@@ -1,0 +1,172 @@
+{
+  "data": [
+    {
+      "id": "page-workbench",
+      "title": "工作台",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787634860000,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-5617107d",
+          "measuredAt": 1787641584232
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/workbench.html",
+        "interactions": [
+          {
+            "domId": "nav-browser",
+            "targetPageId": "page-browser",
+            "hideEdge": true,
+            "transitionLabel": "切换到浏览器"
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-tools-home",
+            "hideEdge": true,
+            "transitionLabel": "切换到媒体工具"
+          },
+          {
+            "domId": "btn-settings",
+            "targetPageId": "page-settings",
+            "hideEdge": false,
+            "transitionLabel": "系统设置"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-browser",
+      "title": "浏览器",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787634860000,
+      "canvasData": {
+        "x": 0,
+        "y": 373,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-98b82f66",
+          "measuredAt": 1787641584232
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/browser.html",
+        "interactions": [
+          {
+            "domId": "nav-workbench",
+            "targetPageId": "page-workbench",
+            "hideEdge": true,
+            "transitionLabel": "切换到工作台"
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-tools-home",
+            "hideEdge": true,
+            "transitionLabel": "切换到媒体工具"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-media-tools-home",
+      "title": "媒体工具",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787633224000,
+      "canvasData": {
+        "x": 480,
+        "y": 373,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-d7a218a3",
+          "measuredAt": 1787641584232
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/media-tools-home.html",
+        "interactions": [
+          {
+            "domId": "nav-workbench",
+            "targetPageId": "page-workbench",
+            "hideEdge": true,
+            "transitionLabel": "切换到工作台"
+          },
+          {
+            "domId": "nav-browser",
+            "targetPageId": "page-browser",
+            "hideEdge": true,
+            "transitionLabel": "切换到浏览器"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-settings",
+      "title": "系统设置",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787640042000,
+      "canvasData": {
+        "x": 480,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-3501c629",
+          "measuredAt": 1787640782780
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/settings.html",
+        "interactions": [
+          {
+            "domId": "nav-workbench",
+            "targetPageId": "page-workbench",
+            "hideEdge": true,
+            "transitionLabel": "切换到工作台"
+          },
+          {
+            "domId": "nav-browser",
+            "targetPageId": "page-browser",
+            "hideEdge": true,
+            "transitionLabel": "切换到浏览器"
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-tools-home",
+            "hideEdge": true,
+            "transitionLabel": "切换到媒体工具"
+          },
+          {
+            "domId": "btn-back-workbench",
+            "targetPageId": "page-workbench",
+            "hideEdge": true,
+            "transitionLabel": "返回工作台"
+          }
+        ]
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "projectName": "螺丝钉 V3 Electron UI 视觉稿",
+    "designLibrary": null
+  }
+}

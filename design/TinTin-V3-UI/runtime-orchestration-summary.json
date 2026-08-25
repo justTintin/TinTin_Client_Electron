@@ -1,0 +1,109 @@
+{
+  "schemaVersion": "2026.07.11.0",
+  "skillProvenance": {
+    "name": "solo-design",
+    "version": null,
+    "version_source": "unknown",
+    "read_status": "missing"
+  },
+  "project": {
+    "operation": "create",
+    "resolvedLane": "complex_html_page",
+    "intentProfile": { "caseFamily": "complex_html_page" },
+    "selectedIntentWorkflowRead": true,
+    "contextReadScope": [
+      "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+      "shared-runtime/design-artifact-formats/design-project-file-format.md"
+    ],
+    "contextRequirementsLoaded": [
+      { "path": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md", "readStatus": "loaded", "bodyRead": true },
+      { "path": "shared-runtime/design-artifact-formats/design-project-file-format.md", "readStatus": "loaded", "bodyRead": true }
+    ],
+    "validationRunDiscipline": "run-once",
+    "lowValueCallWatchdog": {
+      "noProgressNextAction": "proceed-to-validation"
+    },
+    "deviceType": "desktop",
+    "projectName": "螺丝钉 V3 Electron UI 视觉稿",
+    "designRead": "电商 AI 智能体桌面客户端 / 工具型暗色界面 / 高信息密度 / 避免过度装饰",
+    "designDials": { "layoutVariance": 2, "motionIntensity": 2, "visualDensity": 4 },
+    "cssPreflightEvidence": {
+      "scriptPath": "shared-runtime/deterministic-tooling/apply-html-head-contract.mjs",
+      "cssFilePath": "colors_and_type.css",
+      "preflightOutput": ".preflight/preflight.html",
+      "exitCode": 0,
+      "status": "passed"
+    },
+    "generationTree": {
+      "root": "project-shell",
+      "nodes": [
+        { "id": "shell-workbench", "type": "shared-shell", "usedBy": ["page-workbench-ai-script", "page-workbench-storyboard", "page-workbench-vector-search", "page-workbench-scheduled-tasks"] },
+        { "id": "page-workbench-ai-script", "type": "page", "dependsOn": ["shell-workbench"] },
+        { "id": "page-workbench-storyboard", "type": "page", "dependsOn": ["shell-workbench"] },
+        { "id": "page-workbench-shot-material", "type": "page", "dependsOn": ["page-workbench-storyboard"] },
+        { "id": "page-workbench-vector-search", "type": "page", "dependsOn": ["shell-workbench"] },
+        { "id": "page-workbench-scheduled-tasks", "type": "page", "dependsOn": ["shell-workbench"] },
+        { "id": "page-media-tools-home", "type": "page", "dependsOn": [] }
+      ]
+    },
+    "mobileNavigation": { "applies": false },
+    "dispatchPreflightManifest": [],
+    "expectedDispatches": [],
+    "validationHistory": [
+      { "checkedAt": "2026-08-25T05:03:39.319Z", "success": true, "warningCount": 9, "reportPath": "validation-report.json" }
+    ],
+    "validationRepairLedger": []
+  },
+  "designSource": {
+    "operatingMode": "free-explore",
+    "styleConstraints": {
+      "radiusMax": 16,
+      "staticShadowAlphaMax": 0.05
+    },
+    "cssFilePath": "colors_and_type.css"
+  },
+  "pages": [
+    {
+      "nodeId": "page-workbench-ai-script",
+      "title": "工作台 - 飞书脚本创作",
+      "visualNorthStar": "左侧参数面板 + 右侧镜头卡片流，冷静暗色工具界面",
+      "compositionPattern": "sidebar-left-two-column",
+      "continuityAnchors": ["共享工作台顶栏/侧边栏/底栏", "Luosiding 暗色 tokens"]
+    },
+    {
+      "nodeId": "page-workbench-storyboard",
+      "title": "工作台 - 分镜脚本",
+      "visualNorthStar": "分镜表格化卡片，每个镜头含风格画像缩略图与引用素材入口",
+      "compositionPattern": "sidebar-left-list",
+      "continuityAnchors": ["共享工作台顶栏/侧边栏/底栏", "Luosiding 暗色 tokens"]
+    },
+    {
+      "nodeId": "page-workbench-shot-material",
+      "title": "引用素材对话框",
+      "visualNorthStar": "960x640 居中弹窗，三 Tab 素材库网格，选中态明确",
+      "compositionPattern": "modal-overlay",
+      "continuityAnchors": ["从分镜脚本页弹出", "Luosiding 暗色 tokens"]
+    },
+    {
+      "nodeId": "page-workbench-vector-search",
+      "title": "工作台 - 素材检索",
+      "visualNorthStar": "左侧筛选面板 + 右侧响应式缩略图网格",
+      "compositionPattern": "sidebar-left-filter-grid",
+      "continuityAnchors": ["共享工作台顶栏/侧边栏/底栏", "Luosiding 暗色 tokens"]
+    },
+    {
+      "nodeId": "page-workbench-scheduled-tasks",
+      "title": "工作台 - 成片任务",
+      "visualNorthStar": "12 列表格展示任务状态与进度，选中行展开 JSON 详情",
+      "compositionPattern": "sidebar-left-table",
+      "continuityAnchors": ["共享工作台顶栏/侧边栏/底栏", "Luosiding 暗色 tokens"]
+    },
+    {
+      "nodeId": "page-media-tools-home",
+      "title": "媒体工具 - 卡片首页",
+      "visualNorthStar": "8 张功能卡片，4 列响应式网格，顶部彩色 accent bar",
+      "compositionPattern": "full-width-card-grid",
+      "continuityAnchors": ["共享顶栏/底栏", "Luosiding 暗色 tokens"]
+    }
+  ]
+}

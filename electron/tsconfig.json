@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["renderer/src/*"],
+      "@components/*": ["renderer/src/components/*"],
+      "@stores/*": ["renderer/src/stores/*"],
+      "@views/*": ["renderer/src/views/*"],
+      "@styles/*": ["renderer/src/styles/*"]
+    }
+  },
+  "include": [
+    "renderer/src/**/*.ts",
+    "renderer/src/**/*.d.ts",
+    "renderer/src/**/*.tsx",
+    "renderer/src/**/*.vue",
+    "types/**/*.d.ts"
+  ],
+  "exclude": ["node_modules", "renderer/dist"]
+}

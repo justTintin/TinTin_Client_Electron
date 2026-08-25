@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="zh-CN" class="light" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统设置 | 螺丝钉 V3</title>
+    <style id="theme-vars">
+/* ═══════════════════════════════════════════════════════════════
+   TinTin V3 UI — colors_and_type.css
+   Based on Luosiding Design System with Cherry Studio layout influence.
+   Light mode by default; dark mode available via .dark class.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* === Indigo brand === */
+  --luosiding-indigo-50: #e0e7ff;
+  --luosiding-indigo-100: #c7d2fe;
+  --luosiding-indigo-200: #a5b4fc;
+  --luosiding-indigo-300: #818cf8;
+  --luosiding-indigo-400: #6366f1;
+  --luosiding-indigo-500: #4f46e5;
+  --luosiding-indigo-600: #4338ca;
+  --luosiding-indigo-700: #3730a3;
+  --luosiding-indigo-800: #312e81;
+  --luosiding-indigo-900: #1e1b4b;
+
+  /* === Violet accent === */
+  --luosiding-violet-50: #f5f3ff;
+  --luosiding-violet-100: #ede9fe;
+  --luosiding-violet-200: #ddd6fe;
+  --luosiding-violet-300: #c4b5fd;
+  --luosiding-violet-400: #a78bfa;
+  --luosiding-violet-500: #8b5cf6;
+  --luosiding-violet-600: #7c3aed;
+  --luosiding-violet-700: #6d28d9;
+  --luosiding-violet-800: #5b21b6;
+  --luosiding-violet-900: #4c1d95;
+
+  /* === Slate neutral === */
+  --luosiding-slate-0: #ffffff;
+  --luosiding-slate-50: #f0f1f7;
+  --luosiding-slate-100: #c3c6d2;
+  --luosiding-slate-200: #9ca1b1;
+  --luosiding-slate-300: #73788c;
+  --luosiding-slate-400: #5f6475;
+  --luosiding-slate-500: #4c5060;
+  --luosiding-slate-600: #3a3e4b;
+  --luosiding-slate-700: #2b3040;
+  --luosiding-slate-800: #1e212b;
+  --luosiding-slate-900: #151722;
+  --luosiding-slate-950: #0b0c10;
+
+  /* === Status === */
+  --luosiding-success-400: #34d399;
+  --luosiding-success-500: #10b981;
+  --luosiding-warning-400: #fbbf24;
+  --luosiding-warning-500: #f59e0b;
+  --luosiding-error-400: #f87171;
+  --luosiding-error-500: #ef4444;
+  --luosiding-info-400: #60a5fa;
+  --luosiding-info-500: #3b82f6;
+
+  /* === Semantic aliases (light default) === */
+  --background: var(--luosiding-slate-0);
+  --foreground: var(--luosiding-slate-900);
+  --card: var(--luosiding-slate-0);
+  --card-foreground: var(--luosiding-slate-900);
+  --popover: var(--luosiding-slate-0);
+  --popover-foreground: var(--luosiding-slate-900);
+  --primary: var(--luosiding-indigo-500);
+  --primary-foreground: var(--luosiding-slate-0);
+  --secondary: var(--luosiding-slate-100);
+  --secondary-foreground: var(--luosiding-slate-900);
+  --muted: var(--luosiding-slate-100);
+  --muted-foreground: var(--luosiding-slate-400);
+  --accent: var(--luosiding-violet-500);
+  --accent-foreground: var(--luosiding-slate-0);
+  --destructive: var(--luosiding-error-500);
+  --destructive-foreground: var(--luosiding-slate-0);
+  --border: var(--luosiding-slate-200);
+  --input: var(--luosiding-slate-200);
+  --ring: var(--luosiding-indigo-400);
+
+  /* === Shadcn-style color aliases === */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* === Surface hierarchy === */
+  --surface: var(--luosiding-slate-0);
+  --surface-dim: var(--luosiding-slate-50);
+  --surface-bright: var(--luosiding-slate-0);
+  --surface-container-lowest: var(--luosiding-slate-0);
+  --surface-container-low: var(--luosiding-slate-50);
+  --surface-container: var(--luosiding-slate-100);
+  --surface-container-high: var(--luosiding-slate-200);
+  --surface-container-highest: var(--luosiding-slate-300);
+
+  /* === Status aliases === */
+  --color-success: var(--luosiding-success-500);
+  --color-warning: var(--luosiding-warning-500);
+  --color-error: var(--luosiding-error-500);
+  --color-info: var(--luosiding-info-500);
+
+  /* === Radius === */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-full: 9999px;
+
+  /* === Prefixed semantic aliases for tooling === */
+  --luosiding-background: var(--background);
+  --luosiding-foreground: var(--foreground);
+  --luosiding-card: var(--card);
+  --luosiding-card-foreground: var(--card-foreground);
+  --luosiding-popover: var(--popover);
+  --luosiding-popover-foreground: var(--popover-foreground);
+  --luosiding-primary: var(--primary);
+  --luosiding-primary-foreground: var(--primary-foreground);
+  --luosiding-secondary: var(--secondary);
+  --luosiding-secondary-foreground: var(--secondary-foreground);
+  --luosiding-muted: var(--muted);
+  --luosiding-muted-foreground: var(--muted-foreground);
+  --luosiding-accent: var(--accent);
+  --luosiding-accent-foreground: var(--accent-foreground);
+  --luosiding-destructive: var(--destructive);
+  --luosiding-destructive-foreground: var(--destructive-foreground);
+  --luosiding-border: var(--border);
+  --luosiding-input: var(--input);
+  --luosiding-ring: var(--ring);
+  --luosiding-radius-sm: var(--radius-sm);
+  --luosiding-radius-md: var(--radius-md);
+  --luosiding-radius-lg: var(--radius-lg);
+  --luosiding-radius-xl: var(--radius-xl);
+  --luosiding-radius-full: var(--radius-full);
+
+  /* === Typography === */
+  --font-display: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-heading: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-body: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+
+  --font-size-display: 48px;
+  --font-size-h1: 32px;
+  --font-size-h2: 26px;
+  --font-size-h3: 21px;
+  --font-size-h4: 18px;
+  --font-size-body: 14px;
+  --font-size-lead: 16px;
+  --font-size-caption: 12px;
+  --font-size-eyebrow: 11px;
+  --font-size-mono: 13px;
+
+  --font-weight-display: 700;
+  --font-weight-h1: 700;
+  --font-weight-h2: 600;
+  --font-weight-h3: 600;
+  --font-weight-h4: 600;
+  --font-weight-body: 400;
+  --font-weight-lead: 400;
+  --font-weight-caption: 400;
+  --font-weight-eyebrow: 600;
+  --font-weight-mono: 400;
+
+  --line-height-display: 1.1;
+  --line-height-h1: 1.2;
+  --line-height-h2: 1.25;
+  --line-height-h3: 1.3;
+  --line-height-h4: 1.4;
+  --line-height-body: 1.6;
+  --line-height-lead: 1.6;
+  --line-height-caption: 1.5;
+  --line-height-eyebrow: 1.4;
+  --line-height-mono: 1.6;
+
+  /* === Spacing === */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* === Sizing === */
+  --size-button-height: 36px;
+  --size-button-height-sm: 28px;
+  --size-button-height-lg: 44px;
+  --size-input-height: 34px;
+  --size-icon-sm: 16px;
+  --size-icon-md: 20px;
+  --size-icon-lg: 24px;
+  --size-sidebar-width: 264px;
+  --size-page-header-height: 56px;
+  --size-page-footer-height: 44px;
+
+  /* === Shadows === */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-4: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-5: 0 24px 60px rgba(0, 0, 0, 0.65);
+
+  /* === Motion === */
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --easing-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-in: cubic-bezier(0.4, 0, 1, 1);
+  --easing-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* === Layout === */
+  --max-content-width: 1440px;
+  --gutter-content: var(--space-6);
+  --nav-height: 56px;
+}
+
+.dark {
+  --background: var(--luosiding-slate-950);
+  --foreground: var(--luosiding-slate-50);
+  --card: var(--luosiding-slate-900);
+  --card-foreground: var(--luosiding-slate-50);
+  --popover: var(--luosiding-slate-900);
+  --popover-foreground: var(--luosiding-slate-50);
+  --primary: var(--luosiding-indigo-400);
+  --primary-foreground: var(--luosiding-slate-0);
+  --secondary: var(--luosiding-slate-700);
+  --secondary-foreground: var(--luosiding-slate-100);
+  --muted: var(--luosiding-slate-800);
+  --muted-foreground: var(--luosiding-slate-300);
+  --accent: var(--luosiding-violet-400);
+  --accent-foreground: var(--luosiding-slate-0);
+  --destructive: var(--luosiding-error-500);
+  --destructive-foreground: var(--luosiding-slate-0);
+  --border: var(--luosiding-slate-700);
+  --input: var(--luosiding-slate-700);
+  --ring: var(--luosiding-indigo-400);
+  --surface: var(--luosiding-slate-900);
+  --surface-dim: var(--luosiding-slate-950);
+  --surface-bright: var(--luosiding-slate-800);
+  --surface-container-lowest: var(--luosiding-slate-950);
+  --surface-container-low: var(--luosiding-slate-900);
+  --surface-container: var(--luosiding-slate-800);
+  --surface-container-high: var(--luosiding-slate-700);
+  --surface-container-highest: var(--luosiding-slate-600);
+  --color-success: var(--luosiding-success-400);
+  --color-warning: var(--luosiding-warning-400);
+  --color-error: var(--luosiding-error-400);
+  --color-info: var(--luosiding-info-400);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-4: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-5: 0 24px 60px rgba(0, 0, 0, 0.65);
+}
+
+/* === Typography classes === */
+.luo-display { font-family: var(--font-display); font-size: 3rem; font-weight: var(--font-weight-display); line-height: var(--line-height-display); letter-spacing: -0.02em; }
+.luo-h1 { font-family: var(--font-heading); font-size: 2rem; font-weight: var(--font-weight-h1); line-height: var(--line-height-h1); }
+.luo-h2 { font-family: var(--font-heading); font-size: 1.625rem; font-weight: var(--font-weight-h2); line-height: var(--line-height-h2); }
+.luo-h3 { font-family: var(--font-heading); font-size: 1.3125rem; font-weight: var(--font-weight-h3); line-height: var(--line-height-h3); }
+.luo-h4 { font-family: var(--font-heading); font-size: 1.125rem; font-weight: var(--font-weight-h4); line-height: var(--line-height-h4); }
+.luo-body { font-family: var(--font-body); font-size: 0.875rem; font-weight: var(--font-weight-body); line-height: var(--line-height-body); }
+.luo-lead { font-family: var(--font-body); font-size: 1rem; font-weight: var(--font-weight-lead); line-height: var(--line-height-lead); }
+.luo-caption { font-family: var(--font-body); font-size: 0.75rem; font-weight: var(--font-weight-caption); line-height: var(--line-height-caption); }
+.luo-eyebrow { font-family: var(--font-body); font-size: 0.6875rem; font-weight: var(--font-weight-eyebrow); line-height: var(--line-height-eyebrow); letter-spacing: 0.08em; text-transform: uppercase; }
+.luo-mono { font-family: var(--font-mono); font-size: 0.8125rem; font-weight: var(--font-weight-mono); line-height: var(--line-height-mono); }
+
+/* === Utility classes === */
+.luo-focus-ring { outline: none; box-shadow: 0 0 0 2px var(--ring); }
+
+/* === Base reset for design pages === */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-body);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--foreground);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font-family: inherit; font-size: inherit; }
+button { cursor: pointer; }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--luosiding-background);
+    --color-foreground: var(--luosiding-foreground);
+    --color-card: var(--luosiding-card);
+    --color-card-foreground: var(--luosiding-card-foreground);
+    --color-popover: var(--luosiding-popover);
+    --color-popover-foreground: var(--luosiding-popover-foreground);
+    --color-primary: var(--luosiding-primary);
+    --color-primary-foreground: var(--luosiding-primary-foreground);
+    --color-secondary: var(--luosiding-secondary);
+    --color-secondary-foreground: var(--luosiding-secondary-foreground);
+    --color-muted: var(--luosiding-muted);
+    --color-muted-foreground: var(--luosiding-muted-foreground);
+    --color-accent: var(--luosiding-accent);
+    --color-accent-foreground: var(--luosiding-accent-foreground);
+    --color-destructive: var(--luosiding-destructive);
+    --color-destructive-foreground: var(--luosiding-destructive-foreground);
+    --color-border: var(--luosiding-border);
+    --color-input: var(--luosiding-input);
+    --color-ring: var(--luosiding-ring);
+    --radius-sm: var(--luosiding-radius-sm);
+    --radius-md: var(--luosiding-radius-md);
+    --radius-lg: var(--luosiding-radius-lg);
+    --radius-xl: var(--luosiding-radius-xl);
+  }
+  @layer base {
+    body { background: var(--luosiding-background); color: var(--luosiding-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--luosiding-background); }
+      .text-background { color: var(--luosiding-background); }
+      .border-background { border-color: var(--luosiding-background); }
+      .ring-background { --tw-ring-color: var(--luosiding-background); }
+      .bg-foreground { background-color: var(--luosiding-foreground); }
+      .text-foreground { color: var(--luosiding-foreground); }
+      .border-foreground { border-color: var(--luosiding-foreground); }
+      .ring-foreground { --tw-ring-color: var(--luosiding-foreground); }
+      .bg-card { background-color: var(--luosiding-card); }
+      .text-card { color: var(--luosiding-card); }
+      .border-card { border-color: var(--luosiding-card); }
+      .ring-card { --tw-ring-color: var(--luosiding-card); }
+      .bg-card-foreground { background-color: var(--luosiding-card-foreground); }
+      .text-card-foreground { color: var(--luosiding-card-foreground); }
+      .border-card-foreground { border-color: var(--luosiding-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--luosiding-card-foreground); }
+      .bg-popover { background-color: var(--luosiding-popover); }
+      .text-popover { color: var(--luosiding-popover); }
+      .border-popover { border-color: var(--luosiding-popover); }
+      .ring-popover { --tw-ring-color: var(--luosiding-popover); }
+      .bg-popover-foreground { background-color: var(--luosiding-popover-foreground); }
+      .text-popover-foreground { color: var(--luosiding-popover-foreground); }
+      .border-popover-foreground { border-color: var(--luosiding-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--luosiding-popover-foreground); }
+      .bg-primary { background-color: var(--luosiding-primary); }
+      .text-primary { color: var(--luosiding-primary); }
+      .border-primary { border-color: var(--luosiding-primary); }
+      .ring-primary { --tw-ring-color: var(--luosiding-primary); }
+      .bg-primary-foreground { background-color: var(--luosiding-primary-foreground); }
+      .text-primary-foreground { color: var(--luosiding-primary-foreground); }
+      .border-primary-foreground { border-color: var(--luosiding-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--luosiding-primary-foreground); }
+      .bg-secondary { background-color: var(--luosiding-secondary); }
+      .text-secondary { color: var(--luosiding-secondary); }
+      .border-secondary { border-color: var(--luosiding-secondary); }
+      .ring-secondary { --tw-ring-color: var(--luosiding-secondary); }
+      .bg-secondary-foreground { background-color: var(--luosiding-secondary-foreground); }
+      .text-secondary-foreground { color: var(--luosiding-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--luosiding-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--luosiding-secondary-foreground); }
+      .bg-muted { background-color: var(--luosiding-muted); }
+      .text-muted { color: var(--luosiding-muted); }
+      .border-muted { border-color: var(--luosiding-muted); }
+      .ring-muted { --tw-ring-color: var(--luosiding-muted); }
+      .bg-muted-foreground { background-color: var(--luosiding-muted-foreground); }
+      .text-muted-foreground { color: var(--luosiding-muted-foreground); }
+      .border-muted-foreground { border-color: var(--luosiding-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--luosiding-muted-foreground); }
+      .bg-accent { background-color: var(--luosiding-accent); }
+      .text-accent { color: var(--luosiding-accent); }
+      .border-accent { border-color: var(--luosiding-accent); }
+      .ring-accent { --tw-ring-color: var(--luosiding-accent); }
+      .bg-accent-foreground { background-color: var(--luosiding-accent-foreground); }
+      .text-accent-foreground { color: var(--luosiding-accent-foreground); }
+      .border-accent-foreground { border-color: var(--luosiding-accent-foreground); }
+      .ring-accent-foreground { --tw-ring-color: var(--luosiding-accent-foreground); }
+      .bg-destructive { background-color: var(--luosiding-destructive); }
+      .text-destructive { color: var(--luosiding-destructive); }
+      .border-destructive { border-color: var(--luosiding-destructive); }
+      .ring-destructive { --tw-ring-color: var(--luosiding-destructive); }
+      .bg-destructive-foreground { background-color: var(--luosiding-destructive-foreground); }
+      .text-destructive-foreground { color: var(--luosiding-destructive-foreground); }
+      .border-destructive-foreground { border-color: var(--luosiding-destructive-foreground); }
+      .ring-destructive-foreground { --tw-ring-color: var(--luosiding-destructive-foreground); }
+      .bg-border { background-color: var(--luosiding-border); }
+      .text-border { color: var(--luosiding-border); }
+      .border-border { border-color: var(--luosiding-border); }
+      .ring-border { --tw-ring-color: var(--luosiding-border); }
+      .bg-input { background-color: var(--luosiding-input); }
+      .text-input { color: var(--luosiding-input); }
+      .border-input { border-color: var(--luosiding-input); }
+      .ring-input { --tw-ring-color: var(--luosiding-input); }
+      .bg-ring { background-color: var(--luosiding-ring); }
+      .text-ring { color: var(--luosiding-ring); }
+      .border-ring { border-color: var(--luosiding-ring); }
+      .ring-ring { --tw-ring-color: var(--luosiding-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+  <header class="h-14 flex items-center justify-between px-4 border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white font-bold text-sm">钉</div>
+      <div class="flex flex-col">
+        <span class="text-sm font-semibold leading-tight">螺丝钉-电商智能体矩阵</span>
+        <span class="text-[11px] text-[var(--muted-foreground)] leading-tight">V3.0.0</span>
+      </div>
+    </div>
+    <div class="flex items-center bg-[var(--surface-container)] rounded-lg p-1 gap-1">
+      <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-workbench">工作台</button>
+      <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-browser">浏览器</button>
+      <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-media">媒体工具</button>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]"><span class="w-2 h-2 rounded-full bg-[var(--color-success)]"></span><span>服务端正常</span></div>
+      <div class="flex items-center gap-3 text-xs text-[var(--muted-foreground)]"><span>CPU 12%</span><span>内存 34%</span><span>GPU 8%</span></div>
+      <button class="w-8 h-8 rounded-md flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)]"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+    </div>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden">
+    <!-- Settings Sidebar -->
+    <aside class="w-[240px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col shrink-0">
+      <div class="p-5">
+        <h1 class="text-lg font-semibold mb-1">设置</h1>
+        <p class="text-xs text-[var(--muted-foreground)] mb-5">管理账号、模型与系统偏好</p>
+        <nav>
+          <div class="menu-item active" data-section="platform">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            平台接入
+          </div>
+          <div class="menu-item" data-section="local">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            本地配置
+          </div>
+          <div class="menu-item" data-section="env">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            环境与维护
+          </div>
+          <div class="menu-item" data-section="extensions">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+            扩展插件
+          </div>
+          <div class="menu-item" data-section="tasks">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+            任务队列
+          </div>
+          <div class="menu-item" data-section="about">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            关于
+          </div>
+        </nav>
+      </div>
+      <div class="mt-auto p-5 border-t border-[var(--border)]">
+        <button class="btn btn-secondary w-full h-10 text-sm" data-dom-id="btn-back-workbench">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m15 18-6-6 6-6"/></svg>
+          返回工作台
+        </button>
+      </div>
+    </aside>
+
+    <!-- Settings Content -->
+    <main class="flex-1 overflow-auto custom-scroll p-8 bg-[var(--background)]">
+      <div class="max-w-3xl mx-auto">
+        <!-- Header -->
+        <div class="mb-8">
+          <h2 class="text-2xl font-semibold mb-2">平台接入</h2>
+          <p class="text-sm text-[var(--muted-foreground)]">配置大模型 API、服务账号与联网能力</p>
+        </div>
+
+        <!-- Segment -->
+        <div class="segment mb-8">
+          <div class="segment-item active">LLM 设置</div>
+          <div class="segment-item">服务接入</div>
+        </div>
+
+        <!-- LLM Card -->
+        <div class="card p-6 mb-6">
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">默认模型</div>
+              <div class="setting-desc">选择会话中默认使用的模型</div>
+            </div>
+            <select class="input w-56">
+              <option>GPT-4o</option>
+              <option>Claude 3.5 Sonnet</option>
+              <option>DeepSeek-V2</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">API Key</div>
+              <div class="setting-desc">用于调用模型服务的密钥</div>
+            </div>
+            <input type="password" value="sk-xxxxxxxxxxxxxxxx" class="input w-72" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">Base URL</div>
+              <div class="setting-desc">自定义 API 代理地址</div>
+            </div>
+            <input type="text" value="https://api.openai.com/v1" class="input w-72" />
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">启用联网搜索</div>
+              <div class="setting-desc">让模型在必要时检索实时信息</div>
+            </div>
+            <div class="switch on"></div>
+          </div>
+        </div>
+
+        <!-- Local Config -->
+        <div class="mb-8 mt-10">
+          <h2 class="text-2xl font-semibold mb-2">本地配置</h2>
+          <p class="text-sm text-[var(--muted-foreground)]">本地资源路径与效果配置</p>
+        </div>
+        <div class="card p-6 mb-6">
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">声音样例目录</div>
+              <div class="setting-desc">TTS 训练使用的参考音频目录</div>
+            </div>
+            <div class="flex gap-2 w-80">
+              <input type="text" value="D:\\TinTin\\voice_samples" class="input" />
+              <button class="btn btn-secondary px-4 h-10">浏览</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">LUT 配置文件</div>
+              <div class="setting-desc">视频调色默认 LUT</div>
+            </div>
+            <div class="flex gap-2 w-80">
+              <input type="text" value="default.cube" class="input" />
+              <button class="btn btn-secondary px-4 h-10">选择</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Environment -->
+        <div class="mb-8 mt-10">
+          <h2 class="text-2xl font-semibold mb-2">环境与维护</h2>
+          <p class="text-sm text-[var(--muted-foreground)]">服务状态、日志与存储管理</p>
+        </div>
+        <div class="card p-6 mb-6">
+          <div class="setting-row">
+            <div class="flex items-center gap-4">
+              <div class="status-dot bg-[var(--color-success)]"></div>
+              <div>
+                <div class="setting-label">本地服务端</div>
+                <div class="setting-desc">http://127.0.0.1:8000 · 运行中</div>
+              </div>
+            </div>
+            <button class="btn btn-secondary h-10 px-4 text-sm">重启服务</button>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">日志级别</div>
+              <div class="setting-desc">控制台与日志文件输出详细程度</div>
+            </div>
+            <select class="input w-40"><option>INFO</option><option>DEBUG</option><option>WARNING</option></select>
+          </div>
+          <div class="setting-row">
+            <div>
+              <div class="setting-label">缓存清理</div>
+              <div class="setting-desc">释放临时文件与预览缓存占用的空间</div>
+            </div>
+            <button class="btn btn-secondary h-10 px-4 text-sm">立即清理</button>
+          </div>
+        </div>
+
+        <!-- About -->
+        <div class="card p-6 mb-8">
+          <div class="flex items-center gap-5">
+            <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white font-bold text-2xl shadow-lg">钉</div>
+            <div>
+              <div class="text-xl font-semibold">螺丝钉-电商智能体矩阵</div>
+              <div class="text-sm text-[var(--muted-foreground)] mt-1">版本 V3.0.0 · Electron 客户端</div>
+              <div class="text-xs text-[var(--muted-foreground)] mt-2">© 2026 TinTin Team</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+    <style>
+    body { background: var(--background); color: var(--foreground); font-family: var(--font-body); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-1); }
+    .input { width: 100%; height: 40px; padding: 0 14px; background: var(--surface-container); border: 1px solid var(--border); border-radius: var(--radius-lg); color: var(--foreground); outline: none; font-size: 14px; transition: all 150ms; }
+    .input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--ring); background: var(--card); }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: var(--radius-lg); font-weight: 500; white-space: nowrap; transition: all 150ms; }
+    .btn-primary { background: var(--primary); color: var(--primary-foreground); height: 40px; padding: 0 20px; }
+    .btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
+    .btn-secondary { background: var(--surface-container); color: var(--foreground); border-color: var(--border); height: 40px; padding: 0 16px; }
+    .btn-secondary:hover { background: var(--surface-container-high); }
+    .btn-ghost { background: transparent; color: var(--muted-foreground); border-color: var(--border); height: 28px; padding: 0 10px; font-size: 12px; }
+    .btn-ghost:hover { color: var(--foreground); background: var(--surface-container); }
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: var(--surface-container-high); border-radius: 3px; }
+    .menu-item { display: flex; align-items: center; gap-3; height: 40px; padding: 0 12px; border-radius: var(--radius-lg); color: var(--muted-foreground); cursor: pointer; transition: all 150ms; margin-bottom: 2px; font-size: 14px; }
+    .menu-item:hover { background: var(--surface-container); color: var(--foreground); }
+    .menu-item.active { background: var(--primary); color: var(--primary-foreground); font-weight: 500; box-shadow: var(--shadow-1); }
+    .menu-item svg { width: 18px; height: 18px; margin-right: 12px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; border-bottom: 1px solid var(--border); }
+    .setting-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .setting-row:first-child { padding-top: 0; }
+    .setting-label { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+    .setting-desc { font-size: 13px; color: var(--muted-foreground); }
+    .switch { width: 44px; height: 24px; border-radius: 12px; background: var(--surface-container-high); position: relative; cursor: pointer; transition: background 200ms; }
+    .switch.on { background: var(--primary); }
+    .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: white; transition: transform 200ms cubic-bezier(0.4, 0, 0.2, 1); box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    .switch.on::after { transform: translateX(20px); }
+    .segment { display: flex; background: var(--surface-container); border-radius: var(--radius-lg); padding: 4px; width: fit-content; }
+    .segment-item { height: 32px; padding: 0 16px; border-radius: var(--radius-md); font-size: 13px; color: var(--muted-foreground); cursor: pointer; transition: all 150ms; }
+    .segment-item.active { background: var(--card); color: var(--foreground); font-weight: 500; box-shadow: var(--shadow-1); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  </style>
+</body>
+</html>

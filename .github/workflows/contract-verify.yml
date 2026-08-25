@@ -1,0 +1,52 @@
+# =====================================================================
+# contract-verify.yml — CI 提交门禁（软件工程铁律 IRON-03/04/05/10）
+#
+# 触发：push 到 main/master/dev 分支、任意 PR 到 main/master
+# 任务：在 electron/ 子目录执行三级门禁
+#   1. npm run verify              — F-3 双写一致性自检（IRON-10）
+#   2. npm run contract:typecheck  — TypeScript 编译期类型检查（IRON-03/05）
+#   3. npm run build:renderer      — Vite 生产构建无破坏验证（IRON-04）
+# 任一步失败即阻断 CI，PR 不允许合并。
+# =====================================================================
+
+name: Contract Verify
+
+on:
+  push:
+    branches: [main, master, dev]
+  pull_request:
+    branches: [main, master]
+
+  # 支持手动触发，便于调试
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: F-2 OpenAPI 契约门禁
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: electron
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: IRON-10 双写一致性自检
+        run: npm run verify
+
+      - name: IRON-03/05 类型检查
+        run: npm run contract:typecheck
+
+      - name: IRON-04 生产构建验证
+        run: npm run build:renderer

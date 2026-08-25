@@ -1,0 +1,33 @@
+{
+  "version": "2026.08.25",
+  "cdnBase": "https://cdn.tintin-ai.com/models/v1/",
+  "inferencePkgs": [
+    {
+      "id": "ocr-paddle-int8",
+      "files": [
+        { "name": "paddle_det_int8.onnx",  "sha256": "TBD_OCR_DET",  "size": 4194304 },
+        { "name": "paddle_rec_int8.onnx",  "sha256": "TBD_OCR_REC",  "size": 12582912 },
+        { "name": "paddle_cls_int8.onnx",  "sha256": "TBD_OCR_CLS",  "size": 2097152 },
+        { "name": "paddle_rec_dict.txt",   "sha256": "TBD_OCR_DICT", "size": 204800 }
+      ],
+      "totalSize": 19079168
+    },
+    {
+      "id": "embedding-bge-small-zh",
+      "files": [
+        { "name": "bge_small_zh_v1.5_int8.onnx", "sha256": "TBD_EMBEDDING_BGE", "size": 104857600 }
+      ],
+      "totalSize": 104857600
+    },
+    {
+      "id": "native-addons-sqlitevss-sharp",
+      "files": [
+        { "name": "sqlite-vss-win32-x64.node", "sha256": "TBD_SQLITEVSS_NODE", "size": 4194304 },
+        { "name": "sqlite_vss.dll",            "sha256": "TBD_SQLITEVSS_DLL",  "size": 1048576 }
+      ],
+      "totalSize": 5242880,
+      "platformOnly": ["win32-x64"]
+    }
+  ],
+  "totalDownloadSizeBytes": 129180032
+}

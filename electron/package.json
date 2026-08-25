@@ -1,0 +1,87 @@
+{
+  "name": "tintin-client-electron",
+  "version": "3.0.0",
+  "description": "螺丝钉-电商智能体矩阵 V3 (Electron)",
+  "main": "main/main.js",
+  "author": "TinTin Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --config ./renderer/vite.config.ts",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && cross-env NODE_ENV=development electron .",
+    "build:renderer": "vite build --config ./renderer/vite.config.ts",
+    "build": "npm run build:renderer && electron-builder --win nsis --x64",
+    "build:dir": "npm run build:renderer && electron-builder --win --x64 --dir",
+    "contract:gen": "openapi-typescript http://192.168.111.31:8000/openapi.json -o ./renderer/src/types/api-contract.generated.ts",
+    "contract:gen-local": "openapi-typescript ../openapi-latest.json -o ./renderer/src/types/api-contract.generated.ts",
+    "contract:typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify": "node scripts/verify-contract.js",
+    "typecheck": "tsc --noEmit -p renderer/tsconfig.json",
+    "lint": "eslint \"renderer/src/**/*.{ts,vue}\"",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.3.4",
+    "onnxruntime-node": "^1.20.1",
+    "openapi-fetch": "^0.17.0",
+    "systeminformation": "^5.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@vitejs/plugin-vue": "^5.0.5",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "openapi-typescript": "^7.13.0",
+    "pinia": "^2.1.7",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.3",
+    "vue": "^3.4.31",
+    "vue-router": "^4.4.0",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.tintin.electron.v3",
+    "productName": "螺丝钉-电商智能体矩阵",
+    "directories": {
+      "output": "../dist",
+      "buildResources": "build"
+    },
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/**",
+      "node_modules/better-sqlite3/**",
+      "node_modules/sharp/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../resources/bin",
+        "to": "bin",
+        "filter": [
+          "ffmpeg.exe",
+          "ffprobe.exe"
+        ]
+      },
+      {
+        "from": "../resources/icons",
+        "to": "icons"
+      },
+      {
+        "from": "../resources/studio-legacy",
+        "to": "studio-legacy",
+        "filter": [
+          "bridge.exe"
+        ]
+      }
+    ],
+    "files": [
+      "main/**/*",
+      "preload/**/*",
+      "config/**/*",
+      "renderer/dist/**/*",
+      "!node_modules/**/*"
+    ]
+  }
+}

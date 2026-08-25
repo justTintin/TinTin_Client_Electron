@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────
+# TinTin Client Electron — .gitignore
+# 排除 node_modules / 构建产物 / 临时调试文件 / IDE / OS 垃圾
+# ─────────────────────────────────────────────────────────────────────
+
+# 依赖
+node_modules/
+**/node_modules/
+
+# 构建产物
+electron/renderer/dist/
+dist/
+*.app
+*.exe
+*.msi
+*.nupkg
+*.blockmap
+
+# 临时调试脚本与截图（非工程代码）
+find_window.ps1
+screenshot_step1.png
+screenshot_step1.ps1
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Electron-builder 缓存
+electron/build/Release/
+electron/build/obj/
+
+# TypeScript 增量缓存
+*.tsbuildinfo

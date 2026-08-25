@@ -1,0 +1,51 @@
+#!/bin/sh
+# =====================================================================
+# pre-commit git hook — 软件工程铁律 IRON-05/IRON-10 提交门禁
+#
+# 作用：在 git commit 之前自动执行 `npm run verify`（F-3 双写一致性自检），
+#       任何 FAIL 项都会阻断本次提交，防止契约漂移流入仓库。
+#
+# 一次配置（仓库克隆后执行一次即可，配置写入 .git/config 不会被覆盖）：
+#   git config core.hooksPath githooks
+#
+# 临时绕过（仅紧急情况，禁止常规使用）：
+#   git commit --no-verify
+# =====================================================================
+
+# 切到仓库根（git 钩子工作目录固定为仓库根）
+REPO_ROOT=$(git rev-parse --show-toplevel)
+ELECTRON_DIR="$REPO_ROOT/electron"
+
+if [ ! -d "$ELECTRON_DIR" ]; then
+  echo "[pre-commit] ⚠️  electron/ 目录不存在，跳过 verify"
+  exit 0
+fi
+
+if [ ! -f "$ELECTRON_DIR/scripts/verify-contract.js" ]; then
+  echo "[pre-commit] ⚠️  electron/scripts/verify-contract.js 不存在，跳过 verify"
+  exit 0
+fi
+
+# 没有 node_modules 时跳过（首次 clone 未 install 的场景）
+if [ ! -d "$ELECTRON_DIR/node_modules" ]; then
+  echo "[pre-commit] ⚠️  electron/node_modules 不存在，跳过 verify（请先 npm install）"
+  exit 0
+fi
+
+echo "[pre-commit] 运行 IRON-10 双写一致性自检 (cd electron && npm run verify)"
+cd "$ELECTRON_DIR" || exit 1
+
+# npm run verify 失败时 exit code != 0，直接阻断 commit
+npm run --silent verify
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "[pre-commit] ❌ verify 失败 (exit $status)。提交已被阻断。"
+  echo "            请修复以上 FAIL 项后重新 commit。"
+  echo "            紧急情况可使用 git commit --no-verify 绕过（不推荐）。"
+  exit $status
+fi
+
+echo "[pre-commit] ✅ verify 通过，允许提交。"
+exit 0

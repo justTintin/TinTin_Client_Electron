@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="zh-CN" class="light" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>浏览器 | 螺丝钉 V3</title>
+    <style id="theme-vars">
+/* ═══════════════════════════════════════════════════════════════
+   TinTin V3 UI — colors_and_type.css
+   Based on Luosiding Design System with Cherry Studio layout influence.
+   Light mode by default; dark mode available via .dark class.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* === Indigo brand === */
+  --luosiding-indigo-50: #e0e7ff;
+  --luosiding-indigo-100: #c7d2fe;
+  --luosiding-indigo-200: #a5b4fc;
+  --luosiding-indigo-300: #818cf8;
+  --luosiding-indigo-400: #6366f1;
+  --luosiding-indigo-500: #4f46e5;
+  --luosiding-indigo-600: #4338ca;
+  --luosiding-indigo-700: #3730a3;
+  --luosiding-indigo-800: #312e81;
+  --luosiding-indigo-900: #1e1b4b;
+
+  /* === Violet accent === */
+  --luosiding-violet-50: #f5f3ff;
+  --luosiding-violet-100: #ede9fe;
+  --luosiding-violet-200: #ddd6fe;
+  --luosiding-violet-300: #c4b5fd;
+  --luosiding-violet-400: #a78bfa;
+  --luosiding-violet-500: #8b5cf6;
+  --luosiding-violet-600: #7c3aed;
+  --luosiding-violet-700: #6d28d9;
+  --luosiding-violet-800: #5b21b6;
+  --luosiding-violet-900: #4c1d95;
+
+  /* === Slate neutral === */
+  --luosiding-slate-0: #ffffff;
+  --luosiding-slate-50: #f0f1f7;
+  --luosiding-slate-100: #c3c6d2;
+  --luosiding-slate-200: #9ca1b1;
+  --luosiding-slate-300: #73788c;
+  --luosiding-slate-400: #5f6475;
+  --luosiding-slate-500: #4c5060;
+  --luosiding-slate-600: #3a3e4b;
+  --luosiding-slate-700: #2b3040;
+  --luosiding-slate-800: #1e212b;
+  --luosiding-slate-900: #151722;
+  --luosiding-slate-950: #0b0c10;
+
+  /* === Status === */
+  --luosiding-success-400: #34d399;
+  --luosiding-success-500: #10b981;
+  --luosiding-warning-400: #fbbf24;
+  --luosiding-warning-500: #f59e0b;
+  --luosiding-error-400: #f87171;
+  --luosiding-error-500: #ef4444;
+  --luosiding-info-400: #60a5fa;
+  --luosiding-info-500: #3b82f6;
+
+  /* === Semantic aliases (light default) === */
+  --background: var(--luosiding-slate-0);
+  --foreground: var(--luosiding-slate-900);
+  --card: var(--luosiding-slate-0);
+  --card-foreground: var(--luosiding-slate-900);
+  --popover: var(--luosiding-slate-0);
+  --popover-foreground: var(--luosiding-slate-900);
+  --primary: var(--luosiding-indigo-500);
+  --primary-foreground: var(--luosiding-slate-0);
+  --secondary: var(--luosiding-slate-100);
+  --secondary-foreground: var(--luosiding-slate-900);
+  --muted: var(--luosiding-slate-100);
+  --muted-foreground: var(--luosiding-slate-400);
+  --accent: var(--luosiding-violet-500);
+  --accent-foreground: var(--luosiding-slate-0);
+  --destructive: var(--luosiding-error-500);
+  --destructive-foreground: var(--luosiding-slate-0);
+  --border: var(--luosiding-slate-200);
+  --input: var(--luosiding-slate-200);
+  --ring: var(--luosiding-indigo-400);
+
+  /* === Shadcn-style color aliases === */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* === Surface hierarchy === */
+  --surface: var(--luosiding-slate-0);
+  --surface-dim: var(--luosiding-slate-50);
+  --surface-bright: var(--luosiding-slate-0);
+  --surface-container-lowest: var(--luosiding-slate-0);
+  --surface-container-low: var(--luosiding-slate-50);
+  --surface-container: var(--luosiding-slate-100);
+  --surface-container-high: var(--luosiding-slate-200);
+  --surface-container-highest: var(--luosiding-slate-300);
+
+  /* === Status aliases === */
+  --color-success: var(--luosiding-success-500);
+  --color-warning: var(--luosiding-warning-500);
+  --color-error: var(--luosiding-error-500);
+  --color-info: var(--luosiding-info-500);
+
+  /* === Radius === */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 14px;
+  --radius-full: 9999px;
+
+  /* === Prefixed semantic aliases for tooling === */
+  --luosiding-background: var(--background);
+  --luosiding-foreground: var(--foreground);
+  --luosiding-card: var(--card);
+  --luosiding-card-foreground: var(--card-foreground);
+  --luosiding-popover: var(--popover);
+  --luosiding-popover-foreground: var(--popover-foreground);
+  --luosiding-primary: var(--primary);
+  --luosiding-primary-foreground: var(--primary-foreground);
+  --luosiding-secondary: var(--secondary);
+  --luosiding-secondary-foreground: var(--secondary-foreground);
+  --luosiding-muted: var(--muted);
+  --luosiding-muted-foreground: var(--muted-foreground);
+  --luosiding-accent: var(--accent);
+  --luosiding-accent-foreground: var(--accent-foreground);
+  --luosiding-destructive: var(--destructive);
+  --luosiding-destructive-foreground: var(--destructive-foreground);
+  --luosiding-border: var(--border);
+  --luosiding-input: var(--input);
+  --luosiding-ring: var(--ring);
+  --luosiding-radius-sm: var(--radius-sm);
+  --luosiding-radius-md: var(--radius-md);
+  --luosiding-radius-lg: var(--radius-lg);
+  --luosiding-radius-xl: var(--radius-xl);
+  --luosiding-radius-full: var(--radius-full);
+
+  /* === Typography === */
+  --font-display: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-heading: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-body: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+
+  --font-size-display: 48px;
+  --font-size-h1: 32px;
+  --font-size-h2: 26px;
+  --font-size-h3: 21px;
+  --font-size-h4: 18px;
+  --font-size-body: 14px;
+  --font-size-lead: 16px;
+  --font-size-caption: 12px;
+  --font-size-eyebrow: 11px;
+  --font-size-mono: 13px;
+
+  --font-weight-display: 700;
+  --font-weight-h1: 700;
+  --font-weight-h2: 600;
+  --font-weight-h3: 600;
+  --font-weight-h4: 600;
+  --font-weight-body: 400;
+  --font-weight-lead: 400;
+  --font-weight-caption: 400;
+  --font-weight-eyebrow: 600;
+  --font-weight-mono: 400;
+
+  --line-height-display: 1.1;
+  --line-height-h1: 1.2;
+  --line-height-h2: 1.25;
+  --line-height-h3: 1.3;
+  --line-height-h4: 1.4;
+  --line-height-body: 1.6;
+  --line-height-lead: 1.6;
+  --line-height-caption: 1.5;
+  --line-height-eyebrow: 1.4;
+  --line-height-mono: 1.6;
+
+  /* === Spacing === */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* === Sizing === */
+  --size-button-height: 36px;
+  --size-button-height-sm: 28px;
+  --size-button-height-lg: 44px;
+  --size-input-height: 34px;
+  --size-icon-sm: 16px;
+  --size-icon-md: 20px;
+  --size-icon-lg: 24px;
+  --size-sidebar-width: 264px;
+  --size-page-header-height: 56px;
+  --size-page-footer-height: 44px;
+
+  /* === Shadows === */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-4: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-5: 0 24px 60px rgba(0, 0, 0, 0.65);
+
+  /* === Motion === */
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --easing-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --easing-in: cubic-bezier(0.4, 0, 1, 1);
+  --easing-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* === Layout === */
+  --max-content-width: 1440px;
+  --gutter-content: var(--space-6);
+  --nav-height: 56px;
+}
+
+.dark {
+  --background: var(--luosiding-slate-950);
+  --foreground: var(--luosiding-slate-50);
+  --card: var(--luosiding-slate-900);
+  --card-foreground: var(--luosiding-slate-50);
+  --popover: var(--luosiding-slate-900);
+  --popover-foreground: var(--luosiding-slate-50);
+  --primary: var(--luosiding-indigo-400);
+  --primary-foreground: var(--luosiding-slate-0);
+  --secondary: var(--luosiding-slate-700);
+  --secondary-foreground: var(--luosiding-slate-100);
+  --muted: var(--luosiding-slate-800);
+  --muted-foreground: var(--luosiding-slate-300);
+  --accent: var(--luosiding-violet-400);
+  --accent-foreground: var(--luosiding-slate-0);
+  --destructive: var(--luosiding-error-500);
+  --destructive-foreground: var(--luosiding-slate-0);
+  --border: var(--luosiding-slate-700);
+  --input: var(--luosiding-slate-700);
+  --ring: var(--luosiding-indigo-400);
+  --surface: var(--luosiding-slate-900);
+  --surface-dim: var(--luosiding-slate-950);
+  --surface-bright: var(--luosiding-slate-800);
+  --surface-container-lowest: var(--luosiding-slate-950);
+  --surface-container-low: var(--luosiding-slate-900);
+  --surface-container: var(--luosiding-slate-800);
+  --surface-container-high: var(--luosiding-slate-700);
+  --surface-container-highest: var(--luosiding-slate-600);
+  --color-success: var(--luosiding-success-400);
+  --color-warning: var(--luosiding-warning-400);
+  --color-error: var(--luosiding-error-400);
+  --color-info: var(--luosiding-info-400);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-4: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-5: 0 24px 60px rgba(0, 0, 0, 0.65);
+}
+
+/* === Typography classes === */
+.luo-display { font-family: var(--font-display); font-size: 3rem; font-weight: var(--font-weight-display); line-height: var(--line-height-display); letter-spacing: -0.02em; }
+.luo-h1 { font-family: var(--font-heading); font-size: 2rem; font-weight: var(--font-weight-h1); line-height: var(--line-height-h1); }
+.luo-h2 { font-family: var(--font-heading); font-size: 1.625rem; font-weight: var(--font-weight-h2); line-height: var(--line-height-h2); }
+.luo-h3 { font-family: var(--font-heading); font-size: 1.3125rem; font-weight: var(--font-weight-h3); line-height: var(--line-height-h3); }
+.luo-h4 { font-family: var(--font-heading); font-size: 1.125rem; font-weight: var(--font-weight-h4); line-height: var(--line-height-h4); }
+.luo-body { font-family: var(--font-body); font-size: 0.875rem; font-weight: var(--font-weight-body); line-height: var(--line-height-body); }
+.luo-lead { font-family: var(--font-body); font-size: 1rem; font-weight: var(--font-weight-lead); line-height: var(--line-height-lead); }
+.luo-caption { font-family: var(--font-body); font-size: 0.75rem; font-weight: var(--font-weight-caption); line-height: var(--line-height-caption); }
+.luo-eyebrow { font-family: var(--font-body); font-size: 0.6875rem; font-weight: var(--font-weight-eyebrow); line-height: var(--line-height-eyebrow); letter-spacing: 0.08em; text-transform: uppercase; }
+.luo-mono { font-family: var(--font-mono); font-size: 0.8125rem; font-weight: var(--font-weight-mono); line-height: var(--line-height-mono); }
+
+/* === Utility classes === */
+.luo-focus-ring { outline: none; box-shadow: 0 0 0 2px var(--ring); }
+
+/* === Base reset for design pages === */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-body);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--foreground);
+  background: var(--background);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font-family: inherit; font-size: inherit; }
+button { cursor: pointer; }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--luosiding-background);
+    --color-foreground: var(--luosiding-foreground);
+    --color-card: var(--luosiding-card);
+    --color-card-foreground: var(--luosiding-card-foreground);
+    --color-popover: var(--luosiding-popover);
+    --color-popover-foreground: var(--luosiding-popover-foreground);
+    --color-primary: var(--luosiding-primary);
+    --color-primary-foreground: var(--luosiding-primary-foreground);
+    --color-secondary: var(--luosiding-secondary);
+    --color-secondary-foreground: var(--luosiding-secondary-foreground);
+    --color-muted: var(--luosiding-muted);
+    --color-muted-foreground: var(--luosiding-muted-foreground);
+    --color-accent: var(--luosiding-accent);
+    --color-accent-foreground: var(--luosiding-accent-foreground);
+    --color-destructive: var(--luosiding-destructive);
+    --color-destructive-foreground: var(--luosiding-destructive-foreground);
+    --color-border: var(--luosiding-border);
+    --color-input: var(--luosiding-input);
+    --color-ring: var(--luosiding-ring);
+    --radius-sm: var(--luosiding-radius-sm);
+    --radius-md: var(--luosiding-radius-md);
+    --radius-lg: var(--luosiding-radius-lg);
+    --radius-xl: var(--luosiding-radius-xl);
+  }
+  @layer base {
+    body { background: var(--luosiding-background); color: var(--luosiding-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--luosiding-background); }
+      .text-background { color: var(--luosiding-background); }
+      .border-background { border-color: var(--luosiding-background); }
+      .ring-background { --tw-ring-color: var(--luosiding-background); }
+      .bg-foreground { background-color: var(--luosiding-foreground); }
+      .text-foreground { color: var(--luosiding-foreground); }
+      .border-foreground { border-color: var(--luosiding-foreground); }
+      .ring-foreground { --tw-ring-color: var(--luosiding-foreground); }
+      .bg-card { background-color: var(--luosiding-card); }
+      .text-card { color: var(--luosiding-card); }
+      .border-card { border-color: var(--luosiding-card); }
+      .ring-card { --tw-ring-color: var(--luosiding-card); }
+      .bg-card-foreground { background-color: var(--luosiding-card-foreground); }
+      .text-card-foreground { color: var(--luosiding-card-foreground); }
+      .border-card-foreground { border-color: var(--luosiding-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--luosiding-card-foreground); }
+      .bg-popover { background-color: var(--luosiding-popover); }
+      .text-popover { color: var(--luosiding-popover); }
+      .border-popover { border-color: var(--luosiding-popover); }
+      .ring-popover { --tw-ring-color: var(--luosiding-popover); }
+      .bg-popover-foreground { background-color: var(--luosiding-popover-foreground); }
+      .text-popover-foreground { color: var(--luosiding-popover-foreground); }
+      .border-popover-foreground { border-color: var(--luosiding-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--luosiding-popover-foreground); }
+      .bg-primary { background-color: var(--luosiding-primary); }
+      .text-primary { color: var(--luosiding-primary); }
+      .border-primary { border-color: var(--luosiding-primary); }
+      .ring-primary { --tw-ring-color: var(--luosiding-primary); }
+      .bg-primary-foreground { background-color: var(--luosiding-primary-foreground); }
+      .text-primary-foreground { color: var(--luosiding-primary-foreground); }
+      .border-primary-foreground { border-color: var(--luosiding-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--luosiding-primary-foreground); }
+      .bg-secondary { background-color: var(--luosiding-secondary); }
+      .text-secondary { color: var(--luosiding-secondary); }
+      .border-secondary { border-color: var(--luosiding-secondary); }
+      .ring-secondary { --tw-ring-color: var(--luosiding-secondary); }
+      .bg-secondary-foreground { background-color: var(--luosiding-secondary-foreground); }
+      .text-secondary-foreground { color: var(--luosiding-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--luosiding-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--luosiding-secondary-foreground); }
+      .bg-muted { background-color: var(--luosiding-muted); }
+      .text-muted { color: var(--luosiding-muted); }
+      .border-muted { border-color: var(--luosiding-muted); }
+      .ring-muted { --tw-ring-color: var(--luosiding-muted); }
+      .bg-muted-foreground { background-color: var(--luosiding-muted-foreground); }
+      .text-muted-foreground { color: var(--luosiding-muted-foreground); }
+      .border-muted-foreground { border-color: var(--luosiding-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--luosiding-muted-foreground); }
+      .bg-accent { background-color: var(--luosiding-accent); }
+      .text-accent { color: var(--luosiding-accent); }
+      .border-accent { border-color: var(--luosiding-accent); }
+      .ring-accent { --tw-ring-color: var(--luosiding-accent); }
+      .bg-accent-foreground { background-color: var(--luosiding-accent-foreground); }
+      .text-accent-foreground { color: var(--luosiding-accent-foreground); }
+      .border-accent-foreground { border-color: var(--luosiding-accent-foreground); }
+      .ring-accent-foreground { --tw-ring-color: var(--luosiding-accent-foreground); }
+      .bg-destructive { background-color: var(--luosiding-destructive); }
+      .text-destructive { color: var(--luosiding-destructive); }
+      .border-destructive { border-color: var(--luosiding-destructive); }
+      .ring-destructive { --tw-ring-color: var(--luosiding-destructive); }
+      .bg-destructive-foreground { background-color: var(--luosiding-destructive-foreground); }
+      .text-destructive-foreground { color: var(--luosiding-destructive-foreground); }
+      .border-destructive-foreground { border-color: var(--luosiding-destructive-foreground); }
+      .ring-destructive-foreground { --tw-ring-color: var(--luosiding-destructive-foreground); }
+      .bg-border { background-color: var(--luosiding-border); }
+      .text-border { color: var(--luosiding-border); }
+      .border-border { border-color: var(--luosiding-border); }
+      .ring-border { --tw-ring-color: var(--luosiding-border); }
+      .bg-input { background-color: var(--luosiding-input); }
+      .text-input { color: var(--luosiding-input); }
+      .border-input { border-color: var(--luosiding-input); }
+      .ring-input { --tw-ring-color: var(--luosiding-input); }
+      .bg-ring { background-color: var(--luosiding-ring); }
+      .text-ring { color: var(--luosiding-ring); }
+      .border-ring { border-color: var(--luosiding-ring); }
+      .ring-ring { --tw-ring-color: var(--luosiding-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+  <header class="h-14 flex items-center justify-between px-4 border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white font-bold text-sm">钉</div>
+      <div class="flex flex-col">
+        <span class="text-sm font-semibold leading-tight">螺丝钉-电商智能体矩阵</span>
+        <span class="text-[11px] text-[var(--muted-foreground)] leading-tight">V3.0.0</span>
+      </div>
+    </div>
+    <div class="flex items-center bg-[var(--surface-container)] rounded-lg p-1 gap-1">
+      <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-workbench">工作台</button>
+      <button class="btn btn-secondary h-7 px-3 text-sm" data-dom-id="nav-browser">浏览器</button>
+      <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-media">媒体工具</button>
+    </div>
+    <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]"><span class="w-2 h-2 rounded-full bg-[var(--color-success)]"></span><span>服务端正常</span></div>
+      <div class="flex items-center gap-3 text-xs text-[var(--muted-foreground)]"><span>CPU 12%</span><span>内存 34%</span><span>GPU 8%</span></div>
+      <button class="w-8 h-8 rounded-md flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)]"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+    </div>
+  </header>
+
+  <!-- Browser Toolbar -->
+  <div class="h-14 bg-[var(--surface)] border-b border-[var(--border)] flex items-center px-4 gap-3 shrink-0">
+    <div class="flex items-center gap-1">
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)] transition-colors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)] transition-colors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)] transition-colors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+      </button>
+    </div>
+    <div class="flex-1 flex items-center gap-2">
+      <div class="relative flex-1">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-success)]"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <input type="text" value="https://www.douyin.com/video/1234567890" class="input pl-10 text-sm" />
+      </div>
+      <button class="btn btn-primary h-9 px-4 text-sm">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
+        解析并导入
+      </button>
+    </div>
+    <div class="flex items-center gap-1">
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)] transition-colors relative">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span class="absolute top-2 right-2 w-2 h-2 rounded-full bg-[var(--color-error)]"></span>
+      </button>
+      <button class="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)] transition-colors">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Browser Content -->
+  <div class="flex flex-1 overflow-hidden">
+    <!-- Sidebar -->
+    <aside class="w-[240px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col shrink-0">
+      <div class="p-5">
+        <div class="text-[11px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider mb-3">历史记录</div>
+        <div class="space-y-1">
+          <div class="history-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            抖音创作中心
+          </div>
+          <div class="history-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            B站创作中心
+          </div>
+          <div class="history-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            YouTube Studio
+          </div>
+        </div>
+      </div>
+      <div class="p-5 border-t border-[var(--border)]">
+        <div class="text-[11px] font-semibold text-[var(--muted-foreground)] uppercase tracking-wider mb-3">下载管理</div>
+        <div class="card p-4">
+          <div class="text-sm truncate mb-2">sample_video.mp4</div>
+          <div class="h-1.5 bg-[var(--surface-container)] rounded-full overflow-hidden mb-2"><div class="h-full bg-[var(--primary)] rounded-full" style="width: 75%"></div></div>
+          <div class="flex items-center justify-between text-[11px] text-[var(--muted-foreground)]">
+            <span>75%</span>
+            <span>12MB/s</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Webview Placeholder -->
+    <main class="flex-1 bg-[var(--background)] flex flex-col items-center justify-center text-[var(--muted-foreground)]">
+      <div class="w-20 h-20 rounded-2xl bg-[var(--card)] border border-[var(--border)] flex items-center justify-center mb-5 shadow-sm">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      </div>
+      <div class="text-base font-medium mb-1">BrowserView 渲染区</div>
+      <div class="text-sm text-[var(--muted-foreground)]">独立 session partition：persist:tintin-browser</div>
+      <div class="mt-8 flex items-center gap-3">
+        <span class="text-xs px-3 py-1.5 rounded-full bg-[var(--surface-container)] border border-[var(--border)]">抖音</span>
+        <span class="text-xs px-3 py-1.5 rounded-full bg-[var(--surface-container)] border border-[var(--border)]">B站</span>
+        <span class="text-xs px-3 py-1.5 rounded-full bg-[var(--surface-container)] border border-[var(--border)]">YouTube</span>
+      </div>
+    </main>
+  </div>
+
+    <style>
+    body { background: var(--background); color: var(--foreground); font-family: var(--font-body); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-1); }
+    .input { width: 100%; height: 40px; padding: 0 14px; background: var(--surface-container); border: 1px solid var(--border); border-radius: var(--radius-lg); color: var(--foreground); outline: none; font-size: 14px; transition: all 150ms; }
+    .input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--ring); background: var(--card); }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid transparent; border-radius: var(--radius-lg); font-weight: 500; white-space: nowrap; transition: all 150ms; }
+    .btn-primary { background: var(--primary); color: var(--primary-foreground); height: 40px; padding: 0 20px; }
+    .btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
+    .btn-secondary { background: var(--surface-container); color: var(--foreground); border-color: var(--border); height: 40px; padding: 0 16px; }
+    .btn-secondary:hover { background: var(--surface-container-high); }
+    .btn-ghost { background: transparent; color: var(--muted-foreground); border-color: var(--border); height: 28px; padding: 0 10px; font-size: 12px; }
+    .btn-ghost:hover { color: var(--foreground); background: var(--surface-container); }
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: var(--surface-container-high); border-radius: 3px; }
+    .history-item { display: flex; align-items: center; gap-3; padding: 10px 12px; border-radius: var(--radius-lg); cursor: pointer; color: var(--muted-foreground); transition: all 150ms; margin-bottom: 2px; }
+    .history-item:hover { background: var(--surface-container); color: var(--foreground); }
+    .history-item svg { width: 18px; height: 18px; margin-right: 12px; }
+  </style>
+</body>
+</html>

@@ -88,10 +88,11 @@ var __TIN_EX_COMMON__ = (function () {
 
   // ───────── E3: NEED_LOGIN 启发式检测 ─────────
   //   命中任一 = 认为需要登录
+  // 注意：不能匹配裸的"登录"两字——B站/抖音/快手首页头部永远有"登录"按钮，会误伤全部首页抽取
   var NEED_LOGIN_KEYS = [
-    /登录/, /登[录陆]/, /去登录/, /立即登录/, /login/i, /sign\s*in/i, /log\s*in/i,
-    /手机号登录/, /微信登录/, /扫码登录/, /短信登录/, /验证码登录/, /密码登录/,
     /请先登录/, /需要登录/, /未登录时/, /登录后可/, /登录后查看/, /登录后才能/,
+    /登录后可见/, /请登入/, /立即登录/, /扫码登录/,
+    /手机号登录/, /微信扫码/, /短信登录/, /验证码登录/, /密码登录/,
   ]
   var NEED_LOGIN_URL = [/\/passport/i, /\/login[\/?#]/i, /sign[-_]?in/i, /channel-login/, /account\/login/i, /oauth/i]
   var NEED_LOGIN_CLASS_ID = [

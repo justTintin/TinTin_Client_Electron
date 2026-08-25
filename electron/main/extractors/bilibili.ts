@@ -15,7 +15,7 @@
  *               https://www.bilibili.com/opus/xxxx（动态图文，按专栏近似处理）
  */
 var C = window.__TIN_EX_COMMON__ || __TIN_EX_COMMON__
-;(function () {
+var __TIN_EXTRACT_RESULT__ = (function () {
   var PLATFORM = 'bilibili'
   var PLATFORM_NAME = 'B站'
 

@@ -16,7 +16,8 @@ let failed = 0
 for (const p of platforms) {
   const script = fs.readFileSync(path.join(dir, `${p}.ts`), 'utf8')
   const combined = common + '\n' + script
-  const wrapped = `(function(){\n  try { ${combined} }\n  catch(e){ return { ok:false, error:{type:'DOM_MISMATCH', message:String(e.message||e), hint:'平台DOM可能已变更'} } }\n})()`
+  // 与 thickShell-ipc.js 的真实注入 wrapper 保持一致（__TIN_EXTRACT_RESULT__ 捕获 + 显式 return）
+  const wrapped = `(function(){\n  var __TIN_EXTRACT_RESULT__;\n  try { ${combined} }\n  catch(e){ return { ok:false, error:{type:'DOM_MISMATCH', message:String(e.message||e), hint:'平台DOM可能已变更'} } }\n  return (typeof __TIN_EXTRACT_RESULT__ !== 'undefined') ? __TIN_EXTRACT_RESULT__\n    : { ok:false, error:{type:'DOM_MISMATCH', message:'抽取脚本未返回结果', hint:'平台脚本结构需升级'} }\n})()`
   const outFile = path.join(tmpDir, `${p}.check.js`)
   fs.writeFileSync(outFile, wrapped, 'utf8')
   try {

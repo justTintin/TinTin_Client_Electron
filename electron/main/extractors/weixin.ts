@@ -12,7 +12,7 @@
  *              https://channels.weixin.qq.com/plain/.../live?exportkey=...
  */
 var C = window.__TIN_EX_COMMON__ || __TIN_EX_COMMON__
-;(function () {
+var __TIN_EXTRACT_RESULT__ = (function () {
   var PLATFORM = 'weixin'
   var PLATFORM_NAME = '视频号'
 

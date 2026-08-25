@@ -28,7 +28,7 @@
 //   C14 接口一致性：platforms 5 个 = 抖音/视频号/快手/小红书/B站
 // ═══════════════════════════════════════════════════════════════
 
-const { BrowserView, shell, ipcMain } = require('electron')
+const { BrowserView, session, shell, ipcMain } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 
@@ -274,7 +274,8 @@ function createThickShellIpc(ipcMain, ctx) {
 
     const mw = getMainWindow && getMainWindow()
     if (!mw) throw new Error('NO_MAIN_WINDOW')
-    const sess = mw.webContents.session.fromPartition(def.partition, { cache: true })
+    // partition 隔离的 session：必须用 session 模块静态方法 fromPartition（实例上没有该方法）
+    const sess = session.fromPartition(def.partition, { cache: true })
     const view = new BrowserView({
       webPreferences: {
         session: sess,
@@ -465,7 +466,6 @@ function createThickShellIpc(ipcMain, ctx) {
 
   // browser:attachPlatform
   ipcMain.handle('browser:attachPlatform', async (_e, platformId, seedUrlOverride) => {
-    console.log(`[E2E attachPlatform] platformId=${platformId} seedUrlOverride=${seedUrlOverride || '(none)'}`)
     try {
       if (!PLATFORM_IDS.includes(platformId)) throw new Error('BROWSER_PLATFORM_UNKNOWN')
       const entry = _getOrCreateView(platformId, seedUrlOverride)
@@ -481,7 +481,6 @@ function createThickShellIpc(ipcMain, ctx) {
       } catch (_) {}
 
       const wc = entry.view.webContents
-      console.log(`[E2E attachPlatform] OK platformId=${platformId} currentUrl=${wc.getURL?.() || ''} title=${(wc.getTitle?.() || '').slice(0, 40)}`)
       return {
         success: true,
         data: {
@@ -492,10 +491,7 @@ function createThickShellIpc(ipcMain, ctx) {
           title: wc.getTitle?.() || '',
         },
       }
-    } catch (e) {
-      console.log(`[E2E attachPlatform] FAIL platformId=${platformId} error=${e.message}`)
-      return { success: false, error: e.message }
-    }
+    } catch (e) { return { success: false, error: e.message } }
   })
 
   // browser:detachAll（切工作台/关设置 Tab 调用，禁止原生层级盖其他 Tab）
@@ -665,34 +661,21 @@ function createThickShellIpc(ipcMain, ctx) {
   // browser:extractDOM → 运行 platform 抽取脚本（extractors/*.ts）
   //    E3 结构化错误：NEED_LOGIN / RISK_CAPTCHA / DOM_MISMATCH / NETWORK_ERROR
   ipcMain.handle('browser:extractDOM', async (_e, platformId) => {
-    console.log(`[E2E extractDOM:enter] platformId=${platformId}`)
     try {
-      if (!PLATFORM_IDS.includes(platformId)) {
-        console.log(`[E2E extractDOM/${platformId}] NEED_PLATFORM`)
-        return extractionError('NEED_PLATFORM', '缺少平台参数', '')
-      }
+      if (!PLATFORM_IDS.includes(platformId)) return extractionError('NEED_PLATFORM', '缺少平台参数', '')
       const entry = viewPool.get(platformId)
-      if (!entry) {
-        console.log(`[E2E extractDOM/${platformId}] NOT_ATTACHED: viewPool 无此平台，需先点平台 Tab`)
-        return extractionError('NOT_ATTACHED', '平台页面尚未打开', '先点击平台 Tab 打开')
-      }
+      if (!entry) return extractionError('NOT_ATTACHED', '平台页面尚未打开', '先点击平台 Tab 打开')
       const wc = entry.view.webContents
-      if (!wc) {
-        console.log(`[E2E extractDOM/${platformId}] NETWORK_ERROR: webContents 未就绪`)
-        return extractionError('NETWORK_ERROR', 'webContents 尚未就绪', '稍后再试')
-      }
+      if (!wc) return extractionError('NETWORK_ERROR', 'webContents 尚未就绪', '稍后再试')
       const def = PLATFORM_DEFS[platformId]
 
       // 1) 先确认当前 URL 非 data:text/html（离线页）
       try {
         const cur = wc.getURL?.() || ''
-        console.log(`[E2E extractDOM/${platformId}] 当前 view URL = ${cur}`)
         if (cur.startsWith('data:text/html')) {
-          console.log(`[E2E extractDOM/${platformId}] NETWORK_ERROR: 离线兜底页`)
           return extractionError('NETWORK_ERROR', '当前处于离线兜底页，无法抽取', '请恢复网络后重试')
         }
         if (!cur || cur === 'about:blank') {
-          console.log(`[E2E extractDOM/${platformId}] DOM_MISMATCH: about:blank 未加载`)
           return extractionError('DOM_MISMATCH', '页面尚未加载完成', '等待页面加载完成后再点解析')
         }
       } catch (_) {}
@@ -721,12 +704,16 @@ function createThickShellIpc(ipcMain, ctx) {
 
       // 3) 在 BrowserView 里同步执行抽取（永远 try/catch，主进程不崩）
       //    commonScript + '\n' + platformScript 一起注入，确保平台脚本可直接用 __TIN_EX_COMMON__
+      //    平台脚本把结果赋给 var __TIN_EXTRACT_RESULT__，wrapper 显式 return（否则 IIFE 返回值会被丢弃 → undefined）
       let result = null
       try {
         const combined = commonScript + '\n' + script
         const wrapped = `(function(){
+          var __TIN_EXTRACT_RESULT__;
           try { ${combined} }
           catch(e){ return { ok:false, error:{type:'DOM_MISMATCH', message:String(e.message||e), hint:'平台DOM可能已变更'} } }
+          return (typeof __TIN_EXTRACT_RESULT__ !== 'undefined') ? __TIN_EXTRACT_RESULT__
+            : { ok:false, error:{type:'DOM_MISMATCH', message:'抽取脚本未返回结果', hint:'平台脚本结构需升级'} }
         })()`
         result = await wc.executeJavaScript(wrapped, false)
       } catch (e) {
@@ -734,22 +721,12 @@ function createThickShellIpc(ipcMain, ctx) {
       }
       // 4) 结果必须是 {ok, data?} 结构
       if (!result || typeof result !== 'object') {
-        console.log(`[E2E extractDOM/${platformId}] DOM_MISMATCH: 抽取脚本返回非对象结构`)
         return extractionError('DOM_MISMATCH', '抽取脚本返回了非对象结构', '需修复 ' + def.extractor)
       }
       if (result.ok === false) {
         // 允许抽取脚本内部直接抛结构化错误（例：检测到登录页则返回 NEED_LOGIN）
-        console.log(`[E2E extractDOM/${platformId}] ${result.error?.type}: ${result.error?.message} | hint: ${result.error?.hint || ''}`)
         return { success: false, ok: false, error: result.error || { type: 'DOM_MISMATCH', message: '抽取失败' } }
       }
-      // E2E 验证日志（验证完可移除）：打印场景与关键字段摘要
-      try {
-        const d = result.data || {}
-        const c = d.content || {}
-        const keyObj = c.video || c.note || c.profile || c.user || c.live || c.product || c.bangumi || c.article || c.search || null
-        const summary = keyObj ? JSON.stringify(keyObj).slice(0, 300) : `fallback(links=${c.linkCount || 0}, imgs=${c.imageCount || 0}, excerpts=${c.excerptsCount || 0})`
-        console.log(`[E2E extractDOM/${platformId}] OK scene=${d.source?.scene} title="${(d.source?.title || '').slice(0, 50)}" content.kind=${c.kind} ${summary}`)
-      } catch (_) {}
       return { success: true, data: result.data || null }
     } catch (e) {
       return extractionError('EXTRACTOR_ERROR', e.message || '未知错误')

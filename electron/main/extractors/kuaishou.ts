@@ -13,7 +13,7 @@
  *               https://www.kuaishou.com/mall/goods/:goodsId
  */
 var C = window.__TIN_EX_COMMON__ || __TIN_EX_COMMON__
-;(function () {
+var __TIN_EXTRACT_RESULT__ = (function () {
   var PLATFORM = 'kuaishou'
   var PLATFORM_NAME = '快手'
 

@@ -436,14 +436,14 @@ button { cursor: pointer; }
     </style>
 </head>
 <body class="h-screen flex flex-col overflow-hidden">
-  <header class="h-14 flex items-center justify-between px-4 border-b border-[var(--border)] bg-[var(--surface)] shrink-0">
-    <div class="flex items-center gap-3">
+  <header class="h-14 flex items-center justify-between px-4 border-b border-[var(--border)] bg-[var(--surface)] shrink-0"><div class="flex items-center gap-3">
       <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-[var(--primary)] to-[var(--accent)] flex items-center justify-center text-white font-bold text-sm">钉</div>
       <div class="flex flex-col">
         <span class="text-sm font-semibold leading-tight">螺丝钉-电商智能体矩阵</span>
-        <span class="text-[11px] text-[var(--muted-foreground)] leading-tight">V3.0.0</span>
+        
       </div>
     </div>
+    
     <div class="flex items-center bg-[var(--surface-container)] rounded-lg p-1 gap-1">
       <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-workbench">工作台</button>
       <button class="btn btn-ghost h-7 px-3 text-sm" data-dom-id="nav-browser">浏览器</button>
@@ -452,7 +452,7 @@ button { cursor: pointer; }
     <div class="flex items-center gap-4">
       <div class="flex items-center gap-2 text-xs text-[var(--muted-foreground)]"><span class="w-2 h-2 rounded-full bg-[var(--color-success)]"></span><span>服务端正常</span></div>
       <div class="flex items-center gap-3 text-xs text-[var(--muted-foreground)]"><span>CPU 12%</span><span>内存 34%</span><span>GPU 8%</span></div>
-      <button class="w-8 h-8 rounded-md flex items-center justify-center hover:bg-[var(--surface-container-high)] text-[var(--muted-foreground)]"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+      
     </div>
   </header>
 
@@ -464,34 +464,31 @@ button { cursor: pointer; }
         <p class="text-xs text-[var(--muted-foreground)] mb-5">管理账号、模型与系统偏好</p>
         <nav>
           <div class="menu-item active" data-section="platform">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
             平台接入
           </div>
           <div class="menu-item" data-section="local">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
             本地配置
           </div>
           <div class="menu-item" data-section="env">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
             环境与维护
           </div>
           <div class="menu-item" data-section="extensions">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2v4"></path><path d="m16.2 7.8 2.9-2.9"></path><path d="M18 12h4"></path><path d="m16.2 16.2 2.9 2.9"></path><path d="M12 18v4"></path><path d="m4.9 19.1 2.9-2.9"></path><path d="M2 12h4"></path><path d="m4.9 4.9 2.9 2.9"></path></svg>
             扩展插件
           </div>
-          <div class="menu-item" data-section="tasks">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-            任务队列
-          </div>
+          
           <div class="menu-item" data-section="about">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
             关于
           </div>
         </nav>
       </div>
       <div class="mt-auto p-5 border-t border-[var(--border)]">
         <button class="btn btn-secondary w-full h-10 text-sm" data-dom-id="btn-back-workbench">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m15 18-6-6 6-6"/></svg>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m15 18-6-6 6-6"></path></svg>
           返回工作台
         </button>
       </div>
@@ -530,14 +527,14 @@ button { cursor: pointer; }
               <div class="setting-label">API Key</div>
               <div class="setting-desc">用于调用模型服务的密钥</div>
             </div>
-            <input type="password" value="sk-xxxxxxxxxxxxxxxx" class="input w-72" />
+            <input type="password" value="sk-xxxxxxxxxxxxxxxx" class="input w-72" >
           </div>
           <div class="setting-row">
             <div>
               <div class="setting-label">Base URL</div>
               <div class="setting-desc">自定义 API 代理地址</div>
             </div>
-            <input type="text" value="https://api.openai.com/v1" class="input w-72" />
+            <input type="text" value="https://api.openai.com/v1" class="input w-72" >
           </div>
           <div class="setting-row">
             <div>
@@ -560,7 +557,7 @@ button { cursor: pointer; }
               <div class="setting-desc">TTS 训练使用的参考音频目录</div>
             </div>
             <div class="flex gap-2 w-80">
-              <input type="text" value="D:\\TinTin\\voice_samples" class="input" />
+              <input type="text" value="D:\\TinTin\\voice_samples" class="input" >
               <button class="btn btn-secondary px-4 h-10">浏览</button>
             </div>
           </div>
@@ -570,7 +567,7 @@ button { cursor: pointer; }
               <div class="setting-desc">视频调色默认 LUT</div>
             </div>
             <div class="flex gap-2 w-80">
-              <input type="text" value="default.cube" class="input" />
+              <input type="text" value="default.cube" class="input" >
               <button class="btn btn-secondary px-4 h-10">选择</button>
             </div>
           </div>

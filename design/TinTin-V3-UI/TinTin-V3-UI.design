@@ -14,8 +14,8 @@
           "version": 1,
           "contentHeight": 900,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-5617107d",
-          "measuredAt": 1787641584232
+          "sourceHash": "fnv1a-5acf4ae4",
+          "measuredAt": 1787670698401
         }
       },
       "devMetadata": {
@@ -56,8 +56,8 @@
           "version": 1,
           "contentHeight": 900,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-98b82f66",
-          "measuredAt": 1787641584232
+          "sourceHash": "fnv1a-243f9233",
+          "measuredAt": 1787670428707
         }
       },
       "devMetadata": {
@@ -92,8 +92,8 @@
           "version": 1,
           "contentHeight": 900,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-d7a218a3",
-          "measuredAt": 1787641584232
+          "sourceHash": "fnv1a-88e38f5c",
+          "measuredAt": 1787670428707
         }
       },
       "devMetadata": {
@@ -128,8 +128,8 @@
           "version": 1,
           "contentHeight": 900,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-3501c629",
-          "measuredAt": 1787640782780
+          "sourceHash": "fnv1a-b8bf1d6f",
+          "measuredAt": 1787670698401
         }
       },
       "devMetadata": {
@@ -167,6 +167,8 @@
     "autoLayout": true,
     "deviceType": "desktop",
     "projectName": "螺丝钉 V3 Electron UI 视觉稿",
-    "designLibrary": null
+    "designLibrary": null,
+    "showEdge": false,
+    "visualEditorEnabled": false
   }
 }

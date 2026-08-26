@@ -1,0 +1,8 @@
+{
+  "npmRebuild": false,
+  "extraResources": [],
+  "electronDist": "D:/Project/TinTin_Client_Electron/desktop/node_modules/electron/dist",
+  "win": {
+    "signAndEditExecutable": false
+  }
+}

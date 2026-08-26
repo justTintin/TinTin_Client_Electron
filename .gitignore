@@ -8,7 +8,7 @@ node_modules/
 **/node_modules/
 
 # 构建产物
-electron/renderer/dist/
+desktop/renderer/dist/
 dist/
 *.app
 *.exe
@@ -45,8 +45,8 @@ Thumbs.db
 desktop.ini
 
 # Electron-builder 缓存
-electron/build/Release/
-electron/build/obj/
+desktop/build/Release/
+desktop/build/obj/
 
 # TypeScript 增量缓存
 *.tsbuildinfo

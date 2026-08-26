@@ -95,16 +95,16 @@
     ]
   },
   "projectFileHashes": {
-    "TinTin-V3-UI.design": "ee0048289c27ac74cec7ab88d2b65c17c568e8972e98f23cd034518a1faa76a0",
+    "TinTin-V3-UI.design": "dbffc49ed34619e4901d0c14a1707c8e12d99e0d6eebadb7a53dc1ad6ce96c36",
     "colors_and_type.css": "d9e2506704fe4ed1451180cccae95bad68a2ff4a65dd4af0d7990cfb6b2e838b",
     "runtime-orchestration-summary.json": "2f10633673b899accd6b6d08a7c7eba41f2ebc313985f83b3eceb201aefffd67",
-    "pages/browser.html": "f825f883ec1e2eeba8da328df0002e7586108bba2dc244d91ba4c869e13a73d8",
-    "pages/media-tools-home.html": "cb9c45866258a95a413d1ea604c4950603518d25c7f165543ec9e22f92937193",
-    "pages/settings.html": "3e495b9c548f4e6bdbe47e1d84f6068a1f073cb971cd69fc00798a17246ff7f3",
-    "pages/workbench.html": "ac7537dfda464216ec27b767c5af55b0c009731a2f496dc6528a490723cb9f07"
+    "pages/browser.html": "e13956d230d6fc867ada588d82ff39322e3c62179f58abe087b151d43ee878e2",
+    "pages/media-tools-home.html": "2ed8dced9cbe2fa02e47d4e872fb785d8189011f0793f053fc9568ba156822d7",
+    "pages/settings.html": "c1793235ff8234ef42d9cefcd6fbff0c4f09a88f948ed1a05bbccc9da6792598",
+    "pages/workbench.html": "14666dfe7e4f7de83c6a68f5956dab921042d49432fa5a05b43e8a347a751e87"
   },
   "designDir": "d:\\Project\\TinTin_Client_Electron\\design\\TinTin-V3-UI",
   "expectedPages": null,
   "requireInteractions": null,
-  "checkedAt": "2026-08-25T07:03:31.520Z"
+  "checkedAt": "2026-08-25T15:11:14.869Z"
 }

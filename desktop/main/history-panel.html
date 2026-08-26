@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>历史记录</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: var(--popover, #ffffff);
+      color: var(--foreground, #1f2328);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      font-size: 13px;
+      overflow: hidden;
+      user-select: none;
+    }
+    body[data-theme="dark"] {
+      background: #1f1f1f;
+      color: #e6e6e6;
+    }
+    .hist-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border, #e4e4e7);
+    }
+    body[data-theme="dark"] .hist-header { border-bottom-color: #333; }
+    .hist-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--foreground, #1f2328);
+    }
+    body[data-theme="dark"] .hist-title { color: #e6e6e6; }
+    .hist-actions { display: flex; gap: 8px; }
+    .hist-btn {
+      background: transparent;
+      border: none;
+      color: var(--foreground-muted, #6b7280);
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1;
+      transition: all 0.15s;
+    }
+    body[data-theme="dark"] .hist-btn { color: #999; }
+    .hist-btn:hover {
+      background: var(--surface-hover, rgba(0,0,0,0.04));
+      color: var(--foreground, #1f2328);
+    }
+    body[data-theme="dark"] .hist-btn:hover { background: rgba(255,255,255,0.08); color: #e6e6e6; }
+    .hist-list {
+      overflow-y: auto;
+      height: calc(100% - 45px);
+      padding: 4px 0;
+    }
+    .hist-list::-webkit-scrollbar { width: 6px; }
+    .hist-list::-webkit-scrollbar-track { background: transparent; }
+    .hist-list::-webkit-scrollbar-thumb {
+      background: var(--border, #d4d4d8);
+      border-radius: 3px;
+    }
+    body[data-theme="dark"] .hist-list::-webkit-scrollbar-thumb { background: #444; }
+    .hist-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .hist-item:hover {
+      background: var(--surface-hover, rgba(0,0,0,0.04));
+    }
+    body[data-theme="dark"] .hist-item:hover { background: rgba(255,255,255,0.06); }
+    .hist-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      flex-shrink: 0;
+      background: var(--surface-container, #f5f5f7);
+    }
+    body[data-theme="dark"] .hist-icon { background: #2a2a2a; }
+    .hist-info {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .hist-title-text {
+      font-size: 12px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--foreground, #1f2328);
+    }
+    body[data-theme="dark"] .hist-title-text { color: #e6e6e6; }
+    .hist-url {
+      font-size: 11px;
+      color: var(--foreground-muted, #6b7280);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    body[data-theme="dark"] .hist-url { color: #888; }
+    .hist-time {
+      font-size: 10px;
+      color: var(--foreground-muted, #9ca3af);
+      flex-shrink: 0;
+    }
+    body[data-theme="dark"] .hist-time { color: #666; }
+    .hist-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: calc(100% - 45px);
+      color: var(--foreground-muted, #9ca3af);
+      font-size: 12px;
+      gap: 8px;
+    }
+    body[data-theme="dark"] .hist-empty { color: #666; }
+    .hist-empty-icon {
+      font-size: 32px;
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="hist-header">
+    <div class="hist-title">历史记录</div>
+    <div class="hist-actions">
+      <button class="hist-btn" id="btn-clear">清空</button>
+    </div>
+  </div>
+  <div class="hist-list" id="hist-list">
+    <div class="hist-empty" id="hist-empty" style="display:none">
+      <div class="hist-empty-icon">🗂</div>
+      <div>暂无浏览历史</div>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    
+    let historyItems = [];
+    
+    function formatTime(ts) {
+      const d = new Date(ts);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 60000) return '刚刚';
+      if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+      return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + 
+             String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    function renderHistory(items) {
+      const list = document.getElementById('hist-list');
+      const empty = document.getElementById('hist-empty');
+      
+      if (!items || items.length === 0) {
+        list.innerHTML = '';
+        list.appendChild(empty);
+        empty.style.display = 'flex';
+        return;
+      }
+      
+      empty.style.display = 'none';
+      list.innerHTML = items.map(item => {
+        const url = item.url || '';
+        const hostname = url.replace(/^https?:\/\//, '').split('/')[0];
+        return `
+          <div class="hist-item" data-index="${item.index}">
+            <div class="hist-icon">🌐</div>
+            <div class="hist-info">
+              <div class="hist-title-text">${item.title || hostname || '未知页面'}</div>
+              <div class="hist-url">${url}</div>
+            </div>
+            <div class="hist-time">${formatTime(item.timestamp)}</div>
+          </div>
+        `;
+      }).join('');
+      
+      list.querySelectorAll('.hist-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.dataset.index);
+          ipcRenderer.send('history:navigate', idx);
+        });
+      });
+    }
+
+    // 接收历史数据
+    ipcRenderer.on('history:data', (_e, items) => {
+      historyItems = items || [];
+      renderHistory(historyItems);
+    });
+
+    // 清空历史
+    document.getElementById('btn-clear').addEventListener('click', () => {
+      ipcRenderer.invoke('history:clear').then(result => {
+        if (result.success) {
+          historyItems = [];
+          renderHistory([]);
+        }
+      });
+    });
+
+    // 点击外部关闭
+    document.addEventListener('mousedown', (e) => {
+      if (e.target === document.body) {
+        ipcRenderer.send('history:close');
+      }
+    });
+  </script>
+</body>
+</html>

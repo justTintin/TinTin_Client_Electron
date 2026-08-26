@@ -109,6 +109,25 @@ const currentPlatform = computed<BrowserPlatformId | null>(() => {
   return p ? p.id : null
 })
 
+/** URL → 平台 ID 映射（根据域名自动识别） */
+const PLATFORM_DOMAINS: Record<BrowserPlatformId, RegExp[]> = {
+  douyin:      [/douyin\.com/i],
+  bilibili:    [/bilibili\.com/i],
+  kuaishou:    [/kuaishou\.com/i, /ks\.com/i],
+  xiaohongshu: [/xiaohongshu\.com/i],
+  weixin:      [/channels\.weixin\.qq\.com/i, /weixin\.qq\.com/i],
+  youtube:     [/youtube\.com/i, /youtu\.be/i],
+  jimeng:      [/jimeng\.jianying\.com/i, /jimeng\.com/i],
+}
+
+function detectPlatformFromUrl(url: string): BrowserPlatformId | null {
+  if (!url) return null
+  for (const [id, patterns] of Object.entries(PLATFORM_DOMAINS)) {
+    if (patterns.some((p) => p.test(url))) return id as BrowserPlatformId
+  }
+  return null
+}
+
 const activePlatformName = computed<string>(() => {
   const p = platforms.value.find((x) => x.active)
   return p ? p.name : ''
@@ -810,9 +829,14 @@ function _subscribeEvents(): void {
   try {
     if (typeof t.browser.onUrlUpdated === 'function') {
       _unsubUrl = t.browser.onUrlUpdated((payload: any) => {
-        if (payload?.platformId === currentPlatform.value && payload?.url) {
+        if (payload?.url) {
           addressUrl.value = payload.url
           addHistory(payload.url, payload?.title || '', payload.platformId)
+          // 自动检测 URL 所属平台并同步左侧标签
+          const detected = detectPlatformFromUrl(payload.url)
+          if (detected && detected !== currentPlatform.value) {
+            platforms.value.forEach((p) => (p.active = p.id === detected))
+          }
         }
       })
     }

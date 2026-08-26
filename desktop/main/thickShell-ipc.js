@@ -448,10 +448,10 @@ function createThickShellIpc(ipcMain, ctx) {
         const media = _sniffMediaFromHeaders(details.responseHeaders, details.url)
         if (media) {
           // 智能化嗅探：只在详情页嗅探，主页/列表页不嗅探
-          // 检查当前页面 URL 或媒体请求 URL 是否指向详情页
+          // 只检查当前页面 URL，不检查媒体请求 URL（避免列表页视频缩略图误触发）
           const entry = viewPool.get(platformId)
           const pageUrl = entry?.currentUrl || ''
-          const isDetail = isDetailPage(pageUrl, platformId) || isDetailPage(details.url, platformId)
+          const isDetail = isDetailPage(pageUrl, platformId)
           if (!isDetail) {
             try {
               const mw2 = getMainWindow && getMainWindow()

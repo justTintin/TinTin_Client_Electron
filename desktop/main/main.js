@@ -515,6 +515,7 @@ app.whenReady().then(() => {
     // Phase 1: 媒体下载器（yt-dlp + 流式下载 + FFmpeg 合并）
     createMediaDownloader(ipcMain, {
       app,
+      store,
       getMainWindow: () => mainWindow,
       // 下载浮窗打开期间同步接收进度广播（注册表状态推送到面板）
       getDownloadsPanel: () => (floatingPanelWindow

@@ -15,6 +15,10 @@
   .clear-done { background: none; border: none; color: #00a1d6; font-size: 12px; cursor: pointer; }
   .clear-done:hover { text-decoration: underline; }
   .close { background: none; border: none; cursor: pointer; color: #8a8f99; font-size: 14px; width: 24px; height: 24px; border-radius: 6px; }
+  .dir-btn { background: none; border: none; cursor: pointer; color: #8a8f99; font-size: 14px; width: 24px; height: 24px; border-radius: 6px; }
+  .dir-btn:hover { background: #f2f3f5; }
+  .toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); background: #1f2329; color: #fff; font-size: 12px; padding: 6px 12px; border-radius: 8px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 90%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .toast.show { opacity: .92; }
   .close:hover { background: #f2f3f5; color: #1f2329; }
   .body { flex: 1; overflow: auto; margin-top: 6px; }
   .empty { color: #8a8f99; font-size: 13px; text-align: center; padding: 24px 0; }
@@ -38,6 +42,7 @@
       <span>下载</span>
       <div class="head-actions">
         <button class="clear-done" id="clearBtn">清除已完成</button>
+        <button class="dir-btn" id="dirBtn" aria-label="设置下载路径">📁</button>
         <button class="close" id="closeBtn" aria-label="关闭">✕</button>
       </div>
     </div>
@@ -116,6 +121,34 @@
       } catch (_) { body.innerHTML = '<p class="empty">加载失败</p>' }
     }
     document.getElementById('closeBtn').onclick = () => ipcRenderer.send('browser:closeDownloadsPanel')
+
+    // ── 下载路径设置（📁）：悬停显示当前目录，点击选目录并持久化 ──
+    const dirBtn = document.getElementById('dirBtn')
+    const toastEl = document.createElement('div')
+    toastEl.className = 'toast'
+    document.body.appendChild(toastEl)
+    let _toastTimer = null
+    function toast(text) {
+      toastEl.textContent = text
+      toastEl.classList.add('show')
+      clearTimeout(_toastTimer)
+      _toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200)
+    }
+    async function refreshDir() {
+      try {
+        const r = await ipcRenderer.invoke('browser:downloadGetDir')
+        if (r && r.success && r.dir) dirBtn.title = '下载路径：' + r.dir + '（点击修改）'
+      } catch (_) {}
+    }
+    dirBtn.onclick = async () => {
+      try {
+        const r = await ipcRenderer.invoke('browser:downloadSetDir')
+        if (r && r.success) { toast('下载路径已设置为：' + r.dir); refreshDir() }
+        else if (r && r.error) toast('设置失败：' + r.error)
+      } catch (_) {}
+    }
+    refreshDir()
+
     addEventListener('DOMContentLoaded', load)
     ipcRenderer.on('floating:data', load)
     ipcRenderer.on('browser:downloads-updated', (_e, msg) => {

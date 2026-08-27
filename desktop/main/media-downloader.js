@@ -1,4 +1,4 @@
-const { ipcMain, session, shell } = require('electron')
+const { ipcMain, session, shell, dialog } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const https = require('node:https')
@@ -257,8 +257,22 @@ function _getFfmpegPath(app, dirname) {
 }
 
 function createMediaDownloader(ipcMain, ctx) {
-  const { app, getMainWindow, getDownloadsPanel } = ctx
+  const { app, getMainWindow, getDownloadsPanel, store } = ctx
   _loadHistory(app)
+
+  // 下载目录解析：用户设置(store: downloadDir) > Windows 下载文件夹 > userData/downloads 兜底
+  function _resolveDownloadDir() {
+    try {
+      const pref = store && store.get && store.get('downloadDir')
+      if (pref && typeof pref === 'string') {
+        fs.mkdirSync(pref, { recursive: true })
+        return pref
+      }
+    } catch (_) {}
+    try { return app.getPath('downloads') } catch (_) {}
+    try { return path.join(app.getPath('userData'), 'downloads') } catch (_) {}
+    return path.join(require('node:os').tmpdir(), 'tintin-downloads')
+  }
 
   // 兼容双调用形态：_updateTaskProgress/_updateTaskStatus 传入完整消息对象（单参），
   // 其余调用方传 (taskId, payload)。此前固定双参导致消息被二次包装为 {taskId: MSG}，
@@ -290,14 +304,14 @@ function createMediaDownloader(ipcMain, ctx) {
     const { taskId, url, audioUrl, filename, title, referer, subDir, useYtdlp, platformId } = params
     const partition = platformId ? `persist:tintin-${platformId}` : 'persist:tintin-browser'
 
-    let downloadDir
+    let downloadDir = _resolveDownloadDir()
     try {
-      const workspace = app.getPath('userData')
-      downloadDir = path.join(workspace, 'downloads', subDir || '')
+      downloadDir = path.join(downloadDir, subDir || '')
+      fs.mkdirSync(downloadDir, { recursive: true })
     } catch (_) {
       downloadDir = path.join(require('node:os').tmpdir(), 'tintin-downloads', subDir || '')
+      fs.mkdirSync(downloadDir, { recursive: true })
     }
-    fs.mkdirSync(downloadDir, { recursive: true })
 
     let safeFilename = (filename || 'media').replace(/[\\/:*?"<>|]/g, '_')
     let finalPath = path.join(downloadDir, safeFilename)
@@ -582,6 +596,26 @@ function createMediaDownloader(ipcMain, ctx) {
     taskRegistry.delete(taskId)
     _persistHistory()
     return { success: true }
+  })
+
+  // ── 下载路径设置：浮窗「📁」按钮读取/修改（store: downloadDir）──
+  ipcMain.handle('browser:downloadGetDir', () => {
+    try { return { success: true, dir: _resolveDownloadDir() } }
+    catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('browser:downloadSetDir', async () => {
+    try {
+      const owner = (getDownloadsPanel && getDownloadsPanel()) || (getMainWindow && getMainWindow())
+      const r = await dialog.showOpenDialog(owner && !owner.isDestroyed() ? owner : undefined, {
+        title: '选择下载保存路径',
+        defaultPath: _resolveDownloadDir(),
+        properties: ['openDirectory', 'createDirectory'],
+      })
+      if (r.canceled || !r.filePaths || !r.filePaths[0]) return { success: false, cancelled: true }
+      const dir = r.filePaths[0]
+      try { if (store && store.set) store.set('downloadDir', dir) } catch (_) {}
+      return { success: true, dir }
+    } catch (e) { return { success: false, error: e.message } }
   })
 
   return {}

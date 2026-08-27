@@ -3,18 +3,13 @@
 // Workbench.vue — 工作台（聊天会话界面）
 // 结构：左侧 260px 会话侧栏（新建会话/分组会话列表/系统设置）
 //       中间主区：消息流 + 底部输入框（上传/发送按钮 + 快捷键提示）
-// 厚壳化补充：
-//   · 消费 appStore.pendingExtract（浏览器"解析并导入"按钮推送的数据）
-//     → 作为 AI 消息展示平台抽取结果（结构化数据卡）
 // ═══════════════════════════════════════════════════════════════
 
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, type Ref } from 'vue'
+import { ref, computed, nextTick, onMounted, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore, type BrowserExtractPayload } from '@/stores/app'
 import { useTasksStore } from '@/stores/tasks'
 
 const router = useRouter()
-const appStore = useAppStore()
 const tasksStore = useTasksStore()
 
 /* ── 会话列表数据 ──────────────────────────────────────────── */
@@ -38,24 +33,11 @@ const activeSessionId = ref<string>('s1')
 /* ── 消息数据 ──────────────────────────────────────────────── */
 type Role = 'user' | 'ai'
 
-interface ExtractCard {
-  /** 抽取来源平台（中文显示名） */
-  platformName: string
-  /** 抽取时间（毫秒） */
-  extractedAt: number
-  /** 原始结构化数据 */
-  raw: any
-  /** 人类可读摘要项（key-value 展示） */
-  summary: Array<{ label: string; value: string }>
-}
-
 interface ChatMessage {
   id: string
   role: Role
   content: string
   shots?: Array<{ index: number; label: string; desc: string }>
-  /** 浏览器解析导入的数据卡片（extract→工作台） */
-  extract?: ExtractCard
 }
 
 const messages = ref<ChatMessage[]>([
@@ -274,92 +256,8 @@ const groupLabels: Record<Session['group'], string> = {
   earlier: '更早'
 }
 
-/* ── 消费：浏览器"解析并导入"推送的 payload ──────────────── */
-/** 从抽取的原始 data 中粗略挑选 N 个 key-value 作为摘要（不同平台字段不同，尽量兜底展示） */
-function _summarizeExtract(data: any): ExtractCard['summary'] {
-  const out: ExtractCard['summary'] = []
-  if (!data) return out
-  // data 可能是对象或数组
-  if (Array.isArray(data)) {
-    out.push({ label: '条目数', value: String(data.length) })
-    // 取第 0 项的前几个字段
-    if (data.length > 0 && typeof data[0] === 'object' && data[0] !== null) {
-      const keys = Object.keys(data[0]).slice(0, 4)
-      for (const k of keys) {
-        const v = (data[0] as any)[k]
-        out.push({ label: `样本.${k}`, value: typeof v === 'string' || typeof v === 'number' ? String(v) : JSON.stringify(v).slice(0, 60) })
-      }
-    }
-    return out
-  }
-  if (typeof data === 'object' && data !== null) {
-    const keys = Object.keys(data).slice(0, 8)
-    for (const k of keys) {
-      const v = (data as any)[k]
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-        out.push({ label: k, value: String(v) })
-      } else if (Array.isArray(v)) {
-        out.push({ label: k, value: `[Array ×${v.length}]` })
-      } else if (v && typeof v === 'object') {
-        out.push({ label: k, value: `{Object}` })
-      }
-    }
-  }
-  return out
-}
-
-function consumeExtract(payload: BrowserExtractPayload): void {
-  const summary = _summarizeExtract(payload.data)
-  // 先写一条用户消息：记录"从XX平台导入"
-  const now = Date.now()
-  messages.value.push({
-    id: 'u' + now,
-    role: 'user',
-    content: `从【${payload.platformName}】解析并导入数据。`,
-  })
-  // 再写一条 AI 消息：附数据卡片
-  messages.value.push({
-    id: 'a' + (now + 1),
-    role: 'ai',
-    content: `已接收来自 ${payload.platformName} 的结构化数据，请确认下方内容无误后告诉我下一步需求（生成脚本 / 提炼卖点 / 对比竞品等）。`,
-    extract: {
-      platformName: payload.platformName,
-      extractedAt: payload.extractedAt,
-      raw: payload.data,
-      summary,
-    },
-  })
-  scrollToBottom()
-}
-
-/* ── watch appStore.pendingExtract：一旦 Browser 推送就消费（支持页面已打开时 receive） ── */
-let _stopWatchExtract: (() => void) | null = null
-
 onMounted(() => {
   scrollToBottom()
-  // 1) 先消费可能在跳转前就已经写入 store 的 pending 载荷
-  if (appStore.pendingExtract) {
-    const p = appStore.pendingExtract
-    appStore.clearPendingExtract()
-    consumeExtract(p)
-  }
-  // 2) watch 后续变化（极端情况：页面已打开，Browser 侧 push）
-  _stopWatchExtract = watch(
-    () => appStore.pendingExtract,
-    (v) => {
-      if (!v) return
-      const p = v
-      appStore.clearPendingExtract()
-      consumeExtract(p)
-    },
-  )
-})
-
-onBeforeUnmount(() => {
-  if (_stopWatchExtract) {
-    try { _stopWatchExtract() } catch (_) {}
-    _stopWatchExtract = null
-  }
 })
 </script>
 
@@ -458,33 +356,6 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="shot-desc">{{ shot.desc }}</div>
                 </template>
-              </div>
-              <!-- 浏览器解析导入数据卡片（AI 消息附带 extract） -->
-              <div v-if="m.extract" class="extract-card">
-                <div class="extract-head">
-                  <span class="extract-tag">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                      <polyline points="7.5 4.21 12 6.81 16.5 4.21" />
-                      <polyline points="7.5 19.79 7.5 14.6 3 12" />
-                    </svg>
-                    {{ m.extract.platformName }} · 已导入
-                  </span>
-                  <span class="extract-time">
-                    {{ new Date(m.extract.extractedAt).toLocaleTimeString('zh-CN', { hour12: false }) }}
-                  </span>
-                </div>
-                <div v-if="m.extract.summary?.length" class="extract-summary">
-                  <div
-                    v-for="(item, i) in m.extract.summary"
-                    :key="i"
-                    class="extract-row"
-                  >
-                    <span class="extract-label">{{ item.label }}</span>
-                    <span class="extract-value" :title="item.value">{{ item.value }}</span>
-                  </div>
-                </div>
-                <div v-else class="extract-empty">（平台未返回可摘要字段，原始数据已存入 raw 供后续逻辑使用）</div>
               </div>
             </div>
           </div>
@@ -1088,87 +959,6 @@ onBeforeUnmount(() => {
 .shot-desc {
   font-size: var(--font-size-body);
   color: var(--muted-foreground);
-}
-
-/* 浏览器解析导入数据卡片 */
-.extract-card {
-  margin-top: var(--space-3);
-  background:
-    linear-gradient(180deg, rgba(99, 102, 241, 0.06), rgba(139, 92, 246, 0.02)),
-    var(--surface-container);
-  border: 1px solid rgba(99, 102, 241, 0.20);
-  border-radius: var(--radius-xl);
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.extract-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.extract-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  background: rgba(99, 102, 241, 0.14);
-  color: var(--primary);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.extract-time {
-  font-size: 11px;
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-
-.extract-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: var(--space-3);
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-}
-
-.extract-row {
-  display: grid;
-  grid-template-columns: 100px 1fr;
-  gap: var(--space-3);
-  align-items: start;
-}
-
-.extract-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted-foreground);
-  line-height: 1.6;
-  white-space: nowrap;
-}
-
-.extract-value {
-  font-size: 12px;
-  color: var(--foreground);
-  line-height: 1.6;
-  word-break: break-all;
-}
-
-.extract-empty {
-  font-size: 12px;
-  color: var(--muted-foreground);
-  padding: var(--space-3);
-  background: var(--card);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-lg);
-  text-align: center;
 }
 
 /* ─── 输入区 ─── */

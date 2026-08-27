@@ -3,7 +3,7 @@
 // Browser.vue — 浏览器（对齐 TinTin V3 UI 设计稿三栏布局）
 //
 // 布局（与设计稿 浏览器.html 一致）：
-//   · 顶部工具条：导航按钮 + 地址栏 + 解析并导入 + 下载/设置
+//   · 顶部工具条：导航按钮 + 地址栏 + 扩展/历史/设置
 //   · 左栏 200px：模式切换 + 常用平台（对齐原客户端素材浏览器）
 //   · 中间：BrowserView 渲染区（非壳模式显示地球占位）
 //   · 右栏 240px：下载管理（实时进度）
@@ -24,8 +24,6 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { ref, computed, onMounted, onBeforeUnmount, reactive, nextTick, watch } from 'vue'
-import { useRouter } from 'vue-router'
-import { useAppStore, type BrowserExtractPayload } from '@/stores/app'
 import type { BrowserPlatformId, BrowserBoundsVerifyReport } from '../../../../types/global'
 
 /* ── 壳检测（C9 门控）：Electron = true，纯 Vite 浏览器 = false，走降级占位 ────── */
@@ -36,21 +34,32 @@ function _detectShell(): void {
 }
 _detectShell()
 
-const appStore = useAppStore()
-const router = useRouter()
-
 /* ── 地址栏交互 + 导航按钮 ──────────────────────────────────────────── */
-const addressUrl = ref<string>('https://www.douyin.com/user/jbl_official')
+// 默认起始 URL（对齐原素材浏览器：https://www.pinterest.com/）
+const DEFAULT_BROWSER_URL = 'https://www.pinterest.com/'
+const addressUrl = ref<string>(DEFAULT_BROWSER_URL)
 const navCan = reactive({ back: false, forward: false })
+
+// 地址栏是否可编辑（仅网页浏览器模式可编辑）
+const addressEditable = computed(() => isWebBrowser.value)
+
+// 获取当前有效的平台 ID（用于 attach/navigate）
+// 网页浏览器模式返回 'web'，平台模式返回对应平台 ID
+function getActivePlatformId(): string | null {
+  if (isWebBrowser.value) return 'web'
+  return activePlatformId.value
+}
 
 async function onUrlEnter(): Promise<void> {
   const u = addressUrl.value.trim()
   if (!u) return
-  if (!isElectronShell.value) return  // 非壳模式不跳
-  const cur = currentPlatform.value
-  if (!cur) return
+  if (!isElectronShell.value) return
+  // 仅网页浏览器模式下地址栏输入才导航（平台模式地址栏锁定）
+  if (!isWebBrowser.value) return
+  const pid = getActivePlatformId()
+  if (!pid) return
   try {
-    const r = await (window as any).tintin.browser.navigate({ platformId: cur, url: u })
+    const r = await (window as any).tintin.browser.navigate({ platformId: pid, url: u })
     if (r?.success && r?.data) {
       navCan.back = !!r.data.canGoBack
       navCan.forward = !!r.data.canGoForward
@@ -58,25 +67,25 @@ async function onUrlEnter(): Promise<void> {
   } catch (_) {}
 }
 async function navBack(): Promise<void> {
-  const cur = currentPlatform.value
-  if (!cur || !isElectronShell.value) return
+  const pid = getActivePlatformId()
+  if (!pid || !isElectronShell.value) return
   try {
-    const r = await (window as any).tintin.browser.navigate({ platformId: cur, back: true })
+    const r = await (window as any).tintin.browser.navigate({ platformId: pid, back: true })
     if (r?.success && r?.data) { navCan.back = !!r.data.canGoBack; navCan.forward = !!r.data.canGoForward }
   } catch (_) {}
 }
 async function navForward(): Promise<void> {
-  const cur = currentPlatform.value
-  if (!cur || !isElectronShell.value) return
+  const pid = getActivePlatformId()
+  if (!pid || !isElectronShell.value) return
   try {
-    const r = await (window as any).tintin.browser.navigate({ platformId: cur, forward: true })
+    const r = await (window as any).tintin.browser.navigate({ platformId: pid, forward: true })
     if (r?.success && r?.data) { navCan.back = !!r.data.canGoBack; navCan.forward = !!r.data.canGoForward }
   } catch (_) {}
 }
 async function navReload(): Promise<void> {
-  const cur = currentPlatform.value
-  if (!cur || !isElectronShell.value) return
-  try { await (window as any).tintin.browser.navigate({ platformId: cur, reload: true }) } catch (_) {}
+  const pid = getActivePlatformId()
+  if (!pid || !isElectronShell.value) return
+  try { await (window as any).tintin.browser.navigate({ platformId: pid, reload: true }) } catch (_) {}
 }
 
 /* ── 平台标签（左栏，对齐原客户端素材浏览器布局） ─────────────── */
@@ -88,7 +97,7 @@ interface PlatformTab {
 }
 
 const platforms = ref<PlatformTab[]>([
-  { id: 'douyin',      name: '抖音',   badge: '抖', active: true },
+  { id: 'douyin',      name: '抖音',   badge: '抖' },
   { id: 'bilibili',    name: 'B站',    badge: 'B' },
   { id: 'kuaishou',    name: '快手',   badge: '快' },
   { id: 'xiaohongshu', name: '小红书', badge: '小' },
@@ -99,31 +108,71 @@ const platforms = ref<PlatformTab[]>([
 
 type BrowseMode = 'browser' | 'favorites'
 const browseMode = ref<BrowseMode>('browser')
-const browseModes: { id: BrowseMode; name: string; icon: string }[] = [
-  { id: 'browser',   name: '网页浏览器', icon: '🌐' },
-  { id: 'favorites', name: '收藏记录',   icon: '📑' },
-]
 
-const currentPlatform = computed<BrowserPlatformId | null>(() => {
-  const p = platforms.value.find((x) => x.active)
-  return p ? p.id : null
+/* ── 统一导航项：网页浏览器 + 收藏记录 + 常用平台（单一激活态） ── */
+interface SidebarItem {
+  id: string
+  name: string
+  badge: string
+  type: 'browser' | 'favorites' | 'platform'
+  active?: boolean
+}
+
+// 当前选中的导航项 ID（'web' | 'favorites' | 平台 ID）
+const activeNavId = ref<string>('web')
+const isWebBrowser = computed(() => activeNavId.value === 'web')
+const isFavorites = computed(() => activeNavId.value === 'favorites')
+const activePlatformId = computed<BrowserPlatformId | null>(() => {
+  if (isWebBrowser.value || isFavorites.value) return null
+  const id = activeNavId.value as BrowserPlatformId
+  return platforms.value.some(p => p.id === id) ? id : null
 })
+
+const sidebarItems = computed<SidebarItem[]>(() => [
+  { id: 'web', name: '网页浏览器', badge: '🌐', type: 'browser', active: isWebBrowser.value },
+  ...platforms.value.map(p => ({
+    id: p.id, name: p.name, badge: p.badge, type: 'platform' as const,
+    active: activeNavId.value === p.id,
+  })),
+  { id: 'favorites', name: '收藏记录', badge: '📑', type: 'favorites', active: isFavorites.value },
+])
+
+function onSidebarItemClick(item: SidebarItem): void {
+  activeNavId.value = item.id
+  if (item.type === 'favorites') {
+    browseMode.value = 'favorites'
+  } else if (item.type === 'browser') {
+    browseMode.value = 'browser'
+    void selectWebBrowser()
+  } else {
+    browseMode.value = 'browser'
+    void selectPlatform(item.id)
+  }
+}
 
 /** URL → 平台 ID 映射（根据域名自动识别） */
 const PLATFORM_DOMAINS: Record<BrowserPlatformId, RegExp[]> = {
-  douyin:      [/douyin\.com/i],
+  douyin:      [/douyin\.com/i, /iesdouyin\.com/i],
   bilibili:    [/bilibili\.com/i],
   kuaishou:    [/kuaishou\.com/i, /ks\.com/i],
-  xiaohongshu: [/xiaohongshu\.com/i],
-  weixin:      [/channels\.weixin\.qq\.com/i, /weixin\.qq\.com/i],
-  youtube:     [/youtube\.com/i, /youtu\.be/i],
+  xiaohongshu: [/xiaohongshu\.com/i, /xhslink\.com/i],
+  weixin:      [/channels\.weixin\.qq\.com/i, /weixin\.qq\.com/i, /wx\.qq\.com/i],
+  youtube:     [/youtube\.com/i, /youtu\.be/i, /music\.youtube\.com/i],
   jimeng:      [/jimeng\.jianying\.com/i, /jimeng\.com/i],
 }
 
 function detectPlatformFromUrl(url: string): BrowserPlatformId | null {
   if (!url) return null
-  for (const [id, patterns] of Object.entries(PLATFORM_DOMAINS)) {
-    if (patterns.some((p) => p.test(url))) return id as BrowserPlatformId
+  try {
+    const u = new URL(url)
+    const hostname = u.hostname.toLowerCase()
+    for (const [id, patterns] of Object.entries(PLATFORM_DOMAINS)) {
+      if (patterns.some((p) => p.test(hostname))) return id as BrowserPlatformId
+    }
+  } catch {
+    for (const [id, patterns] of Object.entries(PLATFORM_DOMAINS)) {
+      if (patterns.some((p) => p.test(url))) return id as BrowserPlatformId
+    }
   }
   return null
 }
@@ -133,41 +182,15 @@ const activePlatformName = computed<string>(() => {
   return p ? p.name : ''
 })
 
-/** bounds 徽标显示文本 */
-const boundsBadgeLabel = computed<string>(() => {
-  switch (boundsStatus.value) {
-    case 'ok': return 'OK'
-    case 'nomatch': return 'NOMATCH'
-    case 'verifying': return '…'
-    default: return '—'
-  }
-})
 
-/** bounds 徽标 tooltip（含诊断详情） */
-const boundsBadgeTip = computed<string>(() => {
-  const r = lastBoundsReport.value
-  if (!r) {
-    if (boundsStatus.value === 'ok') return 'BrowserView 已正确挂载（通过闭环校验）。点击立即重算。'
-    if (boundsStatus.value === 'nomatch') return 'BrowserView 挂载坐标与宿主 DOM 不匹配。点击立即重算。'
-    if (boundsStatus.value === 'verifying') return '正在校验 BrowserView 真实 bounds…'
-    return '尚未校验。点击立即重算。'
-  }
-  const lines: string[] = []
-  lines.push(`平台: ${r.platformId}`)
-  lines.push(`状态: ${r.attached ? (r.visible ? '已挂载并可见' : '已挂载但越界/不可见') : '未挂载'}`)
-  lines.push(`期望: (${r.expected?.x ?? '-'},${r.expected?.y ?? '-'}) ${r.expected?.width ?? '-'}×${r.expected?.height ?? '-'}`)
-  lines.push(`实际: (${r.actual.x},${r.actual.y}) ${r.actual.width}×${r.actual.height}`)
-  if (typeof r.deltaPx === 'number') lines.push(`最大边差: ${r.deltaPx}px（阈值 ≤${r.tolerancePx}px）`)
-  lines.push(`主窗口: ${r.winSize.width}×${r.winSize.height}`)
-  lines.push('点击徽标 → 立即重算+校验')
-  return lines.join('\n')
-})
 
-async function selectPlatform(id: string): Promise<void> {
+async function selectPlatform(id: string, loadDefaultUrl: boolean = false): Promise<void> {
   const pid = id as BrowserPlatformId
-  platforms.value.forEach((p) => (p.active = p.id === pid))
+  // activeNavId 已由 onSidebarItemClick 设置，这里确保同步
+  activeNavId.value = id
+  browseMode.value = 'browser'
 
-  // 非壳模式：直接更新地址栏为 seed URL
+  // 非壳模式：直接更新地址栏
   if (!isElectronShell.value) {
     const seed: Record<BrowserPlatformId, string> = {
       douyin: 'https://www.douyin.com',
@@ -178,26 +201,67 @@ async function selectPlatform(id: string): Promise<void> {
       youtube: 'https://www.youtube.com',
       jimeng: 'https://jimeng.jianying.com',
     }
-    addressUrl.value = seed[pid] || 'about:blank'
-    // 小屏抽屉场景：选中标签后自动收起抽屉
+    addressUrl.value = loadDefaultUrl ? DEFAULT_BROWSER_URL : (seed[pid] || 'about:blank')
     if (isNarrow.value) leftDrawerOpen.value = false
     return
   }
 
-  // 壳模式：attachPlatform → 拿到当前 URL/导航能力 → 重算 bounds
+  // 壳模式：attachPlatform → 导航到 seed URL
   try {
     const t = (window as any).tintin
-    const r = await t.browser.attachPlatform(pid)
+    const r = await t.browser.attachPlatform(pid, undefined, loadDefaultUrl)
     if (r?.success && r?.data) {
-      addressUrl.value = r.data.currentUrl || addressUrl.value
+      if (loadDefaultUrl) {
+        // 初始加载：跳过 seed，手动导航到默认 URL
+        addressUrl.value = DEFAULT_BROWSER_URL
+        try {
+          await t.browser.navigate({ platformId: pid, url: DEFAULT_BROWSER_URL })
+        } catch (_) {}
+      } else {
+        // 用户点击平台：直接用 seed URL（不依赖主进程返回的 currentUrl，因 loadURL 是异步的）
+        const seed: Record<string, string> = {
+          douyin: 'https://www.douyin.com',
+          weixin: 'https://channels.weixin.qq.com',
+          kuaishou: 'https://www.kuaishou.com',
+          xiaohongshu: 'https://www.xiaohongshu.com',
+          bilibili: 'https://www.bilibili.com',
+          youtube: 'https://www.youtube.com',
+          jimeng: 'https://jimeng.jianying.com',
+          web: 'https://www.pinterest.com',
+        }
+        addressUrl.value = seed[pid] || addressUrl.value
+      }
       navCan.back = !!r.data.canGoBack
       navCan.forward = !!r.data.canGoForward
     }
-    // ② 平台切换后：C13 200ms debounce 重算 bounds
     await nextTick()
     scheduleRecalcBounds()
   } catch (e) {
     console.warn('[Browser] attachPlatform failed:', e)
+  }
+}
+
+// 点击"网页浏览器"标签
+async function selectWebBrowser(): Promise<void> {
+  activeNavId.value = 'web'
+  browseMode.value = 'browser'
+  if (!isElectronShell.value) {
+    addressUrl.value = DEFAULT_BROWSER_URL
+    return
+  }
+  try {
+    const t = (window as any).tintin
+    // 'web' 是网页浏览器的独立 partition ID
+    const r = await t.browser.attachPlatform('web')
+    if (r?.success && r?.data) {
+      addressUrl.value = r.data.currentUrl || DEFAULT_BROWSER_URL
+      navCan.back = !!r.data.canGoBack
+      navCan.forward = !!r.data.canGoForward
+    }
+    await nextTick()
+    scheduleRecalcBounds()
+  } catch (e) {
+    console.warn('[Browser] attachPlatform(web) failed:', e)
   }
 }
 
@@ -223,7 +287,7 @@ async function visitHistory(item: HistoryItem): Promise<void> {
   addressUrl.value = u
   if (isNarrow.value) leftDrawerOpen.value = false
   if (!isElectronShell.value) return
-  const cur = currentPlatform.value
+  const cur = getActivePlatformId()
   if (!cur) return
   try {
     await (window as any).tintin.browser.navigate({ platformId: cur, url: u })
@@ -238,11 +302,7 @@ interface DownloadItem {
   status: 'downloading' | 'done' | 'queued'
   size?: string
 }
-const downloads = ref<DownloadItem[]>([
-  { id: 'd1', title: 'sample_video.mp4',       progress: 75, status: 'downloading', size: '128MB' },
-  { id: 'd2', title: 'COVER_MAIN_V1.png',      progress: 100, status: 'done',       size: '3.4MB' },
-  { id: 'd3', title: 'LIVE_CLIP_21.mp4',       progress: 0,   status: 'queued' }
-])
+const downloads = ref<DownloadItem[]>([])
 const downloadingCount = computed(() => downloads.value.filter((d) => d.status === 'downloading').length)
 /** 字节 → 人类可读大小（粗估） */
 function _fmtBytes(b?: number): string {
@@ -278,6 +338,56 @@ interface SniffedMedia {
 const sniffedMedia = ref<SniffedMedia[]>([])
 const activeRightTab = ref<'sniff' | 'downloads'>('sniff')
 const sniffedCount = computed(() => sniffedMedia.value.length)
+
+/* ── B站下载插件可用性（装了插件 → 右栏显示"用插件下载"，不再嗅探） ── */
+const biliPluginInstalled = ref<boolean>(false)
+async function loadBiliPluginState(): Promise<void> {
+  const t = (window as any).tintin
+  if (!isElectronShell.value || !t?.browser?.extensionList) return
+  try {
+    const r = await t.browser.extensionList()
+    biliPluginInstalled.value = !!(r?.success && r?.data?.installed)
+  } catch (_) { biliPluginInstalled.value = false }
+}
+/** B站且已装插件：右栏 show 插件下载，不显示嗅探/解析列表 */
+const biliPluginDownloadMode = computed<boolean>(() =>
+  activePlatformId.value === 'bilibili' && biliPluginInstalled.value,
+)
+
+/** B站扩展推送的下载链接列表 */
+interface BiliExtDownload {
+  url: string
+  download: string
+  text: string
+  sizeText: string
+}
+const biliExtDownloads = ref<BiliExtDownload[]>([])
+const biliExtTitle = ref<string>('')
+
+/* ── 已安装扩展列表（工具栏右侧显示）：内置 B站助手 + 用户上传安装扩展 ── */
+interface InstalledExtension {
+  id: string
+  name: string
+  version: string
+  path?: string
+  icon?: string | null
+  builtin?: boolean
+  description?: string
+}
+const installedExtensions = ref<InstalledExtension[]>([])
+async function loadInstalledExtensions(): Promise<void> {
+  const t = (window as any).tintin
+  if (!isElectronShell.value || !t?.browser?.extensionList) return
+  try {
+    const r = await t.browser.extensionList()
+    if (r?.success && r?.data?.extensions) installedExtensions.value = r.data.extensions
+  } catch (_) {}
+}
+/** 扩展图标 file://（主进程返回扩展目录 path + icon 相对路径） */
+function extIconSrc(e: InstalledExtension): string {
+  if (!e?.icon || !e?.path) return ''
+  return 'file://' + String(e.path).replace(/\\/g, '/') + '/' + String(e.icon).replace(/^\/+/, '')
+}
 
 interface FavoriteItem {
   url: string
@@ -340,7 +450,7 @@ async function collectCurrentPage(): Promise<void> {
     url,
     name: activePlatformName.value || url,
     type: 'video',
-    platformId: currentPlatform.value || undefined,
+    platformId: activeNavId.value || undefined,
     addedAt: Date.now(),
   }
   await addToFavorites(item)
@@ -349,7 +459,7 @@ async function collectCurrentPage(): Promise<void> {
 async function navigateToFavorite(item: FavoriteItem): Promise<void> {
   const t = (window as any).tintin
   if (!t?.browser?.navigate) return
-  const platformId = item.platformId || currentPlatform.value
+  const platformId = item.platformId || activeNavId.value
   if (!platformId) return
   // 切回浏览器模式
   browseMode.value = 'browser'
@@ -379,8 +489,14 @@ function _formatBytesPhase2(b?: number): string {
 async function downloadSniffedMedia(media: SniffedMedia): Promise<void> {
   const t = (window as any).tintin
   if (!t?.mediaDownload?.start) return
-  const cur = currentPlatform.value
+  const cur = getActivePlatformId()
   const taskId = 'mdl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+  
+  // 检测是否为动态加载平台（Bilibili, YouTube, 抖音等）
+  // 这些平台的视频流通常被加密或分片，直接下载链接会失效
+  const isDynamicPlatform = ['bilibili', 'youtube', 'douyin', 'kuaishou', 'xiaohongshu', 'weixin'].includes(cur || '')
+  const needsYtdlp = isDynamicPlatform && (media.url.includes('.m3u8') || media.url.includes('.flv') || media.url.includes('video/tos') || media.url.includes('videoplayback'))
+  
   try {
     await t.mediaDownload.start({
       taskId,
@@ -390,20 +506,86 @@ async function downloadSniffedMedia(media: SniffedMedia): Promise<void> {
       referer: addressUrl.value,
       platformId: cur || undefined,
       subDir: cur || undefined,
+      // 动态平台的分片流必须用 yt-dlp 处理
+      useYtdlp: needsYtdlp,
     })
-    mediaDownloadTasks.value.unshift({
-      id: taskId,
+    // 幂等创建：onProgress 可能已创建同 taskId 卡片，避免重复 key
+    _ensureMediaTask(taskId, {
       title: media.name || taskId,
-      progress: 0,
-      status: 'downloading',
-      speed: 0,
       totalSize: media.size || 0,
-      downloaded: 0,
-      paused: false,
       url: media.url,
     })
   } catch (e) {
     console.warn('[Browser] downloadSniffedMedia failed:', e)
+  }
+}
+
+// B站扩展下载链接 → 触发下载
+async function downloadBiliExtLink(dl: BiliExtDownload): Promise<void> {
+  const t = (window as any).tintin
+  if (!t?.mediaDownload?.start) {
+    window.open(dl.url, '_blank')
+    return
+  }
+  const taskId = 'bili_ext_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+  try {
+    const filename = dl.download || dl.text || 'video.mp4'
+    await t.mediaDownload.start({
+      taskId,
+      url: dl.url,
+      filename,
+      referer: addressUrl.value,
+      platformId: 'bilibili',
+      subDir: 'bilibili',
+      useYtdlp: false,
+    })
+    _ensureMediaTask(taskId, {
+      title: filename,
+      totalSize: 0,
+      url: dl.url,
+    })
+    activeRightTab.value = 'downloads'
+  } catch (e) {
+    console.warn('[Browser] downloadBiliExtLink failed:', e)
+    window.open(dl.url, '_blank')
+  }
+}
+
+// 从当前页面解析下载（针对动态加载平台的回退方案）
+async function downloadFromPage(): Promise<void> {
+  const t = (window as any).tintin
+  if (!t?.mediaDownload?.start) return
+  const cur = getActivePlatformId()
+  const pageUrl = addressUrl.value
+  if (!pageUrl) return
+  
+  // 仅对支持的平台启用此功能
+  const supportedPlatforms = ['bilibili', 'youtube', 'douyin', 'kuaishou', 'xiaohongshu']
+  if (!supportedPlatforms.includes(cur || '')) {
+    alert('当前平台不支持页面解析下载')
+    return
+  }
+  
+  const taskId = 'pgdl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+  try {
+    const platformName = activePlatformName.value || 'video'
+    const safeName = `${platformName}_${Date.now()}`
+    await t.mediaDownload.start({
+      taskId,
+      url: pageUrl,  // 直接传页面 URL，让 yt-dlp 解析
+      filename: safeName + '.mp4',
+      referer: pageUrl,
+      platformId: cur || undefined,
+      subDir: cur || undefined,
+      useYtdlp: true,  // 强制使用 yt-dlp 解析页面
+    })
+    // 幂等创建：onProgress 可能已创建同 taskId 卡片，避免重复 key
+    _ensureMediaTask(taskId, {
+      title: `${platformName} 视频 (解析下载)`,
+      url: pageUrl,
+    })
+  } catch (e) {
+    console.warn('[Browser] downloadFromPage failed:', e)
   }
 }
 
@@ -426,6 +608,32 @@ const mediaDownloadTasks = ref<MediaDownloadTask[]>([])
 const activeDownloadCount = computed(() =>
   mediaDownloadTasks.value.filter((t) => t.status === 'downloading' && !t.paused).length,
 )
+
+/**
+ * 幂等创建/更新一个下载任务。
+ * 手动触发（downloadSniffedMedia/downloadFromPage）与主进程 onProgress 都在创建任务，
+ * 若不幂等会出现同一 taskId 的重复卡片（相同 :key），最终留下一个停在 0% 的空卡片。
+ */
+function _ensureMediaTask(id: string, partial: Partial<MediaDownloadTask>): MediaDownloadTask {
+  let task = mediaDownloadTasks.value.find((t) => t.id === id)
+  if (!task) {
+    task = {
+      id,
+      title: id,
+      progress: 0,
+      status: 'downloading',
+      speed: 0,
+      totalSize: 0,
+      downloaded: 0,
+      paused: false,
+      ...partial,
+    }
+    mediaDownloadTasks.value.unshift(task)
+  } else {
+    Object.assign(task, partial)
+  }
+  return task
+}
 
 /* ═══════════════════════════════════════════════════════════════
    Phase 3: 历史记录 + 持久化
@@ -461,7 +669,7 @@ function navigateToHistory(index: number): void {
   if (!entry) return
   const t = (window as any).tintin
   if (!t?.browser?.navigate) return
-  const cur = currentPlatform.value
+  const cur = getActivePlatformId()
   void t.browser.navigate({ platformId: cur, url: entry.url })
 }
 
@@ -568,44 +776,6 @@ function _formatSpeed(bps: number): string {
   return (bps / (1024 * 1024)).toFixed(2) + 'MB/s'
 }
 
-/* ── 解析并导入（调用 browser:extractDOM → 成功后推到工作台会话） ─────── */
-const extracting = ref(false)
-async function onExtract(): Promise<void> {
-  const cur = currentPlatform.value
-  if (!cur || !isElectronShell.value) return
-  extracting.value = true
-  try {
-    const r = await (window as any).tintin.browser.extractDOM(cur)
-    console.log('[Browser] extractDOM result:', r)
-    if (r?.success && r?.data) {
-      // 构造跨页面载荷，写入 appStore 并切 Tab → 工作台 watch 后消费
-      const platName = platforms.value.find((p) => p.id === cur)?.name || String(cur)
-      const payload: BrowserExtractPayload = {
-        platformId: cur,
-        platformName: platName,
-        extractedAt: Date.now(),
-        data: r.data,
-      }
-      appStore.pushBrowserExtract(payload)
-      // 切 Tab：C6 防泄漏（切工作台前先 detach）
-      try {
-        await (window as any).tintin?.browser?.detachAll?.()
-      } catch (_) {}
-      appStore.setActiveTab('workbench')
-      await router.push('/workbench')
-    } else if (r?.ok === false) {
-      // 结构化错误：NEED_LOGIN / RISK_CAPTCHA / DOM_MISMATCH / NETWORK_ERROR
-      const errType = r?.error?.type || 'EXTRACTOR_ERROR'
-      const errMsg = r?.error?.message || '抽取失败'
-      console.warn(`[Browser] extractDOM ${errType}:`, errMsg, r?.error?.hint)
-    }
-  } catch (e) {
-    console.warn('[Browser] extractDOM failed:', e)
-  } finally {
-    extracting.value = false
-  }
-}
-
 /* ════════════════════════════════════════════════════════════
    P1.5 bounds 4源重算 + Cherry Studio 实时校验闭环（attach/setBounds/verify → 2 次 NOMATCH 自动重试）
    BrowserView 宿主节点：#browser-view-host（.browser-view-host）
@@ -656,7 +826,7 @@ function _setBoundsStatus(
 }
 
 async function _doRecalcBounds(forceVerify: boolean): Promise<void> {
-  const cur = currentPlatform.value
+  const cur = getActivePlatformId()
   if (!cur) return
   const host = hostRef.value
   if (!host) return
@@ -753,7 +923,7 @@ function _onWindowResize(): void { scheduleRecalcBounds() }
 const isNarrow = ref(false)
 const rightDocked = ref(true)
 const leftDrawerOpen = ref(false)
-const rightPanelOpen = ref(false)
+const rightPanelOpen = ref(true)
 let _mqNarrow: MediaQueryList | null = null
 let _mqDocked: MediaQueryList | null = null
 
@@ -766,9 +936,10 @@ function _onMqDocked(e: MediaQueryListEvent): void {
   if (e.matches) rightPanelOpen.value = false
 }
 
-/** 浮层（抽屉/面板）是否处于打开态且覆盖宿主区域 */
+/** 浮层（抽屉/侧栏）是否处于打开态且覆盖宿主区域（扩展/设置面板已改为独立原生窗口，不属此处） */
 const overlayActive = computed<boolean>(() =>
-  (leftDrawerOpen.value && isNarrow.value) || (rightPanelOpen.value && !rightDocked.value),
+  (leftDrawerOpen.value && isNarrow.value) ||
+  (rightPanelOpen.value && !rightDocked.value),
 )
 const backdropVisible = computed<boolean>(() => overlayActive.value)
 
@@ -781,11 +952,46 @@ function closeOverlays(): void {
   leftDrawerOpen.value = false
   rightPanelOpen.value = false
 }
-function goSettings(): void { router.push('/settings') }
+
+/* ── 已安装扩展列表面板：独立原生窗口（BrowserWindow，始终在 BrowserView 之上） ── */
+/** 计算工具栏按钮锚点坐标（相对主窗口渲染区），供原生面板定位 */
+function _toolbarAnchor(btn: Element | null): { x: number; y: number } {
+  let x = 100, y = 60
+  if (btn) {
+    const rect = btn.getBoundingClientRect()
+    x = Math.round(rect.left)
+    y = Math.round(rect.bottom + 6)
+  }
+  return { x, y }
+}
+function openExtensionsPanel(): void {
+  const t = (window as any).tintin
+  if (!isElectronShell.value || !t?.browser?.openExtensionsPanel) return
+  const btn = document.querySelector('.right-actions > .hist-wrapper:first-child button')
+  const a = _toolbarAnchor(btn)
+  t.browser.openExtensionsPanel(a.x, a.y)
+}
+
+/* ── 浏览器设置面板（Cookie/登录）：独立原生窗口（BrowserWindow，始终在 BrowserView 之上） ── */
+function buildSettingsPlatforms(): { id: string; name: string; badge: string }[] {
+  return [
+    { id: 'web', name: '网页浏览器', badge: '🌐' },
+    ...platforms.value.map((p) => ({ id: p.id as string, name: p.name, badge: p.badge })),
+  ]
+}
+function openBrowserSettings(): void {
+  const t = (window as any).tintin
+  if (!isElectronShell.value || !t?.browser?.openSettingsPanel) return
+  const btn = document.querySelector('.right-actions > button.ic-btn')
+  const a = _toolbarAnchor(btn)
+  t.browser.openSettingsPanel(a.x, a.y, { list: buildSettingsPlatforms() })
+}
+
+function goSettings(): void { openBrowserSettings() }
 
 /** 壳模式浮层打开 → BrowserView 置零；关闭 → 重算恢复 */
 async function _collapseBounds(): Promise<void> {
-  const cur = currentPlatform.value
+  const cur = getActivePlatformId()
   if (!cur) return
   const t = (window as any).tintin
   if (!t?.browser?.setBounds) return
@@ -817,6 +1023,8 @@ let _unsubDownloads: (() => void) | null = null
 let _unsubViewReady: (() => void) | null = null
 let _unsubMediaSniff: (() => void) | null = null
 let _unsubMediaProgress: (() => void) | null = null
+let _unsubBiliExtDl: (() => void) | null = null
+let _unsubExtensions: (() => void) | null = null
 let _onAppWindowStateChange: (() => void) | null = null
 /** 主动校验定时：1.5s 后、之后每 8s 做一次轻量 verifyBounds（检测误挂/窗口越界） */
 let _boundsWatchdogTimer: ReturnType<typeof setInterval> | null = null
@@ -830,13 +1038,11 @@ function _subscribeEvents(): void {
     if (typeof t.browser.onUrlUpdated === 'function') {
       _unsubUrl = t.browser.onUrlUpdated((payload: any) => {
         if (payload?.url) {
+          // 平台模式：地址栏显示 URL 但 active 标签不变（锁定状态）
+          // 网页浏览器模式：地址栏同步 URL，但 active 标签也不变
           addressUrl.value = payload.url
           addHistory(payload.url, payload?.title || '', payload.platformId)
-          // 自动检测 URL 所属平台并同步左侧标签
-          const detected = detectPlatformFromUrl(payload.url)
-          if (detected && detected !== currentPlatform.value) {
-            platforms.value.forEach((p) => (p.active = p.id === detected))
-          }
+          // 不再根据 URL 自动切换 active 标签——active 由用户点击决定
         }
       })
     }
@@ -866,6 +1072,8 @@ function _subscribeEvents(): void {
     // Phase 2-1: 媒体嗅探订阅（browser:onMediaSniffed）
     if (typeof t.browser.onMediaSniffed === 'function') {
       _unsubMediaSniff = t.browser.onMediaSniffed((payload: any) => {
+        // 跳过标记：主进程在非详情页/被忽略的请求时下发 skipped，不得当作真实媒体加入列表
+        if (payload?.skipped) return
         if (!payload?.url) return
         const media: SniffedMedia = {
           id: payload.id || ('sniff_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)),
@@ -893,36 +1101,32 @@ function _subscribeEvents(): void {
       _unsubMediaProgress = t.mediaDownload.onProgress((payload: any) => {
         const id = payload?.taskId || payload?.id
         if (!id) return
-        let task = mediaDownloadTasks.value.find((t) => t.id === id)
-        if (!task) {
-          task = {
-            id,
-            title: payload?.filename || payload?.name || id,
-            progress: 0,
-            status: 'downloading',
-            speed: 0,
-            totalSize: payload?.totalSize || 0,
-            downloaded: 0,
-            paused: false,
-          }
-          mediaDownloadTasks.value.unshift(task)
-        }
+        // 主进程状态名与渲染层不一致：completed→done，failed→error
+        let st = payload.status
+        if (st === 'completed') st = 'done'
+        else if (st === 'failed') st = 'error'
+        const task = _ensureMediaTask(id, {
+          title: payload?.filename || payload?.name || id,
+          totalSize: payload?.totalSize || 0,
+        })
         if (typeof payload.progress === 'number') task.progress = payload.progress
         if (typeof payload.speed === 'number') task.speed = payload.speed
         if (typeof payload.downloaded === 'number') task.downloaded = payload.downloaded
         if (typeof payload.totalSize === 'number') task.totalSize = payload.totalSize
-        if (payload.status) task.status = payload.status
-        if (payload.status === 'done') {
+        if (st) task.status = st
+        if (st === 'done') {
           task.progress = 100
           task.speed = 0
           task.status = 'done'
-        } else if (payload.status === 'paused') {
+        } else if (st === 'paused') {
           task.paused = true
           task.speed = 0
-        } else if (payload.status === 'downloading') {
+        } else if (st === 'downloading') {
           task.paused = false
-        } else if (payload.status === 'cancelled' || payload.status === 'error') {
+        } else if (st === 'cancelled' || st === 'error') {
           task.speed = 0
+        } else if (st === 'queued') {
+          task.paused = false
         }
       })
     }
@@ -931,10 +1135,26 @@ function _subscribeEvents(): void {
     if (typeof t.browser.onViewReady === 'function') {
       _unsubViewReady = t.browser.onViewReady((payload: any) => {
         if (!payload?.platformId) return
-        if (payload.platformId !== currentPlatform.value) return  // 其他 Tab 的事件忽略
+        if (payload.platformId !== activeNavId.value) return  // 其他 Tab 的事件忽略
         // 立刻 + 300ms 后各重算一次（首帧 Chromium 会补 1px 阴影/滚动条）
         forceRecalcBounds()
         setTimeout(() => forceRecalcBounds(), 300)
+      })
+    }
+
+    // B站扩展下载链接订阅
+    if (typeof t.browser.onBiliExtDownloads === 'function') {
+      _unsubBiliExtDl = t.browser.onBiliExtDownloads((payload: any) => {
+        if (!payload?.payload?.downloads?.length) return
+        biliExtDownloads.value = payload.payload.downloads
+        biliExtTitle.value = payload.payload.title || ''
+      })
+    }
+
+    // 已安装扩展变更订阅（安装/卸载后主进程广播 → 刷新工具栏图标）
+    if (typeof t.browser.onExtensionsChanged === 'function') {
+      _unsubExtensions = t.browser.onExtensionsChanged(() => {
+        void loadInstalledExtensions()
       })
     }
     // App.vue 广播：窗口最大化/还原/尺寸显著变化后，强制重算 bounds
@@ -961,7 +1181,7 @@ function _startBoundsWatchdog(): void {
   if (_firstVerifyTimer) { clearTimeout(_firstVerifyTimer); _firstVerifyTimer = null }
   if (_boundsWatchdogTimer) { clearInterval(_boundsWatchdogTimer); _boundsWatchdogTimer = null }
   _firstVerifyTimer = setTimeout(async () => {
-    const cur = currentPlatform.value
+    const cur = getActivePlatformId()
     if (!cur) return
     const host = hostRef.value
     if (!host) return
@@ -974,7 +1194,7 @@ function _startBoundsWatchdog(): void {
     await _runVerifyBounds(expected, cur)
   }, 1500)
   _boundsWatchdogTimer = setInterval(async () => {
-    const cur = currentPlatform.value
+    const cur = getActivePlatformId()
     if (!cur) return
     // 8s 一次：只在未 attach / nomatch / verifying 之外的"看似 OK"场景触发，
     // 主要兜底 BrowserView 挂错窗口 / 被 remove 了但渲染端不知道（经验 478486：悬挂引用）
@@ -1010,6 +1230,8 @@ onMounted(async () => {
   // Phase 3: 启动时加载持久化数据
   void loadFromStorage()
   void loadFavorites()
+  void loadBiliPluginState()
+  void loadInstalledExtensions()
 
   // ① mount 后首次 bounds 重算（含 C9 判定）
   await nextTick()
@@ -1018,43 +1240,30 @@ onMounted(async () => {
   _subscribeEvents()
   _startBoundsWatchdog()
 
-  // 首个平台：自动 attach（仅壳模式）
-  const cur = currentPlatform.value
-  if (cur && isElectronShell.value) {
-    try {
-      const t = (window as any).tintin
-      const r = await t.browser.attachPlatform(cur)
-      if (r?.success && r?.data) {
-        addressUrl.value = r.data.currentUrl || addressUrl.value
-        navCan.back = !!r.data.canGoBack
-        navCan.forward = !!r.data.canGoForward
-      }
-      scheduleRecalcBounds()
-    } catch (_) {}
+  // 初始：进入"网页浏览器"模式，加载默认 URL（Pinterest）
+  if (browseMode.value === 'browser') {
+    await selectWebBrowser()
   }
 })
 
 // 模式切换：浏览器模式 ↔ 收藏记录模式
 watch(browseMode, async (mode) => {
   const t = (window as any).tintin
-  if (!t?.browser) return
   if (mode === 'browser') {
-    // 切回浏览器模式：重新 attach 当前平台的 BrowserView
-    const cur = currentPlatform.value
-    if (cur && isElectronShell.value) {
-      try {
-        const r = await t.browser.attachPlatform(cur)
-        if (r?.success && r?.data) {
-          addressUrl.value = r.data.currentUrl || addressUrl.value
-        }
-        scheduleRecalcBounds()
-      } catch (_) {}
+    // 切回浏览器模式：恢复上次的 activeNavId
+    const navId = activeNavId.value || 'web'
+    if (navId === 'web') {
+      await selectWebBrowser()
+    } else {
+      await selectPlatform(navId)
     }
   } else if (mode === 'favorites') {
     // 切到收藏模式：detach BrowserView 释放资源
     if (isElectronShell.value) {
       try {
-        await t.browser.detachAll()
+        if (t?.browser?.detachAll) {
+          await t.browser.detachAll()
+        }
       } catch (_) {}
     }
     // 刷新收藏列表
@@ -1078,6 +1287,8 @@ onBeforeUnmount(() => {
   if (_unsubViewReady) { try { _unsubViewReady() } catch(_){} _unsubViewReady = null }
   if (_unsubMediaSniff) { try { _unsubMediaSniff() } catch(_){} _unsubMediaSniff = null }
   if (_unsubMediaProgress) { try { _unsubMediaProgress() } catch(_){} _unsubMediaProgress = null }
+  if (_unsubBiliExtDl) { try { _unsubBiliExtDl() } catch(_){} _unsubBiliExtDl = null }
+  if (_unsubExtensions) { try { _unsubExtensions() } catch(_){} _unsubExtensions = null }
   // C6：卸载前 detachAll，防止 BrowserView 原生层泄漏到其他 Tab
   try {
     const t = (window as any).tintin
@@ -1085,8 +1296,8 @@ onBeforeUnmount(() => {
   } catch (_) {}
 })
 
-// 当 currentPlatform 变化时：延迟重算 bounds（保证 DOM layout 完成）
-watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
+// 当 activeNavId 变化时：延迟重算 bounds（保证 DOM layout 完成）
+watch(activeNavId, () => { nextTick().then(scheduleRecalcBounds) })
 </script>
 
 <template>
@@ -1143,48 +1354,62 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
         </button>
       </div>
 
-      <div class="address-bar">
-        <span class="lock-ic" title="安全连接">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <div class="address-bar" :class="{ locked: !addressEditable }">
+        <span class="lock-ic" :title="addressEditable ? '可编辑' : '平台固定地址'">
+          <svg v-if="addressEditable" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
           </svg>
         </span>
         <input
           v-model="addressUrl"
           type="text"
           class="address-input"
-          placeholder="输入网址或搜索"
+          :class="{ locked: !addressEditable }"
+          :readonly="!addressEditable"
+          :placeholder="addressEditable ? '输入网址或搜索' : '平台固定地址'"
           @keydown.enter="onUrlEnter"
         />
       </div>
 
       <div class="right-actions">
-        <button
-          class="btn-parse"
-          :disabled="extracting || !isElectronShell"
-          :title="isElectronShell ? '解析当前页面并导入工作台' : '仅 Electron 壳内可用'"
-          @click="onExtract"
+        <div
+          v-for="ext in installedExtensions.filter(e => !e.builtin)"
+          :key="ext.id"
+          class="hist-wrapper"
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-            <polyline points="13 2 13 9 20 9" />
-          </svg>
-          {{ extracting ? '解析中…' : '解析并导入' }}
-        </button>
-        <button
-          class="ic-btn"
-          :class="{ active: rightPanelOpen }"
-          :title="rightDocked ? '下载任务见右侧面板' : '下载管理'"
-          aria-label="下载管理"
-          @click="toggleRightPanel"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            <polyline points="7 10 12 15 17 10" />
-            <line x1="12" y1="15" x2="12" y2="3" />
-          </svg>
-          <span v-if="activeDownloadCount > 0 || downloadingCount > 0" class="badge-dot" />
-        </button>
+          <button
+            class="ic-btn ext-ic"
+            :title="ext.name"
+            :aria-label="ext.name"
+            @click="openExtensionsPanel"
+          >
+            <img v-if="extIconSrc(ext)" :src="extIconSrc(ext)" class="ext-img" alt="" />
+            <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+          </button>
+        </div>
+        <div class="hist-wrapper">
+          <button
+            class="ic-btn"
+            title="扩展"
+            aria-label="扩展"
+            @click="openExtensionsPanel"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M20.5 13h-1a2.5 2.5 0 0 1 0-5h1a2.5 2.5 0 0 0 0-5h-1" />
+              <path d="M3.5 3h4a2.5 2.5 0 0 1 0 5h-4" />
+              <path d="M3.5 13h1a2.5 2.5 0 0 1 0 5h-1a2.5 2.5 0 0 1 0-5z" />
+              <path d="M3.5 21h2.5a2.5 2.5 0 0 0 0-5" />
+              <path d="M21 21v-2.5a2.5 2.5 0 0 0-5 0V21" />
+            </svg>
+          </button>
+        </div>
         <div class="hist-wrapper">
           <button
             class="ic-btn"
@@ -1211,50 +1436,27 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
 
     <!-- ─── 主体：左栏 + 渲染区 + 右栏 ─── -->
     <div class="browser-body">
-      <!-- 左栏：模式切换 + 平台网格（对齐原客户端素材浏览器） -->
+      <!-- 左栏：统一导航（收藏记录 + 常用平台，单一激活态，无分组） -->
       <aside class="browser-sidebar" :class="{ open: leftDrawerOpen }">
         <div class="side-scroll custom-scroll">
-
-          <!-- 模式切换 -->
-          <div class="side-block">
-            <div class="section-title">模式切换</div>
-            <div class="mode-buttons">
-              <button
-                v-for="m in browseModes"
-                :key="m.id"
-                class="mode-btn"
-                :class="{ active: browseMode === m.id }"
-                @click="browseMode = m.id"
-              >
-                <span class="mode-icon">{{ m.icon }}</span>
-                <span>{{ m.name }}</span>
-              </button>
-            </div>
+          <div class="platform-grid">
+            <button
+              v-for="item in sidebarItems"
+              :key="item.id"
+              class="platform-btn"
+              :class="{ active: !!item.active }"
+              @click="onSidebarItemClick(item)"
+            >
+              <span class="platform-badge" :class="item.id">{{ item.badge }}</span>
+              <span class="platform-name">{{ item.name }}</span>
+            </button>
           </div>
-
-          <!-- 常用平台 -->
-          <div class="side-block">
-            <div class="section-title">常用平台</div>
-            <div class="platform-grid">
-              <button
-                v-for="p in platforms"
-                :key="p.id"
-                class="platform-btn"
-                :class="{ active: p.active }"
-                @click="selectPlatform(p.id)"
-              >
-                <span class="platform-badge" :class="p.id">{{ p.badge }}</span>
-                <span class="platform-name">{{ p.name }}</span>
-              </button>
-            </div>
-          </div>
-
         </div>
       </aside>
 
       <!-- 中间主区：BrowserView host / 收藏记录列表 -->
       <main class="browser-main">
-        <!-- 网页浏览器模式 -->
+        <!-- 网页浏览器模式：直接显示浏览器，对齐原素材浏览器行为 -->
         <div v-if="browseMode === 'browser'" class="browser-view-area">
           <!-- ═══ BrowserView 宿主容器（厚壳化） ═══
                真实 BrowserView（原生层）通过 getBoundingClientRect
@@ -1295,19 +1497,7 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
             </template>
           </div>
 
-          <!-- Cherry Studio：BrowserView bounds 校验徽标 -->
-          <button
-            v-if="isElectronShell"
-            class="bounds-pill"
-            :class="boundsStatus"
-            type="button"
-            :title="boundsBadgeTip"
-            @click.stop.prevent="() => { forceRecalcBounds() }"
-          >
-            <span class="bounds-pill-dot" />
-            <span class="bounds-pill-text">{{ boundsBadgeLabel }}</span>
-          </button>
-        </div>
+          </div>
 
         <!-- 收藏记录模式 -->
         <div v-else class="favorites-view-area">
@@ -1398,7 +1588,70 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
         <div class="side-scroll custom-scroll">
           <!-- Tab: 媒体嗅探 -->
           <template v-if="activeRightTab === 'sniff'">
-            <div class="side-block">
+            <!-- B站已装下载插件 → 展示扩展推送的下载链接 -->
+            <div v-if="biliPluginDownloadMode" class="side-block">
+              <div class="section-title">
+                <span v-if="biliExtTitle">{{ biliExtTitle }}</span>
+                <span v-else>B站下载助手</span>
+              </div>
+              <!-- 有扩展推送的下载链接 → 显示下载按钮列表 -->
+              <div v-if="biliExtDownloads.length > 0" class="bili-ext-dl-list">
+                <div
+                  v-for="(dl, idx) in biliExtDownloads"
+                  :key="idx"
+                  class="bili-ext-dl-item"
+                >
+                  <div class="bili-ext-dl-info">
+                    <div class="bili-ext-dl-name" :title="dl.text">{{ dl.text }}</div>
+                    <div v-if="dl.sizeText" class="bili-ext-dl-size">{{ dl.sizeText }}</div>
+                  </div>
+                  <button
+                    class="bili-ext-dl-btn"
+                    :disabled="!isElectronShell"
+                    title="下载"
+                    @click="downloadBiliExtLink(dl)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <!-- 暂无下载链接 → 显示加载提示 -->
+              <div v-else class="bili-ext-waiting">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="bili-spinner">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+                <p>正在检测视频下载链接…</p>
+                <ul class="bili-plugin-steps">
+                  <li>打开一个 B站视频详情页</li>
+                  <li>播放视频，扩展会自动解析下载地址</li>
+                  <li>在此处点击按钮即可下载</li>
+                </ul>
+              </div>
+            </div>
+            <div v-else class="side-block">
+              <!-- 从页面解析下载按钮（针对动态加载平台的回退方案） -->
+              <div v-if="activePlatformId && ['bilibili','youtube','douyin','kuaishou','xiaohongshu'].includes(activePlatformId)" class="page-dl-section">
+                <div class="section-title">页面解析下载</div>
+                <button
+                  class="page-dl-btn"
+                  :disabled="!isElectronShell || !addressUrl"
+                  @click="downloadFromPage"
+                  title="使用 yt-dlp 解析当前页面并下载视频"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  解析当前页面下载
+                </button>
+                <div class="page-dl-hint">当嗅探不到视频流时，使用此功能通过 yt-dlp 解析下载</div>
+              </div>
+              
               <div v-if="sniffedMedia.length > 0" class="sniff-list">
                 <div
                   v-for="m in sniffedMedia"
@@ -1610,6 +1863,16 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
   color: var(--foreground);
 }
 
+/* ── 工具栏扩展图标（已装用户扩展） ── */
+.ext-ic { overflow: hidden; }
+.ext-ic .ext-img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  border-radius: 3px;
+  display: block;
+}
+
 .ic-btn.active {
   background: var(--surface-container);
   color: var(--foreground);
@@ -1660,6 +1923,10 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
   flex: 0 0 auto;
 }
 
+.address-bar.locked .lock-ic {
+  color: var(--muted-foreground);
+}
+
 .address-input {
   flex: 1 1 auto;
   min-width: 0;
@@ -1670,31 +1937,19 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
   font-size: var(--font-size-body);
 }
 
+.address-input.locked {
+  color: var(--muted-foreground);
+  cursor: default;
+}
+
+.address-input.locked::selection {
+  background: transparent;
+}
+
 .right-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-}
-
-.btn-parse {
-  height: 40px;
-  padding: 0 var(--space-4);
-  border-radius: var(--radius-lg);
-  background: var(--primary);
-  color: var(--primary-foreground);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  font-size: var(--font-size-body);
-  transition: all var(--duration-fast);
-  white-space: nowrap;
-}
-.btn-parse:disabled { opacity: 0.6; cursor: not-allowed; }
-
-.btn-parse:hover:not(:disabled) {
-  filter: brightness(1.08);
-  transform: translateY(-1px);
 }
 
 /* ─── 主体 ─── */
@@ -1915,6 +2170,7 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
   position: relative;
 }
 
+/* ─── BrowserView 宿主容器 ─── */
 .browser-view-host {
   width: 100%;
   height: 100%;
@@ -2354,6 +2610,58 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
   cursor: not-allowed;
 }
 
+/* ═══ 页面解析下载按钮 ═══ */
+.page-dl-section {
+  margin-bottom: 12px;
+  padding: 10px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08) 0%, rgba(59, 130, 246, 0.08) 100%);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(139, 92, 246, 0.2);
+}
+
+.page-dl-section .section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.page-dl-btn {
+  width: 100%;
+  height: 34px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%);
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all var(--duration-fast);
+}
+
+.page-dl-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+}
+
+.page-dl-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-dl-hint {
+  font-size: 10px;
+  color: var(--muted-foreground);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
 /* ═══ Phase 2: 增强下载卡片 ═══ */
 
 .side-block .dl-card:nth-child(odd) {
@@ -2506,7 +2814,6 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
 
   /* 地址栏在极窄屏隐藏（历史记录/快速标签承担导航） */
   .address-bar { display: none; }
-  .btn-parse { padding: 0 var(--space-3); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2822,4 +3129,114 @@ watch(currentPlatform, () => { nextTick().then(scheduleRecalcBounds) })
 .favorites-list::-webkit-scrollbar { width: 6px; }
 .favorites-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .favorites-list::-webkit-scrollbar-track { background: transparent; }
+
+/* ─── B站插件下载卡（装了插件时替代嗅探列表） ─── */
+.bili-plugin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.bili-plugin-card > svg { color: #fb7299; }
+.bili-plugin-card p { margin: 0; }
+.bili-plugin-tip { color: var(--muted-foreground); font-size: 12px; }
+.bili-plugin-steps { margin: 2px 0 0; padding-left: 18px; color: var(--muted-foreground); font-size: 12px; }
+
+/* ─── B站扩展下载链接列表 ─── */
+.bili-ext-dl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bili-ext-dl-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.bili-ext-dl-item:hover {
+  border-color: #fb7299;
+  background: var(--surface-container-hov, var(--surface-container));
+}
+.bili-ext-dl-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.bili-ext-dl-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bili-ext-dl-size {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  margin-top: 2px;
+}
+.bili-ext-dl-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--foreground);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.bili-ext-dl-btn:hover:not(:disabled) {
+  background: #fb7299;
+  color: #fff;
+  border-color: #fb7299;
+}
+.bili-ext-dl-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ─── B站扩展等待状态 ─── */
+.bili-ext-waiting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  text-align: center;
+}
+.bili-ext-waiting svg {
+  color: #fb7299;
+  animation: bili-spin 2s linear infinite;
+}
+.bili-ext-waiting p {
+  margin: 0;
+  color: var(--foreground);
+  font-size: 13px;
+}
+.bili-ext-waiting .bili-plugin-steps {
+  margin-top: 8px;
+  text-align: left;
+}
+@keyframes bili-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 </style>

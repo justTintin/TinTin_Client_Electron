@@ -65,16 +65,6 @@ function setHtmlDarkClass(enable: boolean) {
   else html.classList.remove(DARK_CLASS)
 }
 
-/** 浏览器 → 工作台：extractDOM 结果跨页面推送（V3 extract→工作台） */
-export interface BrowserExtractPayload {
-  platformId: string
-  platformName: string
-  /** 抽取时间戳 */
-  extractedAt: number
-  /** 原始数据（不同平台结构不同） */
-  data: any
-}
-
 export const useAppStore = defineStore('app', () => {
   // 当前激活的 Tab，默认工作台
   const activeTab = ref<TabKey>('workbench')
@@ -87,9 +77,6 @@ export const useAppStore = defineStore('app', () => {
 
   // 外观主题：light / dark / system，默认 system（亮色优先跟随系统）
   const themeMode = ref<ThemeMode>('system')
-
-  // extract→工作台 待消费载荷（set 后切 Tab，Workbench watch 后消费并 clear）
-  const pendingExtract = ref<BrowserExtractPayload | null>(null)
 
   /** 解析后的实际主题（考虑 system → 系统偏好） */
   const resolvedTheme = computed<'light' | 'dark'>(() => {
@@ -163,15 +150,6 @@ export const useAppStore = defineStore('app', () => {
     sidebarCollapsed.value = !sidebarCollapsed.value
   }
 
-  /** 浏览器解析并导入：设置 pendingExtract 并切到工作台（Workbench watch 后消费） */
-  function pushBrowserExtract(payload: BrowserExtractPayload): void {
-    pendingExtract.value = payload
-  }
-  /** 工作台消费后清空，避免重复消费 */
-  function clearPendingExtract(): void {
-    pendingExtract.value = null
-  }
-
   return {
     activeTab,
     version,
@@ -179,13 +157,10 @@ export const useAppStore = defineStore('app', () => {
     themeMode,
     resolvedTheme,
     themeModeLabel,
-    pendingExtract,
     setActiveTab,
     setVersion,
     toggleSidebar,
     setThemeMode,
     initTheme,
-    pushBrowserExtract,
-    clearPendingExtract,
   }
 })

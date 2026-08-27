@@ -1,4 +1,4 @@
-﻿# PRD V3 — 客户端全面 Electron 化（方案一：纯服务端推理，零本地 Python runtime）
+# PRD V3 — 客户端全面 Electron 化（方案一：纯服务端推理，零本地 Python runtime）
 
 > 版本：**V3 正式版（已锁定）** | 日期：2026-08-25 | 状态：✅ 已确认
 > 决策结论（已由业务方确认锁定）：
@@ -262,17 +262,21 @@ S1/S2 的 `task_id` 必须：
 - **详情区（任务详情 / 参数 / 结果）**：点击行展开；显示服务端返回的完整 JSON（折叠展示 audio/video/image/project 各个子项）
 - **自动刷新**：复选框勾选时 15s 轮询一次；后台运行时，任务进度更新通过 SSE（优先）或长轮询（兼容）推送至顶栏通知
 
-### 3.3 Tab2 浏览器 — 合并 apps/asset-browser 规格
+### 3.3 Tab2 浏览器 — 合并 apps/asset-browser 规格（✅ 已实现，以本节为准）
 
-- **合并范围**：
-  - `main.js`：窗口创建、单例锁、Cookie 持久化路径（`session.fromPartition('persist:tintin-browser')`）
-  - `preload-app.js`：`window.tintin.downloads.start / cancel / pause` → 合并进 `electron/preload/preload.js`，加命名空间 `window.tintin.browser.*`
-  - `preload-webview.js`：`pageonload.js` 注入、解析抖音/B站/YouTube 元素 → 不改功能，合并到 `electron/preload/browser-webview.js`
-  - `renderer/app.js`：地址栏、刷新/前进/后退、侧边栏下载、视频预览 → 重构为 Vue 组件
-- **浏览器 Cookie/缓存位置不变**：`studio/assets/playwright/` 目录（V2 用户升级后历史登录态无缝继承）
-- **下载进度统一**：浏览器发起的下载必须广播到主进程 `global.downloadBus`，工作台 Tab 和媒体工具 Tab 底部状态栏都能看到（同一个进度池）
-- **新增快捷操作**：浏览到抖音/B站视频页时，地址栏右侧显示「⚡ 解析并导入素材库」按钮，点击 = 解析 → 下载 → 写入 `studio/outputs/materials/` → 发系统通知 → 素材检索 Tab1 中立即可见
-- **多账号隔离（规划进 V3.1）**：支持最多 5 套 profile（抖音大号/小号/员工号…），每个 profile 独立 Cookie 分区，互不干扰
+> **2026-08-27 按实际实现同步**。实现载体：`desktop/main/thickShell-ipc.js`（调度壳）+ 拆分模块（bilibili-ext / ext-manager / platform-meta / media-sniff-utils / offline-page / thick-shell-viewpool）+ `media-downloader.js` + `downloads-panel.html` + 渲染层 `views/Browser.vue` 及 `components/browser/*`。
+
+- **多平台 BrowserView 嵌入（8 平台）**：网页浏览器 / 抖音 / 视频号 / 快手 / 小红书 / B站 / YouTube / 即梦AI；每平台独立 session 分区 `persist:tintin-<platform>`（Cookie/登录态天然隔离），实例池懒创建复用；崩溃自动恢复 ≤3 次（U10）。
+- **事件链路**：`did-navigate` / `did-navigate-in-page` → 推送 `browser:url-updated`（🔒地址栏，含 detectedPlatform 归属识别）；`did-stop-loading` → `browser:view-ready`（渲染层立即重算 bounds）；`did-fail-load` → 注入 Luosiding 风格离线兜底页（亮/暗主题跟随，E2）；协议白名单拦截 bytedance:// 等非标准协议（不弹系统窗）。
+- **媒体嗅探**：`onHeadersReceived` 实时嗅探音/视频流；仅在「平台详情页 URL 白名单」内生效（主页/列表页推送 `skipped: NOT_DETAIL_PAGE`，不产生卡片）；B站已装下载助手时嗅探让位给扩展（避免列表切片塞满卡片）。
+- **B站下载助手扩展（预装内置）**：随包分发于 `resources/assets/bilibili-helper`；content script 手动注入方案（兼容 Electron 对 MV3 的有限支持）：`import.meta.url` 语法合法化 + CSP 放行 + `tintin-ext://` 文件协议；下载链接提取双通道：主进程 executeJavaScript 每 2s 主动轮询 shadow DOM（主通道）+ `console-message` 监听（冗余通道）。
+- **合并下载（单条目）**：扩展 `durls`（音频+视频）归并为**一条**「合并下载」条目（含画质/体积标识），主进程分别下载两路流后 **ffmpeg 合并**（`resources/bin/ffmpeg.exe` 随包内置）；合并阶段卡片显示「视频 x% · 音频 y%」；合并失败兜底仅存视频流并在任务消息明示。
+- **下载管理**：主进程任务注册表（单一真相源）+ `downloads-history.json` 持久化（上限 300 条）；**默认保存到 Windows 下载文件夹**（`store: downloadDir` 可改）；下载浮窗由工具栏 ⬇ 唤起（置顶、不被 BrowserView 遮盖），提供 打开文件 / 打开位置 / 删除 / 清除已完成。
+- **Cookie 管理**：按平台分区 `browser:cookieList` / `browser:cookieClear`；`browser:exportCookies` 导出 Netscape 格式（供 yt-dlp 使用）；`browser:getCookieStatus` 登录态检测。**变更**：V2 的 `studio/assets/playwright/` 目录不再使用，由 Electron 原生分区替代。
+- **扩展管理**：crx/zip 上传安装（adm-zip 解包 → `userData/extensions/` → 各平台分区 session 逐个 loadExtension）、卸载、清单持久化；内置 B站助手以「预装扩展」展示在列表顶部。
+- **E3 结构化抽取**：`browser:extractDOM` 按平台运行 `extractors/*.ts`，结构化错误 `NEED_LOGIN / RISK_CAPTCHA / DOM_MISMATCH / NETWORK_ERROR`（抽取脚本当前为预留位；解析下载以「嗅探 + 扩展」双通道为准）。
+- **已废弃**：~~地址栏「⚡ 解析并导入素材库」按钮~~（解析→下载→写素材库链路，因素材库接口未就绪移除，commit 341e581）；~~下载进度同步到底部全局状态栏~~（改为嗅探卡片内嵌进度条 + 下载浮窗，2026-08-27 按用户方案）。
+- **V3.1 规划保留**：多账号 profile 切换（≤5 套，独立 Cookie 分区）。
 
 ### 3.4 Tab3 媒体工具 — 卡片导航 + 表单规格
 
@@ -533,3 +537,4 @@ electron-builder --win nsis --x64
 |---|---|---|---|
 | 2026-08-25 | V3 草案 | 初始需求：方案一（纯 Electron + 服务端化 rembg/vsr/reverse-prompt），无本地 Python runtime | — |
 | 2026-08-25 | **V3 正式锁定** | 业务方确认方案一 + 版本号 V3；全文档 V2.x/V3/V3.1 → 统一 V2.x/V3/V3.1 命名 | — |
+| 2026-08-27 | V3.0 | **§3.3 浏览器按实际实现重写**（以此为准）：8 平台分区隔离、媒体嗅探白名单、B站扩展注入+双通道提取、合并下载（内置 ffmpeg）、下载浮窗+Windows 下载目录默认、扩展管理、Cookie 分区导出；废弃「⚡解析并导入」与底部全局进度条方案 | — |

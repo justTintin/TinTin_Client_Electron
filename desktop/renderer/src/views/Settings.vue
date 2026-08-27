@@ -3,9 +3,10 @@
 // Settings.vue — 系统设置（左栏6菜单项 + 右区4类设置 + A2本地推理卡）
 // ═══════════════════════════════════════════════════════════════
 
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore, type ThemeMode } from '../stores/app'
+import { useInferenceSettings, bytesToMB as _bytesToMB, type PkgRow } from '../composables/useInferenceSettings'
 
 const router = useRouter()
 const appStore = useAppStore()
@@ -203,170 +204,41 @@ async function testLlm() {
 
 /* ═══════════════════════════════════════════════════════════
    A2 双模式：本地推理能力卡片（§1.5.4 规格）
+   业务逻辑已收编至 composables/useInferenceSettings.ts（界面层零内嵌）
    ═══════════════════════════════════════════════════════════ */
 
-// 3 种模式（对齐 inference-router 的 store 取值）
-const MODE_TABS: Array<{ value: 'server-only' | 'hybrid-auto' | 'force-local'; label: string; hint: string }> = [
-  { value: 'server-only', label: '仅服务端', hint: '所有 OCR / 向量 / 封面走服务端 HTTP；新安装默认。' },
-  { value: 'hybrid-auto', label: '混合自动', hint: '模型已下载时本地优先；失败/耗时过高自动切服务端（用户零感知）。' },
-  { value: 'force-local', label: '强制本地', hint: '仅使用本地能力；本地不可用时直接返回错误，用于隐私合规场景。' },
-]
-const currentMode = ref<'server-only' | 'hybrid-auto' | 'force-local'>('server-only')
+const {
+  currentMode,
+  capability,
+  pkgList,
+  a2Busy,
+  lastError,
+  totalSizeMB,
+  MODE_TABS,
+  statusSummary,
+  refreshA2,
+  setMode,
+  actOnPkg: _actOnPkg,
+  attachDownloadBus,
+} = useInferenceSettings()
 
-// 能力状态
-type CapState = {
-  mode: string
-  nativeModulesOk: boolean
-  modelsOk: boolean
-  avgLocalMs: number
-  manifestVersion?: string
-} | null
-const capability = ref<CapState>(null)
-
-// 模型包列表
-type PkgStatus = 'NOT_INSTALLED' | 'INSTALLED' | 'SKIPPED' | 'DOWNLOADING'
-interface PkgRow {
-  id: string
-  label: string
-  desc: string
-  totalSizeMB: string
-  status: PkgStatus
-  progress?: number  // 0-100
-  files: Array<{ name: string; size: number }>
-}
-const pkgList = ref<PkgRow[]>([])
-const totalSizeMB = computed(() => {
-  return (pkgList.value.reduce((s, p) => s + (parseFloat(p.totalSizeMB) || 0), 0)).toFixed(0)
-})
-const a2Busy = ref(false)
-const lastError = ref<string | null>(null)
-
-/* 工具：size → human MB */
-function bytesToMB(n: number) {
-  if (!n) return '0'
-  return (n / 1024 / 1024).toFixed(1)
+/** 供模板调用的包装：保持原模板 @click 签名 */
+function actOnPkg(row: PkgRow, action: 'download' | 'cancel' | 'uninstall') {
+  void _actOnPkg(row, action)
 }
 
-/* 能力描述 */
-function statusSummary() {
-  if (!capability.value) return '加载中…'
-  if (currentMode.value === 'server-only')  return '当前：仅使用服务端推理（默认）。'
-  if (currentMode.value === 'force-local')  return `当前：强制本地（原生模块 ${capability.value.nativeModulesOk ? '✓' : '✗'}，模型 ${capability.value.modelsOk ? '✓' : '✗'}）`
-  if (capability.value.modelsOk && capability.value.nativeModulesOk) return '当前：混合自动模式 · 本地能力就绪 ✓'
-  if (capability.value.nativeModulesOk && !capability.value.modelsOk) return '当前：混合自动模式 · 原生模块就绪，但模型尚未下载（自动走服务端）。'
-  return '当前：混合自动模式 · 本地能力未就绪（自动走服务端）。'
+/** 供模板调用的工具转发（pkg-chip 文件体积显示） */
+function bytesToMB(n: number): string {
+  return _bytesToMB(n)
 }
 
-/* 主流程：加载能力 + 模型清单 */
-async function refreshA2(force = false) {
-  const tintin = (window as any).tintin
-  const ok =
-    !!tintin?.inference &&
-    typeof tintin.inference.getCapability === 'function' &&
-    typeof tintin.inference.setMode === 'function' &&
-    !!tintin?.model &&
-    typeof tintin.model.listPkgs === 'function' &&
-    typeof tintin.model.downloadPkg === 'function' &&
-    typeof tintin.model.cancelPkg === 'function' &&
-    typeof tintin.model.uninstallPkg === 'function'
-  if (!ok) {
-    lastError.value = 'A2 IPC 未就绪（preload.js 可能未加载）；当前所有推理仍走服务端 HTTP。'
-    return
-  }
-  lastError.value = null
-  try {
-    const [capRes, listRes] = await Promise.all([
-      tintin.inference.getCapability(force),
-      tintin.model.listPkgs(),
-    ])
-    if (capRes?.success && capRes.data) {
-      currentMode.value = (capRes.data.mode || 'server-only') as any
-      capability.value = {
-        mode: capRes.data.mode,
-        nativeModulesOk: !!capRes.data.nativeModulesOk,
-        modelsOk: !!capRes.data.modelsOk,
-        avgLocalMs: capRes.data.avgLocalMs || 0,
-        manifestVersion: capRes.data.detail?.manifestVersion,
-      }
-    }
-    if (listRes?.success && Array.isArray(listRes.data)) {
-      const labelMap: Record<string, { label: string; desc: string }> = {
-        'ocr-paddle-int8':              { label: 'OCR · PaddleOCR INT8 3件套', desc: '本地图片/截图文字识别（det + rec + cls）' },
-        'embedding-bge-small-zh':       { label: 'Embedding · bge-small-zh INT8', desc: '768 维中文向量生成，驱动本地知识库检索' },
-        'native-addons-sqlitevss-sharp':{ label: '原生扩展 · sqlite-vss + sharp', desc: '向量 ANN 检索引擎、封面合成图像库（仅 Windows x64）' },
-      }
-      pkgList.value = listRes.data.map((p: any) => ({
-        id: p.id,
-        label: labelMap[p.id]?.label || p.id,
-        desc:  labelMap[p.id]?.desc  || '',
-        totalSizeMB: bytesToMB(p.totalSize),
-        status: (p.status || 'NOT_INSTALLED') as PkgStatus,
-        files: p.files || [],
-      }))
-    }
-  } catch (e: any) {
-    lastError.value = e?.message || String(e)
-  }
-}
-
-/* 切换模式（写回 electron-store → inference:setMode） */
-async function setMode(m: typeof currentMode.value) {
-  const tintin = (window as any).tintin
-  if (!tintin?.inference) return
-  a2Busy.value = true
-  try {
-    await tintin.inference.setMode(m)
-    currentMode.value = m
-    // 刷新能力缓存
-    await refreshA2(true)
-  } catch (e: any) {
-    lastError.value = e?.message || String(e)
-  } finally {
-    a2Busy.value = false
-  }
-}
-
-/* 下载 / 取消 / 卸载 */
-async function actOnPkg(row: PkgRow, action: 'download' | 'cancel' | 'uninstall') {
-  const tintin = (window as any).tintin
-  if (!tintin?.model) return
-  a2Busy.value = true
-  try {
-    if (action === 'download') {
-      row.status = 'DOWNLOADING'
-      row.progress = 0
-      const r = await tintin.model.downloadPkg(row.id)
-      if (r?.skipped) {
-        lastError.value = r.reason || 'SKIPPED'
-      } else if (!r?.ok) {
-        lastError.value = r?.error || '下载失败'
-      }
-    } else if (action === 'cancel') {
-      await tintin.model.cancelPkg(row.id)
-    } else if (action === 'uninstall') {
-      await tintin.model.uninstallPkg(row.id)
-    }
-    await refreshA2(true)
-  } catch (e: any) {
-    lastError.value = e?.message || String(e)
-  } finally {
-    a2Busy.value = false
-  }
-}
-
-/* Footer 下载总线监听：模型下载进度挂 downloads:progress */
-function attachDownloadBus() {
-  const tintin = (window as any).tintin
-  if (!tintin?.downloads) return
-  // 简化：每 5s 轮询 listPkgs 更新安装状态（避免任务ID跟踪）
-  setInterval(() => refreshA2(false).catch(() => {}), 5000)
-}
+let stopDownloadBus: (() => void) | null = null
 
 onMounted(() => {
   // A2 初始化 + 挂载下载进度监听；用 await/try 代替 .then/.catch 链路，避免运行环境差异
   const initA2 = async () => {
     try { await refreshA2(false) } catch (_) { /* 离线/无 IPC 静默 */ }
-    attachDownloadBus()
+    stopDownloadBus = attachDownloadBus()
   }
   initA2()
   // 加载真实配置并探测本地服务端
@@ -375,6 +247,10 @@ onMounted(() => {
     logLevel.value = String(await readCfg('env.logLevel', 'INFO')).toUpperCase()
   })()
   pingServer()
+})
+
+onBeforeUnmount(() => {
+  if (stopDownloadBus) { stopDownloadBus(); stopDownloadBus = null }
 })
 </script>
 

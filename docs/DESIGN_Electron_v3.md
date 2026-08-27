@@ -372,6 +372,22 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 - **页面下载**：当前页面 URL 直下。
 - 下载历史统一在 ⬇ 浮窗（打开文件 / 打开位置 / 删除 / 清除已完成），浮窗头部 📁 可改保存路径。
 
+### 5.2b 左侧导航分组（2026-08-27 新增裁决）
+
+BrowserSidebar 分两组，**不混排**：
+
+```
+┌────────────┐
+│ 【平台】     │  8 平台网格（网页/抖音/视频号/快手/小红书/B站/YouTube/即梦AI）
+│             │
+│ 【功能扩展】 │  ⬆ 自动上架（按钮，迁移自系统设置·扩展插件）
+│             │  ⭐ 收藏记录（FavoritesView 入口）
+└────────────┘
+```
+
+- 「自动上架」点击进入上架面板（复用内置浏览器平台分区已登录会话；V2 PRD 十四章行为口径）。
+- 原「系统设置 → 扩展插件」卡移除：下载插件职责归浏览器 🧩 扩展管理，分离时代 bridge/chrome 配置废弃。
+
 ### 5.3 主浏览区
 
 - BrowserView 真嵌入，**每平台独立 session partition `persist:tintin-<platform>`**（共 8 个，Cookie/登录态互不干扰；`persist:tintin-browser` 仅网页浏览器 Tab 使用）。

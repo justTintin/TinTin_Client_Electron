@@ -21,8 +21,9 @@
 | ① 工作台 | 会话智能体（原工作台形态） | ✅ 已实现 | WbComposer / WbMessages / WbTaskDrawer / WbNotificationDrawer；以现状为准 |
 | ① 工作台 | **定时任务管理（新增页）** | ❌ 待移植 | 对照 scheduled_tasks_mgmt_page.py 原生重写，进侧边栏 |
 | ② 浏览器 | 原素材浏览器 | ✅ 已完成 | 含扩展下载/嗅探/合并下载/下载浮窗；以现状为准 |
+| ② 浏览器 | **功能扩展分组 + 自动上架迁移** | ❌ 待移植 | 左栏新增「功能扩展」组（自动上架按钮在收藏记录上方，不与平台混排）；自动上架从系统设置迁入，载体改内置分区会话（见 §3.4） |
 | ③ 媒体工具 | 原媒体工具 + 新增卡片 | ✅ 已完成 | ImageMatting / VideoTranscribe / VoiceClone / ReversePromptImage（新卡）/ CoverMaker（新卡）等；以现状为准 |
-| ④ 系统配置 | 环境配置/推理设置 | ✅ 已完成 | useInferenceSettings 三模式推理路由；以现状为准 |
+| ④ 系统配置 | 环境配置/推理设置 | ✅ 已完成 | useInferenceSettings 三模式推理路由；**「扩展插件」卡移除**（浏览器已集成，见 §3.4） |
 | — | PRD 4 高频页（脚本/分镜/检索/成片任务） | ⏸ 降级待定 | 会话智能体优先承载，按需评估（见 §3.2） |
 | — | 原侧边栏其余页面（方案脚本/一键成片/产品库/即梦AI/混剪/直播切片等） | 🚫 不移植 | 由会话智能体承载 |
 | — | V3.1 多账号 profile | ⏳ 规划保留 | 按计划后置 |
@@ -67,12 +68,33 @@
 - 其覆盖页面均已归入「不移植」清单，由会话智能体承载
 - DESIGN §4.1「过渡期桥接页」分组同步标注作废；相关 IPC/预埋（如有）在 P1 骨架改造时一并确认无残留
 
+### 3.4 浏览器功能扩展迁移 —— ❌ 待移植（2026-08-27 业务方裁决）
+
+**背景**：原客户端与浏览器分离，「扩展插件」（下载插件 + 自动上架）必须配置在系统设置里对接外挂 Chrome；现浏览器已内置集成，该配置失去存在意义。
+
+**裁决内容**：
+1. 系统设置「扩展插件」卡**整体移除**（Settings.vue ext 菜单项 + CardExtensions.vue + useSettingsExtension.ts）
+2. 「自动上架」迁移为**浏览器功能**：左栏新增独立「功能扩展」分组（不与平台混排），组内「自动上架」按钮位于「收藏记录」上方
+3. 需求已确认进 [PRD §3.3](./PRD_Electron_v3_SchemeA.md) / [DESIGN §5.2b](./DESIGN_Electron_v3.md)
+
+**基于「浏览器已集成 → 分离时代配置冗余」原则的连带修改清单**：
+
+| # | 项 | 现状 | 处置 |
+|---|---|---|---|
+| 1 | Settings「扩展插件」卡（含下载插件 Tab 6 项配置：bridgePort/bridgeSaveDir/extScanServer/chromePort/chromePath/chromeDataDir） | [useSettingsExtension.ts](../desktop/renderer/src/composables/useSettingsExtension.ts) | 随卡移除 |
+| 2 | `env:detectCdp` IPC（preload.js:393 + 主进程 handler） | 分离时代检测外挂 Chrome 通道 | 自动上架新实现（内置分区会话）确认不需要后再删，迁移任务内闭环 |
+| 3 | `ext.*` 配置键（electron-store） | bridge*/chrome* 6 键废弃；`shopKeyword`（上架关键词）仍需要 | 随自动上架迁入浏览器（键名建议 `listing.shopKeyword`），旧键清理 |
+| 4 | `bridgeSaveDir`（采集目录 D:\TinTin\collected） | 已被下载路径体系（Windows Downloads + 浮窗 📁）替代 | 废弃，不迁移 |
+| 5 | 「下载插件」职责（扩展安装/管理） | 已由浏览器 🧩 扩展管理覆盖（commit 历史已实现） | 无需迁移，文档标注即可 |
+| 6 | 自动上架实现载体 | 原 auto_listing_tab.py：外挂 Chrome CDP(9222) + bridge(8123) | 改为操作内置浏览器 `persist:tintin-*` 分区已登录会话；**行为口径不变**（V2 PRD 十四章：抖店数据包校验/复用登录/填写/保存草稿/截图日志/断点续跑） |
+
 ## 四、实施排期（2026-08-27 最终版：按移植基本要求收敛）
 
 | 优先级 | 事项 | 内容 / 理由 |
 |---|---|---|
 | **P1** | **工作台骨架改造** | 侧边栏导航骨架 + `/workbench/*` 子路由 + 顶栏任务/通知条；挂载「智能助手」（Wb* 平移）+「定时任务管理」（占位）；不移植页面不出现菜单项 |
 | **P2** | **定时任务管理页（Vue 原生重写）** | 唯一确定的新增移植页：对照 scheduled_tasks_mgmt_page.py 逐项重写（定时任务创建/启停/调度管理），进侧边栏 |
+| **P3** | **浏览器功能扩展分组 + 自动上架迁移** | 左栏「功能扩展」分组（自动上架按钮在收藏记录上方）+ Settings 移除「扩展插件」卡 + detectCdp/ext.* 废弃键清理（清单见 §3.4）；可与 P1/P2 并行 |
 | 待定 | PRD 4 高频页（脚本/分镜/检索/成片任务） | 会话智能体优先承载；是否原生补齐按需评估（缺口清单见 §3.2） |
 | 🚫 取消 | ~~P2 桥接基建 + 7 页 webview~~ | bridge.exe 依赖 Python，作废 |
 | 🚫 取消 | ~~原侧边栏其余页面移植~~ | 会话智能体承载，不移植 |

@@ -277,6 +277,10 @@ S1/S2 的 `task_id` 必须：
 - **Cookie 管理**：按平台分区 `browser:cookieList` / `browser:cookieClear`；`browser:exportCookies` 导出 Netscape 格式（供 yt-dlp 使用）；`browser:getCookieStatus` 登录态检测。**变更**：V2 的 `studio/assets/playwright/` 目录不再使用，由 Electron 原生分区替代。
 - **扩展管理**：crx/zip 上传安装（adm-zip 解包 → `userData/extensions/` → 各平台分区 session 逐个 loadExtension）、卸载、清单持久化；内置 B站助手以「预装扩展」展示在列表顶部。
 - **E3 结构化抽取**：`browser:extractDOM` 按平台运行 `extractors/*.ts`，结构化错误 `NEED_LOGIN / RISK_CAPTCHA / DOM_MISMATCH / NETWORK_ERROR`（抽取脚本当前为预留位；解析下载以「嗅探 + 扩展」双通道为准）。
+- **功能扩展分组（2026-08-27 业务方新增裁决）**：浏览器左栏（BrowserSidebar）在平台网格之外新增独立「功能扩展」分组，**不与平台混排**，组内两项：
+  1. **「自动上架」按钮**（位于「收藏记录」上方）：原「系统设置 → 扩展插件 → 自动上架」功能整体迁移至浏览器（V2 PRD 第十四章行为口径不变：抖店 fxg.jinritemai.com 数据包校验 / 复用登录会话 / 商品填写 / 保存草稿 / 截图日志 / 断点续跑）。**载体变更**：不再依赖外挂 Chrome CDP(9222) 与 bridge(8123)，改为操作内置浏览器的平台分区（`persist:tintin-*`）已登录会话。
+  2. **「收藏记录」**（现有 FavoritesView 入口）。
+- **系统配置「扩展插件」卡移除（2026-08-27 业务方裁决）**：原客户端与浏览器分离，扩展插件需在客户端配置；现浏览器已集成，该卡整体废弃——「下载插件」职责已由浏览器 🧩 扩展管理覆盖；分离时代配置（bridgePort/bridgeSaveDir/extScanServer/chromePort/chromePath/chromeDataDir）随之废弃；`shopKeyword`（上架关键词）随自动上架迁入浏览器。
 - **已废弃**：~~地址栏「⚡ 解析并导入素材库」按钮~~（解析→下载→写素材库链路，因素材库接口未就绪移除，commit 341e581）；~~下载进度同步到底部全局状态栏~~（改为嗅探卡片内嵌进度条 + 下载浮窗，2026-08-27 按用户方案）。
 - **V3.1 规划保留**：多账号 profile 切换（≤5 套，独立 Cookie 分区）。
 

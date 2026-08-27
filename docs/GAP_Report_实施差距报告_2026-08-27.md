@@ -44,6 +44,7 @@
 | 3 | ShotMaterialDialog | **整个对话框不存在**：素材库 Tab（角标多选/右键预览/品牌徽章）、MG动画跳转 Tab、联网素材 Tab（`stock_search` 零调用） | 类型契约已生成 ✅ |
 | 4 | 素材检索 | 无筛选面板（文件类型/横纵比/分辨率/时长/品牌/型号/分类/Tag 云）与缩略图网格；`material_client.search` 零调用 | 类型契约已生成 ✅ |
 | 5 | 成片任务 | 无 12 列表格（**总分列**优先级 `evaluation.total > quality_score.total > variants[0].score > task.*_score`）/ 全选+下载所选+打包所选 / 15s 自动轮询 / SSE 推送 | 类型契约 + SSE 通道 ✅ |
+| 6 | **定时任务管理（新增移植项，2026-08-27 业务方指定）** | 对照 [scheduled_tasks_mgmt_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/scheduled_tasks_mgmt_page.py) 原生重写；**加入工作台侧边栏**；定时任务创建/启停/调度管理 | 类型契约 ✅ |
 
 ### 3.3 桥接页（过渡期 webview → bridge.exe）
 
@@ -60,35 +61,39 @@ PRD 过渡方案：`<webview src="http://127.0.0.1:8766/<page>">` 内嵌 PySide6
 | 5 | 会话与 token 共享 | bridge 与 server 鉴权打通，避免桥接页二次登录 |
 | 6 | webview 权限配置 | allowpopups、preload 注入 `window.tintin` 最小桥、CSP 对齐 |
 
-**桥接页清单（已确认 8 页，映射原客户端）**：
+**桥接页清单（7 页，映射原客户端）**：
 
 | 桥接页 | 原客户端页面 |
 |---|---|
 | 方案脚本 | [product_script_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/product_script_page.py) |
 | 一键成片 | [compile_video_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/compile_video_page.py) |
-| 成片任务队列 | [scheduled_tasks_mgmt_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/scheduled_tasks_mgmt_page.py) |
 | 产品库 | [product_library_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/product_library_page.py) |
 | 素材生成（即梦AI） | [dreamina_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/dreamina_page.py) |
 | 音频素材 | [audio_material_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/audio_material_page.py) |
 | 智能混剪 | [video_montage_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/video_montage_page.py) |
 | 直播切片 | [live_clip_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/live_clip_page.py) |
 
+> 原「成片任务队列」（scheduled_tasks_mgmt_page.py）已移出桥接池——业务方指定（2026-08-27）升级为**原生重写**的「定时任务管理」页，直接进侧边栏。
+
 > 其余原客户端页面（marketing_detect / hook_score / video_lut / image_layered / video_ai_rename / agent_home 等）不在 16 页首期清单，作为 V3.1+ 备选池。已 Vue 实现的媒体工具页（ImageMatting / VideoTranscribe / VoiceClone / ReversePromptImage / CoverMaker 等）归 Tab3，不入桥接池。
 
-## 四、实施排期（2026-08-27 按裁决调整：回归 16 页功能工作台形态）
+## 四、实施排期（2026-08-27 第二次调整：+定时任务管理原生重写；侧边栏渐进式挂载）
+
+> **侧边栏原则（渐进式挂载）**：P1 骨架只挂当前真实存在的页面（智能助手 + 定时任务管理占位），不一次凑满 16 项；每交付一个原生页/桥接页就点亮一个菜单项，其余保持隐藏或禁用态（DESIGN §4.1 未就绪样式）。
 
 | 优先级 | 事项 | 内容 / 理由 |
 |---|---|---|
 | ~~P0~~ | ~~工作台形态裁决~~ | ✅ 已裁决：回归 16 页形态；聊天工作台收纳为「智能助手」页 |
-| **P1** | **工作台骨架改造** | 侧边栏 16 项导航（4 高频 + 8 桥接 + 智能助手 + 预留）+ `/workbench/*` 子路由 + 顶栏任务/通知条；现有 Wb* 组件平移为「智能助手」页（资产保留） |
-| **P2** | **桥接基建 + 8 页 webview 上线** | bridge.exe 打包/生命周期/探活 + WebViewPage.vue 通用容器 + token 共享；8 桥接页先以「桥」形态进侧边栏，让 16 页形态立即可用 |
-| **P3** | 成片任务页（Vue 重写） | 最独立、无跨页依赖、接口+SSE 就绪；完成后从桥接切换为原生页 |
-| **P4** | 飞书脚本创作页 | 四页重写链路起点（脚本 → 分镜 → 素材引用），product 字段传递链路在此建立 |
-| **P5** | 分镜脚本页 + ShotMaterialDialog（三 Tab） | 依赖 P4 的 product 传递；`stock_search` 联网素材在此落地 |
-| **P6** | 素材检索页 | 独立页，可与 P4/P5 并行 |
-| V3.1 | 桥接页逐页 Vue 重写替换 | 按 8 桥接页使用频率排序；备选池页面按需纳入 |
+| **P1** | **工作台骨架改造** | 侧边栏导航骨架 + `/workbench/*` 子路由 + 顶栏任务/通知条；挂载：智能助手（Wb* 平移）+ 定时任务管理（占位）；其余菜单项按交付逐个点亮 |
+| **P2** | **桥接基建 + 7 页 webview 上线** | bridge.exe 打包/生命周期/探活 + WebViewPage.vue 通用容器 + token 共享；7 桥接页以「桥」形态进侧边栏 |
+| **P3** | **定时任务管理页（Vue 原生重写）** | 业务方指定新增移植项（2026-08-27）；对照 scheduled_tasks_mgmt_page.py 逐项重写，进侧边栏 |
+| **P4** | 成片任务页（Vue 重写） | 最独立、无跨页依赖、接口+SSE 就绪；完成后从占位切原生 |
+| **P5** | 飞书脚本创作页 | 四页重写链路起点（脚本 → 分镜 → 素材引用），product 字段传递链路在此建立 |
+| **P6** | 分镜脚本页 + ShotMaterialDialog（三 Tab） | 依赖 P5 的 product 传递；`stock_search` 联网素材在此落地 |
+| **P7** | 素材检索页 | 独立页，可与 P5/P6 并行 |
+| V3.1 | 桥接页逐页 Vue 重写替换 | 按 7 桥接页使用频率排序；备选池页面按需纳入 |
 
-> 排期原则：骨架（P1）先行让形态落地 → 桥接（P2）补齐功能覆盖 → 高频页逐页原生替换（P3~P6）。每个页面交付口径：对照原客户端 `studio/gui` 对应 .py 逐项行为核对 + IRON-04 单测 + 打包产物验证 + IRON-09 提交。
+> 排期原则：骨架（P1）先行让形态落地 → 桥接（P2）补齐功能覆盖 → 原生页逐个交付（P3 定时任务管理 → P4~P7 高频页）。每个页面交付口径：对照原客户端 `studio/gui` 对应 .py 逐项行为核对 + IRON-04 单测 + 打包产物验证 + IRON-09 提交。
 
 ## 五、验证口径
 

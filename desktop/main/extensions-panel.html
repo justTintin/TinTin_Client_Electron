@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src * file: data:;" />
+<title>扩展</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2329; background: #ffffff; user-select: none; -webkit-app-region: drag; }
+  button { -webkit-app-region: no-drag; }
+  .panel { display: flex; flex-direction: column; height: 100%; padding: 12px 14px; }
+  .head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; padding-bottom: 10px; border-bottom: 1px solid #ececf1; }
+  .head-actions { display: flex; align-items: center; gap: 8px; }
+  .install { background: #00a1d6; color: #fff; border: none; border-radius: 6px; font-size: 12px; padding: 5px 10px; cursor: pointer; font-weight: 500; }
+  .install:hover { background: #0b8fc0; }
+  .close { background: none; border: none; cursor: pointer; color: #8a8f99; font-size: 14px; width: 24px; height: 24px; border-radius: 6px; }
+  .close:hover { background: #f2f3f5; color: #1f2329; }
+  .body { flex: 1; overflow: auto; margin-top: 8px; }
+  .empty { color: #8a8f99; font-size: 13px; text-align: center; padding: 24px 0; }
+  .empty small { display: block; margin-top: 6px; color: #a9aeb8; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 8px; border-radius: 8px; }
+  .item:hover { background: #f7f8fa; }
+  .icon { width: 36px; height: 36px; border-radius: 8px; background: #f2f3f5; display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
+  .icon img { width: 100%; height: 100%; object-fit: contain; }
+  .icon .ph { font-size: 12px; color: #8a8f99; }
+  .meta { min-width: 0; flex: 1; }
+  .name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .ver { font-size: 11px; color: #8a8f99; font-weight: 400; }
+  .desc { font-size: 12px; color: #646a73; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { flex-shrink: 0; }
+  .remove { background: none; border: 1px solid #e5484d; color: #e5484d; border-radius: 6px; font-size: 12px; padding: 3px 8px; cursor: pointer; }
+  .remove:hover { background: #e5484d; color: #fff; }
+  .builtin-tag { font-size: 11px; color: #667085; background: #f2f3f5; border-radius: 4px; padding: 2px 6px; }
+  .tip { font-size: 12px; padding: 8px 6px 0; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="head">
+      <span>扩展</span>
+      <div class="head-actions">
+        <button class="install" id="installBtn" title="安装扩展（crx / zip）">+ 安装扩展</button>
+        <button class="close" id="closeBtn" aria-label="关闭">✕</button>
+      </div>
+    </div>
+    <div class="body" id="body">
+      <p class="empty">加载中…</p>
+    </div>
+    <div class="tip" id="tip" style="display:none"></div>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron')
+    const body = document.getElementById('body')
+    const tip = document.getElementById('tip')
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    }
+    function iconUrl(icon, p) {
+      if (!icon || !p) return ''
+      return 'file://' + String(p).replace(/\\/g, '/') + '/' + String(icon).replace(/^\/+/, '')
+    }
+    function showTip(msg, isErr) {
+      tip.textContent = msg
+      tip.style.color = isErr ? '#e5484d' : '#16a34a'
+      tip.style.display = 'block'
+      setTimeout(() => { tip.style.display = 'none' }, 3500)
+    }
+
+    async function load() {
+      try {
+        const r = await ipcRenderer.invoke('browser:extensionList')
+        const data = r && r.success && r.data
+        const exts = (data && data.extensions) || []
+        if (!exts.length) { body.innerHTML = '<p class="empty">未安装任何扩展 <br/><small>点击右上角「+ 安装扩展」上传 crx 或 zip</small></p>'; return }
+        body.innerHTML = exts.map(e => {
+          const ic = iconUrl(e.icon, e.path)
+          const action = e.builtin
+            ? '<span class="builtin-tag">预装</span>'
+            : '<button class="remove" data-id="' + esc(e.id) + '" title="卸载">卸载</button>'
+          return '<div class="item">'
+            + '<div class="icon">' + (ic ? '<img src="' + esc(ic) + '" />' : '<span class="ph">扩展</span>') + '</div>'
+            + '<div class="meta"><div class="name">' + esc(e.name) + ' <span class="ver">v' + esc(e.version) + '</span></div>'
+            + '<div class="desc">' + esc(e.description || '') + '</div></div>'
+            + '<div class="actions">' + action + '</div>'
+            + '</div>'
+        }).join('')
+        // 绑定卸载
+        body.querySelectorAll('.remove').forEach(btn => {
+          btn.onclick = async () => {
+            const id = btn.dataset.id
+            const res = await ipcRenderer.invoke('browser:extensionUninstall', id)
+            showTip(res && res.message || (res && res.success ? '已卸载' : '卸载失败'), !(res && res.success))
+            load()
+          }
+        })
+      } catch (_) { body.innerHTML = '<p class="empty">加载失败</p>' }
+    }
+
+    document.getElementById('installBtn').onclick = async () => {
+      const filePath = await ipcRenderer.invoke('dialog:openFile', {
+        title: '选择扩展文件',
+        filters: [{ name: '扩展', extensions: ['crx', 'zip'] }]
+      })
+      if (!filePath) return
+      const res = await ipcRenderer.invoke('browser:extensionInstall', filePath)
+      showTip(res && res.message || (res && res.success ? '安装成功' : '安装失败'), !(res && res.success))
+      load()
+    }
+    document.getElementById('closeBtn').onclick = () => ipcRenderer.send('browser:closeExtensionsPanel')
+    addEventListener('DOMContentLoaded', load)
+    ipcRenderer.on('floating:data', load)
+    ipcRenderer.on('browser:extensions-changed', load)
+  </script>
+</body>
+</html>

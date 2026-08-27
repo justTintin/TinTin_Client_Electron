@@ -366,6 +366,11 @@ declare interface TintinBridgeBrowser {
   }): Promise<{ success: boolean; data?: BrowserNavigateResult; error?: string }>
   extractDOM(platformId: BrowserPlatformId):
     Promise<{ success: boolean; ok?: boolean; data?: any; error?: { type: string; message: string; hint?: string } }>
+  /** 浮动面板：独立原生窗口（扩展/设置）；openSettingsPanel 的 data 为平台列表 [{id,name,badge}] */
+  openExtensionsPanel(x: number, y: number): void
+  closeExtensionsPanel(): void
+  openSettingsPanel(x: number, y: number, data?: { id: string; name: string; badge: string }[]): void
+  closeSettingsPanel(): void
   /** Cherry Studio：主动校验 bounds（渲染端期望 vs 主进程实际） */
   verifyBounds(payload: {
     platformId: BrowserPlatformId
@@ -385,6 +390,24 @@ declare interface TintinBridgeBrowser {
   }) => void): () => void
   /** Cherry Studio：订阅 BrowserView did-stop-loading 广播 → 收到立刻重算 bounds */
   onViewReady(cb: (payload: { platformId: BrowserPlatformId; url: string; title: string; ts: number }) => void): () => void
+  /** B站扩展下载链接订阅 */
+  onBiliExtDownloads(cb: (payload: {
+    platformId: BrowserPlatformId
+    payload: {
+      source: string
+      title: string
+      downloads: Array<{ url: string; download: string; text: string; sizeText: string }>
+      url: string
+      ts: number
+    }
+    ts: number
+  }) => void): () => void
+  /** 安装扩展（crx/zip）→ 对每个平台隔离 session 逐个 loadExtension */
+  installExtension(filePath: string): Promise<{ success: boolean; message?: string; data?: any }>
+  /** 卸载扩展 */
+  uninstallExtension(id: string): Promise<{ success: boolean; message?: string }>
+  /** 扩展列表变更订阅（安装/卸载后主进程广播） */
+  onExtensionsChanged(cb: () => void): () => void
 }
 
 // --------------------------------------------------------------------

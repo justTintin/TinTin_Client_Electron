@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, session } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, session, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -133,6 +133,78 @@ function closeHistoryPanel() {
   }
 }
 
+/* ─────────── 浮动面板：扩展/设置（独立原生 BrowserWindow，天然在 BrowserView 之上 ───────────
+   与历史面板同款方案：主进程创建子窗口加载独立 HTML，渲染层仅传锚点坐标。 */
+let floatingPanelWindow = null
+let _fpReady = false
+let _fpBlurTimer = null
+
+function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, anchorY, data) {
+  _closeFloatingPanel()
+  let x = anchorX || 100
+  let y = anchorY || 100
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const winBounds = mainWindow.getBounds()
+    // 传入的是相对主窗口的坐标，转换为屏幕绝对坐标
+    if (anchorX !== undefined && anchorY !== undefined) {
+      x = winBounds.x + anchorX
+      y = winBounds.y + anchorY
+    }
+    const { screen } = require('electron')
+    const display = screen.getDisplayMatching({ x, y, width: panelWidth, height: panelHeight })
+    if (display) {
+      const wa = display.workArea
+      if (x + panelWidth > wa.x + wa.width) x = wa.x + wa.width - panelWidth - 10
+      if (y + panelHeight > wa.y + wa.height) y = wa.y + wa.height - panelHeight - 10
+    }
+  }
+  floatingPanelWindow = new BrowserWindow({
+    width: panelWidth,
+    height: panelHeight,
+    x,
+    y,
+    frame: false,
+    transparent: false,
+    resizable: false,
+    alwaysOnTop: false,
+    skipTaskbar: true,
+    hasShadow: true,
+    show: false,  // 防止闪烁，准备好后再显示
+    backgroundColor: '#ffffff',
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    }
+  })
+  floatingPanelWindow.setParentWindow(mainWindow)
+  floatingPanelWindow.loadFile(path.join(__dirname, htmlFile))
+  floatingPanelWindow.once('ready-to-show', () => {
+    if (floatingPanelWindow && !floatingPanelWindow.isDestroyed()) {
+      floatingPanelWindow.show()
+    }
+  })
+  floatingPanelWindow.webContents.on('did-finish-load', () => {
+    if (floatingPanelWindow && !floatingPanelWindow.isDestroyed()) {
+      floatingPanelWindow.webContents.send('floating:data', data || {})
+    }
+  })
+  let _r = false
+  floatingPanelWindow.on('show', () => { _r = true })
+  floatingPanelWindow.on('blur', () => {
+    if (!_r) return
+    if (_fpBlurTimer) clearTimeout(_fpBlurTimer)
+    _fpBlurTimer = setTimeout(() => { _closeFloatingPanel() }, 150)
+  })
+}
+
+function _closeFloatingPanel() {
+  if (_fpBlurTimer) { clearTimeout(_fpBlurTimer); _fpBlurTimer = null }
+  if (floatingPanelWindow && !floatingPanelWindow.isDestroyed()) {
+    floatingPanelWindow.close()
+    floatingPanelWindow = null
+  }
+}
+
 function getStudioRoot() {
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'studio-legacy')
@@ -225,6 +297,10 @@ let sharedCtx = {
 }
 
 function createMainWindow(store) {
+  // 单例守卫：已有存活主窗口时直接复用，禁止重复创建
+  // （否则两个窗口叠放 + 争抢同一 userData 磁盘缓存，BrowserView 只挂最后一个窗口）
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+
   const preloadPath = path.join(__dirname, '..', 'preload', 'preload.js')
   const isMac = process.platform === 'darwin'
   const ws = _validateBoundsOnDisplay(_loadWindowState(store))
@@ -252,11 +328,12 @@ function createMainWindow(store) {
     useContentSize: false,
   }
 
-  // 强制自绘标题栏：frame:false + titleBarStyle:'hidden'
-  // 系统标题栏（含图标、"螺丝钉-电商智能体矩阵"文字、最小化/最大化/关闭按钮）已完全移除
+  // 自绘标题栏：titleBarStyle:'hidden'（隐藏系统标题栏，保留可 resize 边框）
+  // 不用 frame:false —— Windows 上 frame:false 会让 maximize() 不改窗口尺寸
+  // （isMaximized() 返回 true、事件触发，但 DWM 对无边框窗口的 maximize 不变尺寸，
+  //   导致"还原"按钮图标切换但窗口尺寸不变）。保留边框才能正常 maximize/restore。
   mainWindow = new BrowserWindow({
     ...baseWinOpts,
-    frame: false,
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     ...(isMac ? { trafficLightPosition: { x: 14, y: 10 } } : {}),
   })
@@ -294,8 +371,33 @@ function createMainWindow(store) {
   }
   mainWindow.on('move', scheduleSave)
   mainWindow.on('resize', scheduleSave)
-  mainWindow.on('maximize', () => { try { store.set('windowState.isMaximized', true) } catch(_){} })
-  mainWindow.on('unmaximize', () => { try { store.set('windowState.isMaximized', false) } catch(_){} })
+  mainWindow.on('maximize', () => {
+    try {
+      store.set('windowState.isMaximized', true)
+      // 全屏最大化（覆盖任务栏）：Windows 默认最大化到工作区（不含任务栏），
+      // 手动 setBounds 到 screen.bounds 实现真正的全屏最大化
+      const { screen } = require('electron')
+      const display = screen.getDisplayMatching(mainWindow.getBounds())
+      mainWindow.setBounds(display.bounds)
+    } catch(_){}
+  })
+  mainWindow.on('unmaximize', () => {
+    try {
+      store.set('windowState.isMaximized', false)
+      // 还原到小窗口（1440×900 居中），让最大化/还原有明显的视觉差异
+      const { screen } = require('electron')
+      const workArea = screen.getPrimaryDisplay().workArea
+      let width = 1440, height = 900
+      // 屏幕太小则缩到 workArea 的 80%
+      if (workArea.width < width + 100 || workArea.height < height + 100) {
+        width = Math.round(workArea.width * 0.8)
+        height = Math.round(workArea.height * 0.8)
+      }
+      const x = Math.round(workArea.x + (workArea.width - width) / 2)
+      const y = Math.round(workArea.y + (workArea.height - height) / 2)
+      mainWindow.setBounds({ x, y, width, height })
+    } catch(_){}
+  })
 
   // ══════════════════════════════════════════════════════════════
   // B11/B12 关闭按钮 → 隐藏到托盘（不退出进程）；托盘菜单"退出"才真正 app.quit()
@@ -360,7 +462,12 @@ if (!gotTheLock) {
     }
   })
 
-  app.whenReady().then(() => {
+// 注册 tintin-ext 为标准协议（支持 Worker/fetch 访问扩展文件）
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'tintin-ext', privileges: { standard: true, secure: true, supportFetchAPI: true } }
+])
+
+app.whenReady().then(() => {
     // E1: DPI 缩放：让 Chromium 高 DPI 支持更稳定（Intel 核显 150% 不贴偏 BrowserView bounds）
     try { app.commandLine.appendSwitch('high-dpi-support', '1') } catch(_){}
 
@@ -547,6 +654,14 @@ ipcMain.handle('history:clear', async () => {
     return { success: false, error: e.message }
   }
 })
+
+// IPC: 浮动面板（扩展/设置 → 独立原生窗口，渲染层只传锚点坐标）
+ipcMain.on('browser:openExtensionsPanel', (e, x, y) =>
+  _openFloatingPanel('extensions', 'extensions-panel.html', 380, 440, x, y, null))
+ipcMain.on('browser:closeExtensionsPanel', () => _closeFloatingPanel())
+ipcMain.on('browser:openSettingsPanel', (e, x, y, data) =>
+  _openFloatingPanel('settings', 'settings-panel.html', 420, 470, x, y, data))
+ipcMain.on('browser:closeSettingsPanel', () => _closeFloatingPanel())
 
 // IPC: dialog
 ipcMain.handle('dialog:openFile', async (event, params) => {

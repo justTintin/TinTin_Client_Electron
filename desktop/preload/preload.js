@@ -210,11 +210,27 @@ const win = {
 
 // ── P1.5 厚壳化：browser:* 7 条 + 2（verifyBounds/onViewReady）（BrowserView 真嵌入，§1.3.2 B3+B4+B6 + Cherry Studio 实时校验）──
 const browser = {
-  attachPlatform:  (platformId, seedUrl) => ipcRenderer.invoke('browser:attachPlatform', platformId, seedUrl),
+  attachPlatform:  (platformId, seedUrl, skipSeed) => ipcRenderer.invoke('browser:attachPlatform', platformId, seedUrl, skipSeed),
   detachAll:       ()                    => ipcRenderer.invoke('browser:detachAll'),
   setBounds:       (bounds)              => ipcRenderer.invoke('browser:setBounds', bounds),
   navigate:        (payload)             => ipcRenderer.invoke('browser:navigate', payload),
   extractDOM:      (platformId)          => ipcRenderer.invoke('browser:extractDOM', platformId),
+  // 浮动面板：独立原生窗口（扩展/设置），渲染层只传锚点坐标
+  openExtensionsPanel: (x, y)            => ipcRenderer.send('browser:openExtensionsPanel', x, y),
+  closeExtensionsPanel: ()               => ipcRenderer.send('browser:closeExtensionsPanel'),
+  openSettingsPanel:   (x, y, data)      => ipcRenderer.send('browser:openSettingsPanel', x, y, data),
+  closeSettingsPanel:  ()                => ipcRenderer.send('browser:closeSettingsPanel'),
+  cookieList:      (platformId)          => ipcRenderer.invoke('browser:cookieList', platformId),
+  cookieClear:     (platformId)          => ipcRenderer.invoke('browser:cookieClear', platformId),
+  extensionList:   ()                    => ipcRenderer.invoke('browser:extensionList'),
+  installExtension: (filePath)           => ipcRenderer.invoke('browser:extensionInstall', filePath),
+  uninstallExtension: (id)               => ipcRenderer.invoke('browser:extensionUninstall', id),
+  // 扩展列表变更订阅（主进程安装/卸载后主动广播）
+  onExtensionsChanged: (cb) => {
+    const handler = (_e, payload) => cb(payload)
+    ipcRenderer.on('browser:extensions-changed', handler)
+    return () => ipcRenderer.removeListener('browser:extensions-changed', handler)
+  },
   // Cherry Studio：主动校验（渲染端期望 vs 主进程实际生效值）
   verifyBounds:    (payload)             => ipcRenderer.invoke('browser:verifyBounds', payload),
   onUrlUpdated: (cb) => {
@@ -281,6 +297,24 @@ const browser = {
         }).catch(() => {})
         handler = null
       }
+    }
+  },
+  // Phase: B站扩展下载链接订阅
+  onBiliExtDownloads: (cb) => {
+    let handler = null
+    let biliChannel = null
+    ipcRenderer.invoke('browser:onBiliExtDownloads').then((res) => {
+      if (!res?.success || !res?.channel) return
+      biliChannel = res.channel
+      handler = (_e, payload) => cb(payload)
+      ipcRenderer.on(biliChannel, handler)
+    }).catch(() => {})
+    return () => {
+      if (handler && biliChannel) {
+        ipcRenderer.removeListener(biliChannel, handler)
+      }
+      handler = null
+      biliChannel = null
     }
   },
   // Phase 1: Cookie 导出 / 状态查询

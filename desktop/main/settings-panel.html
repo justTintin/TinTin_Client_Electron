@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src * file: data:;" />
+<title>浏览器设置</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2329; background: #ffffff; user-select: none; -webkit-app-region: drag; }
+  button { -webkit-app-region: no-drag; }
+  .panel { display: flex; flex-direction: column; height: 100%; padding: 12px 14px; }
+  .head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; padding-bottom: 10px; border-bottom: 1px solid #ececf1; }
+  .close { background: none; border: none; cursor: pointer; color: #8a8f99; font-size: 14px; width: 24px; height: 24px; border-radius: 6px; }
+  .close:hover { background: #f2f3f5; color: #1f2329; }
+  .body { flex: 1; overflow: auto; margin-top: 8px; }
+  .tip { font-size: 12px; color: #8a8f99; padding: 4px 2px 8px; }
+  .empty { color: #8a8f99; font-size: 13px; text-align: center; padding: 20px 0; }
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 8px; border-radius: 8px; }
+  .item:hover { background: #f7f8fa; }
+  .badge { width: 26px; height: 26px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 14px; background: #f2f3f5; flex-shrink: 0; }
+  .name { flex: 1; font-size: 13px; min-width: 0; }
+  .count { font-size: 12px; color: #8a8f99; }
+  .clear { border: 1px solid #d9dbe0; background: #fff; color: #1f2329; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .clear:hover:not(:disabled) { border-color: #3370ff; color: #3370ff; }
+  .clear:disabled { opacity: 0.5; cursor: default; }
+  .divider { height: 1px; background: #ececf1; margin: 10px 0; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="head">
+      <span>浏览器设置</span>
+      <button class="close" id="closeBtn" aria-label="关闭">✕</button>
+    </div>
+    <div class="body">
+      <div class="tip">Cookie / 登录状态（点击清除可重置对应平台登录态）</div>
+      <div class="list" id="list">
+        <p class="empty">加载中…</p>
+      </div>
+      <div class="divider"></div>
+      <div class="tip">其他设置项后续在此扩展</div>
+    </div>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron')
+    const list = document.getElementById('list')
+    let platforms = []
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    }
+
+    async function loadCounts() {
+      const rows = []
+      for (const pl of platforms) {
+        let count = 0
+        try {
+          const r = await ipcRenderer.invoke('browser:cookieList', pl.id)
+          count = r && r.success && r.data ? (r.data.count || 0) : 0
+        } catch (_) {}
+        rows.push({ ...pl, count })
+      }
+      if (!rows.length) { list.innerHTML = '<p class="empty">无可管理平台</p>'; return }
+      list.innerHTML = rows.map(p =>
+        '<div class="item">'
+        + '<div class="badge">' + esc(p.badge) + '</div>'
+        + '<div class="name">' + esc(p.name) + '</div>'
+        + '<span class="count">' + p.count + ' 个 Cookie</span>'
+        + '<button class="clear" data-id="' + esc(p.id) + '" ' + (p.count > 0 ? '' : 'disabled') + '>'
+        + (p.count > 0 ? '清除' : '—') + '</button>'
+        + '</div>'
+      ).join('')
+      list.querySelectorAll('.clear').forEach(btn => {
+        btn.onclick = async () => {
+          btn.disabled = true
+          btn.textContent = '清理中…'
+          try { await ipcRenderer.invoke('browser:cookieClear', btn.dataset.id) } catch (_) {}
+          loadCounts()
+        }
+      })
+    }
+
+    ipcRenderer.on('floating:data', (_e, data) => {
+      platforms = (data && data.list) || []
+      loadCounts()
+    })
+    document.getElementById('closeBtn').onclick = () => ipcRenderer.send('browser:closeSettingsPanel')
+  </script>
+</body>
+</html>

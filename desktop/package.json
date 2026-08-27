@@ -14,6 +14,7 @@
     "// build:no-native 说明": "跳过原生重编译 + 跳过缺失 resources（经 -c builder-skip.json 覆盖 npmRebuild=false、extraResources=[]）；快速跑通流程/无工具链/网络受限时用。注意：其产物原生模块为 Node ABI，运行时可能无法在 Electron 加载，仅作流程验证。",
     "build": "npm run build:renderer && electron-builder --win nsis --x64",
     "build:dir": "npm run build:renderer && electron-builder --win --x64 --dir",
+    "build:timestamp": "npm run build:renderer && node scripts/build-timestamp.js",
     "build:no-native": "npm run build:renderer && electron-builder --win nsis --x64 -c builder-skip.json",
     "build:dir:no-native": "npm run build:renderer && electron-builder --win --x64 --dir -c builder-skip.json",
     "contract:gen": "openapi-typescript http://192.168.111.31:8000/openapi.json -o ./renderer/src/types/api-contract.generated.ts",
@@ -25,6 +26,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "adm-zip": "^0.6.0",
     "better-sqlite3": "^11.3.0",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.3.4",
@@ -79,6 +81,10 @@
         "filter": [
           "bridge.exe"
         ]
+      },
+      {
+        "from": "../assets/bilibili-helper",
+        "to": "assets/bilibili-helper"
       }
     ],
     "files": [
@@ -86,7 +92,11 @@
       "preload/**/*",
       "config/**/*",
       "renderer/dist/**/*",
-      "!node_modules/**/*"
-    ]
+      "!node_modules/**/*",
+      "node_modules/adm-zip/**/*"
+    ],
+    "win": {
+      "signAndEditExecutable": false
+    }
   }
 }

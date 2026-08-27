@@ -35,15 +35,22 @@ function createA2Ipc(ipcMain, ctx) {
    */
   const { store, modelManager, inferenceRouter, vectorStore, httpRequest } = ctx
 
+  // 幂等注册：main.js 会"占位注册(null 依赖) → 二次重注册(真实依赖)"两次调用本函数，
+  // 必须先移除旧 handler 再注册，否则 ipcMain.handle 对同名 channel 抛异常导致初始化中断
+  const _handle = (channel, fn) => {
+    try { ipcMain.removeHandler(channel) } catch (_) { /* 尚未注册过 */ }
+    ipcMain.handle(channel, fn)
+  }
+
   // ======== 0. config:* 2 条（渲染层通用配置持久化） ========
-  ipcMain.handle('config:get', (_e, key, defaultValue) => {
+  _handle('config:get', (_e, key, defaultValue) => {
     try {
       if (typeof key === 'undefined') return { success: true, data: store?.store ?? null }
       return { success: true, data: store ? store.get(key, defaultValue) : defaultValue }
     } catch (e) { return { success: false, error: e.message, data: defaultValue } }
   })
 
-  ipcMain.handle('config:set', (_e, keyOrObject, value) => {
+  _handle('config:set', (_e, keyOrObject, value) => {
     try {
       if (!store) return { success: false, error: 'STORE_NOT_INITIALIZED' }
       if (keyOrObject !== null && typeof keyOrObject === 'object' && !Array.isArray(keyOrObject)) {
@@ -58,39 +65,39 @@ function createA2Ipc(ipcMain, ctx) {
   })
 
   // ======== 1. model:* 4 条 ========
-  ipcMain.handle('model:listPkgs', () => {
+  _handle('model:listPkgs', () => {
     try {
       return { success: true, data: modelManager.listPkgs() }
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('model:download', async (_e, pkgId) => {
+  _handle('model:download', async (_e, pkgId) => {
     try {
       return await modelManager.downloadPkg(pkgId)
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('model:cancel', (_e, pkgId) => {
+  _handle('model:cancel', (_e, pkgId) => {
     try {
       return modelManager.cancelPkg(pkgId)
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('model:uninstall', (_e, pkgId) => {
+  _handle('model:uninstall', (_e, pkgId) => {
     try {
       return modelManager.uninstallPkg(pkgId)
     } catch (e) { return { success: false, error: e.message } }
   })
 
   // ======== 2. inference:* 2 条 ========
-  ipcMain.handle('inference:getCapability', (_e, force) => {
+  _handle('inference:getCapability', (_e, force) => {
     try {
       const cap = inferenceRouter.getCapability(!!force)
       return { success: true, data: cap }
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('inference:setMode', (_e, mode) => {
+  _handle('inference:setMode', (_e, mode) => {
     try {
       const valid = ['server-only', 'hybrid-auto', 'force-local']
       if (!valid.includes(mode)) throw new Error(`Invalid mode: ${mode}. Must be one of ${valid.join('/')}`)
@@ -103,7 +110,7 @@ function createA2Ipc(ipcMain, ctx) {
   })
 
   // ======== 3. ocr:* 1 条（通过 inferenceRouter 双模式路由）========
-  ipcMain.handle('ocr:imageToText', async (event, payload, onProgressChannel) => {
+  _handle('ocr:imageToText', async (event, payload, onProgressChannel) => {
     try {
       const p = payload || {}
       if (!p.image) throw new Error('ocr:imageToText missing image')
@@ -139,7 +146,7 @@ function createA2Ipc(ipcMain, ctx) {
   })
 
   // ======== 4. knowledge:* 3 条（vectorStore 本地 / HTTP fallback）========
-  ipcMain.handle('knowledge:listDocuments', async (_e, params) => {
+  _handle('knowledge:listDocuments', async (_e, params) => {
     try {
       const local = vectorStore.listDocuments(params || {})
       if (local.success) return { success: true, data: local.data, branch: 'local', durationMs: local.durationMs }
@@ -150,7 +157,7 @@ function createA2Ipc(ipcMain, ctx) {
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('knowledge:deleteDocument', async (_e, id) => {
+  _handle('knowledge:deleteDocument', async (_e, id) => {
     try {
       const local = vectorStore.deleteDocument(id)
       if (local.success) return { success: true, data: local.data, branch: 'local', durationMs: local.durationMs }
@@ -159,7 +166,7 @@ function createA2Ipc(ipcMain, ctx) {
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('knowledge:vectorSearch', async (_e, payload) => {
+  _handle('knowledge:vectorSearch', async (_e, payload) => {
     try {
       const p = payload || {}
       if (!p.query) throw new Error('knowledge:vectorSearch missing query')

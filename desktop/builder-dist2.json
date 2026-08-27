@@ -1,5 +1,8 @@
 {
   "npmRebuild": false,
+  "directories": {
+    "output": "dist2"
+  },
   "extraResources": [
     {
       "from": "../assets/bilibili-helper",

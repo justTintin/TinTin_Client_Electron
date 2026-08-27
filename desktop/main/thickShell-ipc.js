@@ -28,10 +28,232 @@
 //   C14 接口一致性：platforms 5 个 = 抖音/视频号/快手/小红书/B站
 // ═══════════════════════════════════════════════════════════════
 
-const { BrowserView, session, shell, ipcMain } = require('electron')
+const { BrowserView, session, shell, ipcMain, protocol, app } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
+const AdmZip = require('adm-zip')
 const { URL } = require('node:url')
+
+// ── B站扩展协议注册（只注册一次）──
+let bilibiliProtoRegistered = false
+let bilibiliCspBypassRegistered = false
+
+/** B站下载插件是否已随包分发（dev=assets，打包=resources/assets）。装了插件 → B站下载交给插件，无需嗅探 */
+function _bilibiliHelperInstalled() {
+  return !!_findBilibiliHelperDir()
+}
+
+// ── 查找 B站扩展真实目录（dev=assets，打包=resources/assets；多候选，失败时递归探测 resources） ──
+function _findBilibiliHelperDir() {
+  const candidates = []
+  const res = process.resourcesPath
+  if (res) {
+    candidates.push(path.join(res, 'assets', 'bilibili-helper'))
+    candidates.push(path.join(res, 'bilibili-helper'))
+  }
+  candidates.push(path.join(__dirname, '..', '..', 'assets', 'bilibili-helper'))
+  candidates.push(path.join(process.cwd(), 'assets', 'bilibili-helper'))
+  for (const p of candidates) {
+    try { if (fs.existsSync(path.join(p, 'manifest.json'))) return p } catch (_) {}
+  }
+  // 兜底：在 resources 下递归搜索含 bilibili-helper 的目录
+  if (res) {
+    try {
+      const hits = []
+      const walk = (dir, depth) => {
+        if (depth > 4) return
+        let ents
+        try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch (_) { return }
+        for (const en of ents) {
+          if (!en.isDirectory()) continue
+          const sub = path.join(dir, en.name)
+          if (/bilibili-helper/i.test(en.name)) {
+            try { if (fs.existsSync(path.join(sub, 'manifest.json'))) hits.push(sub) } catch (_) {}
+          }
+          walk(sub, depth + 1)
+        }
+      }
+      walk(res, 0)
+      if (hits.length) return hits[0]
+    } catch (_) {}
+  }
+  return null
+}
+
+// ── B站扩展下载链接提取脚本：主进程 executeJavaScript 主动从页面 shadow DOM 提取下载地址 ──
+//    支持扩展的三种链接形式：href（兼容模式）、durl（单段高级）、durls（合并模式）
+const BILI_DL_EXTRACT_SCRIPT = `(function(){
+  function _dec(en){ try { return JSON.parse(decodeURIComponent(en)) } catch(_){} try { return JSON.parse(en) } catch(_){} return null; }
+  function _norm(u){ try { return decodeURIComponent(u) } catch(_){ return u } }
+  var host = document.getElementById('bilibili-helper-host');
+  if(!host || !host.shadowRoot) return { hostFound: false, downloads: [] };
+  try {
+    var sr = host.shadowRoot;
+    var list = sr.querySelectorAll('#durls li a');
+    var titleEl = sr.querySelector('#title');
+    var title = (titleEl && titleEl.textContent || '').trim();
+    var items = [];
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      var t = (a.textContent || '').trim();
+      var sm = t.match(/\\(([^)]+)\\)/);
+      var sizeText = sm ? sm[1] : '';
+      var href0 = a.getAttribute('href') || '';
+      if (href0 && href0 !== '#nogo' && href0.indexOf('javascript:') !== 0) {
+        items.push({ url: href0, download: a.getAttribute('download') || '', text: t, sizeText: sizeText });
+        continue;
+      }
+      var durl = a.getAttribute('durl');
+      if (durl) {
+        var e = _dec(durl);
+        if (e && e.url) { items.push({ url: _norm(e.url), download: a.getAttribute('title') || '', text: t, sizeText: sizeText }); continue; }
+      }
+      var durls = a.getAttribute('durls');
+      if (durls) {
+        var arr = _dec(durls);
+        if (Object.prototype.toString.call(arr) === '[object Array]') {
+          var base = a.getAttribute('title') || '';
+          for (var j = 0; j < arr.length; j++) {
+            var g = arr[j];
+            if (g && g.url) items.push({ url: _norm(g.url), download: base + (arr.length>1?('_p'+(j+1)):''), text: t + (arr.length>1?(' '+(j+1)):''), sizeText: sizeText });
+          }
+          continue;
+        }
+      }
+    }
+    return { hostFound: true, title: title, downloads: items, url: window.location.href, ts: Date.now() };
+  } catch(e) { return { hostFound: true, downloads: [] }; }
+})()`
+
+// ── B站扩展：手动注入 content script（兼容 Electron）──
+function _injectBilibiliHelper(wc, extPath, sess) {
+  try {
+    const contentScriptPath = path.join(extPath, 'bilibili-helper-content-script.js')
+    if (!fs.existsSync(contentScriptPath)) {
+      console.warn(`[ThickShell::bilibili] Content script not found: ${contentScriptPath}`)
+      return
+    }
+    
+    const scriptContent = fs.readFileSync(contentScriptPath, 'utf8')
+    const manifestPath = path.join(extPath, 'manifest.json')
+    let manifestData = { name: 'bilibili-helper', version: '3.0.4' }
+    if (fs.existsSync(manifestPath)) {
+      try {
+        manifestData = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+      } catch (_) {}
+    }
+    
+    // 注册自定义协议服务扩展文件
+    if (!bilibiliProtoRegistered) {
+      try {
+        protocol.registerFileProtocol('tintin-ext', (request, callback) => {
+          let urlPath = decodeURIComponent(request.url.replace('tintin-ext://', ''))
+          // 处理 Windows 绝对路径 (例如 D:/...)
+          if (/^[a-zA-Z]:[\\/]/.test(urlPath)) {
+            urlPath = path.normalize(urlPath)
+          } else {
+            // 相对路径，基于 extPath
+            urlPath = path.join(extPath, urlPath)
+          }
+          callback({ path: urlPath })
+        })
+        bilibiliProtoRegistered = true
+        console.log(`[ThickShell::bilibili] Registered tintin-ext protocol for: ${extPath}`)
+      } catch (err) {
+        console.warn(`[ThickShell::bilibili] Protocol registration failed: ${err.message}`)
+      }
+    }
+    
+    const extBaseUrl = `tintin-ext://${extPath.replace(/\\/g, '/')}`
+    
+    // chrome.runtime polyfill + 扩展信息注入 + 主脚本
+    const injectScript = `
+      // chrome.runtime polyfill
+      (function() {
+        if (!window.chrome) window.chrome = {};
+        if (!window.chrome.runtime) {
+          window.chrome.runtime = {
+            getManifest: function() {
+              return ${JSON.stringify(manifestData)};
+            },
+            getURL: function(path) {
+              return '${extBaseUrl}/' + path.replace(/^\\//, '');
+            }
+          };
+        }
+      })();
+      // 注入扩展信息占位元素
+      (function() {
+        const EL_ID = 'bilibili-helper-ext-content-script';
+        let el = document.getElementById(EL_ID);
+        if (!el) {
+          el = document.createElement('div');
+          el.id = EL_ID;
+          el.style.display = 'none';
+          document.head.appendChild(el);
+        }
+        el.dataset.internals = JSON.stringify({
+          manifest: ${JSON.stringify(manifestData)},
+          baseUrl: '${extBaseUrl}'
+        });
+      })();
+    ` + scriptContent
+    
+    // 在会话中移除 CSP 限制（允许内联脚本和 Worker）—— 只注册一次
+    if (sess && !bilibiliCspBypassRegistered) {
+      try {
+        sess.webRequest.onHeadersReceived({ urls: ['*://*.bilibili.com/*'] }, (details, callback) => {
+          const headers = details.responseHeaders || {}
+          const cspKey = Object.keys(headers).find(k => k.toLowerCase() === 'content-security-policy')
+          if (cspKey) {
+            delete headers[cspKey]
+            headers['content-security-policy'] = "default-src * 'unsafe-inline' 'unsafe-eval' 'unsafe-wasm-utils' 'self' data: blob: tintin-ext:; script-src * 'unsafe-inline' 'unsafe-eval' 'unsafe-wasm-utils' 'self' data: blob: tintin-ext:; worker-src * 'unsafe-inline' 'unsafe-eval' 'self' data: blob: tintin-ext:; style-src * 'unsafe-inline' 'self' data:; img-src * 'self' data: blob:; connect-src * 'self' data: blob:; font-src * 'self' data:;"
+          }
+          callback({ responseHeaders: headers })
+        })
+        bilibiliCspBypassRegistered = true
+        console.log(`[ThickShell::bilibili] CSP bypass registered for bilibili.com`)
+      } catch (err) {
+        console.warn(`[ThickShell::bilibili] CSP bypass failed: ${err.message}`)
+      }
+    }
+    
+    // 使用 addScriptToEvaluateOnNewDocument 在文档开始时注入脚本
+    if (wc && typeof wc.addScriptToEvaluateOnNewDocument === 'function') {
+      wc.addScriptToEvaluateOnNewDocument({
+        content: injectScript,
+        runAt: 'document_start',
+      })
+      console.log(`[ThickShell::bilibili] Content script registered for document_start injection`)
+    }
+    
+    // 如果页面已经加载，立即注入一次
+    if (wc && !wc.isLoading()) {
+      wc.executeJavaScript(injectScript).then(() => {
+        console.log(`[ThickShell::bilibili] Content script injected immediately`)
+      }).catch((err) => {
+        console.warn(`[ThickShell::bilibili] Immediate injection failed: ${err.message}`)
+      })
+    }
+    
+    // 监听导航事件，在每次页面加载后重新注入
+    if (wc && typeof wc.on === 'function') {
+      wc.on('did-finish-load', () => {
+        const url = wc.getURL()
+        if (url && (url.includes('bilibili.com'))) {
+          console.log(`[ThickShell::bilibili] Page loaded: ${url}, injecting content script`)
+          wc.executeJavaScript(injectScript).then(() => {
+            console.log(`[ThickShell::bilibili] Content script injected after page load`)
+          }).catch((err) => {
+            console.warn(`[ThickShell::bilibili] Post-load injection failed: ${err.message}`)
+          })
+        }
+      })
+    }
+  } catch (err) {
+    console.warn(`[ThickShell::bilibili] Injection error: ${err.message}`)
+  }
+}
 
 // ── 媒体嗅探辅助 ──
 function _formatBytes(bytes, decimals = 2) {
@@ -123,8 +345,9 @@ function _sniffMediaFromHeaders(responseHeaders, url) {
   }
 }
 
-// ── 7 平台定义：partition（cookie jar 隔离）+ seed URL + extractor script 路径 ──
+// ── 7 平台定义 + 网页浏览器：partition（cookie jar 隔离）+ seed URL + extractor script 路径 ──
 const PLATFORM_DEFS = {
+  web:         { name: '网页浏览器', partition: 'persist:tintin-web',      seedUrl: 'https://www.pinterest.com/',     extractor: null },
   douyin:      { name: '抖音',   partition: 'persist:tintin-douyin',   seedUrl: 'https://www.douyin.com',        extractor: 'extractors/douyin.ts' },
   weixin:      { name: '视频号', partition: 'persist:tintin-weixin',   seedUrl: 'https://channels.weixin.qq.com', extractor: 'extractors/weixin.ts' },
   kuaishou:    { name: '快手',   partition: 'persist:tintin-kuaishou', seedUrl: 'https://www.kuaishou.com',       extractor: 'extractors/kuaishou.ts' },
@@ -135,8 +358,192 @@ const PLATFORM_DEFS = {
 }
 const PLATFORM_IDS = Object.keys(PLATFORM_DEFS)
 
-// ── 各平台详情页 URL 模式（只在详情页嗅探，主页/列表页不嗅探） ──
-// 注：所有 pattern 都要求 URL path 非根路径，以排除首页/推荐列表页
+// ═══════════════════════════════════════════════════════════════
+// 扩展管理器：上传 crx/zip → 解压到 userData/extensions → 对每个平台分隔离 session 逐个 loadExtension
+//   逐 session 加载：保持各平台 cookie/登录态隔离（电商多店铺安全），扩展 content script 按 manifest.matches 在各平台页面生效
+// ═══════════════════════════════════════════════════════════════
+const _extManager = {
+  root: null,          // userData/extensions
+  manifest: [],        // 已安装扩展清单 [{ id, name, version, path, icon, addedAt }]
+  manifestFile: null,
+  // 计算清单指纹：内容变更时推送 renderer 刷新工具栏/面板
+  _fingerprint: '',
+
+  init() {
+    try {
+      this.root = path.join(app.getPath('userData'), 'extensions')
+      this.manifestFile = path.join(this.root, 'manifest.json')
+      fs.mkdirSync(this.root, { recursive: true })
+      this._loadManifest()
+    } catch (_) {}
+  },
+  _loadManifest() {
+    try {
+      if (fs.existsSync(this.manifestFile)) {
+        this.manifest = JSON.parse(fs.readFileSync(this.manifestFile, 'utf8'))
+        if (!Array.isArray(this.manifest)) this.manifest = []
+      }
+    } catch (_) { this.manifest = [] }
+  },
+  _saveManifest() {
+    try { fs.writeFileSync(this.manifestFile, JSON.stringify(this.manifest, null, 2), 'utf8') } catch (_) {}
+  },
+  _fingerprintOf(list) {
+    try { return list.map(e => `${e.id}@${e.version}`).join(',') } catch (_) { return '' }
+  },
+  // 对单个扩展目录，加载到"指定平台 session"；返回 {id,name,version}
+  _loadIntoSession(extDir, sess) {
+    try {
+      const ext = sess.loadExtension(extDir)
+      // loadExtension 返回 Promise；此处同步返回 extDir 相关，实际结果由调用方 await
+      return ext
+    } catch (_) { return null }
+  },
+  // 获取所有平台/网页的隔离 session（含可能已创建的）
+  _allSessions() {
+    const sess = []
+    for (const id of PLATFORM_IDS) {
+      try { sess.push(session.fromPartition(PLATFORM_DEFS[id].partition, { cache: true })) } catch (_) {}
+    }
+    return sess
+  },
+  // 把一个扩展目录加载到全部分离 session（幂等：已加载的会被 loadExtension 去重）
+  _loadExtToAllSessions(extDir) {
+    const results = []
+    for (const s of this._allSessions()) {
+      try { results.push(s.loadExtension(extDir)) } catch (_) {}
+    }
+    return Promise.allSettled(results)
+  },
+  // 安装：接收 crx/zip 文件源路径 → 解压到 root/<id>/ → loadExtension 全 session → 持久化
+  async install(filePath) {
+    if (!filePath) return { success: false, message: '未选择文件' }
+    try {
+      const extDir = this._extractPackage(filePath)
+      if (!extDir) return { success: false, message: '无法解析扩展包（需为 manifest.json 的 zip 或 crx）' }
+      // 读取解析出的 manifest 基本信息
+      const mf = JSON.parse(fs.readFileSync(path.join(extDir, 'manifest.json'), 'utf8'))
+      const id = (mf.key ? String(mf.key).slice(0, 32) : null) || path.basename(extDir)
+      const entry = {
+        id,
+        name: mf.name || '未命名扩展',
+        version: mf.version || '—',
+        path: extDir,
+        icon: (mf.icons && (mf.icons['128'] || mf.icons['48'] || mf.icons['32'] || mf.icons['16'])) || null,
+        addedAt: Date.now(),
+      }
+      // 先移除同 id 旧版本，再加载新版（避免重复）
+      this._removeExtensionEntry(id)
+      await this._loadExtToAllSessions(extDir)
+      this.manifest.push(entry)
+      this._saveManifest()
+      this._bump()
+      return { success: true, data: entry, message: `已安装：${entry.name} v${entry.version}` }
+    } catch (e) {
+      return { success: false, message: '安装失败：' + (e.message || e) }
+    }
+  },
+  _removeExtensionEntry(id) {
+    const idx = this.manifest.findIndex(e => e.id === id)
+    if (idx >= 0) this.manifest.splice(idx, 1)
+  },
+  // 卸载：从清单移除 + userData 删除目录 + 各 session removeExtension
+  uninstall(id) {
+    try {
+      const entry = this.manifest.find(e => e.id === id)
+      if (!entry) return { success: false, message: '扩展不存在' }
+      for (const s of this._allSessions()) {
+        try { s.removeExtension(id) } catch (_) {}
+      }
+      this._removeExtensionEntry(id)
+      this._saveManifest()
+      try { fs.rmSync(entry.path, { recursive: true, force: true }) } catch (_) {}
+      this._bump()
+      return { success: true, message: `已卸载：${entry.name}` }
+    } catch (e) { return { success: false, message: '卸载失败：' + (e.message || e) } }
+  },
+  // 列表：内置 B站下载助手 + 已装用户扩展
+  list() {
+    const builtin = _builtinExtension()
+    return { installed: true, extensions: [builtin, ...this.manifest] }
+  },
+  // 通知渲染层扩展列表已变化
+  _bump() {
+    try {
+      const f = this._fingerprintOf(this.manifest)
+      if (f === this._fingerprint) return
+      this._fingerprint = f
+      const mw = require('electron').BrowserWindow.getAllWindows().find(w => !w.isDestroyed())
+      if (mw) mw.webContents.send('browser:extensions-changed', { extensions: this.list().extensions })
+    } catch (_) {}
+  },
+  // 解压 crx/zip 到 root/<dir>，返回目录；失败返回 null
+  _extractPackage(src) {
+    const buf = fs.readFileSync(src)
+    let zipBuf = buf
+    // crx：头部 "Cr24" + version(4) + pubkeyLen(4) + sigLen(4) + header
+    if (buf.length >= 4 && buf[0] === 0x43 && buf[1] === 0x72 && buf[2] === 0x32 && buf[3] === 0x34) {
+      if (buf.length < 16) return null
+      const pubLen = buf.readUInt32LE(8)
+      const sigLen = buf.readUInt32LE(12)
+      const headLen = 16 + pubLen + sigLen
+      if (headLen >= buf.length) return null
+      zipBuf = buf.slice(headLen)
+    }
+    let zip
+    try { zip = new AdmZip(zipBuf) } catch (_) { return null }
+    const entries = zip.getEntries()
+    // 校验根目录有 manifest.json（可能在子目录，做一层查找）
+    let manifestEntry = entries.find(e => !e.isDirectory && e.entryName === 'manifest.json')
+    let baseDir = ''
+    if (!manifestEntry) {
+      const inDir = entries.find(e => !e.isDirectory && /(^|\/)manifest\.json$/i.test(e.entryName) && !e.entryName.split('/').slice(1).find(x => x))
+      if (inDir) {
+        baseDir = inDir.entryName.split('/')[0] + '/'
+        manifestEntry = inDir
+      }
+    }
+    if (!manifestEntry) return null
+    const mf = JSON.parse(manifestEntry.getData().toString('utf8')) || {}
+    const id = (mf.key ? String(mf.key).slice(0, 32) : null) || ('ext_' + Math.random().toString(36).slice(2, 10))
+    const outDir = path.join(this.root, id)
+    fs.mkdirSync(outDir, { recursive: true })
+    // 解压（含 baseDir 前缀剥离）
+    for (const en of entries) {
+      if (en.isDirectory) continue
+      let rel = en.entryName
+      if (baseDir && rel.startsWith(baseDir)) rel = rel.slice(baseDir.length)
+      if (!rel) continue
+      const dest = path.join(outDir, rel)
+      try {
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        fs.writeFileSync(dest, en.getData())
+      } catch (_) {}
+    }
+    return fs.existsSync(path.join(outDir, 'manifest.json')) ? outDir : null
+  },
+}
+
+// 内置 B站下载助手（随包分发，手动注入方案，作为"预装扩展"展示在列表顶部）
+function _builtinExtension() {
+  const dir = _findBilibiliHelperDir()
+  if (!dir) return { id: 'bilibili-helper-builtin', name: 'B站下载助手', version: '预装', installed: true }
+  let mf = null
+  try { mf = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) } catch (_) {}
+  const ic = (mf && mf.icons) || {}
+  return {
+    id: 'bilibili-helper',
+    name: (mf && mf.name) || 'B站下载助手',
+    version: (mf && mf.version) || '—',
+    path: dir,
+    icon: ic['128'] || ic['48'] || ic['32'] || ic['16'] || null,
+    builtin: true,
+    description: (mf && mf.description) || 'B站视频下载辅助扩展',
+  }
+}
+// 各平台详情页 URL 模式（只在详情页嗅探，主页/列表页不嗅探）
+// 注：使用白名单方式 - 只有匹配这些模式的 URL 才嗅探
+// 所有不匹配详情页模式的 URL（包括首页、列表页、搜索页等）都不嗅探
 const PLATFORM_DETAIL_PATTERNS = {
   douyin:      [/\/video\/\d+/, /\/note\/\d+/, /\/user\/[^/]+\/video\/\d+/],
   bilibili:    [/\/video\/BV[\w]+/i, /\/video\/av\d+/i, /\/medialist\/\d+/],
@@ -147,28 +554,49 @@ const PLATFORM_DETAIL_PATTERNS = {
   jimeng:      [/\/video\/\d+/, /\/creation\/\w+/, /\/workspace\/\w+/, /\/template\/\d+/],
 }
 
-// 各平台主页 URL（嗅探时必须排除）
-const PLATFORM_HOME_URLS = {
-  douyin:      'https://www.douyin.com',
-  bilibili:    'https://www.bilibili.com',
-  kuaishou:    'https://www.kuaishou.com',
-  xiaohongshu: 'https://www.xiaohongshu.com',
-  weixin:      'https://channels.weixin.qq.com',
-  youtube:     'https://www.youtube.com',
-  jimeng:      'https://jimeng.jianying.com',
+// URL → 平台 ID 映射（根据域名自动识别）
+const URL_TO_PLATFORM = {
+  douyin:      [/douyin\.com/i, /iesdouyin\.com/i],
+  bilibili:    [/bilibili\.com/i],
+  kuaishou:    [/kuaishou\.com/i, /ks\.com/i],
+  xiaohongshu: [/xiaohongshu\.com/i, /xhslink\.com/i],
+  weixin:      [/channels\.weixin\.qq\.com/i, /weixin\.qq\.com/i, /wx\.qq\.com/i],
+  youtube:     [/youtube\.com/i, /youtu\.be/i, /music\.youtube\.com/i],
+  jimeng:      [/jimeng\.jianying\.com/i, /jimeng\.com/i],
+}
+
+function detectPlatformFromUrl(url) {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    const hostname = u.hostname.toLowerCase()
+    for (const [id, patterns] of Object.entries(URL_TO_PLATFORM)) {
+      if (patterns.some((p) => p.test(hostname))) return id
+    }
+  } catch {
+    for (const [id, patterns] of Object.entries(URL_TO_PLATFORM)) {
+      if (patterns.some((p) => p.test(url))) return id
+    }
+  }
+  return null
 }
 
 function isDetailPage(url, platformId) {
-  if (!url || !platformId) return false
-  // 排除主页 URL（完全相等或根路径）
-  const homeUrl = PLATFORM_HOME_URLS[platformId]
-  if (homeUrl) {
-    try {
-      const u = new URL(url)
-      const home = new URL(homeUrl)
-      if (u.origin === home.origin && (u.pathname === '/' || u.pathname === '')) return false
-    } catch (_) {}
+  if (!url) return false
+  // 网页浏览器（platformId='web'）：不做 URL 平台过滤，所有平台详情页都可嗅探
+  if (platformId === 'web') {
+    // 仅用 URL 检测实际平台，找对应的详情页模式
+    const urlPlatform = detectPlatformFromUrl(url)
+    if (!urlPlatform) return false
+    const patterns = PLATFORM_DETAIL_PATTERNS[urlPlatform]
+    if (!patterns) return false
+    return patterns.some(p => p.test(url))
   }
+  // 1. 先根据 URL 检测实际所属平台
+  const urlPlatform = detectPlatformFromUrl(url)
+  // 如果 URL 属于其他平台，跳过（不在这个 BrowserView 中嗅探其他平台的内容）
+  if (urlPlatform && platformId && urlPlatform !== platformId) return false
+  // 2. 使用白名单方式：只有匹配详情页模式的 URL 才返回 true
   const patterns = PLATFORM_DETAIL_PATTERNS[platformId]
   if (!patterns) return false
   return patterns.some(p => p.test(url))
@@ -253,6 +681,14 @@ function createThickShellIpc(ipcMain, ctx) {
    * }
    */
   const { store, getMainWindow, EventBus } = ctx
+
+  // 初始化扩展管理器（userData/extensions），并在启动时把已装扩展加载到各平台隔离 session
+  _extManager.init()
+  Promise.resolve().then(async () => {
+    for (const e of _extManager.manifest) {
+      try { await _extManager._loadExtToAllSessions(e.path) } catch (_) {}
+    }
+  })
 
   /** 从 electron-store 解析当前实际主题（light/dark）：system 模式下默认 light */
   function _resolveThemePref() {
@@ -378,6 +814,9 @@ function createThickShellIpc(ipcMain, ctx) {
   /** 订阅 channel：媒体嗅探结果推送 */
   const mediaSniffedSubKey = 'browser:media-sniffed:' + Math.random().toString(36).slice(2, 9)
   let _mediaSniffedSubRegistered = false
+  /** 订阅 channel：B站扩展下载链接推送 */
+  const biliExtDlSubKey = 'browser:bili-ext-dl:' + Math.random().toString(36).slice(2, 9)
+  let _biliExtDlSubRegistered = false
 
   /** 从 entry.view.webContents 取 isDestroyed 门禁（经验 478486） */
   function _wc(entry) {
@@ -425,6 +864,22 @@ function createThickShellIpc(ipcMain, ctx) {
     view.setAutoResize({ width: false, height: false })
     const wc = view.webContents
 
+    // ── B站扩展加载：bilibili-helper Chrome 扩展 ──
+    // 使用手动注入方式，兼容 Electron 对 MV3 扩展的有限支持
+    if (platformId === 'bilibili') {
+      try {
+        const extPath = _findBilibiliHelperDir()
+        if (extPath) {
+          console.log(`[ThickShell::bilibili] Loading extension from: ${extPath}`)
+          _injectBilibiliHelper(wc, extPath, sess)
+        } else {
+          console.warn(`[ThickShell::bilibili] Extension not found (res=${process.resourcesPath})`)
+        }
+      } catch (err) {
+        console.warn(`[ThickShell::bilibili] Extension load error: ${err.message}`)
+      }
+    }
+
     // ── Phase 1-2: 协议拦截（bytedance://, snssdk:// 等非标准协议 → 阻止系统弹窗）──
     try {
       sess.webRequest.onBeforeRequest((details, callback) => {
@@ -447,6 +902,11 @@ function createThickShellIpc(ipcMain, ctx) {
       sess.webRequest.onHeadersReceived({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
         const media = _sniffMediaFromHeaders(details.responseHeaders, details.url)
         if (media) {
+          // B站：已随包安装下载插件时，下载交给插件处理，不再嗅探（避免列表/切片帧塞满列表）
+          if (platformId === 'bilibili' && _bilibiliHelperInstalled()) {
+            callback({ cancel: false })
+            return
+          }
           // 智能化嗅探：只在详情页嗅探，主页/列表页不嗅探
           // 只检查当前页面 URL，不检查媒体请求 URL（避免列表页视频缩略图误触发）
           const entry = viewPool.get(platformId)
@@ -514,18 +974,21 @@ function createThickShellIpc(ipcMain, ctx) {
       // 更新 viewPool 中的 currentUrl，用于媒体嗅探智能判断
       const entry = viewPool.get(platformId)
       if (entry) entry.currentUrl = url
+      // 检测 URL 实际所属平台（可能与 BrowserView 的 platformId 不同）
+      const detectedPlatform = detectPlatformFromUrl(url)
       try {
         const mw2 = getMainWindow && getMainWindow()
-        if (mw2 && !mw2.isDestroyed()) mw2.webContents.send('browser:url-updated', { platformId, url, ts: Date.now() })
+        if (mw2 && !mw2.isDestroyed()) mw2.webContents.send('browser:url-updated', { platformId, detectedPlatform, url, ts: Date.now() })
       } catch (_) {}
     })
     wc.on('did-navigate-in-page', (_e, url) => {
       // 子框架导航也更新 URL
       const entry = viewPool.get(platformId)
       if (entry) entry.currentUrl = url
+      const detectedPlatform = detectPlatformFromUrl(url)
       try {
         const mw2 = getMainWindow && getMainWindow()
-        if (mw2 && !mw2.isDestroyed()) mw2.webContents.send('browser:url-updated', { platformId, url, ts: Date.now(), inPage: true })
+        if (mw2 && !mw2.isDestroyed()) mw2.webContents.send('browser:url-updated', { platformId, detectedPlatform, url, ts: Date.now(), inPage: true })
       } catch (_) {}
     })
 
@@ -550,6 +1013,25 @@ function createThickShellIpc(ipcMain, ctx) {
             platformId,
             url: wc.getURL?.() || '',
             title: wc.getTitle?.() || '',
+            ts: Date.now(),
+          })
+        }
+      } catch (_) {}
+    })
+
+    // ── B站扩展下载消息监听：捕获扩展 content script 通过 console.log 推送的下载链接（冗余通道，主通道为主动轮询） ──
+    wc.on('console-message', (_event, _level, message) => {
+      if (platformId !== 'bilibili') return
+      if (!message || typeof message !== 'string') return
+      if (!message.startsWith('[TINTIN_BILI_DL]')) return
+      try {
+        const jsonStr = message.slice('[TINTIN_BILI_DL]'.length)
+        const payload = JSON.parse(jsonStr)
+        const mw2 = getMainWindow && getMainWindow()
+        if (mw2 && !mw2.isDestroyed() && _biliExtDlSubRegistered) {
+          mw2.webContents.send(biliExtDlSubKey, {
+            platformId,
+            payload,
             ts: Date.now(),
           })
         }
@@ -671,6 +1153,33 @@ function createThickShellIpc(ipcMain, ctx) {
       } catch (_) {}
     }
 
+    // ── B站扩展下载链接主动轮询：主进程定期从页面 shadow DOM 提取下载链接（不依赖 console-message / 注入时机） ──
+    if (platformId === 'bilibili') {
+      try {
+        const biliPollTimer = setInterval(() => {
+          try {
+            const wc2 = wc.isDestroyed?.() ? null : wc
+            if (!wc2) { clearInterval(biliPollTimer); return }
+            const url = wc2.getURL?.() || ''
+            if (!url || url === 'about:blank' || !/bilibili\.com/i.test(url)) return
+            if (!_biliExtDlSubRegistered) return
+            wc2.executeJavaScript(BILI_DL_EXTRACT_SCRIPT).then((res) => {
+              if (!res || !res.downloads || !res.downloads.length) return
+              const mw3 = getMainWindow && getMainWindow()
+              if (mw3 && !mw3.isDestroyed()) {
+                mw3.webContents.send(biliExtDlSubKey, {
+                  platformId,
+                  payload: res,
+                  ts: Date.now(),
+                })
+              }
+            }).catch(() => {})
+          } catch (_) {}
+        }, 2000)
+        entry._biliPollTimer = biliPollTimer
+      } catch (_) {}
+    }
+
     viewPool.set(platformId, entry)
     return entry
   }
@@ -684,7 +1193,7 @@ function createThickShellIpc(ipcMain, ctx) {
   }
 
   // browser:attachPlatform
-  ipcMain.handle('browser:attachPlatform', async (_e, platformId, seedUrlOverride) => {
+  ipcMain.handle('browser:attachPlatform', async (_e, platformId, seedUrlOverride, skipSeed) => {
     try {
       if (!PLATFORM_IDS.includes(platformId)) throw new Error('BROWSER_PLATFORM_UNKNOWN: ' + platformId)
       const entry = _getOrCreateView(platformId, seedUrlOverride)
@@ -694,16 +1203,19 @@ function createThickShellIpc(ipcMain, ctx) {
       _detachAllFrom(mw)
       mw.addBrowserView(entry.view)
 
-      // 强制导航到 seed URL（每次点击平台标签都回到起点，避免残留页面）
+      // 默认导航到 seed URL（点击平台标签 = 跳转到平台首页）
+      // skipSeed=true 时跳过（用于初始加载场景，由渲染层控制初始 URL）
       const def = PLATFORM_DEFS[platformId]
       const seed = seedUrlOverride || def?.seedUrl
-      if (seed) {
+      let loadedNewUrl = false
+      if (seed && !skipSeed) {
         try {
-          const curr = entry.view.webContents.getURL?.()
-          // 只有当前为空或 about:blank 时才 load，否则保留当前导航状态
-          if (!curr || curr === 'about:blank') {
-            entry.view.webContents.loadURL(seed).catch(() => {})
-          }
+          // 不 await stop()：stop() 在某些情况下会挂起导致 loadURL 永不执行。
+          // loadURL 本身就会终止旧加载并导航到新 URL
+          try { entry.view.webContents.stop() } catch (_) {}
+          const loadPromise = entry.view.webContents.loadURL(seed)
+          await loadPromise.catch(() => {})
+          loadedNewUrl = true
         } catch (_) {}
       }
       // 默认 1024x700 窗口下的 bounds（渲染层会紧接着调用 browser:setBounds 重算）
@@ -713,11 +1225,13 @@ function createThickShellIpc(ipcMain, ctx) {
       } catch (_) {}
 
       const wc = entry.view.webContents
+      // 如果刚加载了新 URL，返回 seed URL 而不是旧 URL（因为页面还在加载中）
+      const currentUrl = loadedNewUrl ? seed : (wc.getURL?.() || '')
       return {
         success: true,
         data: {
           platformId,
-          currentUrl: wc.getURL?.() || '',
+          currentUrl,
           canGoBack: !!wc.canGoBack?.(),
           canGoForward: !!wc.canGoForward?.(),
           title: wc.getTitle?.() || '',
@@ -859,6 +1373,58 @@ function createThickShellIpc(ipcMain, ctx) {
     } catch (e) { return { success: false, error: e.message } }
   })
 
+  // browser:cookieList → 列出一个平台 partition 的 cookies（登录态管理用）
+  //   platformId ∈ PLATFORM_IDS（含 web）；session.fromPartition(def.partition)
+  ipcMain.handle('browser:cookieList', async (_e, platformId) => {
+    try {
+      const def = PLATFORM_DEFS[platformId]
+      if (!def) throw new Error('BROWSER_PLATFORM_UNKNOWN: ' + platformId)
+      const sess = session.fromPartition(def.partition, { cache: true })
+      const cookies = await sess.cookies.get({})
+      const summarized = cookies.map((c) => ({
+        name: c.name || '',
+        domain: c.domain || '',
+        path: c.path || '/',
+        secure: !!c.secure,
+        httpOnly: !!c.httpOnly,
+        session: !!c.session,
+        expirationDate: c.expirationDate,
+      }))
+      return { success: true, data: { platformId, count: summarized.length, cookies: summarized } }
+    } catch (e) { return { success: false, error: e.message } }
+  })
+
+  // browser:cookieClear → 清空一个平台 partition 的所有 cookie
+  ipcMain.handle('browser:cookieClear', async (_e, platformId) => {
+    try {
+      const def = PLATFORM_DEFS[platformId]
+      if (!def) throw new Error('BROWSER_PLATFORM_UNKNOWN: ' + platformId)
+      const sess = session.fromPartition(def.partition, { cache: true })
+      await sess.cookies.flushStore()
+      await sess.clearStorageData({ storages: ['cookies'] })
+      await sess.cookies.flushStore()
+      return { success: true, data: { platformId } }
+    } catch (e) { return { success: false, error: e.message } }
+  })
+
+  // browser:extensionList → 返回已安装扩展清单（内置 B站下载助手 + userData 用户已装扩展）
+  ipcMain.handle('browser:extensionList', () => {
+    try {
+      const data = _extManager.list()
+      return { success: true, data: { installed: data.installed, path: data.path, extensions: data.extensions } }
+    } catch (e) { return { success: true, data: { installed: false, extensions: [] } } }
+  })
+  // browser:extensionInstall → 上传 crx/zip 安装扩展（对每个平台隔离 session 逐 loadExtension）
+  ipcMain.handle('browser:extensionInstall', async (_e, filePath) => {
+    try { return await _extManager.install(filePath) }
+    catch (e) { return { success: false, message: '安装失败：' + (e.message || e) } }
+  })
+  // browser:extensionUninstall → 卸载已装扩展
+  ipcMain.handle('browser:extensionUninstall', (_e, id) => {
+    try { return _extManager.uninstall(id) }
+    catch (e) { return { success: false, message: '卸载失败：' + (e.message || e) } }
+  })
+
   // browser:navigate → back/forward/reload/loadURL；返回 canGoBack/canGoForward/currentUrl
   ipcMain.handle('browser:navigate', (_e, payload) => {
     try {
@@ -978,6 +1544,12 @@ function createThickShellIpc(ipcMain, ctx) {
     try {
       _mediaSniffedSubRegistered = true
       return { success: true, channel: mediaSniffedSubKey }
+    } catch (e) { return { success: false, error: e.message } }
+  })
+  ipcMain.handle('browser:onBiliExtDownloads', () => {
+    try {
+      _biliExtDlSubRegistered = true
+      return { success: true, channel: biliExtDlSubKey }
     } catch (e) { return { success: false, error: e.message } }
   })
 

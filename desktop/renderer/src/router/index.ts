@@ -12,6 +12,7 @@ const routes: RouteRecordRaw[] = [
     redirect: '/workbench'
   },
   {
+    // 工作台（聊天会话形态）：定时任务以侧栏入口+抽屉组件进入（P1 微调，框架不动）
     path: '/workbench',
     name: 'workbench',
     component: () => import('@/views/Workbench.vue'),

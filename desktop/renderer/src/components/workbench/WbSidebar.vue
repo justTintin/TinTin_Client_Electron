@@ -17,6 +17,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'select', id: string): void
   (e: 'create'): void
+  (e: 'open-scheduled'): void
   (e: 'toggle-taskqueue'): void
   (e: 'toggle-notifications'): void
   (e: 'open-settings'): void
@@ -33,6 +34,14 @@ const emit = defineEmits<{
           <path d="M5 12h14" />
         </svg>
         新建会话
+      </button>
+      <!-- 定时任务入口（移植自原客户端；P1 占位抽屉，P2 实装） -->
+      <button class="btn btn-secondary w-full h-btn text-sm scheduled-btn" @click="emit('open-scheduled')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M12 6v6l4 2" />
+        </svg>
+        定时任务
       </button>
     </div>
 
@@ -101,6 +110,9 @@ const emit = defineEmits<{
 }
 
 .sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   padding: var(--space-4);
 }
 

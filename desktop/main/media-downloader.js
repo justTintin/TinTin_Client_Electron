@@ -82,6 +82,8 @@ async function _downloadStream(taskId, url, destPath, referer, partition, broadc
     }
     if (referer) headers['Referer'] = referer
     if (cookieString) headers['Cookie'] = cookieString
+    // B站 PCDN 等分块响应缺 content-length，Range 请求可拿到 206+content-range 以计算进度百分比
+    headers['Range'] = 'bytes=0-'
 
     let req = null
     let fileStream = null
@@ -120,6 +122,7 @@ async function _downloadStream(taskId, url, destPath, referer, partition, broadc
           } catch (err) { reject(err); return }
 
           const totalBytes = parseInt(res.headers['content-length'] || '0', 10) || 0
+            || ((res.headers['content-range'] || '').match(/\/(\d+)\s*$/) ? parseInt(RegExp.$1, 10) : 0)
           let receivedBytes = 0
           let lastTime = Date.now()
           let lastBytes = 0
@@ -215,11 +218,18 @@ function _getFfmpegPath(app, dirname) {
 function createMediaDownloader(ipcMain, ctx) {
   const { app, getMainWindow } = ctx
 
-  function broadcast(taskId, payload) {
+  // 兼容双调用形态：_updateTaskProgress/_updateTaskStatus 传入完整消息对象（单参），
+  // 其余调用方传 (taskId, payload)。此前固定双参导致消息被二次包装为 {taskId: MSG}，
+  // 渲染层 id 变成对象引用 → 幂等失效 → 每个进度事件新建一张 0% 空 JSON 卡。
+  function broadcast(msgOrTaskId, maybePayload) {
     try {
+      const msg = typeof msgOrTaskId === 'string'
+        ? { taskId: msgOrTaskId, ...(maybePayload || {}) }
+        : msgOrTaskId
+      if (!msg || !msg.taskId || typeof msg.taskId !== 'string') return
       const mw = getMainWindow && getMainWindow()
       if (mw && !mw.isDestroyed()) {
-        mw.webContents.send('browser:downloads-updated', { taskId, ...payload })
+        mw.webContents.send('browser:downloads-updated', msg)
       }
     } catch (_) {}
   }

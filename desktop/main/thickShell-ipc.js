@@ -92,6 +92,9 @@ const BILI_DL_EXTRACT_SCRIPT = `(function(){
     var list = sr.querySelectorAll('#durls li a');
     var titleEl = sr.querySelector('#title');
     var title = (titleEl && titleEl.textContent || '').trim();
+    // 从标题前缀提取画质标识（如 "[4K 超高清]" / "[1080P 高码率]"），附加到每个条目便于区分
+    var qm = title.match(/^\\[([^\\]]+)\\]/);
+    var quality = qm ? ('[' + qm[1] + '] ') : '';
     var items = [];
     for (var i = 0; i < list.length; i++) {
       var a = list[i];
@@ -100,13 +103,13 @@ const BILI_DL_EXTRACT_SCRIPT = `(function(){
       var sizeText = sm ? sm[1] : '';
       var href0 = a.getAttribute('href') || '';
       if (href0 && href0 !== '#nogo' && href0.indexOf('javascript:') !== 0) {
-        items.push({ url: href0, download: a.getAttribute('download') || '', text: t, sizeText: sizeText });
+        items.push({ url: href0, download: a.getAttribute('download') || '', text: quality + t + (sizeText?('<'+sizeText+'>'):''), sizeText: sizeText });
         continue;
       }
       var durl = a.getAttribute('durl');
       if (durl) {
         var e = _dec(durl);
-        if (e && e.url) { items.push({ url: _norm(e.url), download: a.getAttribute('title') || '', text: t, sizeText: sizeText }); continue; }
+        if (e && e.url) { items.push({ url: _norm(e.url), download: a.getAttribute('title') || '', text: quality + t + (sizeText?('<'+sizeText+'>'):''), sizeText: sizeText }); continue; }
       }
       var durls = a.getAttribute('durls');
       if (durls) {
@@ -115,7 +118,7 @@ const BILI_DL_EXTRACT_SCRIPT = `(function(){
           var base = a.getAttribute('title') || '';
           for (var j = 0; j < arr.length; j++) {
             var g = arr[j];
-            if (g && g.url) items.push({ url: _norm(g.url), download: base + (arr.length>1?('_p'+(j+1)):''), text: t + (arr.length>1?(' '+(j+1)):''), sizeText: sizeText });
+            if (g && g.url) items.push({ url: _norm(g.url), download: quality + base + (arr.length>1?('_p'+(j+1)):''), text: quality + t + (arr.length>1?(' '+(j+1)):'') + (sizeText?('<'+sizeText+'>'):''), sizeText: sizeText });
           }
           continue;
         }
@@ -169,6 +172,14 @@ function _injectBilibiliHelper(wc, extPath, sess) {
     // chrome.runtime polyfill + 扩展信息注入 + 主脚本
     // 幂等守卫：同一文档只完整执行一次（addScriptToEvaluateOnNewDocument 与 did-finish-load 补注会重复触发，
     // 重复执行会让 customElements.define 二次定义抛错）。SPA 跳转由 did-navigate-in-page 的 reload 兜底。
+    // 注：content script 是 MV3 模块化产物，内含 import.meta.url（仅用于 ffmpeg worker 路径解析）。
+    // executeJavaScript/addScriptToEvaluateOnNewDocument 按经典脚本求值，import.meta 是解析期 SyntaxError，
+    // 会导致整段脚本一行都不执行（调试实证：page:console 报 "Cannot use 'import.meta' outside a module"）。
+    // 这里把它替换成页面 URL 表达式：语法合法化；ffmpeg 仅在合成/转码时惰性用到且与"链接提取"无关。
+    const safeContent = String(scriptContent || '').replace(
+      /import\.meta\.url/g,
+      "(window.location && window.location.href || 'https://www.bilibili.com/')"
+    )
     const injectScript = `
       if (!window.__TINTIN_BILI_INJECTED__) {
       window.__TINTIN_BILI_INJECTED__ = true;
@@ -203,7 +214,7 @@ function _injectBilibiliHelper(wc, extPath, sess) {
           baseUrl: '${extBaseUrl}'
         });
       })();
-    ` + scriptContent + `
+    ` + safeContent + `
       } // __TINTIN_BILI_INJECTED__ guard end
 `
     
@@ -234,7 +245,7 @@ function _injectBilibiliHelper(wc, extPath, sess) {
       })
       console.log(`[ThickShell::bilibili] Content script registered for document_start injection`)
     }
-    
+
     // 如果页面已经加载，立即注入一次
     if (wc && !wc.isLoading()) {
       wc.executeJavaScript(injectScript).then(() => {

@@ -4,9 +4,11 @@
 // 上传图片 → 选择模型与参数 → POST /rembg/matting（上传）
 // 轮询 GET /tasks/{task_id} → 预览/下载 PNG 结果
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
+import { useFilePicker } from '@/composables/useFilePicker'
+import { useServerTask } from '@/composables/useServerTask'
 
 /** 抠图模型选项 */
 const modelOptions: SelectOption[] = [
@@ -15,79 +17,34 @@ const modelOptions: SelectOption[] = [
   { label: 'BiRefNet Portrait（人像）', value: 'birefnet-portrait' }
 ]
 
-/** 任务状态 */
-type TaskStatus = 'queued' | 'processing' | 'done' | 'failed'
-
 // ── 表单状态 ──
-const filePath = ref('')        // 源图片本地路径
-const fileName = ref('')        // 源图片文件名
 const model = ref('u2net')      // 抠图模型
 const alphaMatting = ref(false) // Alpha matting 开关
 const bgColor = ref('#ffffff')  // 背景颜色
 const bgTransparent = ref(true) // 背景透明（默认透明）
 
-// ── 任务状态 ──
-const taskId = ref('')
-const status = ref<TaskStatus | ''>('')
-const progress = ref(0)
-const errorMsg = ref('')
-const resultUrl = ref('')       // 结果图地址
-const resultPath = ref('')      // 结果图本地路径
-const isProcessing = ref(false)
-const isDragging = ref(false)
-const uploadPercent = ref(0)
+// ── 文件选择 + 拖拽（共享 composable，选中后清结果区） ──
+const { filePath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
+  useFilePicker({
+    dialogTitle: '选择图片',
+    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+    onPicked: () => task.resetResult(),
+  })
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
+// ── 任务状态机（共享 composable：上传进度 + 轮询 + 终态通知） ──
+const task = useServerTask({
+  successTitle: '图像抠图完成',
+  failTitle: '图像抠图失败',
+  getSuccessBody: () => fileName.value,
+})
+const { status, progress, errorMsg, resultUrl, resultPath, isProcessing, uploadPercent } = task
 
 const canStart = computed(() => !!filePath.value && !isProcessing.value)
-
-/** 选择图片文件 */
-async function pickFile() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择图片',
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }]
-  })
-  if (res) setFile(res)
-}
-
-/** 设置已选文件并重置结果 */
-function setFile(path: string) {
-  filePath.value = path
-  fileName.value = path.split(/[\\/]/).pop() || path
-  resetResult()
-}
-
-// ── 拖拽上传 ──
-function onDrop(e: DragEvent) {
-  isDragging.value = false
-  const f = e.dataTransfer?.files?.[0]
-  // Electron 在 File 对象上暴露 path 属性
-  if (f && (f as File & { path?: string }).path) {
-    setFile((f as File & { path: string }).path)
-  }
-}
-function onDragOver() {
-  isDragging.value = true
-}
-function onDragLeave() {
-  isDragging.value = false
-}
-
-/** 本地路径转可显示 URL */
-function resolveSrc(src: string): string {
-  if (!src) return ''
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  return `file://${src.replace(/\\/g, '/')}`
-}
 
 /** 提交抠图任务 */
 async function startMatting() {
   if (!filePath.value) return
-  resetResult()
-  isProcessing.value = true
-  status.value = 'queued'
-  errorMsg.value = ''
-  uploadPercent.value = 0
+  task.begin()
   try {
     const payload = {
       image: filePath.value as unknown as Blob, // 路径占位：server-proxy 在 Node 侧按字段名读本地路径
@@ -95,68 +52,12 @@ async function startMatting() {
       alpha_matting: alphaMatting.value,
       bg_color: bgTransparent.value ? null : bgColor.value,
     }
-    const res = await window.tintin.server.rembgSubmit(payload, (p: number) => {
-      uploadPercent.value = Math.round(p)
-    })
+    const res = await window.tintin.server.rembgSubmit(payload, task.setUpload)
     if (!res) throw new Error('服务端离线或未返回任务ID')
-    taskId.value = res.task_id
-    startPolling(res.task_id)
+    task.startPolling(res.task_id)
   } catch (err) {
-    failWith(err)
+    task.failWith(err)
   }
-}
-
-/** 启动 2s 轮询 */
-function startPolling(id: string) {
-  stopPolling()
-  pollTimer = setInterval(() => pollTask(id), 2000)
-}
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-/** 拉取任务状态 */
-async function pollTask(id: string) {
-  try {
-    const data = await window.tintin.server.tasksProgress(id)
-    if (!data) return
-    status.value = (data.status as unknown as TaskStatus) || ''
-    progress.value = data.progress ?? 0
-    if (data.status === 'completed' as unknown as TaskStatus || data.progress === 100) {
-      // 兼容 V2：completed 统一视为 done
-      status.value = 'done'
-      resultUrl.value = data.result_url || ''
-      isProcessing.value = false
-      stopPolling()
-      window.tintin.shell.showNotification('图像抠图完成', fileName.value)
-    } else if (data.status === 'failed' as unknown as TaskStatus) {
-      failWith(data.error_message || '处理失败')
-    }
-  } catch (err) {
-    failWith(err)
-  }
-}
-
-/** 统一失败处理 */
-function failWith(err: unknown) {
-  errorMsg.value = err instanceof Error ? err.message : String(err)
-  status.value = 'failed'
-  isProcessing.value = false
-  stopPolling()
-  window.tintin.shell.showNotification('图像抠图失败', errorMsg.value)
-}
-
-/** 重置结果区 */
-function resetResult() {
-  taskId.value = ''
-  status.value = ''
-  progress.value = 0
-  errorMsg.value = ''
-  resultUrl.value = ''
-  resultPath.value = ''
 }
 
 /** 下载结果 PNG */
@@ -190,8 +91,6 @@ const statusText = computed(() => {
       return ''
   }
 })
-
-onBeforeUnmount(() => stopPolling())
 </script>
 
 <template>

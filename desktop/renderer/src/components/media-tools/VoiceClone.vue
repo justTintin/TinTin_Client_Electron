@@ -4,11 +4,12 @@
 // 上传参考音频或从 voice_samples 选择 → 选择音色（/voices/list）
 // → 输入文本 → POST /clone → 轮询任务 → 音频播放与下载
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
+import { useFilePicker } from '@/composables/useFilePicker'
+import { useServerTask } from '@/composables/useServerTask'
 
-type TaskStatus = 'queued' | 'processing' | 'done' | 'failed'
 type RefMode = 'upload' | 'sample'
 
 /** 音色样本（来自 /voices/samples） */
@@ -23,26 +24,33 @@ interface VoiceSample {
 const voiceOptions = ref<SelectOption[]>([])   // 音色下拉（来自 /voices/list）
 const voiceSamples = ref<VoiceSample[]>([])    // 参考样本列表
 
-// ── 表单状态 ──
+// ── 任务状态机（共享 composable：上传进度 + 轮询 + 终态通知） ──
+const task = useServerTask({
+  successTitle: '声音克隆完成',
+  failTitle: '声音克隆失败',
+  getSuccessBody: () => '合成音频已就绪',
+})
+const { taskId, status, progress, errorMsg, resultUrl, resultPath, isProcessing, uploadPercent } = task
+
+// ── 参考音频选择 + 拖拽（共享 composable） ──
+const {
+  filePath: refFilePath,
+  fileName: refFileName,
+  isDragging,
+  pickFile: pickRefFile,
+  onDrop,
+  onDragOver,
+  onDragLeave,
+  resolveSrc,
+} = useFilePicker({
+  dialogTitle: '选择参考音频',
+  filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }],
+})
+
 const refMode = ref<RefMode>('upload')
-const refFilePath = ref('')          // 上传的参考音频路径
-const refFileName = ref('')
 const selectedSampleId = ref('')     // 选中的样本 id
 const voice = ref('')                // 选中音色
 const text = ref('')                 // 待合成文本
-
-// ── 任务状态 ──
-const taskId = ref('')
-const status = ref<TaskStatus | ''>('')
-const progress = ref(0)
-const errorMsg = ref('')
-const resultUrl = ref('')
-const resultPath = ref('')
-const isProcessing = ref(false)
-const isDragging = ref(false)
-const uploadPercent = ref(0)
-
-let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // 已选参考描述（用于校验/提示）
 const refReady = computed(() =>
@@ -75,47 +83,12 @@ async function loadVoices() {
   }
 }
 
-/** 选择参考音频文件 */
-async function pickRefFile() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择参考音频',
-    filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }]
-  })
-  if (res) {
-    refFilePath.value = res
-    refFileName.value = res.split(/[\\/]/).pop() || res
-  }
-}
-
-function onDrop(e: DragEvent) {
-  isDragging.value = false
-  const f = e.dataTransfer?.files?.[0]
-  if (f && (f as File & { path?: string }).path) {
-    refFilePath.value = (f as File & { path: string }).path
-    refFileName.value = refFilePath.value.split(/[\\/]/).pop() || refFilePath.value
-  }
-}
-function onDragOver() {
-  isDragging.value = true
-}
-function onDragLeave() {
-  isDragging.value = false
-}
-
-function resolveSrc(src: string): string {
-  if (!src) return ''
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  return `file://${src.replace(/\\/g, '/')}`
-}
+/** 选择参考音频文件（pickRefFile 由 useFilePicker 提供） */
 
 /** 提交克隆合成（走 tts:generate + 一次性参考音频 clone_ref_file） */
 async function startClone() {
   if (!canStart.value) return
-  resetResult()
-  isProcessing.value = true
-  status.value = 'queued'
-  errorMsg.value = ''
-  uploadPercent.value = 0
+  task.begin()
   try {
     const payload: Record<string, unknown> = {
       voice_id: voice.value,
@@ -124,71 +97,17 @@ async function startClone() {
     if (refMode.value === 'upload') {
       payload.clone_ref_file = refFilePath.value as unknown as Blob
     }
-    const res = await window.tintin.server.ttsGenerate(payload as any, (p: number) => {
-      uploadPercent.value = Math.round(p)
-    })
+    const res = await window.tintin.server.ttsGenerate(payload as any, task.setUpload)
     if (!res) throw new Error('服务端离线或未返回结果')
     // ttsGenerate 返回 audio_url；若带 task_id（异步模式）则进入轮询；否则同步显示结果
     if ((res as any).task_id) {
-      taskId.value = (res as any).task_id
-      startPolling((res as any).task_id)
+      task.startPolling((res as any).task_id)
     } else {
-      resultUrl.value = (res as any).audio_url || ''
-      status.value = 'done'
-      isProcessing.value = false
-      window.tintin.shell.showNotification('声音克隆完成', '合成音频已就绪')
+      task.completeSync((res as any).audio_url || '')
     }
   } catch (err) {
-    failWith(err)
+    task.failWith(err)
   }
-}
-
-function startPolling(id: string) {
-  stopPolling()
-  pollTimer = setInterval(() => pollTask(id), 2000)
-}
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-async function pollTask(id: string) {
-  try {
-    const data = await window.tintin.server.tasksProgress(id)
-    if (!data) return
-    status.value = (data.status as unknown as TaskStatus) || ''
-    progress.value = data.progress ?? 0
-    if (data.status === 'completed' as unknown as TaskStatus || (data.progress === 100 && status.value !== 'failed')) {
-      status.value = 'done'
-      resultUrl.value = data.result_url || ''
-      isProcessing.value = false
-      stopPolling()
-      window.tintin.shell.showNotification('声音克隆完成', '合成音频已就绪')
-    } else if (data.status === 'failed' as unknown as TaskStatus) {
-      failWith(data.error_message || '处理失败')
-    }
-  } catch (err) {
-    failWith(err)
-  }
-}
-
-function failWith(err: unknown) {
-  errorMsg.value = err instanceof Error ? err.message : String(err)
-  status.value = 'failed'
-  isProcessing.value = false
-  stopPolling()
-  window.tintin.shell.showNotification('声音克隆失败', errorMsg.value)
-}
-
-function resetResult() {
-  taskId.value = ''
-  status.value = ''
-  progress.value = 0
-  errorMsg.value = ''
-  resultUrl.value = ''
-  resultPath.value = ''
 }
 
 /** 下载合成音频 */
@@ -221,7 +140,6 @@ const statusText = computed(() => {
 })
 
 onMounted(loadVoices)
-onBeforeUnmount(() => stopPolling())
 </script>
 
 <template>

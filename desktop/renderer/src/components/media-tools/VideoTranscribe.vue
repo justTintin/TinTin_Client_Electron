@@ -7,6 +7,7 @@
 import { ref, computed } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
+import { useFilePicker } from '@/composables/useFilePicker'
 
 type SourceMode = 'file' | 'url'
 
@@ -23,8 +24,6 @@ const formatOptions: SelectOption[] = [
 
 // ── 表单状态 ──
 const sourceMode = ref<SourceMode>('file')
-const filePath = ref('')
-const fileName = ref('')
 const url = ref('')
 const language = ref('auto')
 const format = ref<'srt' | 'txt' | 'json'>('txt')
@@ -34,45 +33,23 @@ const isProcessing = ref(false)
 const errorMsg = ref('')
 const transcript = ref('')          // 转写文本
 const downloadUrl = ref('')         // 服务端提供的下载地址
-const isDragging = ref(false)
 const uploadPercent = ref(0)
+
+// ── 文件选择 + 拖拽（共享 composable，选中后清转写结果） ──
+const { filePath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave } =
+  useFilePicker({
+    dialogTitle: '选择视频或音频',
+    filters: [
+      { name: '视频', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] },
+      { name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac'] }
+    ],
+    onPicked: () => { transcript.value = '' },
+  })
 
 const canStart = computed(() => {
   if (isProcessing.value) return false
   return sourceMode.value === 'file' ? !!filePath.value : !!url.value
 })
-
-/** 选择视频/音频文件 */
-async function pickFile() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择视频或音频',
-    filters: [
-      { name: '视频', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] },
-      { name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac'] }
-    ]
-  })
-  if (res) {
-    filePath.value = res
-    fileName.value = res.split(/[\\/]/).pop() || res
-    transcript.value = ''
-  }
-}
-
-function onDrop(e: DragEvent) {
-  isDragging.value = false
-  const f = e.dataTransfer?.files?.[0]
-  if (f && (f as File & { path?: string }).path) {
-    filePath.value = (f as File & { path: string }).path
-    fileName.value = filePath.value.split(/[\\/]/).pop() || filePath.value
-    transcript.value = ''
-  }
-}
-function onDragOver() {
-  isDragging.value = true
-}
-function onDragLeave() {
-  isDragging.value = false
-}
 
 /** 提交转写 */
 async function startTranscribe() {

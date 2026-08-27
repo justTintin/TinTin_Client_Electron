@@ -4,10 +4,10 @@
 // 上传视频 → 在帧预览上框选需移除区域（矩形）→ 可选水印文字
 // → POST /vsr/remove → 轮询任务 → 下载 MP4
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import TButton from '@/components/common/TButton.vue'
-
-type TaskStatus = 'queued' | 'processing' | 'done' | 'failed'
+import { useFilePicker } from '@/composables/useFilePicker'
+import { useServerTask } from '@/composables/useServerTask'
 
 /** 选区矩形（基于预览显示像素） */
 interface Rect {
@@ -17,54 +17,24 @@ interface Rect {
   h: number
 }
 
-// ── 表单状态 ──
-const filePath = ref('')
-const fileName = ref('')
+// ── 任务状态机（共享 composable：上传进度 + 轮询 + 终态通知） ──
+const task = useServerTask({
+  successTitle: '去水印完成',
+  failTitle: '去水印失败',
+  getSuccessBody: () => fileName.value,
+})
+const { status, progress, errorMsg, resultUrl, resultPath, isProcessing, uploadPercent } = task
+
+// ── 文件选择 + 拖拽（共享 composable；选中后清选区并抽预览帧） ──
 const framePath = ref('')         // 抽取的预览帧路径
+const isExtractingFrame = ref(false)
 const watermarkText = ref('')     // 可选水印文字
 const regions = ref<Rect[]>([])   // 已选区域
 
-// ── 任务状态 ──
-const taskId = ref('')
-const status = ref<TaskStatus | ''>('')
-const progress = ref(0)
-const errorMsg = ref('')
-const resultUrl = ref('')
-const resultPath = ref('')
-const isProcessing = ref(false)
-const isDragging = ref(false)
-const isExtractingFrame = ref(false)
-const uploadPercent = ref(0)
-
-// ── 框选状态 ──
-const canvasRef = ref<HTMLCanvasElement | null>(null)
-const imgRef = ref<HTMLImageElement | null>(null)
-let drawing = false
-let startPt = { x: 0, y: 0 }
-let currentRect: Rect | null = null
-
-let pollTimer: ReturnType<typeof setInterval> | null = null
-
-const canStart = computed(
-  () => !!filePath.value && regions.value.length > 0 && !isProcessing.value
-)
-
-/** 选择视频文件 */
-async function pickFile() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择视频',
-    filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] }]
-  })
-  if (res) await setFile(res)
-}
-
-async function setFile(path: string) {
-  filePath.value = path
-  fileName.value = path.split(/[\\/]/).pop() || path
+async function extractPreviewFrame(path: string): Promise<void> {
   regions.value = []
   framePath.value = ''
-  resetResult()
-  // 抽取预览帧
+  task.resetResult()
   isExtractingFrame.value = true
   try {
     const thumb = await window.tintin.ffmpeg.extractThumb(path, 1, 640)
@@ -78,25 +48,23 @@ async function setFile(path: string) {
   }
 }
 
-function onDrop(e: DragEvent) {
-  isDragging.value = false
-  const f = e.dataTransfer?.files?.[0]
-  if (f && (f as File & { path?: string }).path) {
-    setFile((f as File & { path: string }).path)
-  }
-}
-function onDragOver() {
-  isDragging.value = true
-}
-function onDragLeave() {
-  isDragging.value = false
-}
+const { filePath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
+  useFilePicker({
+    dialogTitle: '选择视频',
+    filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] }],
+    onPicked: (path) => { void extractPreviewFrame(path) },
+  })
 
-function resolveSrc(src: string): string {
-  if (!src) return ''
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  return `file://${src.replace(/\\/g, '/')}`
-}
+// ── 框选状态 ──
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+const imgRef = ref<HTMLImageElement | null>(null)
+let drawing = false
+let startPt = { x: 0, y: 0 }
+let currentRect: Rect | null = null
+
+const canStart = computed(
+  () => !!filePath.value && regions.value.length > 0 && !isProcessing.value
+)
 
 /** 同步 canvas 尺寸到图片显示尺寸 */
 function syncCanvas() {
@@ -195,11 +163,7 @@ function clearRegions() {
 /** 提交去水印任务 */
 async function startRemove() {
   if (!canStart.value) return
-  resetResult()
-  isProcessing.value = true
-  status.value = 'queued'
-  errorMsg.value = ''
-  uploadPercent.value = 0
+  task.begin()
 
   // 将显示坐标归一化为 0-1 分数，便于服务端按原分辨率映射
   const canvas = canvasRef.value
@@ -217,63 +181,12 @@ async function startRemove() {
       video: filePath.value,
       mode: watermarkText.value ? 'both' : 'subtitle',
       bboxes,
-    }, (p: number) => {
-      uploadPercent.value = Math.round(p)
-    })
+    }, task.setUpload)
     if (!res) throw new Error('服务端离线或未返回任务ID')
-    taskId.value = res.task_id
-    startPolling(res.task_id)
+    task.startPolling(res.task_id)
   } catch (err) {
-    failWith(err)
+    task.failWith(err)
   }
-}
-
-function startPolling(id: string) {
-  stopPolling()
-  pollTimer = setInterval(() => pollTask(id), 2000)
-}
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-async function pollTask(id: string) {
-  try {
-    const data = await window.tintin.server.tasksProgress(id)
-    if (!data) return
-    status.value = (data.status as unknown as TaskStatus) || ''
-    progress.value = data.progress ?? 0
-    if (data.status === 'completed' as unknown as TaskStatus || (data.progress === 100 && status.value !== 'failed')) {
-      status.value = 'done'
-      resultUrl.value = data.result_url || ''
-      isProcessing.value = false
-      stopPolling()
-      window.tintin.shell.showNotification('去水印完成', fileName.value)
-    } else if (data.status === 'failed' as unknown as TaskStatus) {
-      failWith(data.error_message || '处理失败')
-    }
-  } catch (err) {
-    failWith(err)
-  }
-}
-
-function failWith(err: unknown) {
-  errorMsg.value = err instanceof Error ? err.message : String(err)
-  status.value = 'failed'
-  isProcessing.value = false
-  stopPolling()
-  window.tintin.shell.showNotification('去水印失败', errorMsg.value)
-}
-
-function resetResult() {
-  taskId.value = ''
-  status.value = ''
-  progress.value = 0
-  errorMsg.value = ''
-  resultUrl.value = ''
-  resultPath.value = ''
 }
 
 function downloadResult() {
@@ -305,8 +218,6 @@ const statusText = computed(() => {
       return ''
   }
 })
-
-onBeforeUnmount(() => stopPolling())
 </script>
 
 <template>

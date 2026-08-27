@@ -8,6 +8,7 @@
 import { ref, computed } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
+import { useFilePicker } from '@/composables/useFilePicker'
 
 /** 单条反推结果 */
 interface PromptItem {
@@ -29,8 +30,6 @@ const languageOptions: SelectOption[] = [
 ]
 
 // ── 表单状态 ──
-const filePath = ref('')
-const fileName = ref('')
 const frameCount = ref<number>(1)   // 抽帧数量 1-10
 const count = ref<number>(4)        // 生成数量 1-8
 const style = ref('general')
@@ -40,45 +39,17 @@ const language = ref('zh+en')
 const isProcessing = ref(false)
 const errorMsg = ref('')
 const results = ref<PromptItem[]>([])
-const isDragging = ref(false)
 const copiedIndex = ref(-1)
 
 const canStart = computed(() => !!filePath.value && !isProcessing.value)
 
-/** 选择视频 */
-async function pickFile() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择视频',
-    filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm'] }]
+// ── 文件选择 + 拖拽（共享 composable，选中后清结果区） ──
+const { filePath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
+  useFilePicker({
+    dialogTitle: '选择视频',
+    filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm'] }],
+    onPicked: () => { results.value = [] },
   })
-  if (res) {
-    filePath.value = res
-    fileName.value = res.split(/[\\/]/).pop() || res
-    results.value = []
-  }
-}
-
-function onDrop(e: DragEvent) {
-  isDragging.value = false
-  const f = e.dataTransfer?.files?.[0]
-  if (f && (f as File & { path?: string }).path) {
-    filePath.value = (f as File & { path: string }).path
-    fileName.value = filePath.value.split(/[\\/]/).pop() || filePath.value
-    results.value = []
-  }
-}
-function onDragOver() {
-  isDragging.value = true
-}
-function onDragLeave() {
-  isDragging.value = false
-}
-
-function resolveSrc(src: string): string {
-  if (!src) return ''
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  return `file://${src.replace(/\\/g, '/')}`
-}
 
 /** 提交反推 */
 async function startReverse() {

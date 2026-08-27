@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════
 import { ref, computed, onBeforeUnmount } from 'vue'
 import TButton from '@/components/common/TButton.vue'
+import { useFilePicker } from '@/composables/useFilePicker'
 
 type SizeRatio = '1:1' | '9:16' | '16:9'
 
@@ -25,14 +26,22 @@ interface WorkflowEvent {
   message?: string
 }
 
+// ── 文件选择（共享 composable：商品图 / Logo 各一路） ──
+const product = useFilePicker({
+  dialogTitle: '选择商品图',
+  filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+})
+const logo = useFilePicker({
+  dialogTitle: '选择 Logo',
+  filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg'] }],
+})
+
 // ── 图层状态 ──
 const bgColor = ref('#161828')        // 背景颜色
 const bgTransparent = ref(false)      // 背景透明
-const productPath = ref('')           // 商品图路径
-const productName = ref('')
+const { filePath: productPath, fileName: productName } = product  // 商品图
 const textContent = ref('')           // 文本内容
-const logoPath = ref('')             // Logo 路径
-const logoName = ref('')
+const { filePath: logoPath, fileName: logoName } = logo            // Logo
 
 // ── 参数 ──
 const size = ref<SizeRatio>('1:1')
@@ -60,34 +69,11 @@ const canStart = computed(
 )
 
 /** 选择商品图 */
-async function pickProduct() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择商品图',
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
-  })
-  if (res) {
-    productPath.value = res
-    productName.value = res.split(/[\\/]/).pop() || res
-  }
-}
-
+async function pickProduct() { await product.pickFile() }
 /** 选择 Logo */
-async function pickLogo() {
-  const res = await window.tintin.dialog.openFile({
-    title: '选择 Logo',
-    filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg'] }]
-  })
-  if (res) {
-    logoPath.value = res
-    logoName.value = res.split(/[\\/]/).pop() || res
-  }
-}
+async function pickLogo() { await logo.pickFile() }
 
-function resolveSrc(src: string): string {
-  if (!src) return ''
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  return `file://${src.replace(/\\/g, '/')}`
-}
+const resolveSrc = product.resolveSrc
 
 /** 构建封面工作流 JSON */
 function buildWorkflow(): Record<string, unknown> {

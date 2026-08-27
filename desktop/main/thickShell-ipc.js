@@ -167,7 +167,11 @@ function _injectBilibiliHelper(wc, extPath, sess) {
     const extBaseUrl = `tintin-ext://${extPath.replace(/\\/g, '/')}`
     
     // chrome.runtime polyfill + 扩展信息注入 + 主脚本
+    // 幂等守卫：同一文档只完整执行一次（addScriptToEvaluateOnNewDocument 与 did-finish-load 补注会重复触发，
+    // 重复执行会让 customElements.define 二次定义抛错）。SPA 跳转由 did-navigate-in-page 的 reload 兜底。
     const injectScript = `
+      if (!window.__TINTIN_BILI_INJECTED__) {
+      window.__TINTIN_BILI_INJECTED__ = true;
       // chrome.runtime polyfill
       (function() {
         if (!window.chrome) window.chrome = {};
@@ -190,14 +194,18 @@ function _injectBilibiliHelper(wc, extPath, sess) {
           el = document.createElement('div');
           el.id = EL_ID;
           el.style.display = 'none';
-          document.head.appendChild(el);
+          // document_start 阶段 document.head 尚未解析（为 null），必须回退 documentElement，
+          // 否则此处抛 TypeError 会中断整个注入脚本，扩展永远无法初始化
+          (document.head || document.documentElement).appendChild(el);
         }
         el.dataset.internals = JSON.stringify({
           manifest: ${JSON.stringify(manifestData)},
           baseUrl: '${extBaseUrl}'
         });
       })();
-    ` + scriptContent
+    ` + scriptContent + `
+      } // __TINTIN_BILI_INJECTED__ guard end
+`
     
     // 在会话中移除 CSP 限制（允许内联脚本和 Worker）—— 只注册一次
     if (sess && !bilibiliCspBypassRegistered) {
@@ -248,6 +256,26 @@ function _injectBilibiliHelper(wc, extPath, sess) {
             console.warn(`[ThickShell::bilibili] Post-load injection failed: ${err.message}`)
           })
         }
+      })
+      // SPA 内页跳转（pushState，如首页→视频详情页）不触发 did-finish-load；
+      // content script 在非视频文档不会建立 URL 监听，跳到视频页后会永远沉默。
+      // 检测到"文档已注入但扩展未初始化（无 host 元素）"时整页 reload 一次，让脚本在新文档完整初始化。
+      wc.on('did-navigate-in-page', (_e, navUrl, isMainFrame) => {
+        try {
+          if (!isMainFrame) return
+          const url = navUrl || wc.getURL() || ''
+          if (!/bilibili\.com\/(video\/(av|bv)|bangumi\/play)/i.test(url)) return
+          Promise.resolve(wc.executeJavaScript(`(function(){
+            if (!window.__TINTIN_BILI_INJECTED__) return 'FRESH'
+            if (document.getElementById('bilibili-helper-host')) return 'ACTIVE'
+            return 'NEED_RELOAD'
+          })()`)).then((state) => {
+            if (state === 'NEED_RELOAD') {
+              console.log(`[ThickShell::bilibili] SPA navigate to video page without initialized helper, reloading: ${url}`)
+              wc.reload()
+            }
+          }).catch(() => {})
+        } catch (_) {}
       })
     }
   } catch (err) {

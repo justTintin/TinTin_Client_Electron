@@ -28,12 +28,12 @@
 
 ## 三、差距明细：工作台（Tab1）
 
-### 3.1 现状与 PRD 的形态分歧
+### 3.1 现状与 PRD 的形态分歧 —— ✅ 已裁决（2026-08-27）
 
-当前 `/workbench`（[Workbench.vue](../desktop/renderer/src/views/Workbench.vue)）= **聊天会话形态**：
-`WbComposer`（输入）+ `WbMessages`（消息流）+ `WbTaskDrawer`（任务抽屉）+ `WbNotificationDrawer`（通知）+ `WbSidebar`（会话列表）+ `useWorkbench{Chat,Sessions,Notifications,Tasks}.ts`
+业务方裁决：**按 PRD 定义回归 16 页功能工作台形态**。
 
-PRD §3.2 定义 = **16 页功能工作台**（侧边栏页面导航）。两者是不同的产品形态，需业务方裁决：**保留聊天形态 / 回归 16 页形态 / 聊天 + 页面混合**。
+- 当前聊天形态（`WbComposer` / `WbMessages` / `WbTaskDrawer` / `WbNotificationDrawer`）**保留资产、降级收纳**为侧边栏导航中的「智能助手」页（待最终确认命名）。
+- 工作台骨架改造为：侧边栏页面导航（16 项）+ `/workbench/*` 子路由 + 顶栏任务/通知条。
 
 ### 3.2 四个高频页（0/4）
 
@@ -45,20 +45,50 @@ PRD §3.2 定义 = **16 页功能工作台**（侧边栏页面导航）。两者
 | 4 | 素材检索 | 无筛选面板（文件类型/横纵比/分辨率/时长/品牌/型号/分类/Tag 云）与缩略图网格；`material_client.search` 零调用 | 类型契约已生成 ✅ |
 | 5 | 成片任务 | 无 12 列表格（**总分列**优先级 `evaluation.total > quality_score.total > variants[0].score > task.*_score`）/ 全选+下载所选+打包所选 / 15s 自动轮询 / SSE 推送 | 类型契约 + SSE 通道 ✅ |
 
-### 3.3 桥接页（12 页，未落地）
+### 3.3 桥接页（过渡期 webview → bridge.exe）
 
-方案脚本 / 一键成片 / 成片任务队列 / 产品库 / 素材生成 / 音频素材 / 智能混剪 / 直播切片 等：PRD 的 `<webview src="http://127.0.0.1:8766">` + bridge.exe 过渡方案**无任何代码落地**。若 PySide6 客户端退役方向确定，建议评估**放弃 bridge.exe、直接按优先级逐页重写**，避免建设一条将被淘汰的过渡链路。
+PRD 过渡方案：`<webview src="http://127.0.0.1:8766/<page>">` 内嵌 PySide6 打包出的 bridge.exe 页面，右侧带「桥」标签（hover 提示「该模块正在升级中，V3.1 将全面重写」），未就绪菜单 opacity 0.5 + cursor not-allowed。
 
-## 四、建议实施顺序
+**需完成的桥接功能（基建）**：
 
-| 优先级 | 事项 | 理由 |
+| # | 工作项 | 说明 |
 |---|---|---|
-| P0 | 业务方裁决工作台形态（聊天 vs 16 页 vs 混合） | 决定后续全部排期方向，阻塞项 |
-| P1 | 成片任务页 | 最独立、无跨页依赖、接口+SSE 就绪，立即可做 |
-| P2 | 飞书脚本创作 | 四页链路起点（脚本 → 分镜 → 素材引用） |
-| P3 | 分镜脚本 + ShotMaterialDialog（三 Tab） | 依赖 P2 的 product 字段传递 |
-| P4 | 素材检索 | 独立页，可并行 |
-| P5 | 桥接方案取舍 | 依赖 P0 结论 |
+| 1 | bridge.exe 打包分发 | PySide6 studio 以页面服务模式打包为 bridge.exe，随 electron-builder extraResources 分发 |
+| 2 | 生命周期管理（主进程） | app ready 拉起 / 退出 kill / 崩溃自动重启 / `127.0.0.1:8766` 动态端口防占用 |
+| 3 | 健康探活 | `/health` 轮询 → 驱动侧边栏菜单启用态（未就绪禁用样式） |
+| 4 | 通用 webview 容器页 | `WebViewPage.vue`：src 映射 / 加载态 / 失败重试 / 「桥」标签 + tooltip |
+| 5 | 会话与 token 共享 | bridge 与 server 鉴权打通，避免桥接页二次登录 |
+| 6 | webview 权限配置 | allowpopups、preload 注入 `window.tintin` 最小桥、CSP 对齐 |
+
+**桥接页清单（已确认 8 页，映射原客户端）**：
+
+| 桥接页 | 原客户端页面 |
+|---|---|
+| 方案脚本 | [product_script_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/product_script_page.py) |
+| 一键成片 | [compile_video_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/compile_video_page.py) |
+| 成片任务队列 | [scheduled_tasks_mgmt_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/scheduled_tasks_mgmt_page.py) |
+| 产品库 | [product_library_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/product_library_page.py) |
+| 素材生成（即梦AI） | [dreamina_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/dreamina_page.py) |
+| 音频素材 | [audio_material_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/audio_material_page.py) |
+| 智能混剪 | [video_montage_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/video_montage_page.py) |
+| 直播切片 | [live_clip_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/live_clip_page.py) |
+
+> 其余原客户端页面（marketing_detect / hook_score / video_lut / image_layered / video_ai_rename / agent_home 等）不在 16 页首期清单，作为 V3.1+ 备选池。已 Vue 实现的媒体工具页（ImageMatting / VideoTranscribe / VoiceClone / ReversePromptImage / CoverMaker 等）归 Tab3，不入桥接池。
+
+## 四、实施排期（2026-08-27 按裁决调整：回归 16 页功能工作台形态）
+
+| 优先级 | 事项 | 内容 / 理由 |
+|---|---|---|
+| ~~P0~~ | ~~工作台形态裁决~~ | ✅ 已裁决：回归 16 页形态；聊天工作台收纳为「智能助手」页 |
+| **P1** | **工作台骨架改造** | 侧边栏 16 项导航（4 高频 + 8 桥接 + 智能助手 + 预留）+ `/workbench/*` 子路由 + 顶栏任务/通知条；现有 Wb* 组件平移为「智能助手」页（资产保留） |
+| **P2** | **桥接基建 + 8 页 webview 上线** | bridge.exe 打包/生命周期/探活 + WebViewPage.vue 通用容器 + token 共享；8 桥接页先以「桥」形态进侧边栏，让 16 页形态立即可用 |
+| **P3** | 成片任务页（Vue 重写） | 最独立、无跨页依赖、接口+SSE 就绪；完成后从桥接切换为原生页 |
+| **P4** | 飞书脚本创作页 | 四页重写链路起点（脚本 → 分镜 → 素材引用），product 字段传递链路在此建立 |
+| **P5** | 分镜脚本页 + ShotMaterialDialog（三 Tab） | 依赖 P4 的 product 传递；`stock_search` 联网素材在此落地 |
+| **P6** | 素材检索页 | 独立页，可与 P4/P5 并行 |
+| V3.1 | 桥接页逐页 Vue 重写替换 | 按 8 桥接页使用频率排序；备选池页面按需纳入 |
+
+> 排期原则：骨架（P1）先行让形态落地 → 桥接（P2）补齐功能覆盖 → 高频页逐页原生替换（P3~P6）。每个页面交付口径：对照原客户端 `studio/gui` 对应 .py 逐项行为核对 + IRON-04 单测 + 打包产物验证 + IRON-09 提交。
 
 ## 五、验证口径
 

@@ -3,18 +3,29 @@
 > 生成日期：2026-08-27 ｜ 基准文档：[PRD_Electron_v3_SchemeA.md](./PRD_Electron_v3_SchemeA.md) / [DESIGN_Electron_v3.md](./DESIGN_Electron_v3.md)（已同步至实现状态）
 > 原客户端基准：`D:\Project\TinTin_AI_Agent_Main\studio\gui`（铁律：逻辑实现以原客户端代码为准）
 
-## 一、模块总览
+## 〇、移植基本要求（2026-08-27 业务方定稿）
 
-| 模块 | PRD 章节 | 状态 | 说明 |
+1. **移植范围 = 四部分**，全部以新语言（Electron + Vue + TS）原生实现，**不依赖 Python / PySide6**：
+   - ① **工作台**：原工作台（会话智能体形态）+ 新增「定时任务」页
+   - ② **浏览器**：原素材浏览器（apps/asset-browser）
+   - ③ **媒体工具**：原媒体工具 + 新增卡片
+   - ④ **系统配置**
+2. **已移植且与原客户端不同的，以现在的实现为准**。
+3. **原客户端左侧边栏其余页面不在移植之列**——其内容已由**会话智能体**（agent 工具调用）承载，不再走菜单页形式（PRD 4 高频页亦属此列，**降级为待定**，见 §3.2）。
+4. **webview / bridge.exe 桥接过渡方案作废**（依赖 PySide6/Python，违反基本要求）。
+
+## 一、模块总览（按四部分框架）
+
+| 部分 | 范围 | 状态 | 说明 |
 |---|---|---|---|
-| Tab2 浏览器 | §3.3 | ✅ **已完成** | 8 平台分区、嗅探、B站扩展、合并下载、下载浮窗、扩展管理、Cookie 导出；文档已按实现重写 |
-| Tab3 媒体工具 | §3.4 | ✅ 基本完成 | ImageMatting / SubtitleRemoval / VoiceClone / ReversePromptImage / CoverMaker / VideoTranscribe 等；已解耦（useServerTask / useFilePicker，净减 127 行） |
-| 设置 Tab | — | ✅ 完成 | useInferenceSettings 拆分，三模式推理路由（server-only / hybrid-auto / force-local） |
-| 服务端契约 | — | ✅ 完成 | openapi-typescript + openapi-fetch 对齐 /openapi.json；contract:gen / verify 门禁 |
-| 工程纪律 | — | ✅ 完成 | 单文件 ≤800 行（Browser.vue 651、thickShell-ipc.js 556+6 模块） |
-| **Tab1 工作台（4 高频页）** | §3.2 | ❌ **0/4 未实现** | 明细见第三节 |
-| **过渡期桥接（12 页）** | §3.2 | ❌ **未实现** | 无 webview/iframe 内嵌、无 bridge.exe 集成 |
-| V3.1 规划（多账号 profile） | §3.3 | ⏳ 规划保留 | 按计划后置 |
+| ① 工作台 | 会话智能体（原工作台形态） | ✅ 已实现 | WbComposer / WbMessages / WbTaskDrawer / WbNotificationDrawer；以现状为准 |
+| ① 工作台 | **定时任务管理（新增页）** | ❌ 待移植 | 对照 scheduled_tasks_mgmt_page.py 原生重写，进侧边栏 |
+| ② 浏览器 | 原素材浏览器 | ✅ 已完成 | 含扩展下载/嗅探/合并下载/下载浮窗；以现状为准 |
+| ③ 媒体工具 | 原媒体工具 + 新增卡片 | ✅ 已完成 | ImageMatting / VideoTranscribe / VoiceClone / ReversePromptImage（新卡）/ CoverMaker（新卡）等；以现状为准 |
+| ④ 系统配置 | 环境配置/推理设置 | ✅ 已完成 | useInferenceSettings 三模式推理路由；以现状为准 |
+| — | PRD 4 高频页（脚本/分镜/检索/成片任务） | ⏸ 降级待定 | 会话智能体优先承载，按需评估（见 §3.2） |
+| — | 原侧边栏其余页面（方案脚本/一键成片/产品库/即梦AI/混剪/直播切片等） | 🚫 不移植 | 由会话智能体承载 |
+| — | V3.1 多账号 profile | ⏳ 规划保留 | 按计划后置 |
 
 ## 二、已闭环：浏览器（以此实现为准）
 
@@ -26,74 +37,47 @@
 - Cookie：分区隔离 + Netscape 导出（yt-dlp 可用）
 - **方案变更（已废弃）**：~~⚡解析并导入素材库~~（素材库接口未就绪，commit 341e581）；~~底部全局下载进度池~~（改为卡片内嵌 + 浮窗）
 
-## 三、差距明细：工作台（Tab1）
+## 三、差距明细：工作台（① 工作台移植）
 
-### 3.1 现状与 PRD 的形态分歧 —— ✅ 已裁决（2026-08-27）
+### 3.1 形态与范围 —— ✅ 已裁决（2026-08-27，两轮）
 
-业务方裁决：**按 PRD 定义回归 16 页功能工作台形态**。
+- **形态**：回归 16 页功能工作台框架中的侧边栏导航形式；聊天形态（`WbComposer` / `WbMessages` / `WbTaskDrawer` / `WbNotificationDrawer`）保留资产，作为「智能助手」入口页。
+- **范围**：工作台 = 会话智能体（现状）+ **定时任务管理**（新增原生页）；PRD 4 高频页降级待定（见 3.2）；原侧边栏其余页面不移植（会话智能体承载）。
+- **侧边栏原则（渐进式挂载）**：骨架只挂真实存在的页面，每交付一个页面点亮一个菜单项，未交付的不显示或禁用（DESIGN §4.1 样式）。
 
-- 当前聊天形态（`WbComposer` / `WbMessages` / `WbTaskDrawer` / `WbNotificationDrawer`）**保留资产、降级收纳**为侧边栏导航中的「智能助手」页（待最终确认命名）。
-- 工作台骨架改造为：侧边栏页面导航（16 项）+ `/workbench/*` 子路由 + 顶栏任务/通知条。
+### 3.2 PRD 4 高频页 —— ⏸ 降级为待定（2026-08-27 业务方裁决）
 
-### 3.2 四个高频页（0/4）
+会话智能体优先承载其能力（脚本创作/分镜/素材检索/成片任务查询均可由 agent 工具调用完成）；是否以原生页形式补齐**按需评估**。若未来恢复移植，下列缺口清单仍然有效：
 
-| # | 页面 | 缺失关键点 | 接口就绪度 |
+| # | 页面 | 缺口（若恢复移植时适用） | 接口就绪度 |
 |---|---|---|---|
 | 1 | 飞书脚本创作 | 无页面组件；`/script/list`、`/script/adjust-copywriting` 零调用；product{brand,model,category,name} 传递链路不存在 | 类型契约已生成 ✅ |
 | 2 | 分镜脚本 | 无页面组件；相似度自动绑定 / 画幅下拉 / 保存联动刷新一键成片 均无 | 类型契约已生成 ✅ |
-| 3 | ShotMaterialDialog | **整个对话框不存在**：素材库 Tab（角标多选/右键预览/品牌徽章）、MG动画跳转 Tab、联网素材 Tab（`stock_search` 零调用） | 类型契约已生成 ✅ |
-| 4 | 素材检索 | 无筛选面板（文件类型/横纵比/分辨率/时长/品牌/型号/分类/Tag 云）与缩略图网格；`material_client.search` 零调用 | 类型契约已生成 ✅ |
-| 5 | 成片任务 | 无 12 列表格（**总分列**优先级 `evaluation.total > quality_score.total > variants[0].score > task.*_score`）/ 全选+下载所选+打包所选 / 15s 自动轮询 / SSE 推送 | 类型契约 + SSE 通道 ✅ |
-| 6 | **定时任务管理（新增移植项，2026-08-27 业务方指定）** | 对照 [scheduled_tasks_mgmt_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/scheduled_tasks_mgmt_page.py) 原生重写；**加入工作台侧边栏**；定时任务创建/启停/调度管理 | 类型契约 ✅ |
+| 3 | ShotMaterialDialog | **整个对话框不存在**：素材库 Tab / MG动画跳转 Tab / 联网素材 Tab（`stock_search` 零调用） | 类型契约已生成 ✅ |
+| 4 | 素材检索 | 无筛选面板与缩略图网格；`material_client.search` 零调用 | 类型契约已生成 ✅ |
+| 5 | 成片任务 | 无 12 列表格（总分列优先级 `evaluation.total > quality_score.total > variants[0].score > task.*_score`）/ 全选+下载所选+打包所选 / 15s 自动轮询 / SSE | 类型契约 + SSE 通道 ✅ |
 
-### 3.3 桥接页（过渡期 webview → bridge.exe）
+> 注：**定时任务管理**（scheduled_tasks_mgmt_page.py）不受此降级影响——业务方单独指定为新增移植项，排期 P2（见 §四）。
 
-PRD 过渡方案：`<webview src="http://127.0.0.1:8766/<page>">` 内嵌 PySide6 打包出的 bridge.exe 页面，右侧带「桥」标签（hover 提示「该模块正在升级中，V3.1 将全面重写」），未就绪菜单 opacity 0.5 + cursor not-allowed。
+### 3.3 桥接方案 —— 🚫 作废（2026-08-27）
 
-**需完成的桥接功能（基建）**：
+原 PRD 过渡方案（`<webview src="http://127.0.0.1:8766">` 内嵌 PySide6 打包的 bridge.exe，覆盖方案脚本/一键成片/产品库/即梦AI/音频素材/智能混剪/直播切片/成片任务队列等页）**整体作废**：
 
-| # | 工作项 | 说明 |
-|---|---|---|
-| 1 | bridge.exe 打包分发 | PySide6 studio 以页面服务模式打包为 bridge.exe，随 electron-builder extraResources 分发 |
-| 2 | 生命周期管理（主进程） | app ready 拉起 / 退出 kill / 崩溃自动重启 / `127.0.0.1:8766` 动态端口防占用 |
-| 3 | 健康探活 | `/health` 轮询 → 驱动侧边栏菜单启用态（未就绪禁用样式） |
-| 4 | 通用 webview 容器页 | `WebViewPage.vue`：src 映射 / 加载态 / 失败重试 / 「桥」标签 + tooltip |
-| 5 | 会话与 token 共享 | bridge 与 server 鉴权打通，避免桥接页二次登录 |
-| 6 | webview 权限配置 | allowpopups、preload 注入 `window.tintin` 最小桥、CSP 对齐 |
+- 依赖 PySide6 / Python runtime，违反移植基本要求「不依赖 python」
+- 其覆盖页面均已归入「不移植」清单，由会话智能体承载
+- DESIGN §4.1「过渡期桥接页」分组同步标注作废；相关 IPC/预埋（如有）在 P1 骨架改造时一并确认无残留
 
-**桥接页清单（7 页，映射原客户端）**：
-
-| 桥接页 | 原客户端页面 |
-|---|---|
-| 方案脚本 | [product_script_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/product_script_page.py) |
-| 一键成片 | [compile_video_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/compile_video_page.py) |
-| 产品库 | [product_library_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/product_library_page.py) |
-| 素材生成（即梦AI） | [dreamina_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/dreamina_page.py) |
-| 音频素材 | [audio_material_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/audio_material_page.py) |
-| 智能混剪 | [video_montage_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/video_montage_page.py) |
-| 直播切片 | [live_clip_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/live_clip_page.py) |
-
-> 原「成片任务队列」（scheduled_tasks_mgmt_page.py）已移出桥接池——业务方指定（2026-08-27）升级为**原生重写**的「定时任务管理」页，直接进侧边栏。
-
-> 其余原客户端页面（marketing_detect / hook_score / video_lut / image_layered / video_ai_rename / agent_home 等）不在 16 页首期清单，作为 V3.1+ 备选池。已 Vue 实现的媒体工具页（ImageMatting / VideoTranscribe / VoiceClone / ReversePromptImage / CoverMaker 等）归 Tab3，不入桥接池。
-
-## 四、实施排期（2026-08-27 第二次调整：+定时任务管理原生重写；侧边栏渐进式挂载）
-
-> **侧边栏原则（渐进式挂载）**：P1 骨架只挂当前真实存在的页面（智能助手 + 定时任务管理占位），不一次凑满 16 项；每交付一个原生页/桥接页就点亮一个菜单项，其余保持隐藏或禁用态（DESIGN §4.1 未就绪样式）。
+## 四、实施排期（2026-08-27 最终版：按移植基本要求收敛）
 
 | 优先级 | 事项 | 内容 / 理由 |
 |---|---|---|
-| ~~P0~~ | ~~工作台形态裁决~~ | ✅ 已裁决：回归 16 页形态；聊天工作台收纳为「智能助手」页 |
-| **P1** | **工作台骨架改造** | 侧边栏导航骨架 + `/workbench/*` 子路由 + 顶栏任务/通知条；挂载：智能助手（Wb* 平移）+ 定时任务管理（占位）；其余菜单项按交付逐个点亮 |
-| **P2** | **桥接基建 + 7 页 webview 上线** | bridge.exe 打包/生命周期/探活 + WebViewPage.vue 通用容器 + token 共享；7 桥接页以「桥」形态进侧边栏 |
-| **P3** | **定时任务管理页（Vue 原生重写）** | 业务方指定新增移植项（2026-08-27）；对照 scheduled_tasks_mgmt_page.py 逐项重写，进侧边栏 |
-| **P4** | 成片任务页（Vue 重写） | 最独立、无跨页依赖、接口+SSE 就绪；完成后从占位切原生 |
-| **P5** | 飞书脚本创作页 | 四页重写链路起点（脚本 → 分镜 → 素材引用），product 字段传递链路在此建立 |
-| **P6** | 分镜脚本页 + ShotMaterialDialog（三 Tab） | 依赖 P5 的 product 传递；`stock_search` 联网素材在此落地 |
-| **P7** | 素材检索页 | 独立页，可与 P5/P6 并行 |
-| V3.1 | 桥接页逐页 Vue 重写替换 | 按 7 桥接页使用频率排序；备选池页面按需纳入 |
+| **P1** | **工作台骨架改造** | 侧边栏导航骨架 + `/workbench/*` 子路由 + 顶栏任务/通知条；挂载「智能助手」（Wb* 平移）+「定时任务管理」（占位）；不移植页面不出现菜单项 |
+| **P2** | **定时任务管理页（Vue 原生重写）** | 唯一确定的新增移植页：对照 scheduled_tasks_mgmt_page.py 逐项重写（定时任务创建/启停/调度管理），进侧边栏 |
+| 待定 | PRD 4 高频页（脚本/分镜/检索/成片任务） | 会话智能体优先承载；是否原生补齐按需评估（缺口清单见 §3.2） |
+| 🚫 取消 | ~~P2 桥接基建 + 7 页 webview~~ | bridge.exe 依赖 Python，作废 |
+| 🚫 取消 | ~~原侧边栏其余页面移植~~ | 会话智能体承载，不移植 |
 
-> 排期原则：骨架（P1）先行让形态落地 → 桥接（P2）补齐功能覆盖 → 原生页逐个交付（P3 定时任务管理 → P4~P7 高频页）。每个页面交付口径：对照原客户端 `studio/gui` 对应 .py 逐项行为核对 + IRON-04 单测 + 打包产物验证 + IRON-09 提交。
+> 交付口径（不变）：对照原客户端 `studio/gui` 对应 .py 逐项行为核对 + IRON-04 单测 + 门禁（node --check / typecheck / 零残留）+ 打包产物更新验证 + IRON-09 提交。
 
 ## 五、验证口径
 

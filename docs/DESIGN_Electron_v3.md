@@ -200,11 +200,11 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
    - 分镜脚本
    - 素材检索
    - 成片任务
-2. **过渡期桥接页**（webview 指向 bridge.exe）
+2. **过渡期桥接页**（webview 指向 bridge.exe）【🚫 方案作废，2026-08-27：依赖 PySide6/Python，违反移植基本要求「不依赖 python」】
    - 方案脚本、一键成片、成片任务队列、产品库、素材生成、音频素材、智能混剪、直播切片…
-   - 这些项右侧带「桥」小标签，hover tooltip 提示「该模块正在升级中，V3.1 将全面重写」。
+   - 这些页面**不再移植**：其内容已由会话智能体（agent 工具调用）承载，不走菜单页形式。
 
-> **2026-08-27 实现状态**：4.2～4.6 全部未实现；过渡期 webview 桥接页亦未落地（renderer 无 webview/iframe 内嵌、无 bridge.exe 集成）。当前 `/workbench` 实现为聊天会话形态（WbComposer / WbMessages / WbTaskDrawer / WbNotificationDrawer / WbSidebar），与本节定义的 16 页工作台为不同形态。差距明细见 [GAP_Report_实施差距报告_2026-08-27.md](./GAP_Report_实施差距报告_2026-08-27.md)。
+> **2026-08-27 移植基本要求定稿**：移植范围收敛为四部分（工作台 / 浏览器 / 媒体工具 / 系统配置），全部 Electron+Vue+TS 原生实现，**不依赖 Python**。4.2～4.6 降级为「待定」（能力由会话智能体承载，按需评估）；**「过渡期桥接页（webview→bridge.exe）」方案作废**（依赖 PySide6，违反基本要求），原侧边栏其余页面不再移植。工作台仅新增「定时任务管理」原生页（scheduled_tasks_mgmt_page.py）+ 侧边栏渐进式挂载。详见 [GAP_Report_实施差距报告_2026-08-27.md](./GAP_Report_实施差距报告_2026-08-27.md)。
 
 侧边栏项状态：
 
@@ -212,7 +212,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 - 激活：左侧 3px primary 竖线 + `--primary-container` 背景 + primary 图标色。
 - 禁用（桥接未就绪）：opacity 0.5，cursor not-allowed。
 
-### 4.2 飞书脚本创作页【❌ 未实现】
+### 4.2 飞书脚本创作页【⏸ 待定】
 
 参考 `ai_script_page.py`，采用 **左右分栏**。
 
@@ -241,7 +241,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   - 底部：小齿轮（编辑）+「引用素材」按钮（secondary）。
   - 卡片间距 12px，hover border 变 primary。
 
-### 4.3 分镜脚本页【❌ 未实现】
+### 4.3 分镜脚本页【⏸ 待定】
 
 参考 `storyboard_page.py`。
 
@@ -266,7 +266,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 [同步到多维表格] [创建飞书文档] [飞书关联标签]
 ```
 
-### 4.4 引用素材对话框（ShotMaterialDialog）【❌ 未实现】
+### 4.4 引用素材对话框（ShotMaterialDialog）【⏸ 待定】
 
 对话框尺寸：960×640px，圆角 14px，顶部 Tab 切换。
 
@@ -283,7 +283,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 - 左下角 brand/model 小徽章（tag badge）。
 - 选中态：2px primary border + 左上角勾选图标。
 
-### 4.5 素材检索页【❌ 未实现】
+### 4.5 素材检索页【⏸ 待定】
 
 参考 `vector_search_page.py` / `gui/vector_search/`。
 
@@ -314,7 +314,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 - 空 keyword 时显示「最近导入」占位区，带最近 8 张缩略图。
 - 双击图片：大图预览遮罩；双击视频：HTML5 video 弹窗，可拖拽进度。
 
-### 4.6 成片任务页【❌ 未实现】
+### 4.6 成片任务页【⏸ 待定】
 
 参考 `scheduled_tasks_page.py`。
 

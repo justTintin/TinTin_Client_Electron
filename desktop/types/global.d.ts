@@ -456,6 +456,37 @@ declare interface TintinBridge {
   inference: TintinBridgeInference
   ocr: TintinBridgeOcr
   knowledge: TintinBridgeKnowledge
+  // P2 本地定时任务（schtasks）
+  scheduled: TintinBridgeScheduled
+}
+
+// --------------------------------------------------------------------
+// scheduled — 本地定时任务（对照原客户端 utils/local_scheduler.py）
+// --------------------------------------------------------------------
+declare interface TintinBridgeScheduledTask {
+  task_name: string
+  name: string
+  type: 'hotspot' | 'agent'
+  schedule: { mode: 'daily' | 'weekly'; time: string; weekdays: number[] }
+  goal: string
+  created_at: string
+  registered?: boolean
+  next_run?: string
+  last_run?: string
+  last_result?: string
+}
+export type { TintinBridgeScheduledTask }
+declare interface TintinBridgeScheduled {
+  list(): Promise<TintinBridgeScheduledTask[]>
+  create(payload: {
+    name: string
+    taskType: 'hotspot' | 'agent'
+    schedule: { mode: 'daily' | 'weekly'; time: string; weekdays?: number[] }
+    goal?: string
+  }): Promise<[boolean, string]>
+  run(taskName: string): Promise<[boolean, string]>
+  delete(name: string): Promise<[boolean, string]>
+  onScheduledHotspot(cb: () => void): () => void
 }
 
 declare global {

@@ -23,6 +23,8 @@ const { createA2Ipc } = require('./a2-ipc')
 const { createThickShellIpc } = require('./thickShell-ipc')
 const { createMediaDownloader } = require('./media-downloader')
 const { createMediaStorage } = require('./media-storage')
+// 本地定时任务（P2 移植：schtasks CRUD + 到点触发接管）
+const localScheduler = require('./local-scheduler')
 
 // electron-store：CommonJS 兼容；失败兜底内存 store（绝不阻塞启动，P1 红线）
 let Store = null
@@ -454,13 +456,37 @@ function createMainWindow(store) {
 // 单例锁
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
-  app.quit()
+  // 到点拉起的第二实例：agent 任务就地提交后退出（主实例不再处理，防重复）；
+  // hotspot 交给主实例 second-instance 切浏览器 Tab
+  const schedArg = localScheduler.findScheduledArg(process.argv)
+  if (schedArg && schedArg.startsWith('agent:')) {
+    localScheduler.runScheduledTrigger(schedArg).catch(() => {}).finally(() => app.quit())
+  } else {
+    app.quit()
+  }
 } else {
-  app.on('second-instance', () => {
+  // 到点触发切换浏览器 Tab（hotspot）；窗口未就绪时暂存，加载完成后补发
+  let pendingHotspot = false
+  function sendHotspotTrigger() {
+    if (!mainWindow) { pendingHotspot = true; return }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+    mainWindow.webContents.send('scheduled:hotspot-trigger')
+    pendingHotspot = false
+  }
+  async function handleScheduledArg(argv) {
+    const arg = localScheduler.findScheduledArg(argv)
+    if (!arg) return
+    const handled = await localScheduler.runScheduledTrigger(arg).catch(() => false)
+    if (handled && arg.startsWith('hotspot:')) sendHotspotTrigger()
+  }
+  app.on('second-instance', (_e, argv) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     }
+    const schedArg = localScheduler.findScheduledArg(argv)
+    if (schedArg && schedArg.startsWith('hotspot:')) sendHotspotTrigger()
   })
 
 // 注册 tintin-ext 为标准协议（支持 Worker/fetch 访问扩展文件）
@@ -606,6 +632,19 @@ app.whenReady().then(() => {
     createEnvIpc(ipcMain, { getServerUrl })
 
     createMainWindow(store)
+
+    // 本地定时任务 IPC（P2 移植）+ 首启到点参数接管
+    ipcMain.handle('scheduled:list', () => localScheduler.listTasks())
+    ipcMain.handle('scheduled:create', (_e, payload) => localScheduler.createTask(payload || {}))
+    ipcMain.handle('scheduled:run', (_e, taskName) => localScheduler.runNow(taskName))
+    ipcMain.handle('scheduled:delete', (_e, name) => localScheduler.deleteTask(name))
+    void handleScheduledArg(process.argv)
+    if (pendingHotspot && mainWindow) {
+      mainWindow.webContents.once('did-finish-load', () => {
+        mainWindow.webContents.send('scheduled:hotspot-trigger')
+        pendingHotspot = false
+      })
+    }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

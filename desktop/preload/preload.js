@@ -101,6 +101,17 @@ const server = {
   agentTaskAction:       (params)  => ipcRenderer.invoke('agent:taskAction', params),
   agentRegisterArtifact: (payload) => ipcRenderer.invoke('agent:registerArtifact', payload),
 
+  // ---------- scheduled（P2 本地定时任务，schtasks）----------
+  scheduledList:   () => ipcRenderer.invoke('scheduled:list'),
+  scheduledCreate: (payload) => ipcRenderer.invoke('scheduled:create', payload),
+  scheduledRun:    (taskName) => ipcRenderer.invoke('scheduled:run', taskName),
+  scheduledDelete: (name) => ipcRenderer.invoke('scheduled:delete', name),
+  onScheduledHotspot: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('scheduled:hotspot-trigger', handler)
+    return () => ipcRenderer.removeListener('scheduled:hotspot-trigger', handler)
+  },
+
   // ---------- tasks ----------
   tasksUnifiedList:      (params)       => ipcRenderer.invoke('tasks:unifiedList', params),
   tasksUnifiedItem:      (id)           => ipcRenderer.invoke('tasks:unifiedItem', { id }),

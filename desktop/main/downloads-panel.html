@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src * file: data:;" />
+<title>下载</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2329; background: #ffffff; user-select: none; -webkit-app-region: drag; }
+  button { -webkit-app-region: no-drag; }
+  .panel { display: flex; flex-direction: column; height: 100%; padding: 12px 14px; }
+  .head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 14px; padding-bottom: 10px; border-bottom: 1px solid #ececf1; }
+  .head-actions { display: flex; align-items: center; gap: 8px; }
+  .clear-done { background: none; border: none; color: #00a1d6; font-size: 12px; cursor: pointer; }
+  .clear-done:hover { text-decoration: underline; }
+  .close { background: none; border: none; cursor: pointer; color: #8a8f99; font-size: 14px; width: 24px; height: 24px; border-radius: 6px; }
+  .close:hover { background: #f2f3f5; color: #1f2329; }
+  .body { flex: 1; overflow: auto; margin-top: 6px; }
+  .empty { color: #8a8f99; font-size: 13px; text-align: center; padding: 24px 0; }
+  .item { display: flex; gap: 10px; padding: 10px 8px; border-radius: 8px; }
+  .item:hover { background: #f7f8fa; }
+  .icon { width: 32px; height: 32px; border-radius: 8px; background: #eef4fb; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+  .meta { min-width: 0; flex: 1; }
+  .name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { font-size: 11px; color: #8a8f99; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar { height: 4px; border-radius: 2px; background: #ececf1; margin-top: 6px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: #00a1d6; border-radius: 2px; transition: width .25s; }
+  .actions { display: flex; flex-direction: column; gap: 4px; justify-content: center; flex-shrink: 0; }
+  .act { background: none; border: 1px solid #dfe1e6; color: #4e5261; border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+  .act:hover { border-color: #00a1d6; color: #00a1d6; }
+  .ok { color: #16a34a; } .fail { color: #e5484d; } .ing { color: #00a1d6; } .stop { color: #8a8f99; }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div class="head">
+      <span>下载</span>
+      <div class="head-actions">
+        <button class="clear-done" id="clearBtn">清除已完成</button>
+        <button class="close" id="closeBtn" aria-label="关闭">✕</button>
+      </div>
+    </div>
+    <div class="body" id="body">
+      <p class="empty">加载中…</p>
+    </div>
+  </div>
+  <script>
+    const { ipcRenderer } = require('electron')
+    const body = document.getElementById('body')
+    let tasks = []
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"]/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    }
+    function fmt(b) {
+      if (!b || b <= 0) return ''
+      const u = ['B', 'KB', 'MB', 'GB']; let i = 0
+      while (b >= 1024 && i < 3) { b /= 1024; i++ }
+      return b.toFixed(i ? 1 : 0) + ' ' + u[i]
+    }
+    function statusMeta(r) {
+      switch (r.status) {
+        case 'downloading': return { cls: 'ing', label: esc(r.message || '下载中') }
+        case 'completed': return { cls: 'ok', label: '已完成' + (r.size ? ' · ' + fmt(r.size) : '') }
+        case 'failed': return { cls: 'fail', label: esc(r.message || '失败') }
+        case 'cancelled': return { cls: 'stop', label: '已取消' }
+        case 'paused': return { cls: 'stop', label: '已暂停' }
+        default: return { cls: 'stop', label: esc(r.status || '') }
+      }
+    }
+    function render() {
+      if (!tasks.length) { body.innerHTML = '<p class="empty">暂无下载记录<br/><small>在嗅探面板点击下载后，任务会显示在这里</small></p>'; return }
+      body.innerHTML = tasks.map(r => {
+        const m = statusMeta(r)
+        const bar = (r.status === 'downloading')
+          ? '<div class="bar"><i style="width:' + Math.min(100, r.progress || 0) + '%"></i></div>'
+          : ''
+        const acts = []
+        if (r.status === 'completed') acts.push('<button class="act" data-a="open" data-id="' + esc(r.taskId) + '">打开文件</button>')
+        if (r.path) acts.push('<button class="act" data-a="reveal" data-id="' + esc(r.taskId) + '">打开位置</button>')
+        if (r.status !== 'downloading') acts.push('<button class="act" data-a="remove" data-id="' + esc(r.taskId) + '">删除</button>')
+        return '<div class="item">'
+          + '<div class="icon">' + (String(r.filename || '').match(/\.(mp3|m4a|aac|flac|wav)$/i) ? '🎵' : '🎬') + '</div>'
+          + '<div class="meta"><div class="name" title="' + esc(r.title || r.filename) + '">' + esc(r.title || r.filename || '未命名') + '</div>'
+          + '<div class="sub ' + m.cls + '">' + m.label + '</div>' + bar + '</div>'
+          + '<div class="actions">' + acts.join('') + '</div>'
+          + '</div>'
+      }).join('')
+      body.querySelectorAll('.act').forEach(btn => {
+        btn.onclick = () => {
+          const ch = { open: 'browser:downloadOpenFile', reveal: 'browser:downloadRevealPath', remove: 'browser:downloadRemoveRecord' }[btn.dataset.a]
+          ipcRenderer.invoke(ch, btn.dataset.id)
+          if (btn.dataset.a === 'remove') { tasks = tasks.filter(t => t.taskId !== btn.dataset.id); render() }
+        }
+      })
+    }
+    function applyList(items) { tasks = items || []; render() }
+
+    document.getElementById('clearBtn').onclick = async () => {
+      try {
+        const r = await ipcRenderer.invoke('browser:downloadsSnapshot')
+        for (const t of ((r && r.items) || [])) {
+          if (['completed', 'failed', 'cancelled'].includes(t.status)) {
+            await ipcRenderer.invoke('browser:downloadRemoveRecord', t.taskId)
+          }
+        }
+        await load()
+      } catch (_) {}
+    }
+    async function load() {
+      try {
+        const r = await ipcRenderer.invoke('browser:downloadsSnapshot')
+        if (r && r.success) applyList(r.items)
+      } catch (_) { body.innerHTML = '<p class="empty">加载失败</p>' }
+    }
+    document.getElementById('closeBtn').onclick = () => ipcRenderer.send('browser:closeDownloadsPanel')
+    addEventListener('DOMContentLoaded', load)
+    ipcRenderer.on('floating:data', load)
+    ipcRenderer.on('browser:downloads-updated', (_e, msg) => {
+      if (!msg || !msg.taskId) return
+      const idx = tasks.findIndex(t => t.taskId === msg.taskId)
+      if (idx < 0) { load(); return } // 新任务：直接拉全量快照（含静态字段）
+      const cur = tasks[idx]
+      tasks[idx] = msg.kind === 'progress'
+        ? { ...cur, progress: msg.progress || 0, message: msg.message || '', receivedBytes: msg.receivedBytes || 0 }
+        : { ...cur, status: msg.status, progress: msg.progress != null ? msg.progress : cur.progress, size: msg.size || cur.size, message: msg.message || cur.message }
+      render()
+    })
+  </script>
+</body>
+</html>

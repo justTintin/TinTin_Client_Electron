@@ -6,9 +6,10 @@
 import type {
   SniffedMedia,
   BiliExtDownload,
+  MediaDownloadTask,
 } from '../../composables/useBrowserDownloads'
 
-defineProps<{
+const props = defineProps<{
   /** B站已装插件下载模式（替代嗅探列表） */
   biliPluginMode: boolean
   /** B站扩展推送标题 */
@@ -23,6 +24,8 @@ defineProps<{
   pageUrl: string
   /** 嗅探到的媒体列表 */
   sniffedMedia: SniffedMedia[]
+  /** 增强下载任务（卡片内嵌进度条按 taskId 绑定） */
+  mediaTasks: MediaDownloadTask[]
 }>()
 
 defineEmits<{
@@ -30,6 +33,12 @@ defineEmits<{
   (e: 'download-bili', dl: BiliExtDownload): void
   (e: 'page-download'): void
 }>()
+
+/** 按 taskId 取关联任务（展示辅助，无副作用） */
+function taskOf(id?: string): MediaDownloadTask | undefined {
+  if (!id) return undefined
+  return props.mediaTasks.find(t => t.id === id)
+}
 </script>
 
 <template>
@@ -49,8 +58,18 @@ defineEmits<{
         <div class="bili-ext-dl-info">
           <div class="bili-ext-dl-name" :title="dl.text">{{ dl.text }}</div>
           <div v-if="dl.sizeText" class="bili-ext-dl-size">{{ dl.sizeText }}</div>
+          <!-- 卡片内嵌进度：点击下载后在本卡片上显示（不跳转右栏 Tab） -->
+          <template v-if="taskOf(dl.taskId)">
+            <div v-if="taskOf(dl.taskId)!.status === 'downloading'" class="card-progress">
+              <div class="card-bar"><i :style="{ width: (taskOf(dl.taskId)!.progress || 0) + '%' }" /></div>
+              <span class="card-pct">{{ taskOf(dl.taskId)!.progress || 0 }}%</span>
+            </div>
+            <div v-else-if="taskOf(dl.taskId)!.status === 'done'" class="card-done">已完成</div>
+            <div v-else-if="taskOf(dl.taskId)!.status === 'error'" class="card-fail">下载失败</div>
+          </template>
         </div>
         <button
+          v-if="!taskOf(dl.taskId) || taskOf(dl.taskId)!.status === 'error' || taskOf(dl.taskId)!.status === 'cancelled'"
           class="bili-ext-dl-btn"
           :disabled="!isElectronShell"
           title="下载"
@@ -125,8 +144,18 @@ defineEmits<{
             <span v-if="m.sizeText">{{ m.sizeText }}</span>
             <span v-if="m.audioUrl" class="sniff-audio-tag">含音频</span>
           </div>
+          <!-- 卡片内嵌进度：点击下载后在本卡片上显示 -->
+          <template v-if="taskOf(m.taskId)">
+            <div v-if="taskOf(m.taskId)!.status === 'downloading'" class="card-progress">
+              <div class="card-bar"><i :style="{ width: (taskOf(m.taskId)!.progress || 0) + '%' }" /></div>
+              <span class="card-pct">{{ taskOf(m.taskId)!.progress || 0 }}%</span>
+            </div>
+            <div v-else-if="taskOf(m.taskId)!.status === 'done'" class="card-done">已完成</div>
+            <div v-else-if="taskOf(m.taskId)!.status === 'error'" class="card-fail">下载失败</div>
+          </template>
         </div>
         <button
+          v-if="!taskOf(m.taskId) || taskOf(m.taskId)!.status === 'error' || taskOf(m.taskId)!.status === 'cancelled'"
           class="sniff-dl-btn"
           :disabled="!isElectronShell"
           title="下载"
@@ -350,6 +379,36 @@ defineEmits<{
   margin-top: 6px;
   line-height: 1.4;
 }
+
+/* ─── 卡片内嵌下载进度 ─── */
+.card-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+.card-bar {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.card-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--primary);
+  transition: width 0.25s ease;
+}
+.card-pct {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.card-done { margin-top: 5px; font-size: 11px; color: var(--success); }
+.card-fail { margin-top: 5px; font-size: 11px; color: var(--destructive, #ef4444); }
 
 /* ─── B站插件下载卡（装了插件时替代嗅探列表） ─── */
 .bili-plugin-card {

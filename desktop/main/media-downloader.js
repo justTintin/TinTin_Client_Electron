@@ -1,12 +1,53 @@
-const { ipcMain, session } = require('electron')
+const { ipcMain, session, shell } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const https = require('node:https')
 const http = require('node:http')
+const os = require('node:os')
 const { URL } = require('node:url')
 const { spawn } = require('node:child_process')
 
 const activeDownloads = new Map()
+
+// ══ 任务注册表：主进程下载状态的「单一真相源」 ══
+// 浮窗下载面板（downloads-panel.html）与下载历史均从本注册表读取；
+// 渲染层的 useBrowserDownloads 仅做实时卡片镜像，不再承担持久化。
+const FINAL_STATUSES = ['completed', 'failed', 'cancelled']
+const HISTORY_MAX = 300
+const taskRegistry = new Map() // taskId -> { taskId,title,filename,path,url,status,progress,message,size,receivedBytes,startedAt,finishedAt }
+let _userDataDir = null
+
+function _registryUpsert(taskId, patch) {
+  if (!taskId || typeof taskId !== 'string') return
+  const prev = taskRegistry.get(taskId) || {}
+  const rec = { ...prev, ...patch, taskId }
+  if (!rec.startedAt) rec.startedAt = Date.now()
+  if (patch && FINAL_STATUSES.includes(patch.status)) rec.finishedAt = Date.now()
+  taskRegistry.set(taskId, rec)
+}
+
+function _persistHistory() {
+  try {
+    const dir = _userDataDir || os.tmpdir()
+    const file = path.join(dir, 'downloads-history.json')
+    const done = [...taskRegistry.values()]
+      .filter(r => FINAL_STATUSES.includes(r.status))
+      .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
+      .slice(0, HISTORY_MAX)
+    fs.writeFileSync(file, JSON.stringify(done), 'utf8')
+  } catch (_) {}
+}
+
+function _loadHistory(appLike) {
+  try {
+    _userDataDir = (appLike && appLike.getPath) ? appLike.getPath('userData') : null
+  } catch (_) {}
+  try {
+    const file = path.join(_userDataDir || os.tmpdir(), 'downloads-history.json')
+    const arr = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (Array.isArray(arr)) for (const r of arr) if (r && r.taskId) taskRegistry.set(r.taskId, r)
+  } catch (_) {}
+}
 
 function _formatBytes(bytes, decimals = 2) {
   if (!bytes || bytes === 0) return '0 Bytes'
@@ -216,7 +257,8 @@ function _getFfmpegPath(app, dirname) {
 }
 
 function createMediaDownloader(ipcMain, ctx) {
-  const { app, getMainWindow } = ctx
+  const { app, getMainWindow, getDownloadsPanel } = ctx
+  _loadHistory(app)
 
   // 兼容双调用形态：_updateTaskProgress/_updateTaskStatus 传入完整消息对象（单参），
   // 其余调用方传 (taskId, payload)。此前固定双参导致消息被二次包装为 {taskId: MSG}，
@@ -227,16 +269,25 @@ function createMediaDownloader(ipcMain, ctx) {
         ? { taskId: msgOrTaskId, ...(maybePayload || {}) }
         : msgOrTaskId
       if (!msg || !msg.taskId || typeof msg.taskId !== 'string') return
+      // 注册表同步：主窗口 + 浮窗面板共用同一份状态（单一真相源）
+      _registryUpsert(msg.taskId, msg.kind === 'progress'
+        ? { progress: msg.progress || 0, message: msg.message || '', receivedBytes: msg.receivedBytes || 0 }
+        : { status: msg.status, progress: msg.progress || 0, size: msg.size || 0, message: msg.message || '' })
+      if (FINAL_STATUSES.includes(msg.status)) _persistHistory()
       const mw = getMainWindow && getMainWindow()
       if (mw && !mw.isDestroyed()) {
         mw.webContents.send('browser:downloads-updated', msg)
+      }
+      const panel = getDownloadsPanel && getDownloadsPanel()
+      if (panel && !panel.isDestroyed()) {
+        panel.webContents.send('browser:downloads-updated', msg)
       }
     } catch (_) {}
   }
 
   // ── IPC: browser:downloadMediaStart ──
   ipcMain.handle('browser:downloadMediaStart', async (_e, params) => {
-    const { taskId, url, audioUrl, filename, referer, subDir, useYtdlp, platformId } = params
+    const { taskId, url, audioUrl, filename, title, referer, subDir, useYtdlp, platformId } = params
     const partition = platformId ? `persist:tintin-${platformId}` : 'persist:tintin-browser'
 
     let downloadDir
@@ -260,6 +311,16 @@ function createMediaDownloader(ipcMain, ctx) {
     }
 
     activeDownloads.set(taskId, { type: 'downloading', startTime: Date.now() })
+    // 注册表建档：title/path 等静态信息只在此登记一次，后续 broadcast 仅刷新动态字段
+    _registryUpsert(taskId, {
+      title: params.title || safeFilename,
+      filename: safeFilename,
+      path: finalPath,
+      url: url || '',
+      platformId: platformId || null,
+      audioUrl: audioUrl || null,
+      status: 'downloading',
+    })
 
     const isVideoPage = useYtdlp === true || (useYtdlp !== false && referer && _isValidVideoPageUrl(referer))
     _updateTaskStatus(broadcast, taskId, 'downloading', 0, 0, isVideoPage ? '正在通过 yt-dlp 解析视频...' : '准备下载...')
@@ -399,23 +460,27 @@ function createMediaDownloader(ipcMain, ctx) {
 
         let videoBytes = { received: 0, total: 0 }
         let audioBytes = { received: 0, total: 0 }
+        let vPct = 0
+        let aPct = 0
 
         const videoPromise = _downloadStream(taskId + '_video', cleanUrl, videoTempPath, referer, partition, (_p) => {
           videoBytes.received = _p.receivedBytes || 0
           videoBytes.total = _p.size || 0
+          vPct = _p.progress || 0
           const total = videoBytes.total + audioBytes.total
           const received = videoBytes.received + audioBytes.received
           const progress = total > 0 ? Math.round((received / total) * 100) : 0
-          _updateTaskProgress(broadcast, taskId, progress, `下载中 (音视频模式)`, received)
+          _updateTaskProgress(broadcast, taskId, progress, `视频 ${vPct}% · 音频 ${aPct}%`, received)
         })
 
         const audioPromise = _downloadStream(taskId + '_audio', cleanAudioUrl, audioTempPath, referer, partition, (_p) => {
           audioBytes.received = _p.receivedBytes || 0
           audioBytes.total = _p.size || 0
+          aPct = _p.progress || 0
           const total = videoBytes.total + audioBytes.total
           const received = videoBytes.received + audioBytes.received
           const progress = total > 0 ? Math.round((received / total) * 100) : 0
-          _updateTaskProgress(broadcast, taskId, progress, `下载中 (音视频模式)`, received)
+          _updateTaskProgress(broadcast, taskId, progress, `视频 ${vPct}% · 音频 ${aPct}%`, received)
         })
 
         try {
@@ -490,6 +555,33 @@ function createMediaDownloader(ipcMain, ctx) {
       return { success: true }
     }
     return { success: false }
+  })
+
+  // ── IPC: 下载面板数据源与文件操作（注册表为单一真相源） ──
+  ipcMain.handle('browser:downloadsSnapshot', async () => {
+    const items = [...taskRegistry.values()]
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+    return { success: true, items }
+  })
+  ipcMain.handle('browser:downloadOpenFile', async (_e, taskId) => {
+    const t = taskRegistry.get(taskId)
+    if (!t || !t.path) return { success: false, error: '任务不存在' }
+    if (!fs.existsSync(t.path)) return { success: false, error: '文件不存在或已被移动' }
+    await shell.openPath(t.path)
+    return { success: true }
+  })
+  ipcMain.handle('browser:downloadRevealPath', (_e, taskId) => {
+    const t = taskRegistry.get(taskId)
+    if (!t || !t.path) return { success: false, error: '任务不存在' }
+    if (fs.existsSync(t.path)) shell.showItemInFolder(t.path)
+    else shell.openPath(path.dirname(t.path)).catch(() => {})
+    return { success: true }
+  })
+  ipcMain.handle('browser:downloadRemoveRecord', (_e, taskId) => {
+    _killActiveTask(taskId)
+    taskRegistry.delete(taskId)
+    _persistHistory()
+    return { success: true }
   })
 
   return {}

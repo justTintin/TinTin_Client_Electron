@@ -220,6 +220,9 @@ const browser = {
   closeExtensionsPanel: ()               => ipcRenderer.send('browser:closeExtensionsPanel'),
   openSettingsPanel:   (x, y, data)      => ipcRenderer.send('browser:openSettingsPanel', x, y, data),
   closeSettingsPanel:  ()                => ipcRenderer.send('browser:closeSettingsPanel'),
+  // 下载管理浮窗：独立原生窗口（进度内嵌嗅探卡片，浮窗承载历史/文件操作）
+  openDownloadsPanel:  (x, y)            => ipcRenderer.send('browser:openDownloadsPanel', x, y),
+  closeDownloadsPanel: ()                => ipcRenderer.send('browser:closeDownloadsPanel'),
   cookieList:      (platformId)          => ipcRenderer.invoke('browser:cookieList', platformId),
   cookieClear:     (platformId)          => ipcRenderer.invoke('browser:cookieClear', platformId),
   extensionList:   ()                    => ipcRenderer.invoke('browser:extensionList'),

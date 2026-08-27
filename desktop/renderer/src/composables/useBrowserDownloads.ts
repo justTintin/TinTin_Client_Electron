@@ -29,13 +29,6 @@ export interface UseBrowserDownloadsDeps {
 }
 
 /* ── 对外类型（子组件 props 复用；与原定义逐字一致） ── */
-export interface DownloadItem {
-  id: string
-  title: string
-  progress: number // 0-100
-  status: 'downloading' | 'done' | 'queued'
-  size?: string
-}
 export interface SniffedMedia {
   id: string
   url: string
@@ -46,12 +39,16 @@ export interface SniffedMedia {
   platformId?: string
   ts: number
   audioUrl?: string
+  /** 触发下载后的任务 ID（嗅探卡片内嵌进度条绑定用） */
+  taskId?: string
 }
 export interface BiliExtDownload {
   url: string
   download: string
   text: string
   sizeText: string
+  /** 触发下载后的任务 ID（卡片内嵌进度条绑定用） */
+  taskId?: string
 }
 export interface InstalledExtension {
   id: string
@@ -81,12 +78,7 @@ export interface HistoryEntry {
 }
 
 export interface UseBrowserDownloadsReturn {
-  downloads: Ref<DownloadItem[]>
-  downloadingCount: ComputedRef<number>
-  _fmtBytes: (b?: number) => string
-  dlStatusText: (d: DownloadItem) => string
   sniffedMedia: Ref<SniffedMedia[]>
-  activeRightTab: Ref<'sniff' | 'downloads'>
   sniffedCount: ComputedRef<number>
   biliPluginInstalled: Ref<boolean>
   loadBiliPluginState: () => Promise<void>
@@ -108,6 +100,7 @@ export interface UseBrowserDownloadsReturn {
   clearHistory: () => void
   navigateToHistory: (index: number) => void
   openHistoryPanel: () => void
+  openDownloadsPanel: () => void
   formatHistoryTime: (ts: number) => string
   saveAllToStorage: () => Promise<void>
   loadFromStorage: () => Promise<void>
@@ -123,26 +116,8 @@ const {
   activePlatformId, activePlatformName,
 } = deps
 
-/* ── 下载管理（右栏）：will-download 实时推送 ────────────── */
-const downloads = ref<DownloadItem[]>([])
-const downloadingCount = computed(() => downloads.value.filter((d) => d.status === 'downloading').length)
-/** 字节 → 人类可读大小（粗估） */
-function _fmtBytes(b?: number): string {
-  if (!b) return ''
-  if (b < 1024) return b + 'B'
-  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + 'KB'
-  if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + 'MB'
-  return (b / (1024 * 1024 * 1024)).toFixed(2) + 'GB'
-}
-/** 下载状态显示文本 */
-function dlStatusText(d: DownloadItem): string {
-  if (d.status === 'done') return d.size ? '已完成 · ' + d.size : '已完成'
-  if (d.status === 'queued') return '排队中'
-  return d.size || '下载中'
-}
-
+/* ── 媒体嗅探面板 + B站插件状态 + B站扩展推送 + 已装扩展 ── */
 const sniffedMedia = ref<SniffedMedia[]>([])
-const activeRightTab = ref<'sniff' | 'downloads'>('sniff')
 const sniffedCount = computed(() => sniffedMedia.value.length)
 
 /* ── B站下载插件可用性（装了插件 → 右栏显示"用插件下载"，不再嗅探） ── */
@@ -212,6 +187,7 @@ async function downloadSniffedMedia(media: SniffedMedia): Promise<void> {
       useYtdlp: needsYtdlp,
     })
     // 幂等创建：onProgress 可能已创建同 taskId 卡片，避免重复 key
+    media.taskId = taskId
     _ensureMediaTask(taskId, {
       title: media.name || taskId,
       totalSize: media.size || 0,
@@ -235,18 +211,21 @@ async function downloadBiliExtLink(dl: BiliExtDownload): Promise<void> {
     await t.mediaDownload.start({
       taskId,
       url: dl.url,
+      audioUrl: (dl as any).audioUrl,
+      title: dl.text,
       filename,
       referer: addressUrl.value,
       platformId: 'bilibili',
       subDir: 'bilibili',
       useYtdlp: false,
     })
+    // 卡片内嵌进度：把任务 ID 回写到来源条目，SniffTab 据此渲染进度条
+    dl.taskId = taskId
     _ensureMediaTask(taskId, {
-      title: filename,
+      title: dl.text || filename,
       totalSize: 0,
       url: dl.url,
     })
-    activeRightTab.value = 'downloads'
   } catch (e) {
     console.warn('[Browser] downloadBiliExtLink failed:', e)
     window.open(dl.url, '_blank')
@@ -386,6 +365,26 @@ function formatHistoryTime(ts: number): string {
   return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
 }
 
+/** 打开下载管理浮窗（独立原生窗口，天然位于 BrowserView 之上；锚点=工具栏⬇按钮） */
+function openDownloadsPanel(): void {
+  const t = (window as any).tintin
+  if (!t?.browser?.openDownloadsPanel) return
+  const btn = document.querySelector('.browser-toolbar .dl-btn')
+  let x = 0, y = 0
+  if (btn) {
+    const rect = (btn as HTMLElement).getBoundingClientRect()
+    x = Math.round(rect.right - 400)
+    y = Math.round(rect.bottom + 6)
+  }
+  // 相对主窗口坐标 → 屏幕绝对坐标（与 openHistoryPanel 同一套换算）
+  const winBounds = (window as any).__WINDOW_BOUNDS__
+  if (winBounds) {
+    x += winBounds.x || 0
+    y += winBounds.y || 0
+  }
+  t.browser.openDownloadsPanel(x, y)
+}
+
 async function saveAllToStorage(): Promise<void> {
   const t = (window as any).tintin
   if (!t?.mediaStorage) return
@@ -463,14 +462,14 @@ watch(sniffedMedia, () => _debouncedSave(), { deep: true })
 watch(mediaDownloadTasks, () => _debouncedSave(), { deep: true })
 
 return {
-  downloads, downloadingCount, _fmtBytes, dlStatusText,
-  sniffedMedia, activeRightTab, sniffedCount,
+  sniffedMedia, sniffedCount,
   biliPluginInstalled, loadBiliPluginState, biliPluginDownloadMode,
   biliExtDownloads, biliExtTitle,
   installedExtensions, loadInstalledExtensions, extIconSrc,
   _formatBytesPhase2, downloadSniffedMedia, downloadBiliExtLink, downloadFromPage,
   mediaDownloadTasks, activeDownloadCount, _ensureMediaTask,
   historyEntries, addHistory, clearHistory, navigateToHistory, openHistoryPanel, formatHistoryTime,
+  openDownloadsPanel,
   saveAllToStorage, loadFromStorage,
   togglePauseTask, cancelDownloadTask, removeDownloadTask, _formatSpeed,
 }

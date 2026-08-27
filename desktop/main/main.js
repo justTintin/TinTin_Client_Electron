@@ -177,6 +177,7 @@ function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, an
     }
   })
   floatingPanelWindow.setParentWindow(mainWindow)
+  floatingPanelWindow.__panelName = name
   floatingPanelWindow.loadFile(path.join(__dirname, htmlFile))
   floatingPanelWindow.once('ready-to-show', () => {
     if (floatingPanelWindow && !floatingPanelWindow.isDestroyed()) {
@@ -512,7 +513,14 @@ app.whenReady().then(() => {
     createThickShellIpc(ipcMain, sharedCtx)
 
     // Phase 1: 媒体下载器（yt-dlp + 流式下载 + FFmpeg 合并）
-    createMediaDownloader(ipcMain, { app, getMainWindow: () => mainWindow })
+    createMediaDownloader(ipcMain, {
+      app,
+      getMainWindow: () => mainWindow,
+      // 下载浮窗打开期间同步接收进度广播（注册表状态推送到面板）
+      getDownloadsPanel: () => (floatingPanelWindow
+        && !floatingPanelWindow.isDestroyed()
+        && floatingPanelWindow.__panelName === 'downloads') ? floatingPanelWindow : null,
+    })
 
     // Phase 3: 媒体持久化（嗅探历史 + 下载记录 + 设置）
     createMediaStorage(ipcMain, { store })
@@ -655,13 +663,16 @@ ipcMain.handle('history:clear', async () => {
   }
 })
 
-// IPC: 浮动面板（扩展/设置 → 独立原生窗口，渲染层只传锚点坐标）
+// IPC: 浮动面板（扩展/设置/下载 → 独立原生窗口，渲染层只传锚点坐标）
 ipcMain.on('browser:openExtensionsPanel', (e, x, y) =>
   _openFloatingPanel('extensions', 'extensions-panel.html', 380, 440, x, y, null))
 ipcMain.on('browser:closeExtensionsPanel', () => _closeFloatingPanel())
 ipcMain.on('browser:openSettingsPanel', (e, x, y, data) =>
   _openFloatingPanel('settings', 'settings-panel.html', 420, 470, x, y, data))
 ipcMain.on('browser:closeSettingsPanel', () => _closeFloatingPanel())
+ipcMain.on('browser:openDownloadsPanel', (e, x, y) =>
+  _openFloatingPanel('downloads', 'downloads-panel.html', 400, 480, x, y, null))
+ipcMain.on('browser:closeDownloadsPanel', () => _closeFloatingPanel())
 
 // IPC: dialog
 ipcMain.handle('dialog:openFile', async (event, params) => {

@@ -114,12 +114,31 @@ const BILI_DL_EXTRACT_SCRIPT = `(function(){
       var durls = a.getAttribute('durls');
       if (durls) {
         var arr = _dec(durls);
-        if (Object.prototype.toString.call(arr) === '[object Array]') {
+        if (Object.prototype.toString.call(arr) === '[object Array]' && arr.length) {
+          // 合并模式（type="a+v"）：整组归并为「单条目」，携带视频流+音频流，
+          // 由主进程分别下载两路流后 FFmpeg 合并，渲染层只显示一张进度卡。
+          // 扩展源码中 durls 固定 [音频, 视频] 顺序；兜底按体积大者为视频判定。
           var base = a.getAttribute('title') || '';
-          for (var j = 0; j < arr.length; j++) {
-            var g = arr[j];
-            if (g && g.url) items.push({ url: _norm(g.url), download: quality + base + (arr.length>1?('_p'+(j+1)):''), text: quality + t + (arr.length>1?(' '+(j+1)):'') + (sizeText?('<'+sizeText+'>'):''), sizeText: sizeText });
+          var liSize = '';
+          try {
+            var szSpan = a.parentElement ? a.parentElement.querySelector('span.size') : null;
+            liSize = szSpan ? (szSpan.textContent || '').replace(/^[（(共]+/, '').replace(/[）)]$/, '') : '';
+          } catch (_eSz) {}
+          var mergeText = quality + t + (liSize ? (' (' + liSize + ')') : '');
+          if (arr.length >= 2) {
+            var vIdx = 0, aIdx = 1;
+            var tAttr = a.getAttribute('type') || '';
+            if (/a\\+v/.test(tAttr)) { aIdx = 0; vIdx = 1 }
+            else {
+              var s0 = Number(arr[0] && arr[0].size) || 0, s1 = Number(arr[1] && arr[1].size) || 0;
+              if (s1 > s0) { vIdx = 1; aIdx = 0 } else { vIdx = 0; aIdx = 1 }
+            }
+            if (arr[vIdx] && arr[vIdx].url && arr[aIdx] && arr[aIdx].url) {
+              items.push({ url: _norm(arr[vIdx].url), audioUrl: _norm(arr[aIdx].url), download: quality + base + '.mp4', text: mergeText, sizeText: liSize, dual: true });
+              continue;
+            }
           }
+          if (arr[0] && arr[0].url) { items.push({ url: _norm(arr[0].url), download: quality + base + '.mp4', text: mergeText, sizeText: liSize }); }
           continue;
         }
       }

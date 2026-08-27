@@ -25,6 +25,8 @@ const props = defineProps<{
   iconSrc: (e: InstalledExtension) => string
   /** 历史条数（>0 显示红点） */
   historyCount: number
+  /** 进行中下载任务数（⬇按钮角标） */
+  activeDownloadCount: number
 }>()
 
 const emit = defineEmits<{
@@ -36,6 +38,7 @@ const emit = defineEmits<{
   (e: 'url-enter'): void
   (e: 'open-ext-panel'): void
   (e: 'open-history-panel'): void
+  (e: 'open-downloads-panel'): void
   (e: 'open-settings'): void
 }>()
 
@@ -173,6 +176,21 @@ function userExtensions(): InstalledExtension[] {
           <span v-if="historyCount > 0" class="badge-dot" />
         </button>
       </div>
+      <div class="hist-wrapper">
+        <button
+          class="ic-btn dl-btn"
+          title="下载管理"
+          aria-label="下载管理"
+          @click="$emit('open-downloads-panel')"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          <span v-if="activeDownloadCount > 0" class="dl-badge">{{ activeDownloadCount > 99 ? '99+' : activeDownloadCount }}</span>
+        </button>
+      </div>
       <button class="ic-btn" title="设置" aria-label="设置" @click="$emit('open-settings')">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <circle cx="12" cy="12" r="3" />
@@ -250,6 +268,24 @@ function userExtensions(): InstalledExtension[] {
   height: 7px;
   border-radius: 999px;
   background: var(--error);
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+/* ── ⬇ 下载管理按钮角标（进行中任务数） ── */
+.dl-badge {
+  position: absolute;
+  top: 3px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
   box-shadow: 0 0 0 2px var(--surface);
 }
 

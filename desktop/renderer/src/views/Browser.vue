@@ -87,11 +87,7 @@ const {
   removeFavoriteItem,
 } = favoritesApi
 const {
-  downloads,
-  _fmtBytes,
-  dlStatusText,
   sniffedMedia,
-  activeRightTab,
   sniffedCount,
   loadBiliPluginState,
   biliPluginDownloadMode,
@@ -111,12 +107,9 @@ const {
   addHistory,
   navigateToHistory,
   openHistoryPanel,
+  openDownloadsPanel,
   saveAllToStorage,
   loadFromStorage,
-  togglePauseTask,
-  cancelDownloadTask,
-  removeDownloadTask,
-  _formatSpeed,
 } = downloadsApi
 const {
   hostRef,
@@ -139,11 +132,9 @@ const {
 
 /* ── 子组件 v-model 中转（保持子组件纯展示） ── */
 function setAddress(v: string): void { addressUrl.value = v }
-function setActiveTab(tab: 'sniff' | 'downloads'): void { activeRightTab.value = tab }
 
-/* ── 订阅：URL 更新（did-navigate）+ 下载推送（will-download） + Cherry Studio view-ready（did-stop-loading） ──── */
+/* ── 订阅：URL 更新（did-navigate） + Cherry Studio view-ready（did-stop-loading） ──── */
 let _unsubUrl: (() => void) | null = null
-let _unsubDownloads: (() => void) | null = null
 let _unsubViewReady: (() => void) | null = null
 let _unsubMediaSniff: (() => void) | null = null
 let _unsubMediaProgress: (() => void) | null = null
@@ -163,29 +154,6 @@ function _subscribeEvents(): void {
           addressUrl.value = payload.url
           addHistory(payload.url, payload?.title || '', payload.platformId)
           // 不再根据 URL 自动切换 active 标签——active 由用户点击决定
-        }
-      })
-    }
-    if (typeof t.browser.onDownloadsUpdated === 'function') {
-      _unsubDownloads = t.browser.onDownloadsUpdated((payload: any) => {
-        if (!payload?.filename) return
-        // 下载事件 → 右栏卡片实时刷新（简化：若存在同名则更新，否则新增 downloading）
-        const name = String(payload.filename)
-        let item = downloads.value.find((d) => d.title === name)
-        if (!item) {
-          item = { id: 'dl-' + Date.now(), title: name, progress: 0, status: 'downloading', size: _fmtBytes(payload.size) }
-          downloads.value.unshift(item)
-        }
-        if (payload.kind === 'done' || payload.kind === 'completed') {
-          item.progress = 100
-          item.status = 'done'
-          if (payload.savePath) item.size = _fmtBytes(payload.totalBytes)
-        } else if (payload.kind === 'cancelled' || payload.kind === 'interrupted') {
-          item.status = 'queued'
-        } else if (typeof payload.percent === 'number') {
-          item.progress = payload.percent
-          item.status = 'downloading'
-          if (payload.totalBytes) item.size = _fmtBytes(payload.totalBytes)
         }
       })
     }
@@ -352,7 +320,6 @@ onBeforeUnmount(() => {
     _onAppWindowStateChange = null
   }
   if (_unsubUrl) { try { _unsubUrl() } catch(_){} _unsubUrl = null }
-  if (_unsubDownloads) { try { _unsubDownloads() } catch(_){} _unsubDownloads = null }
   if (_unsubViewReady) { try { _unsubViewReady() } catch(_){} _unsubViewReady = null }
   if (_unsubMediaSniff) { try { _unsubMediaSniff() } catch(_){} _unsubMediaSniff = null }
   if (_unsubMediaProgress) { try { _unsubMediaProgress() } catch(_){} _unsubMediaProgress = null }
@@ -384,6 +351,7 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
       :extensions="installedExtensions"
       :icon-src="extIconSrc"
       :history-count="historyEntries.length"
+      :active-download-count="activeDownloadCount"
       @toggle-left-drawer="toggleLeftDrawer"
       @back="navBack"
       @forward="navForward"
@@ -392,6 +360,7 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
       @url-enter="onUrlEnter"
       @open-ext-panel="openExtensionsPanel"
       @open-history-panel="openHistoryPanel"
+      @open-downloads-panel="openDownloadsPanel"
       @open-settings="goSettings"
     />
 
@@ -459,30 +428,20 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
         />
       </main>
 
-      <!-- 右栏：媒体嗅探 + 下载管理（设计稿 240px） -->
+      <!-- 右栏：媒体嗅探（下载进度内嵌卡片；下载管理在工具栏⬇浮窗） -->
       <BrowserRightPanel
         :open="rightPanelOpen"
-        :active-tab="activeRightTab"
-        :sniffed-count="sniffedCount"
-        :active-download-count="activeDownloadCount"
         :sniffed-media="sniffedMedia"
-        :media-download-tasks="mediaDownloadTasks"
-        :downloads="downloads"
+        :media-tasks="mediaDownloadTasks"
         :bili-plugin-mode="biliPluginDownloadMode"
         :bili-ext-title="biliExtTitle"
         :bili-ext-downloads="biliExtDownloads"
         :is-electron-shell="isElectronShell"
         :active-platform-id="activePlatformId"
         :page-url="addressUrl"
-        :format-speed="_formatSpeed"
-        :dl-status-text="dlStatusText"
-        @update:active-tab="setActiveTab"
         @download-media="downloadSniffedMedia"
         @download-bili="downloadBiliExtLink"
         @page-download="downloadFromPage"
-        @pause-task="togglePauseTask"
-        @cancel-task="cancelDownloadTask"
-        @remove-task="removeDownloadTask"
       />
 
       <!-- 浮层遮罩：抽屉/滑出面板打开时（<1200px） -->

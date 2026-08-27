@@ -366,11 +366,14 @@ declare interface TintinBridgeBrowser {
   }): Promise<{ success: boolean; data?: BrowserNavigateResult; error?: string }>
   extractDOM(platformId: BrowserPlatformId):
     Promise<{ success: boolean; ok?: boolean; data?: any; error?: { type: string; message: string; hint?: string } }>
-  /** 浮动面板：独立原生窗口（扩展/设置）；openSettingsPanel 的 data 为平台列表 [{id,name,badge}] */
+  /** 浮动面板：独立原生窗口（扩展/设置/下载）；openSettingsPanel 的 data 为平台列表 [{id,name,badge}] */
   openExtensionsPanel(x: number, y: number): void
   closeExtensionsPanel(): void
   openSettingsPanel(x: number, y: number, data?: { id: string; name: string; badge: string }[]): void
   closeSettingsPanel(): void
+  /** 下载管理浮窗：独立原生窗口（历史 + 文件操作；实时进度内嵌嗅探卡片） */
+  openDownloadsPanel(x: number, y: number): void
+  closeDownloadsPanel(): void
   /** Cherry Studio：主动校验 bounds（渲染端期望 vs 主进程实际） */
   verifyBounds(payload: {
     platformId: BrowserPlatformId

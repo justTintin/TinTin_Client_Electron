@@ -211,7 +211,9 @@ S1/S2 的 `task_id` 必须：
 
 ### 3.2 Tab1 工作台 — 4 个高频页重写规格（第一阶段 MVP 必须过）
 
-#### 3.2.1 飞书脚本创作（参考 [ai_script_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/ai_script_page.py)）
+> **2026-08-27 实现状态**：❌ 3.2.1～3.2.4 四页**均未实现**（renderer 中无对应页面组件，`/script/list`、`stock_search`、scheduled 等接口仅存在于类型契约，零调用）；其余 12 页的 webview→bridge.exe 桥接方案亦未落地。当前 `/workbench` 实现为**聊天会话形态工作台**（WbComposer / WbMessages / WbTaskDrawer / WbNotificationDrawer），与本节定义的 16 页工作台为不同形态。差距明细见 [GAP_Report_实施差距报告_2026-08-27.md](./GAP_Report_实施差距报告_2026-08-27.md)。
+
+#### 3.2.1 飞书脚本创作【❌ 未实现】（参考 [ai_script_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/ai_script_page.py)）
 
 - **左侧区域**（从上到下）：
   - 「已有脚本」下拉 + 继续创作按钮（GET `/script/list?source=feishu`）
@@ -222,7 +224,7 @@ S1/S2 的 `task_id` 必须：
 - **右侧脚本卡片列表**：每行 = 镜头编号 + 镜别 + 时长 + 音效 + 画面描述 + 旁白台词；卡片右下角有小齿轮（直接编辑）和「引用素材」按钮（打开 ShotMaterialDialog 的 Vue 版，见 3.2.2b）
 - **必带字段传递**：`product = {brand, model, category, name}` 必须写入每个镜头的上下文，「引用素材」对话框打开时本地素材 Tab 的筛选条件和联网素材 Tab 的 `stock_search` query 前缀要自动拼上 `brand + model`（例如搜索「特写 手 音箱」自动扩展成「JBL CHARGE6 特写 手 音箱」）
 
-#### 3.2.2 分镜脚本（参考 [storyboard_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/storyboard_page.py)）
+#### 3.2.2 分镜脚本【❌ 未实现】（参考 [storyboard_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/storyboard_page.py)）
 
 - 顶部标题行：相似度自动绑定按钮 + 画幅下拉（9:16/16:9/1:1）+ 保存分镜脚本按钮（保存到服务端时，立即刷新一键成片的脚本列表；与本次 storyboard_page.py 1607 行修复口径一致）
 - 镜头卡片（与 V2.2 完全同字段）：镜别下拉 + 时长输入 + 音效文本框 + 画面描述 + 旁白台词 + **引用素材按钮** + **风格画像预览缩略图**
@@ -232,14 +234,14 @@ S1/S2 的 `task_id` 必须：
   3. **Tab3 联网素材**：类型下拉（图片/视频/全部）+ 搜索框 → 调 `material_client.stock_search(query, kind)`（本次修复的联网素材接口）→ 缩略图网格多选。确认时按勾选写入镜头的 `materials[]` 字段，`type = "web_stock"`（字段顺序：`path(url)/thumb/stock_id/media_type/width/height/duration/author/source`）
 - 底部操作行：同步到多维表格 / 创建飞书文档 / 飞书关联标签（对应现有飞书集成）
 
-#### 3.2.3 素材检索（参考 `studio/gui/vector_search/` 拆分后的 5 个文件）
+#### 3.2.3 素材检索【❌ 未实现】（参考 `studio/gui/vector_search/` 拆分后的 5 个文件）
 
 - 左侧筛选面板：文件类型、横纵比、分辨率下限、时长范围、品牌、型号、产品分类、Tag 云
 - 右侧缩略图网格：必须复现「第一页/第二页 item 间隔一致」的修复 — gridSize 动态计算、关闭 uniformItemSizes 后再调整、数据填充后强制 doItemsLayout（Vue 版对应：CSS Grid `grid-auto-rows` 固定，item 尺寸统一 aspect-ratio，不再有 Qt 的原生缓存坑）
 - 双击预览：图片=大图预览，视频=原生 HTML5 `<video controls>` 流式预览（支持点击跳转播放位置，与现有 VideoPreviewDialog 行为对齐）
 - 顶部搜索框：回车触发 `material_client.search(...)`；空 keyword 时显示最近导入
 
-#### 3.2.4 成片任务（参考 [scheduled_tasks_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/scheduled_tasks_page.py)）
+#### 3.2.4 成片任务【❌ 未实现】（参考 [scheduled_tasks_page.py](file:///d:/Project/TinTin_AI_Agent_Main/studio/gui/scheduled_tasks_page.py)）
 
 - **顶部标题行**：左侧「成片任务列表（来自服务端）」；右侧按顺序依次是：
   1. 全选复选框（列头那个复选框）

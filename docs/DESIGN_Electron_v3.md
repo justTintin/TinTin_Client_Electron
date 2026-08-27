@@ -204,13 +204,15 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
    - 方案脚本、一键成片、成片任务队列、产品库、素材生成、音频素材、智能混剪、直播切片…
    - 这些项右侧带「桥」小标签，hover tooltip 提示「该模块正在升级中，V3.1 将全面重写」。
 
+> **2026-08-27 实现状态**：4.2～4.6 全部未实现；过渡期 webview 桥接页亦未落地（renderer 无 webview/iframe 内嵌、无 bridge.exe 集成）。当前 `/workbench` 实现为聊天会话形态（WbComposer / WbMessages / WbTaskDrawer / WbNotificationDrawer / WbSidebar），与本节定义的 16 页工作台为不同形态。差距明细见 [GAP_Report_实施差距报告_2026-08-27.md](./GAP_Report_实施差距报告_2026-08-27.md)。
+
 侧边栏项状态：
 
 - 默认：文字 + 图标 20px，hover 背景 `--surface-container-high`。
 - 激活：左侧 3px primary 竖线 + `--primary-container` 背景 + primary 图标色。
 - 禁用（桥接未就绪）：opacity 0.5，cursor not-allowed。
 
-### 4.2 飞书脚本创作页
+### 4.2 飞书脚本创作页【❌ 未实现】
 
 参考 `ai_script_page.py`，采用 **左右分栏**。
 
@@ -239,7 +241,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   - 底部：小齿轮（编辑）+「引用素材」按钮（secondary）。
   - 卡片间距 12px，hover border 变 primary。
 
-### 4.3 分镜脚本页
+### 4.3 分镜脚本页【❌ 未实现】
 
 参考 `storyboard_page.py`。
 
@@ -264,7 +266,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 [同步到多维表格] [创建飞书文档] [飞书关联标签]
 ```
 
-### 4.4 引用素材对话框（ShotMaterialDialog）
+### 4.4 引用素材对话框（ShotMaterialDialog）【❌ 未实现】
 
 对话框尺寸：960×640px，圆角 14px，顶部 Tab 切换。
 
@@ -281,7 +283,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 - 左下角 brand/model 小徽章（tag badge）。
 - 选中态：2px primary border + 左上角勾选图标。
 
-### 4.5 素材检索页
+### 4.5 素材检索页【❌ 未实现】
 
 参考 `vector_search_page.py` / `gui/vector_search/`。
 
@@ -312,7 +314,7 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 - 空 keyword 时显示「最近导入」占位区，带最近 8 张缩略图。
 - 双击图片：大图预览遮罩；双击视频：HTML5 video 弹窗，可拖拽进度。
 
-### 4.6 成片任务页
+### 4.6 成片任务页【❌ 未实现】
 
 参考 `scheduled_tasks_page.py`。
 

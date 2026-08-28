@@ -82,8 +82,8 @@
 | # | 项 | 现状 | 处置 |
 |---|---|---|---|
 | 1 | Settings「扩展插件」卡（含下载插件 Tab 6 项配置：bridgePort/bridgeSaveDir/extScanServer/chromePort/chromePath/chromeDataDir） | [useSettingsExtension.ts](../desktop/renderer/src/composables/useSettingsExtension.ts) | 随卡移除 |
-| 2 | `env:detectCdp` IPC（preload.js:393 + 主进程 handler） | 分离时代检测外挂 Chrome 通道 | 自动上架新实现（内置分区会话）确认不需要后再删，迁移任务内闭环 |
-| 3 | `ext.*` 配置键（electron-store） | bridge*/chrome* 6 键废弃；`shopKeyword`（上架关键词）仍需要 | 随自动上架迁入浏览器（键名建议 `listing.shopKeyword`），旧键清理 |
+| 2 | `env:detectCdp` IPC（preload.js:393 + 主进程 handler） | 分离时代检测外挂 Chrome 通道 | ✅ 已随 P3 删除（env-ipc.js + preload + 零残留验证） |
+| 3 | `ext.*` 配置键（electron-store） | bridge*/chrome* 6 键废弃；`shopKeyword`（上架关键词）仍需要 | ✅ 已随 P3 落地：`shopKeyword` 沿用 `ext.shopKeyword` 键无缝继承旧值；6 废弃键由 `config-migrate.js` 启动时幂等清理（单测覆盖） |
 | 4 | `bridgeSaveDir`（采集目录 D:\TinTin\collected） | 已被下载路径体系（Windows Downloads + 浮窗 📁）替代 | 废弃，不迁移 |
 | 5 | 「下载插件」职责（扩展安装/管理） | 已由浏览器 🧩 扩展管理覆盖（commit 历史已实现） | 无需迁移，文档标注即可 |
 | 6 | 自动上架实现载体 | 原 auto_listing_tab.py：外挂 Chrome CDP(9222) + bridge(8123) | 改为操作内置浏览器 `persist:tintin-*` 分区已登录会话；**行为口径不变**（V2 PRD 十四章：抖店数据包校验/复用登录/填写/保存草稿/截图日志/断点续跑） |

@@ -25,6 +25,7 @@ const { createMediaDownloader } = require('./media-downloader')
 const { createMediaStorage } = require('./media-storage')
 // 本地定时任务（P2 移植：schtasks CRUD + 到点触发接管）
 const localScheduler = require('./local-scheduler')
+const { purgeDeprecatedExtKeys } = require('./config-migrate')
 
 // electron-store：CommonJS 兼容；失败兜底内存 store（绝不阻塞启动，P1 红线）
 let Store = null
@@ -526,6 +527,11 @@ app.whenReady().then(() => {
 
     // 同步共享上下文
     sharedCtx.store = store
+
+    // ───────────── P3 遗留清理：ext.* 分离时代废弃配置键一次性迁移（GAP §3.4-3）─────────────
+    // 外挂 Chrome CDP(9222) + bridge(8123) 载体已作废（2026-08-27 裁决），
+    // 6 个废弃键随启动静默清除；ext.shopKeyword 仍被浏览器自动上架面板使用，保留。
+    try { purgeDeprecatedExtKeys(store) } catch (_) { /* 清理失败不阻塞启动 */ }
 
     // F4：frame:true 兜底判断（基于 argv/env/store）
     createMainWindow(store)

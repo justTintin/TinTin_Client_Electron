@@ -161,7 +161,7 @@ function schtasks(args, timeout = 20000) {
 // ── 对外 API（IPC 调用）──
 
 /** 注册本地定时任务。返回 [true, taskName] 或 [false, 错误信息]（对齐原版元组） */
-async function createTask({ name, taskType = 'hotspot', schedule = {}, goal = '' }) {
+async function createTask({ name, taskType = 'hotspot', schedule = {}, goal = '', plan = null }) {
   const v = validateCreate({ name, taskType, schedule, goal })
   if (!v.ok) return [false, v.msg]
   if (loadTasks().some((t) => t.task_name === v.taskName)) {
@@ -185,6 +185,8 @@ async function createTask({ name, taskType = 'hotspot', schedule = {}, goal = ''
       weekdays: v.mode === 'weekly' ? (schedule.weekdays || []) : []
     },
     goal: taskType === 'agent' ? String(goal || '').trim() : '',
+    // agent 注册时 LLM 拆解出的执行步骤，随任务保存，到点优先提交（对齐原版 plan 字段）
+    plan: taskType === 'agent' ? (plan || null) : null,
     created_at: new Date().toLocaleString('sv-SE').replace('T', ' ')
   })
   saveTasks(tasks)
@@ -236,8 +238,8 @@ async function runNow(taskName) {
 
 /**
  * 到点执行入口（--tintin-scheduled=<type>:<task_name>）。
- * agent：读清单 goal → POST /agent/tasks（服务端 Orchestrator 自动拆解，
- *        等价原版「无 plan 回退按 goal 现拆」路径）；
+ * agent：读清单 → plan 优先（注册时拆解保存）/ 回退按 goal 由服务端拆解
+ *        → POST /agent/tasks（对齐原版内联代码语义）；
  * hotspot：返回 true 由 main.js 拉起窗口并切浏览器 Tab。
  */
 async function runScheduledTrigger(argValue) {
@@ -250,16 +252,13 @@ async function runScheduledTrigger(argValue) {
     return false
   }
   if (type === 'agent') {
-    const goal = String(me.goal || '').trim()
-    if (!goal) {
+    const submit = buildAgentSubmitBody(me)
+    if (!submit) {
       console.warn(`[本地定时] 任务 ${taskName} 缺少任务描述，跳过提交`)
       return false
     }
     try {
-      const res = await httpRequest('POST', API_ENDPOINTS.agent.tasks, {
-        body: { goal, mode: 'execute' },
-        timeout: 30000
-      })
+      const res = await httpRequest('POST', API_ENDPOINTS.agent.tasks, { ...submit, timeout: 30000 })
       console.log(`[本地定时] 已到点提交编排任务：${taskName} →`, res && res.task_id ? res.task_id : res)
       return true
     } catch (e) {
@@ -267,13 +266,85 @@ async function runScheduledTrigger(argValue) {
       return false
     }
   }
-  return true // hotspot：由 main.js 切浏览器 Tab
+  return true // hotspot：由 setupTriggerRelay 采完后切浏览器 Tab
 }
 
 /** 解析 argv 中的 --tintin-scheduled 参数值；无则 null */
 function findScheduledArg(argv) {
   const hit = (argv || []).find((a) => String(a).startsWith(SCHEDULED_ARG_PREFIX))
   return hit ? hit.slice(SCHEDULED_ARG_PREFIX.length) : null
+}
+
+/**
+ * agent 任务到点提交体（纯函数，对齐原版内联代码语义）：
+ * plan 优先（注册时 LLM 拆解并保存）；无 plan 回退按 goal 由服务端拆解。
+ */
+function buildAgentSubmitBody(task) {
+  const goal = String((task && task.goal) || '').trim()
+  const plan = (task && task.plan) || null
+  if (plan && typeof plan === 'object' && Array.isArray(plan.steps) && plan.steps.length) {
+    return { body: { goal: String(plan.goal || goal), plan, mode: 'execute' } }
+  }
+  return goal ? { body: { goal, mode: 'execute' } } : null
+}
+
+// ── P4 到点触发中继（从 main.js 移入，保持单文件 ≤800 行铁律）──
+const hotspotCapture = require('./hotspot-capture')
+
+/**
+ * 到点触发中继：主进程注入窗口/目录句柄，本模块负责完整编排。
+ * hotspot：自动采集今日热榜（隐藏 BrowserView，对照原版
+ *          launch_hotspot_capture(auto_quit=True) 无感语义）→ 完成后拉窗
+ *          + 发 scheduled:hotspot-trigger（渲染层切浏览器 Tab + 热榜导航）；
+ * agent：runScheduledTrigger（plan 优先提交服务端）。
+ */
+function setupTriggerRelay({ getWindow, getUserDataDir, progressChannel }) {
+  let pendingHotspot = null
+  function sendHotspotTrigger(count) {
+    const win = getWindow()
+    if (!win) {
+      pendingHotspot = { count: typeof count === 'number' ? count : null }
+      return
+    }
+    if (win.isMinimized()) win.restore()
+    win.focus()
+    win.webContents.send('scheduled:hotspot-trigger', { count: typeof count === 'number' ? count : null })
+    pendingHotspot = null
+  }
+  /** 窗口未就绪时暂存 → did-finish-load 后补发 */
+  function flushPendingHotspot() {
+    if (!pendingHotspot) return false
+    const win = getWindow()
+    if (!win) return false
+    const count = pendingHotspot.count
+    win.webContents.once('did-finish-load', () => sendHotspotTrigger(count))
+    pendingHotspot = null
+    return true
+  }
+  /** 采集今日热点 + 推平台级进度 + 完成后切浏览器 Tab（定时到点与手动采集共用） */
+  async function runHotspotCapture() {
+    const [ok, data] = await hotspotCapture.captureHotspots({
+      userDataDir: getUserDataDir(),
+      onProgress: (p) => {
+        try {
+          const win = getWindow()
+          if (win) win.webContents.send(progressChannel, p)
+        } catch (_) { /* 进度推送失败不影响采集 */ }
+      },
+    }).catch((e) => [false, String((e && e.message) || e)])
+    if (ok) sendHotspotTrigger(typeof data === 'number' ? data : null)
+    return [ok, data]
+  }
+  /** 到点/第二实例共用入口：hotspot=采集+切 Tab；agent=提交服务端 */
+  async function handleScheduledArg(arg) {
+    if (!arg) return
+    if (arg.startsWith('hotspot:')) {
+      await runHotspotCapture().catch(() => {})
+      return
+    }
+    await runScheduledTrigger(arg).catch(() => false)
+  }
+  return { sendHotspotTrigger, runHotspotCapture, handleScheduledArg, flushPendingHotspot, hasPendingHotspot: () => !!pendingHotspot }
 }
 
 module.exports = {
@@ -284,10 +355,12 @@ module.exports = {
   validateCreate,
   buildCreateArgs,
   buildTriggerCommand,
+  buildAgentSubmitBody,
   createTask,
   listTasks,
   deleteTask,
   runNow,
   runScheduledTrigger,
-  findScheduledArg
+  findScheduledArg,
+  setupTriggerRelay
 }

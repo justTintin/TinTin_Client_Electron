@@ -112,6 +112,7 @@ declare interface TintinBridgeServer {
 
   // ---------- agent ----------
   agentRegistry(): Promise<IpcError<CapabilityRegistryItem[]>>
+  agentTaskList(params?: { page?: number; page_size?: number }): Promise<IpcError<{ tasks: any[]; total?: number }>>
   agentSubmitTask(
     payload: AgentAPI.SubmitTaskRequest
   ): Promise<IpcError<AgentAPI.SubmitTaskResponse>>
@@ -190,6 +191,10 @@ declare interface TintinBridgeServer {
     instruction?: string
     [k: string]: any
   }): Promise<IpcError<any>>
+  /** GET /llm/models → 设置页「默认模型」下拉数据源（离线返回 null 或 {error}） */
+  llmModels(): Promise<IpcError<LLMAPI.LlmModelsResponse>>
+  /** GET /llm/providers → Provider 配置回显（api_key 脱敏，服务端管理） */
+  llmProviders(): Promise<IpcError<LLMAPI.LlmProvidersResponse>>
 
   // ---------- material ----------
   materialList(
@@ -463,30 +468,51 @@ declare interface TintinBridge {
 // --------------------------------------------------------------------
 // scheduled — 本地定时任务（对照原客户端 utils/local_scheduler.py）
 // --------------------------------------------------------------------
+/** LLM 拆解出的执行步骤（对齐原版 build_plan 产物 / 服务端 mode=execute 契约） */
+declare interface TintinBridgeAgentPlan {
+  goal: string
+  steps: Array<{
+    id: string
+    capability: string
+    params: Record<string, unknown>
+    depends_on: string[]
+    needs_user_input: boolean
+  }>
+}
+
 declare interface TintinBridgeScheduledTask {
   task_name: string
   name: string
   type: 'hotspot' | 'agent'
   schedule: { mode: 'daily' | 'weekly'; time: string; weekdays: number[] }
   goal: string
+  plan?: TintinBridgeAgentPlan | null
   created_at: string
   registered?: boolean
   next_run?: string
   last_run?: string
   last_result?: string
 }
-export type { TintinBridgeScheduledTask }
+export type { TintinBridgeScheduledTask, TintinBridgeAgentPlan }
 declare interface TintinBridgeScheduled {
   list(): Promise<TintinBridgeScheduledTask[]>
   create(payload: {
-    name: string
-    taskType: 'hotspot' | 'agent'
-    schedule: { mode: 'daily' | 'weekly'; time: string; weekdays?: number[] }
-    goal?: string
-  }): Promise<[boolean, string]>
+            name: string
+            taskType: 'hotspot' | 'agent'
+            schedule: { mode: 'daily' | 'weekly'; time: string; weekdays?: number[] }
+            goal?: string
+            plan?: TintinBridgeAgentPlan | null
+          }): Promise<[boolean, string]>
+          /** LLM 拆解任务描述 → [true, plan] 或 [false, 错误信息]（对照原版 build_plan） */
+  splitPlan(goal: string): Promise<[boolean, TintinBridgeAgentPlan | string]>
   run(taskName: string): Promise<[boolean, string]>
   delete(name: string): Promise<[boolean, string]>
-  onScheduledHotspot(cb: () => void): () => void
+  /** 手动采集今日各平台热榜 → [true, 采集条数] 或 [false, 错误信息]（对照原版「一键采集」） */
+  captureHotspots(): Promise<[boolean, number | string]>
+  /** 采集进度推送：{ platform, index, total } */
+  onScheduledCaptureProgress(cb: (p: { platform: string; index: number; total: number }) => void): () => void
+  /** hotspot 到点触发（采集完成后通知切浏览器 Tab；payload.count = 采集条数，可能为 null） */
+  onScheduledHotspot(cb: (payload?: { count?: number | null }) => void): () => void
 }
 
 declare global {

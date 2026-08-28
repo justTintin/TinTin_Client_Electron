@@ -23,6 +23,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { useAppStore } from '@/stores/app'
 import { useBrowserNav } from '../composables/useBrowserNav'
 import type { BrowserNavWiring } from '../composables/useBrowserNav'
 import { useBrowserFavorites } from '../composables/useBrowserFavorites'
@@ -71,6 +72,7 @@ const {
   navBack,
   navForward,
   navReload,
+  navigateToHotspot,
   browseMode,
   activeNavId,
   sidebarItems,
@@ -330,6 +332,13 @@ watch(browseMode, async (mode) => {
       } catch (_) {}
     }
   }
+})
+
+// ── P4：hotspot 到点触发 → 热榜导航（信号单一真相源 = appStore.pendingHotspotNav，
+//    App.vue 订阅主进程事件后 bump，本视图 watch 后导航到热榜首站）──
+const appStore = useAppStore()
+watch(appStore.pendingHotspotNav, (v) => {
+  if (v) void navigateToHotspot()
 })
 
 onBeforeUnmount(() => {

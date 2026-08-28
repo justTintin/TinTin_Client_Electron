@@ -39,7 +39,7 @@
 const { session } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
-const { PLATFORM_DEFS, PLATFORM_IDS } = require('./platform-meta')
+const { PLATFORM_DEFS, PLATFORM_IDS, PLATFORM_COOKIE_DOMAINS } = require('./platform-meta')
 const { _extManager } = require('./ext-manager')
 const { extractionError } = require('./offline-page')
 const { createViewPoolCtl } = require('./thick-shell-viewpool')
@@ -583,14 +583,7 @@ function createThickShellIpc(ipcMain, ctx) {
     }
   }
 
-  // ── 平台 Cookie 域名映射 ──
-  const PLATFORM_COOKIE_DOMAINS = {
-    douyin: ['.douyin.com', 'www.douyin.com'],
-    bilibili: ['.bilibili.com'],
-    xiaohongshu: ['.xiaohongshu.com'],
-    kuaishou: ['.kuaishou.com'],
-    weixin: ['.weixin.qq.com', 'channels.weixin.qq.com'],
-  }
+  // ── 平台 Cookie 域名映射（来自 platform-meta.js 单一维护点，勿在此重复定义）──
 
   // browser:exportCookies：导出指定平台的 Cookie 为 Netscape 文件（给 yt-dlp 用）
   ipcMain.handle('browser:exportCookies', async (_e, { platformId, destPath }) => {

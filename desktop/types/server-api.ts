@@ -307,6 +307,33 @@ export namespace LLMAPI {
     }>
     usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
   }
+  /** GET /llm/models 条目（实测契约：{id,name,provider,provider_name,max_tokens,type}） */
+  export interface LlmModel {
+    id: string
+    name: string
+    provider: string
+    provider_name?: string
+    max_tokens?: number
+    type?: string
+  }
+  /** GET /llm/models 响应 */
+  export interface LlmModelsResponse {
+    models: LlmModel[]
+    providers?: Array<{ name: string; enabled: boolean; model_count: number }>
+  }
+  /** GET /llm/providers 条目（api_key 服务端脱敏回显，如 sk-***48b） */
+  export interface LlmProvider {
+    name: string
+    base_url?: string
+    api_key?: string
+    enabled?: boolean
+    template?: string
+    models?: Array<{ id: string; name: string; max_tokens?: number; type?: string }>
+  }
+  /** GET /llm/providers 响应 */
+  export interface LlmProvidersResponse {
+    providers: Record<string, LlmProvider>
+  }
 }
 
 export namespace ASRAPI {

@@ -16,6 +16,9 @@ const emit = defineEmits<{
 const {
   tasks, loading, creating, notice, form, formError,
   load, create, runNow, remove,
+  currentPlan, splitting, splitPlan,
+  capturing, captureProgress, captureNow,
+  detailTask, detailLoading, openDetail, closeDetail,
   agentTasks, agentLoading, loadAgent, confirmAgent,
   agentCaps, capsLoading, loadRegistry
 } = useScheduledTasks()
@@ -86,6 +89,19 @@ function normalizeTime(e: Event) {
         <div v-if="form.taskType === 'agent'" class="frow">
           <label class="flabel">任务描述</label>
           <input v-model="form.goal" class="finput" placeholder="到点提交服务端由智能体自动拆解执行" />
+          <button class="btn-ghost" :disabled="splitting || !form.goal.trim()" title="调用服务端 LLM 拆解为能力步骤" @click="splitPlan()">
+            {{ splitting ? '拆解中…' : '拆解任务' }}
+          </button>
+        </div>
+        <!-- 拆解步骤预览（agent 类型，plan 将随任务存储，到点优先提交） -->
+        <div v-if="form.taskType === 'agent' && currentPlan" class="plan-preview">
+          <div class="plan-title">拆解步骤（{{ currentPlan.steps.length }} 步）</div>
+          <div v-for="(step, i) in currentPlan.steps" :key="step.id" class="plan-step">
+            <span class="plan-num">{{ i + 1 }}.</span>
+            <span class="plan-cap">{{ step.capability }}</span>
+            <span v-if="step.needs_user_input" class="plan-flag">需确认</span>
+            <div class="plan-params">{{ JSON.stringify(step.params) }}</div>
+          </div>
         </div>
         <div class="frow">
           <label class="flabel">调度</label>
@@ -118,9 +134,11 @@ function normalizeTime(e: Event) {
         <div class="card-title list-head">
           <span>已注册任务（Windows 任务计划程序）</span>
           <button
-            class="btn-ghost" disabled
-            title="热点自动采集将在后续版本与内置浏览器联动"
-          >立即采集今日热点</button>
+            class="btn-ghost"
+            :disabled="capturing"
+            :title="capturing ? `采集中：${captureProgress ? captureProgress.platform + ' (' + captureProgress.index + '/' + captureProgress.total + ')' : '准备中…'}` : '采集 抖音/小红书/B站 热榜并写入清单'"
+            @click="captureNow()"
+          >{{ capturing ? '采集中…' : '立即采集今日热点' }}</button>
           <button class="btn-ghost" @click="load()">刷新</button>
         </div>
         <div v-if="loading" class="muted">加载中…</div>
@@ -170,6 +188,11 @@ function normalizeTime(e: Event) {
           <div v-if="t.status === 'waiting_user_input'" class="task-ops">
             <button class="btn-primary sm" @click="confirmAgent(t.id)">人工确认，继续执行</button>
           </div>
+          <div class="task-ops">
+            <button class="btn-ghost" :disabled="detailLoading" @click="openDetail(t.id)">
+              {{ detailLoading ? '加载中…' : '详情' }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -187,6 +210,42 @@ function normalizeTime(e: Event) {
             <span class="task-type agent">{{ c.id }}</span>
           </div>
           <div class="task-meta cap-desc">{{ c.description }}</div>
+          <div class="task-meta cap-api" :title="c.api">API：{{ c.api }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── 编排任务详情弹窗（/tasks/unified/{id} 子步骤树） ─── -->
+    <div v-if="detailTask" class="detail-mask" @click.self="closeDetail()">
+      <div class="detail-modal" role="dialog" aria-label="编排任务详情">
+        <header class="detail-head">
+          <span class="detail-title" :title="detailTask.title">{{ detailTask.title || '编排任务详情' }}</span>
+          <button class="sched-actions" @click="closeDetail()" title="关闭">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </header>
+        <div class="detail-body">
+          <div class="task-meta">
+            <span>状态：{{ agentStatusText(detailTask.status) }}</span>
+            <span>进度：{{ detailTask.progress ?? 0 }}%</span>
+            <span v-if="detailTask.created_at">创建：{{ detailTask.created_at.slice(0, 16) }}</span>
+          </div>
+          <div v-if="detailTask.stage" class="task-meta"><span>阶段：{{ detailTask.stage }}</span></div>
+          <div v-if="detailTask.waiting_reason" class="task-meta"><span>等待原因：{{ detailTask.waiting_reason }}</span></div>
+          <div v-if="detailTask.result_preview" class="detail-preview">{{ detailTask.result_preview }}</div>
+          <div v-if="detailTask.children?.length" class="detail-steps">
+            <div class="plan-title">子步骤（{{ detailTask.children.length }}）</div>
+            <div v-for="ch in detailTask.children" :key="ch.id" class="plan-step">
+              <span class="plan-cap">{{ ch.title || ch.capability_key || ch.id }}</span>
+              <span class="task-status">{{ agentStatusText(ch.status) }}{{ ch.progress !== undefined ? ' ' + ch.progress + '%' : '' }}</span>
+              <div v-if="ch.result_preview" class="plan-params">{{ ch.result_preview }}</div>
+              <div v-if="ch.error_message" class="ferr">{{ ch.error_message }}</div>
+            </div>
+          </div>
+          <div v-else class="muted">暂无子步骤信息</div>
         </div>
       </div>
     </div>
@@ -431,6 +490,116 @@ function normalizeTime(e: Event) {
 }
 .cap-desc {
   white-space: normal;
+}
+.cap-api {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+/* 拆解步骤预览 */
+.plan-preview {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.plan-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.plan-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+}
+.plan-num {
+  color: var(--muted-foreground, #8a8f98);
+}
+.plan-cap {
+  font-weight: 600;
+}
+.plan-flag {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid #fbbf24;
+  color: #fbbf24;
+}
+.plan-params {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--muted-foreground, #8a8f98);
+  word-break: break-all;
+  white-space: normal;
+}
+
+/* 详情弹窗 */
+.detail-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.detail-modal {
+  width: 340px;
+  max-width: 94%;
+  max-height: 80%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-4);
+  overflow: hidden;
+}
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.detail-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-body {
+  flex: 1;
+  overflow: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.detail-preview {
+  font-size: 12px;
+  color: var(--foreground, #e6e8eb);
+  background: var(--secondary, rgba(255, 255, 255, 0.06));
+  border-radius: 6px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.detail-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 4px;
 }
 .muted {
   font-size: 12px;

@@ -150,7 +150,23 @@ async function _initTitleBarState(): Promise<void> {
 // 每次 shell 判定变 true 时，初始化标题栏状态
 watch(isElectronShell, (v) => { if (v) _initTitleBarState() }, { immediate: true })
 
+// ══════════════════════════════════════════════════════════════
+// P4 hotspot 到点触发订阅：定时任务采集完成后 → bump 信号（Browser.vue
+// watch 后热榜导航）+ 切浏览器 Tab。仅 Electron 壳内有此事件。
+// ══════════════════════════════════════════════════════════════
+let _unsubHotspot: (() => void) | null = null
+function _bindHotspotTrigger(): void {
+  const t = (window as any).tintin
+  if (t?.scheduled?.onScheduledHotspot) {
+    _unsubHotspot = t.scheduled.onScheduledHotspot(() => {
+      appStore.bumpHotspotNav()
+      switchTab('browser', '/browser')
+    })
+  }
+}
+
 onMounted(async () => {
+  _bindHotspotTrigger()
   // 注入版本号
   try {
     const v = await window.tintin.app.getVersion()
@@ -166,6 +182,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   clearTimeout(_c9Timer)
   if (_unsubWinState) { try { _unsubWinState() } catch(_){} _unsubWinState = null }
+  if (_unsubHotspot) { try { _unsubHotspot() } catch(_){} _unsubHotspot = null }
   serverStore.stopPolling()
 })
 </script>

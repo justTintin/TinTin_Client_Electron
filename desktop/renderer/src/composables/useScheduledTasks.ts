@@ -7,7 +7,8 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { computed, ref } from 'vue'
-import type { TintinBridgeScheduledTask } from '../../../types/global'
+import type { TintinBridgeScheduledTask, TintinBridgeAgentPlan } from '../../../types/global'
+import type { AgentAPI } from '../../../types/server-api'
 
 /** 任务类型标签（对齐原版 _TYPE_LABEL） */
 export const TYPE_LABEL: Record<string, string> = {
@@ -52,6 +53,31 @@ export function useScheduledTasks() {
   const creating = ref(false)
   const notice = ref('')
 
+  /** 表单当前拆解结果（agent 类型「拆解任务」按钮产出，注册时随任务存储） */
+  const currentPlan = ref<TintinBridgeAgentPlan | null>(null)
+  const splitting = ref(false)
+
+  /** 拆解任务描述（对照原版 build_plan：LLM 产出能力步骤 → 注册时存 plan，到点优先提交） */
+  async function splitPlan(): Promise<void> {
+    if (form.value.taskType !== 'agent' || !form.value.goal.trim() || splitting.value) return
+    splitting.value = true
+    notice.value = ''
+    try {
+      const [ok, data] = await window.tintin.scheduled.splitPlan(form.value.goal.trim())
+      if (ok && typeof data === 'object') {
+        currentPlan.value = data
+        notice.value = `拆解完成：${data.steps.length} 个能力步骤，注册任务后将随任务存储（到点优先按此执行）。`
+      } else {
+        currentPlan.value = null
+        notice.value = `拆解失败：${data}`
+      }
+    } catch (e) {
+      notice.value = `拆解失败：${(e as Error).message}`
+    } finally {
+      splitting.value = false
+    }
+  }
+
   const form = ref<ScheduledForm>({
     name: '热点采集',
     taskType: 'hotspot',
@@ -71,8 +97,16 @@ export function useScheduledTasks() {
     return ''
   })
 
+  /** 非 Electron 壳（纯浏览器预览）时 IPC 不可用，统一降级提示 */
+  function shellAvailable(): boolean {
+    if (typeof window !== 'undefined' && window.tintin?.scheduled) return true
+    notice.value = '当前为浏览器预览模式，定时任务功能需在桌面端使用。'
+    return false
+  }
+
   async function load() {
     if (loading.value) return
+    if (!shellAvailable()) return
     loading.value = true
     try {
       tasks.value = (await window.tintin.scheduled.list()) || []
@@ -99,10 +133,12 @@ export function useScheduledTasks() {
             .map((on, i) => (on ? i : -1))
             .filter((i) => i >= 0)
         },
-        goal: form.value.taskType === 'agent' ? form.value.goal.trim() : ''
+        goal: form.value.taskType === 'agent' ? form.value.goal.trim() : '',
+        plan: form.value.taskType === 'agent' ? currentPlan.value : null
       }
       const [ok, msg] = await window.tintin.scheduled.create(payload)
       if (ok) {
+        currentPlan.value = null
         notice.value = `定时任务已注册：${msg}（已写入 Windows 任务计划程序）`
         await load()
         return true
@@ -142,6 +178,54 @@ export function useScheduledTasks() {
     }
   }
 
+  /* ── 今日热点采集域（P4 补齐，对照原版「一键采集」） ── */
+  const capturing = ref(false)
+  const captureProgress = ref<{ platform: string; index: number; total: number } | null>(null)
+
+  /** 手动采集今日各平台热榜（主进程隐藏 BrowserView 执行，采集完成写清单并切浏览器 Tab） */
+  async function captureNow(): Promise<void> {
+    if (capturing.value) return
+    if (!shellAvailable()) return
+    capturing.value = true
+    notice.value = ''
+    const unsub = window.tintin.scheduled.onScheduledCaptureProgress((p) => {
+      captureProgress.value = p
+    })
+    try {
+      const [ok, data] = await window.tintin.scheduled.captureHotspots()
+      notice.value = ok
+        ? `今日热点采集完成：共 ${data} 条（已写入清单）`
+        : `采集失败：${data}`
+    } catch (e) {
+      notice.value = `采集失败：${(e as Error).message}`
+    } finally {
+      try { unsub() } catch (_) { /* ignore */ }
+      capturing.value = false
+      captureProgress.value = null
+    }
+  }
+
+  /* ── 编排任务详情域（详情弹窗：/tasks/unified/{id} 子步骤树） ── */
+  const detailTask = ref<AgentAPI.TaskNode | null>(null)
+  const detailLoading = ref(false)
+
+  /** 拉取编排任务详情（子步骤 + 进度 + 结果预览；unifiedItem 失败/离线返回 null 或 {error}） */
+  async function openDetail(id: string): Promise<void> {
+    detailLoading.value = true
+    try {
+      const node = await window.tintin.server.tasksUnifiedItem(id)
+      detailTask.value = node && !('error' in node) ? node : null
+    } catch (_) {
+      detailTask.value = null
+    } finally {
+      detailLoading.value = false
+    }
+  }
+
+  function closeDetail(): void {
+    detailTask.value = null
+  }
+
   /* ── 云端编排任务域（GET /agent/tasks 根任务） ── */
   interface AgentTaskRow {
     id: string
@@ -157,7 +241,7 @@ export function useScheduledTasks() {
     if (agentLoading.value) return
     agentLoading.value = true
     try {
-      const data = await window.tintin.server.get('/agent/tasks', { page: 1, page_size: 10 })
+      const data = await window.tintin.server.agentTaskList({ page: 1, page_size: 10 })
       const list = (data && !('error' in data) && data.tasks) || []
       agentTasks.value = list.slice(0, 10).map((t: Record<string, unknown>, i: number) => ({
         id: String(t.id ?? i),
@@ -177,7 +261,7 @@ export function useScheduledTasks() {
   async function confirmAgent(id: string) {
     notice.value = ''
     try {
-      const res = await window.tintin.server.post(`/agent/tasks/${id}/confirm`)
+      const res = await window.tintin.server.agentTaskAction({ id, action: 'confirm' })
       notice.value = res && !('error' in res)
         ? `任务 ${id} 已确认，继续执行。`
         : `任务 ${id} 确认失败（状态可能已变化）。`
@@ -196,9 +280,12 @@ export function useScheduledTasks() {
     if (capsLoading.value) return
     capsLoading.value = true
     try {
-      const reg = await window.tintin.server.get('/agent/registry')
-      const caps = (reg && !('error' in reg) && reg.capabilities) || []
-      agentCaps.value = caps
+      const reg = await window.tintin.server.agentRegistry()
+      // /agent/registry 返回能力项数组（V2 §13.3，server.ts store 亦按数组消费）；
+      // 兼容历史 {capabilities:[...]} 包裹结构
+      const raw: unknown = (reg && !('error' in reg)) ? reg : null
+      const list = Array.isArray(raw) ? raw : (((raw as { capabilities?: unknown[] } | null)?.capabilities) ?? [])
+      agentCaps.value = (list as Array<Record<string, unknown>>)
         .filter((c: Record<string, unknown>) => c.executor === 'server')
         .map((c: Record<string, unknown>) => ({
           id: String(c.id ?? '—'),
@@ -218,6 +305,12 @@ export function useScheduledTasks() {
     // 本地任务域
     tasks, loading, creating, notice, form, formError,
     load, create, runNow, remove,
+    // agent 任务拆解（对照原版 build_plan）
+    currentPlan, splitting, splitPlan,
+    // 今日热点采集
+    capturing, captureProgress, captureNow,
+    // 编排任务详情
+    detailTask, detailLoading, openDetail, closeDetail,
     // 云端编排域
     agentTasks, agentLoading, loadAgent, confirmAgent,
     // 能力清单域

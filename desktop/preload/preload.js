@@ -97,6 +97,7 @@ const server = {
 
   // ---------- agent ----------
   agentRegistry:         ()       => ipcRenderer.invoke('agent:registry'),
+  agentTaskList:         (params) => ipcRenderer.invoke('agent:taskList', params),
   agentSubmitTask:       (payload) => ipcRenderer.invoke('agent:submitTask', payload),
   agentTaskAction:       (params)  => ipcRenderer.invoke('agent:taskAction', params),
   agentRegisterArtifact: (payload) => ipcRenderer.invoke('agent:registerArtifact', payload),
@@ -106,8 +107,19 @@ const server = {
   scheduledCreate: (payload) => ipcRenderer.invoke('scheduled:create', payload),
   scheduledRun:    (taskName) => ipcRenderer.invoke('scheduled:run', taskName),
   scheduledDelete: (name) => ipcRenderer.invoke('scheduled:delete', name),
+  // agent 任务 LLM 拆解（对照原版 build_plan，P2 补齐）→ [ok, plan|错误信息]
+  scheduledSplitPlan: (goal) => ipcRenderer.invoke('agent:splitPlan', goal),
+  // 今日热点手动采集（P4 补齐，对照原版「一键采集」）→ [ok, count|错误信息]
+  scheduledCaptureHotspots: () => ipcRenderer.invoke('scheduled:captureHotspots'),
+  // 采集进度推送（平台级：{platform,index,total}）
+  onScheduledCaptureProgress: (cb) => {
+    const handler = (_e, p) => cb(p)
+    ipcRenderer.on('scheduled:capture-progress', handler)
+    return () => ipcRenderer.removeListener('scheduled:capture-progress', handler)
+  },
+  // hotspot 到点触发（定时任务采集完成后通知渲染层切浏览器 Tab）
   onScheduledHotspot: (cb) => {
-    const handler = () => cb()
+    const handler = (_e, payload) => cb(payload)
     ipcRenderer.on('scheduled:hotspot-trigger', handler)
     return () => ipcRenderer.removeListener('scheduled:hotspot-trigger', handler)
   },
@@ -142,6 +154,9 @@ const server = {
   // ---------- llm ----------
   llmChat:               (payload) => ipcRenderer.invoke('llm:chat', payload),
   llmAdjustCopywriting:  (payload) => ipcRenderer.invoke('llm:adjustCopywriting', payload),
+  // 设置页 LLM 对接（P5）：模型列表 / Provider 配置回显（Key 脱敏，服务端管理）
+  llmModels:             () => ipcRenderer.invoke('llm:models'),
+  llmProviders:          () => ipcRenderer.invoke('llm:providers'),
 
   // ---------- material ----------
   materialList:       (params)  => ipcRenderer.invoke('material:list', params),
@@ -338,14 +353,23 @@ const browser = {
 }
 
 // ── Phase 1: 媒体下载器（yt-dlp + 流式下载 + FFmpeg 合并）──
+// 共享 channel 只保留单个监听（后注册覆盖前一个），避免渲染层组件反复挂载累积 listener
+let _mediaDlProgressHandler = null
 const mediaDownload = {
   start: (params) => ipcRenderer.invoke('browser:downloadMediaStart', params),
   cancel: (taskId) => ipcRenderer.invoke('browser:downloadMediaCancel', taskId),
   pause: (taskId) => ipcRenderer.invoke('browser:downloadMediaPause', taskId),
   onProgress: (cb) => {
+    if (_mediaDlProgressHandler) {
+      ipcRenderer.removeListener('browser:downloads-updated', _mediaDlProgressHandler)
+    }
     const handler = (_e, payload) => cb(payload)
+    _mediaDlProgressHandler = handler
     ipcRenderer.on('browser:downloads-updated', handler)
-    return () => ipcRenderer.removeListener('browser:downloads-updated', handler)
+    return () => {
+      ipcRenderer.removeListener('browser:downloads-updated', handler)
+      if (_mediaDlProgressHandler === handler) _mediaDlProgressHandler = null
+    }
   },
 }
 

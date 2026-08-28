@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { createTray } = require('./tray')
 const { initUpdater } = require('./updater')
-const { createServerProxy, httpRequest, multipartUpload, getServerUrl } = require('./server-proxy')
+const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore } = require('./server-proxy')
 const { createDownloadManager } = require('./download-manager')
 const { createFfmpegGate } = require('./ffmpeg-gate')
 
@@ -26,6 +26,8 @@ const { createMediaStorage } = require('./media-storage')
 // 本地定时任务（P2 移植：schtasks CRUD + 到点触发接管）
 const localScheduler = require('./local-scheduler')
 const { purgeDeprecatedExtKeys } = require('./config-migrate')
+// agent 任务 LLM 拆解（对照 agent_router.build_plan，P2 补齐）
+const agentPlan = require('./agent-plan')
 
 // electron-store：CommonJS 兼容；失败兜底内存 store（绝不阻塞启动，P1 红线）
 let Store = null
@@ -466,28 +468,23 @@ if (!gotTheLock) {
     app.quit()
   }
 } else {
-  // 到点触发切换浏览器 Tab（hotspot）；窗口未就绪时暂存，加载完成后补发
-  let pendingHotspot = false
-  function sendHotspotTrigger() {
-    if (!mainWindow) { pendingHotspot = true; return }
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-    mainWindow.webContents.send('scheduled:hotspot-trigger')
-    pendingHotspot = false
-  }
-  async function handleScheduledArg(argv) {
-    const arg = localScheduler.findScheduledArg(argv)
-    if (!arg) return
-    const handled = await localScheduler.runScheduledTrigger(arg).catch(() => false)
-    if (handled && arg.startsWith('hotspot:')) sendHotspotTrigger()
-  }
+  // 到点触发中继（P4，编排在 local-scheduler.setupTriggerRelay）：
+  // hotspot = 自动采集热榜（对照原版 auto_quit=True 无感语义）→ 拉窗切浏览器 Tab；
+  // agent = plan 优先提交服务端
+  const triggerRelay = localScheduler.setupTriggerRelay({
+    getWindow: () => mainWindow,
+    getUserDataDir: () => app.getPath('userData'),
+    progressChannel: 'scheduled:capture-progress',
+  })
   app.on('second-instance', (_e, argv) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     }
     const schedArg = localScheduler.findScheduledArg(argv)
-    if (schedArg && schedArg.startsWith('hotspot:')) sendHotspotTrigger()
+    if (schedArg && schedArg.startsWith('hotspot:')) {
+      void triggerRelay.runHotspotCapture().catch(() => {})
+    }
   })
 
 // 注册 tintin-ext 为标准协议（支持 Worker/fetch 访问扩展文件）
@@ -525,6 +522,9 @@ app.whenReady().then(() => {
       store = { get: (k, d) => _mem.has(k) ? _mem.get(k) : d, set: (k, v) => _mem.set(k, v), delete: (k) => _mem.delete(k), has: (k) => _mem.has(k) }
     }
 
+    // 注入 store 给 server-proxy：getServerUrl 优先读 'server.url'（设置页可改服务端地址）
+    setConfigStore(store)
+
     // 同步共享上下文
     sharedCtx.store = store
 
@@ -533,8 +533,8 @@ app.whenReady().then(() => {
     // 6 个废弃键随启动静默清除；ext.shopKeyword 仍被浏览器自动上架面板使用，保留。
     try { purgeDeprecatedExtKeys(store) } catch (_) { /* 清理失败不阻塞启动 */ }
 
-    // F4：frame:true 兜底判断（基于 argv/env/store）
-    createMainWindow(store)
+    // F4：frame:true 兜底判断在 createMainWindow 内部完成（基于 argv/env/store）
+    // 窗口创建延后到所有 IPC handlers 注册之后（C8 顺序，避免渲染层早调用 IPC 静默超时）
     console.log('[ThickShell] frame mode: SELF-DRAWN (frame:false, system titlebar removed)')
 
     // ══════════════════════════════════════════════════════════════
@@ -644,12 +644,13 @@ app.whenReady().then(() => {
     ipcMain.handle('scheduled:create', (_e, payload) => localScheduler.createTask(payload || {}))
     ipcMain.handle('scheduled:run', (_e, taskName) => localScheduler.runNow(taskName))
     ipcMain.handle('scheduled:delete', (_e, name) => localScheduler.deleteTask(name))
-    void handleScheduledArg(process.argv)
-    if (pendingHotspot && mainWindow) {
-      mainWindow.webContents.once('did-finish-load', () => {
-        mainWindow.webContents.send('scheduled:hotspot-trigger')
-        pendingHotspot = false
-      })
+    // agent 任务 LLM 拆解（对照原版 agent_router.build_plan，P2 补齐）
+    ipcMain.handle('agent:splitPlan', (_e, goal) => agentPlan.splitPlan(goal))
+    // 今日热点手动采集（P4 补齐，对照原版素材浏览器「一键采集」按钮）
+    ipcMain.handle('scheduled:captureHotspots', () => triggerRelay.runHotspotCapture())
+    void triggerRelay.handleScheduledArg(localScheduler.findScheduledArg(process.argv))
+    if (triggerRelay.hasPendingHotspot() && mainWindow) {
+      triggerRelay.flushPendingHotspot()
     }
 
     app.on('activate', () => {

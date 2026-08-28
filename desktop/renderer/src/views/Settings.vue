@@ -46,14 +46,22 @@ const {
   defaultModel,
   apiKey,
   baseUrl,
+  providerName,
+  providerLoaded,
   webSearch,
+  savingLlm,
   testingLlm,
   testLlm,
+  saveLlm,
+  loadLlmCfg,
   localTabs,
   activeLocalTab,
   serverRunning,
   serverDesc,
   serverBusy,
+  serverUrl,
+  savingServerUrl,
+  saveServerUrl,
   logLevel,
   cacheClearing,
   actionHint,
@@ -95,6 +103,7 @@ onMounted(() => {
   // 加载真实配置并探测本地服务端
   ;(async () => {
     await loadEnvCfg()
+    await loadLlmCfg() // LLM 对接：本地偏好回读 + 服务端模型列表/Provider 回显
   })()
   pingServer()
 })
@@ -129,11 +138,18 @@ onBeforeUnmount(() => {
           v-model:active-tab="activePlatTab"
           :model-options="modelOptions"
           v-model:default-model="defaultModel"
-          v-model:api-key="apiKey"
-          v-model:base-url="baseUrl"
+          :api-key="apiKey"
+          :base-url="baseUrl"
+          :provider-name="providerName"
+          :provider-loaded="providerLoaded"
           v-model:web-search="webSearch"
+          :saving-llm="savingLlm"
           :testing-llm="testingLlm"
           :server-desc="serverDesc"
+          v-model:server-url="serverUrl"
+          :saving-server-url="savingServerUrl"
+          @save-llm="saveLlm"
+          @save-server-url="saveServerUrl"
           @refresh-server="pingServer"
           @test-llm="testLlm"
         />

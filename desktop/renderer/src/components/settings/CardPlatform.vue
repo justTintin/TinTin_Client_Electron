@@ -15,17 +15,23 @@ const props = defineProps<{
   defaultModel: string
   apiKey: string
   baseUrl: string
+  providerName: string
+  providerLoaded: boolean
   webSearch: boolean
+  savingLlm: boolean
   testingLlm: boolean
   serverDesc: string
+  serverUrl: string
+  savingServerUrl: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:activeTab', v: string): void
   (e: 'update:defaultModel', v: string): void
-  (e: 'update:apiKey', v: string): void
-  (e: 'update:baseUrl', v: string): void
   (e: 'update:webSearch', v: boolean): void
+  (e: 'update:serverUrl', v: string): void
+  (e: 'save-llm'): void
+  (e: 'save-server-url'): void
   (e: 'refresh-server'): void
   (e: 'test-llm'): void
 }>()
@@ -39,17 +45,13 @@ const curModel = computed({
   get: () => props.defaultModel,
   set: (v: string) => emit('update:defaultModel', v),
 })
-const curKey = computed({
-  get: () => props.apiKey,
-  set: (v: string) => emit('update:apiKey', v),
-})
-const curUrl = computed({
-  get: () => props.baseUrl,
-  set: (v: string) => emit('update:baseUrl', v),
-})
 const searchOn = computed({
   get: () => props.webSearch,
   set: (v: boolean) => emit('update:webSearch', v),
+})
+const curServerUrl = computed({
+  get: () => props.serverUrl,
+  set: (v: string) => emit('update:serverUrl', v),
 })
 </script>
 
@@ -75,12 +77,12 @@ const searchOn = computed({
     </div>
 
     <div class="setting-list">
-      <!-- LLM 设置 -->
+      <!-- LLM 设置（模型选择本地保存；Key/URL 由服务端 Provider 管理，只读回显） -->
       <div v-if="curTab === 'LLM 设置'">
         <div class="setting-row">
           <div>
             <div class="setting-label">默认模型</div>
-            <div class="setting-desc">选择会话中默认使用的模型</div>
+            <div class="setting-desc">选择会话中默认使用的模型（列表来自服务端）</div>
           </div>
           <select v-model="curModel" class="input w-56">
             <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
@@ -89,16 +91,20 @@ const searchOn = computed({
         <div class="setting-row">
           <div>
             <div class="setting-label">API Key</div>
-            <div class="setting-desc">用于调用模型服务的密钥</div>
+            <div class="setting-desc">由服务端 Provider 统一管理，此处仅回显</div>
           </div>
-          <input v-model="curKey" type="password" class="input w-72" />
+          <span class="input w-72 readonly-field" :title="apiKey || '服务端离线，无法读取'">
+            {{ apiKey || (providerLoaded ? '未配置' : '服务端离线，无法读取') }}
+          </span>
         </div>
         <div class="setting-row">
           <div>
             <div class="setting-label">Base URL</div>
-            <div class="setting-desc">自定义 API 代理地址</div>
+            <div class="setting-desc">{{ providerName ? `${providerName} · 由服务端管理` : '由服务端 Provider 统一管理' }}</div>
           </div>
-          <input v-model="curUrl" type="text" class="input w-72" />
+          <span class="input w-72 readonly-field" :title="baseUrl || '服务端离线，无法读取'">
+            {{ baseUrl || (providerLoaded ? '未配置' : '服务端离线，无法读取') }}
+          </span>
         </div>
         <div class="setting-row">
           <div>
@@ -116,10 +122,31 @@ const searchOn = computed({
             <span class="knob" />
           </button>
         </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">保存配置</div>
+            <div class="setting-desc">默认模型与联网搜索保存到本地</div>
+          </div>
+          <button class="btn-secondary-sm primary-sm" :disabled="savingLlm" @click="emit('save-llm')">
+            {{ savingLlm ? '已保存' : '保存' }}
+          </button>
+        </div>
       </div>
 
       <!-- 服务接入 -->
       <div v-else>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">服务端地址</div>
+            <div class="setting-desc">AI 推理服务地址，保存后立即生效并重新探测</div>
+          </div>
+          <div class="server-url-row">
+            <input v-model="curServerUrl" type="text" class="input w-56" placeholder="http://192.168.x.x:8000" />
+            <button class="btn-secondary-sm" :disabled="savingServerUrl" @click="emit('save-server-url')">
+              {{ savingServerUrl ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
         <div class="setting-row">
           <div>
             <div class="setting-label">本地服务端</div>
@@ -140,3 +167,21 @@ const searchOn = computed({
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 只读回显字段（Key/URL 由服务端管理）：弱化输入框外观 */
+.readonly-field {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+  cursor: default;
+}
+/* 服务端地址行：输入框 + 保存按钮并排 */
+.server-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>

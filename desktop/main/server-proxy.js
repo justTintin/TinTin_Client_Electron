@@ -70,7 +70,7 @@ function getServerUrl() {
 const API_ENDPOINTS = {
   health: { capabilities: '/health/capabilities', check: '/health/check' },
   stats:  { workbench: '/stats/workbench' },
-  llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list' },
+  llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list', models: '/llm/models', providers: '/llm/providers' },
   asr:    { transcribe: '/whisper/transcribe' },
   tts:    { generate: '/voxcpm/tts', cloneVoice: '/voxcpm/clone-voice', voicesList: '/voices/list', voicesSamples: '/voices/samples' },
   workflow:{ run: '/workflow/run' },
@@ -365,6 +365,13 @@ function isExpectedOfflineError(err) {
   return false
 }
 
+// electron-store 引用（main.js 创建后注入）：getServerUrl 优先读 'server.url'，
+// 让设置页「服务端地址」配置即时生效（回退 ai_config.json → 默认地址）
+let _configStore = null
+function setConfigStore(store) { _configStore = store }
+
+const { createMediaProxyIpc } = require('./media-proxy-ipc')
+
 function createServerProxy(ipcMain) {
   // GET
   ipcMain.handle('server:get', async (event, path, params) => {
@@ -529,6 +536,13 @@ function createServerProxy(ipcMain) {
       return res.data || []
     } catch (err) { return isExpectedOfflineError(err) ? null : [] }
   })
+  ipcMain.handle('agent:taskList', async (_e, params) => {
+    try {
+      const path = resolveEndpoint(API_ENDPOINTS.agent.tasks, params || {})
+      const res = await httpRequest('GET', path)
+      return res.data || { tasks: [], total: 0, page: 1, page_size: 10 }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
   ipcMain.handle('agent:submitTask', async (_e, payload) => {
     try {
       const body = payload || {}
@@ -594,167 +608,8 @@ function createServerProxy(ipcMain) {
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
-  // --- V3 新接口 S1~S3（rembg / vsr / reverse-prompt）————————————————
-  ipcMain.handle('rembg:submit', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.image) throw new Error('rembg:submit missing `image` Blob')
-      const fields = {}
-      fields.image = p.image
-      if (p.model)         fields.model = p.model
-      if (p.alpha_matting !== undefined) fields.alpha_matting = String(!!p.alpha_matting)
-      if (p.return_mask !== undefined)   fields.return_mask   = String(!!p.return_mask)
-      if (p.bg_color)      fields.bg_color = p.bg_color
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.rembg.matting, fields, onProgress)
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('vsr:submit', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.video) throw new Error('vsr:submit missing `video` Blob')
-      const fields = {}
-      fields.video = p.video
-      if (p.mode)              fields.mode              = p.mode
-      if (p.scale)             fields.scale             = p.scale
-      if (p.fps !== undefined) fields.fps               = String(p.fps)
-      if (p.denoise_strength !== undefined) fields.denoise_strength = String(p.denoise_strength)
-      if (p.face_restoration !== undefined) fields.face_restoration = String(!!p.face_restoration)
-      if (p.trim_start_sec !== undefined)   fields.trim_start_sec   = String(p.trim_start_sec)
-      if (p.trim_end_sec !== undefined)     fields.trim_end_sec     = String(p.trim_end_sec)
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.vsr.enhance, fields, onProgress)
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('vsr:remove', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.video) throw new Error('vsr:remove missing `video` Blob')
-      const fields = {}
-      fields.video = p.video
-      if (p.mode)              fields.mode  = p.mode
-      if (Array.isArray(p.bboxes)) fields.bboxes = JSON.stringify(p.bboxes)
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.vsr.remove, fields, onProgress)
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('vision:reversePrompt', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.file) throw new Error('vision:reversePrompt missing `file` Blob')
-      const fields = {}
-      fields.file = p.file
-      if (p.count !== undefined)       fields.count       = String(p.count)
-      if (p.style)                     fields.style       = p.style
-      if (p.language)                  fields.language    = p.language
-      if (p.frame_count !== undefined) fields.frame_count = String(p.frame_count)
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.vision.reversePrompt, fields, onProgress)
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  // --- asr / tts ------------------------------------------------------
-  ipcMain.handle('asr:transcribe', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      const hasAudio = !!p.audio
-      const hasUrl = !!p.url
-      if (!hasAudio && !hasUrl) throw new Error('asr:transcribe missing `audio` Blob 或 `url` 字段（二选一）')
-
-      if (hasAudio) {
-        // 本地文件上传 → multipart
-        const fields = {}
-        fields.audio = p.audio
-        if (p.language)        fields.language        = p.language
-        if (p.task)            fields.task            = p.task
-        if (p.format)          fields.format          = p.format
-        if (p.word_timestamps !== undefined) fields.word_timestamps = String(!!p.word_timestamps)
-        const onProgress = onProgressChannel
-          ? (percent) => event.sender.send(onProgressChannel, percent)
-          : undefined
-        return await multipartUpload(API_ENDPOINTS.asr.transcribe, fields, onProgress)
-      } else {
-        // URL 远程文件 → 纯 JSON POST
-        const body = { url: p.url }
-        if (p.language)        body.language        = p.language
-        if (p.task)            body.task            = p.task
-        if (p.format)          body.format          = p.format
-        if (p.word_timestamps !== undefined) body.word_timestamps = !!p.word_timestamps
-        const res = await httpRequest('POST', API_ENDPOINTS.asr.transcribe, { body })
-        return res.data
-      }
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('tts:generate', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.text) throw new Error('tts:generate missing `text`')
-      // 有参考音频时走 multipart；否则纯 JSON 即可
-      if (p.clone_ref_file) {
-        const fields = {}
-        fields.text = p.text
-        if (p.voice_id)  fields.voice_id  = p.voice_id
-        if (p.speed !== undefined)     fields.speed     = String(p.speed)
-        if (p.emotion)   fields.emotion   = p.emotion
-        if (p.format)    fields.format    = p.format
-        fields.clone_ref_file = p.clone_ref_file
-        const onProgress = onProgressChannel
-          ? (percent) => event.sender.send(onProgressChannel, percent)
-          : undefined
-        return await multipartUpload(API_ENDPOINTS.tts.generate, fields, onProgress)
-      } else {
-        const res = await httpRequest('POST', API_ENDPOINTS.tts.generate, {
-          body: {
-            text: p.text, voice_id: p.voice_id,
-            speed: p.speed, emotion: p.emotion, format: p.format
-          }
-        })
-        return res.data
-      }
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('tts:cloneVoice', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.name || !p.reference_audio) throw new Error('tts:cloneVoice requires name+reference_audio')
-      const fields = {}
-      fields.name = p.name
-      fields.reference_audio = p.reference_audio
-      if (p.description) fields.description = p.description
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.tts.cloneVoice, fields, onProgress)
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('tts:voicesList', async (_e, params) => {
-    try {
-      const path = resolveEndpoint(API_ENDPOINTS.tts.voicesList, params || {})
-      const res = await httpRequest('GET', path)
-      return res.data || []
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-  ipcMain.handle('tts:voicesSamples', async (_e, params) => {
-    try {
-      const path = resolveEndpoint(API_ENDPOINTS.tts.voicesSamples, params || {})
-      const res = await httpRequest('GET', path)
-      return res.data || []
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
+  // --- 媒体域（rembg/vsr/vision/asr/tts）外迁 media-proxy-ipc.js（单文件 ≤800 行铁律）──
+  createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError })
 
   // --- workflow（CoverMaker 一键成片编排）-----------------------------------------
   ipcMain.handle('workflow:run', async (_e, payload) => {
@@ -775,6 +630,20 @@ function createServerProxy(ipcMain) {
         body: { model: p.model, messages: p.messages, temperature: p.temperature, stream: false }
       })
       return res.data
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+  // 模型列表（设置页「默认模型」下拉数据源，对照原版 GET /llm/models）
+  ipcMain.handle('llm:models', async () => {
+    try {
+      const res = await httpRequest('GET', API_ENDPOINTS.llm.models, { timeout: 8000 })
+      return res.data || { models: [], providers: [] }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+  // Provider 配置回显（API Key 脱敏 / Base URL 由服务端管理，客户端只读展示）
+  ipcMain.handle('llm:providers', async () => {
+    try {
+      const res = await httpRequest('GET', API_ENDPOINTS.llm.providers, { timeout: 8000 })
+      return res.data || { providers: {} }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
   ipcMain.handle('llm:adjustCopywriting', async (_e, payload) => {
@@ -896,6 +765,7 @@ module.exports = {
   createServerProxy,
   getServerUrl,
   getMachineId,
+  setConfigStore,
   API_ENDPOINTS,
   // A2 inference-router 需要：直接复用 server-proxy 的 HTTP 请求能力（不经过 IPC）
   httpRequest,

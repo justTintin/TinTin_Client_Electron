@@ -64,6 +64,7 @@ export interface UseBrowserNavReturn {
   navBack: () => Promise<void>
   navForward: () => Promise<void>
   navReload: () => Promise<void>
+  navigateToHotspot: () => Promise<void>
   platforms: Ref<PlatformTab[]>
   browseMode: Ref<BrowseMode>
   activeNavId: Ref<string>
@@ -143,6 +144,26 @@ async function navReload(): Promise<void> {
   const pid = getActivePlatformId()
   if (!pid || !isElectronShell.value) return
   try { await (window as any).tintin.browser.navigate({ platformId: pid, reload: true }) } catch (_) {}
+}
+
+/* ── P4 热榜导航（hotspot 到点触发，对照原版 HOTSPOT_PAGES 首站）── */
+// 原版素材浏览器热点采集依次打开 douyin/xiaohongshu/bilibili 热榜页；
+// 新客户端采集在主进程隐藏 view 完成，这里导航到首个热榜页供用户直接查看。
+const HOTSPOT_LANDING = { platformId: 'douyin', url: 'https://www.douyin.com/hot' }
+
+/** hotspot 触发后导航：切抖音平台 → 打开热榜页 */
+async function navigateToHotspot(): Promise<void> {
+  if (!isElectronShell.value) return
+  try {
+    await selectPlatform(HOTSPOT_LANDING.platformId)
+    const t = (window as any).tintin
+    const r = await t.browser.navigate({ platformId: HOTSPOT_LANDING.platformId, url: HOTSPOT_LANDING.url })
+    if (r?.success && r?.data) {
+      addressUrl.value = HOTSPOT_LANDING.url
+      navCan.back = !!r.data.canGoBack
+      navCan.forward = !!r.data.canGoForward
+    }
+  } catch (_) { /* 导航失败不影响主流程 */ }
 }
 
 /* ── 平台标签（左栏，对齐原客户端素材浏览器布局） ─────────────── */
@@ -363,7 +384,7 @@ async function visitHistory(item: HistoryItem): Promise<void> {
 return {
   isElectronShell, _detectShell, DEFAULT_BROWSER_URL, addressUrl, navCan,
   addressEditable, getActivePlatformId, onUrlEnter, navBack, navForward,
-  navReload, platforms, browseMode, activeNavId, isWebBrowser, isFavorites,
+  navReload, navigateToHotspot, platforms, browseMode, activeNavId, isWebBrowser, isFavorites,
   activePlatformId, sidebarItems, onSidebarItemClick, detectPlatformFromUrl,
   activePlatformName, selectPlatform, selectWebBrowser, selectFxg, historyItems, visitHistory,
 }

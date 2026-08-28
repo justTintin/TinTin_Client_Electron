@@ -45,6 +45,17 @@ const URL_TO_PLATFORM = {
   jimeng:      [/jimeng\.jianying\.com/i, /jimeng\.com/i],
 }
 
+// 各平台 Cookie 域名映射（yt-dlp Netscape 导出 / 下载器 Cookie 提取）
+// 单一维护点：thickShell-ipc.js 与 media-downloader.js 均从此处引用
+const PLATFORM_COOKIE_DOMAINS = {
+  douyin:      ['.douyin.com', 'www.douyin.com'],
+  bilibili:    ['.bilibili.com'],
+  xiaohongshu: ['.xiaohongshu.com'],
+  kuaishou:    ['.kuaishou.com'],
+  weixin:      ['.weixin.qq.com', 'channels.weixin.qq.com'],
+  youtube:     ['.youtube.com', '.google.com'],
+}
+
 function detectPlatformFromUrl(url) {
   if (!url) return null
   try {
@@ -82,4 +93,4 @@ function isDetailPage(url, platformId) {
   return patterns.some(p => p.test(url))
 }
 
-module.exports = { PLATFORM_DEFS, PLATFORM_IDS, PLATFORM_DETAIL_PATTERNS, URL_TO_PLATFORM, detectPlatformFromUrl, isDetailPage }
+module.exports = { PLATFORM_DEFS, PLATFORM_IDS, PLATFORM_DETAIL_PATTERNS, URL_TO_PLATFORM, PLATFORM_COOKIE_DOMAINS, detectPlatformFromUrl, isDetailPage }

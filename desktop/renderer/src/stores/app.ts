@@ -69,6 +69,15 @@ export const useAppStore = defineStore('app', () => {
   // 当前激活的 Tab，默认工作台
   const activeTab = ref<TabKey>('workbench')
 
+  // hotspot 到点触发信号（时间戳）：App.vue 订阅事件后 bump，
+  // Browser.vue watch 该值 → navigateToHotspot 热榜导航（单一信号源，不直接跨视图调用）
+  const pendingHotspotNav = ref<number>(0)
+
+  /** bump hotspot 导航信号 */
+  function bumpHotspotNav(): void {
+    pendingHotspotNav.value = Date.now()
+  }
+
   // 客户端版本号，由 main 进程注入
   const version = ref<string>('3.0.0')
 
@@ -152,6 +161,8 @@ export const useAppStore = defineStore('app', () => {
 
   return {
     activeTab,
+    pendingHotspotNav,
+    bumpHotspotNav,
     version,
     sidebarCollapsed,
     themeMode,

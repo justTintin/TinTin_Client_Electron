@@ -95,9 +95,21 @@
 | **P1** | **工作台骨架改造** | 侧边栏导航骨架 + `/workbench/*` 子路由 + 顶栏任务/通知条；挂载「智能助手」（Wb* 平移）+「定时任务管理」（占位）；不移植页面不出现菜单项 |
 | **P2** | **定时任务管理页（Vue 原生重写）** | 唯一确定的新增移植页：对照 scheduled_tasks_mgmt_page.py 逐项重写（定时任务创建/启停/调度管理），进侧边栏 |
 | **P3** | **浏览器功能扩展分组 + 自动上架迁移** | 左栏「功能扩展」分组（自动上架按钮在收藏记录上方）+ Settings 移除「扩展插件」卡 + detectCdp/ext.* 废弃键清理（清单见 §3.4）；可与 P1/P2 并行 |
+| **P4** | **定时任务缺口补齐** ✅ 已完成（2026-08-28） | 审计发现的 4 缺口全部闭环，见 §4.1 |
 | 待定 | PRD 4 高频页（脚本/分镜/检索/成片任务） | 会话智能体优先承载；是否原生补齐按需评估（缺口清单见 §3.2） |
 | 🚫 取消 | ~~P2 桥接基建 + 7 页 webview~~ | bridge.exe 依赖 Python，作废 |
 | 🚫 取消 | ~~原侧边栏其余页面移植~~ | 会话智能体承载，不移植 |
+
+### 4.1 P4 定时任务缺口补齐 —— ✅ 已完成（2026-08-28）
+
+| # | 缺口 | 实现载体 | 对照基准 |
+|---|---|---|---|
+| 1 | hotspot 到点断链（主进程推送无渲染层订阅） | [App.vue](../desktop/renderer/src/App.vue) 订阅 `onScheduledHotspot` → bump `appStore.pendingHotspotNav`（单一信号源）+ 切浏览器 Tab；[Browser.vue](../desktop/renderer/src/views/Browser.vue) watch → `navigateToHotspot()`（[useBrowserNav.ts](../desktop/renderer/src/composables/useBrowserNav.ts) 导航热榜首站 douyin/hot） | 原版 launch_hotspot_capture |
+| 2 | hotspot 采集链路（立即采集按钮为占位） | [hotspot-capture.js](../desktop/main/hotspot-capture.js)：隐藏 BrowserView（bounds 移出可视区）+ CDP debugger 拦截四平台热榜 API + DOM 兜底 + 清单追加（userData/hotspots/hotspots_sync.json）；触发编排收敛在 [local-scheduler.js](../desktop/main/local-scheduler.js) `setupTriggerRelay`（hotspot=采集→切 Tab；agent=plan 优先提交）；手动入口 = 抽屉「立即采集今日热点」按钮（进度推送 `scheduled:capture-progress`） | preload-webview.js L1188+ 四段解析逐行对照 / app.js HOTSPOT_PAGES / main.js append-hotspot-manifest |
+| 3 | agent 任务拆解链路 | [agent-plan.js](../desktop/main/agent-plan.js)（prompt/解析/校验纯函数 + splitPlan）→ IPC `agent:splitPlan` → useScheduledTasks `splitPlan()` 拆解预览 → 注册时存 plan → 到点 `buildAgentSubmitBody` plan 优先提交 | agent_router.build_plan |
+| 4 | 编排任务详情弹窗 + 能力 api 字段 | WbScheduledDrawer：「详情」→ `server.tasksUnifiedItem`（/tasks/unified/{id} 子步骤树）弹窗；能力卡新增 API 路径展示 | 原版任务详情语义 |
+
+门禁：node --check ×6 全过 / 单测 22/22（新增 hotspot-capture 9 项）/ typecheck / vite build / 单文件 ≤800 行（main.js 788，触发编排已移入 local-scheduler.js）。
 
 > 交付口径（不变）：对照原客户端 `studio/gui` 对应 .py 逐项行为核对 + IRON-04 单测 + 门禁（node --check / typecheck / 零残留）+ 打包产物更新验证 + IRON-09 提交。
 

@@ -6,6 +6,7 @@ const http = require('node:http')
 const os = require('node:os')
 const { URL } = require('node:url')
 const { spawn } = require('node:child_process')
+const { detectPlatformFromUrl, PLATFORM_COOKIE_DOMAINS } = require('./platform-meta')
 
 const activeDownloads = new Map()
 
@@ -70,14 +71,13 @@ function _updateTaskStatus(broadcastFn, taskId, status, progress, size, message,
   } catch (_) {}
 }
 
+// 老平台兼容：iqiyi/youku/mgtv/weibo 未纳入 platform-meta 平台体系，仍按视频页走 yt-dlp
+const _LEGACY_VIDEO_PAGE_HOSTS = ['iqiyi.com', 'youku.com', 'mgtv.com', 'weibo.com']
+
 function _isValidVideoPageUrl(url) {
   if (!url) return false
   const lower = url.toLowerCase()
-  return lower.includes('youtube.com') || lower.includes('youtu.be') ||
-    lower.includes('bilibili.com') || lower.includes('douyin.com') ||
-    lower.includes('kuaishou.com') || lower.includes('xiaohongshu.com') ||
-    lower.includes('weibo.com') || lower.includes('iqiyi.com') ||
-    lower.includes('youku.com') || lower.includes('mgtv.com')
+  return detectPlatformFromUrl(url) !== null || _LEGACY_VIDEO_PAGE_HOSTS.some((h) => lower.includes(h))
 }
 
 function _cleanMediaUrl(urlStr) {
@@ -342,14 +342,9 @@ function createMediaDownloader(ipcMain, ctx) {
     if (isVideoPage) {
       const urlToDownload = referer || url
 
-      let cookieDomains = []
-      if (urlToDownload.includes('youtube.com') || urlToDownload.includes('youtu.be')) {
-        cookieDomains = ['.youtube.com', '.google.com']
-      } else if (urlToDownload.includes('bilibili.com')) {
-        cookieDomains = ['.bilibili.com']
-      } else if (urlToDownload.includes('douyin.com')) {
-        cookieDomains = ['.douyin.com']
-      }
+      // 平台 Cookie 域名统一从 platform-meta.PLATFORM_COOKIE_DOMAINS 取（单一维护点）
+      const dlPlatformId = detectPlatformFromUrl(urlToDownload)
+      const cookieDomains = (dlPlatformId && PLATFORM_COOKIE_DOMAINS[dlPlatformId]) || []
 
       let cookieTempPath = null
       if (cookieDomains.length > 0) {

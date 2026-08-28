@@ -12,13 +12,11 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { useSettingsGeneral } from '../composables/useSettingsGeneral'
-import { useSettingsExtension } from '../composables/useSettingsExtension'
 import SettingsSidebar, { type SettingsMenuItem } from '../components/settings/SettingsSidebar.vue'
 import CardPlatform from '../components/settings/CardPlatform.vue'
 import CardTheme from '../components/settings/CardTheme.vue'
 import CardEnvMaint from '../components/settings/CardEnvMaint.vue'
 import CardA2Inference from '../components/settings/CardA2Inference.vue'
-import CardExtensions from '../components/settings/CardExtensions.vue'
 import CardAbout from '../components/settings/CardAbout.vue'
 
 const router = useRouter()
@@ -31,7 +29,6 @@ const menuItems = ref<SettingsMenuItem[]>([
   { id: 'theme',      label: '外观主题',   desc: '亮色 / 暗色 / 跟随',   icon: 'theme' },
   { id: 'env',        label: '环境与维护', desc: '服务 · 日志 · 缓存',   icon: 'env' },
   { id: 'inference',  label: '本地推理能力', desc: 'OCR · 向量 · 封面', icon: 'inference' },
-  { id: 'ext',        label: '扩展插件',   desc: '采集 · 自动上架',      icon: 'ext' },
   { id: 'about',      label: '关于',       desc: '版本 V' + appStore.version, icon: 'about' }
 ])
 
@@ -73,32 +70,6 @@ async function onLogLevelChange(v: string) {
   await saveLogLevel()
 }
 
-/* ── 扩展插件：useSettingsExtension 单实例接线 ─────────────── */
-const {
-  extTabs,
-  activeExtTab,
-  bridgePort,
-  bridgeSaveDir,
-  extScanServer,
-  chromePort,
-  chromePath,
-  chromeDataDir,
-  shopKeyword,
-  cdpState,
-  cdpBusy,
-  loadExtCfg,
-  browseDir,
-  browseFile,
-  detectChrome,
-  saveExtension,
-} = useSettingsExtension()
-
-/** 服务端扫描入库开关：对齐原「先置值后保存」的时序 */
-function onScanServerToggle(v: boolean) {
-  extScanServer.value = v
-  void saveExtension()
-}
-
 /* ── 关于卡 props 组装（原散落于 Settings.vue 的常量） ─────── */
 const appVersion = computed(() => appStore.version)
 const buildDate = '2026-08-25'
@@ -123,7 +94,6 @@ onMounted(() => {
   initA2()
   // 加载真实配置并探测本地服务端
   ;(async () => {
-    await loadExtCfg()
     await loadEnvCfg()
   })()
   pingServer()
@@ -222,26 +192,6 @@ onBeforeUnmount(() => {
 
         <!-- 三+、扩展插件 · A2 本地推理能力（§1.5.4 规格） -->
         <CardA2Inference ref="a2Ref" />
-
-        <!-- 扩展插件卡（下载插件 / 自动上架，对齐原来客户端） -->
-        <CardExtensions
-          :ext-tabs="extTabs"
-          v-model:active-tab="activeExtTab"
-          v-model:bridge-port="bridgePort"
-          v-model:bridge-save-dir="bridgeSaveDir"
-          :ext-scan-server="extScanServer"
-          v-model:chrome-port="chromePort"
-          v-model:chrome-path="chromePath"
-          v-model:chrome-data-dir="chromeDataDir"
-          v-model:shop-keyword="shopKeyword"
-          :cdp-state="cdpState"
-          :cdp-busy="cdpBusy"
-          @update:ext-scan-server="onScanServerToggle"
-          @browse-dir="browseDir"
-          @browse-file="browseFile"
-          @detect="detectChrome"
-          @save="saveExtension"
-        />
 
         <!-- 四、关于卡 -->
         <CardAbout

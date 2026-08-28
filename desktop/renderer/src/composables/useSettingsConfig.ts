@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // useSettingsConfig — 设置页 IPC 配置读写（无状态纯函数工具层）
 // 从 Settings.vue 原样迁出（行为不变，IRON-08）；供
-// useSettingsGeneral / useSettingsExtension 共享导入。
+// useSettingsGeneral / useAutoListing 共享导入。
 // 注意：本模块不持有任何响应式状态，两个业务 composable 之间
 // 不允许互相 import 内部状态，共享逻辑只收敛在这里。
 // ═══════════════════════════════════════════════════════════════

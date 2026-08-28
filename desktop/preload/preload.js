@@ -396,12 +396,11 @@ const knowledge = {
   vectorSearch:    (payload) => ipcRenderer.invoke('knowledge:vectorSearch', payload),
 }
 
-// ── env：环境与维护 / 扩展插件（真实主进程操作）──
+// ── env：环境与维护（真实主进程操作）──
 const env = {
   serverPing:    ()      => ipcRenderer.invoke('env:serverPing'),
   restartService:()      => ipcRenderer.invoke('env:restartService'),
   clearCache:    ()      => ipcRenderer.invoke('env:clearCache'),
-  detectCdp:     (port)  => ipcRenderer.invoke('env:detectCdp', port),
 }
 
 // ── 历史面板（独立子窗口，浮于 BrowserView 之上）──

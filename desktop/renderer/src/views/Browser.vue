@@ -31,6 +31,7 @@ import { useBrowserBounds } from '../composables/useBrowserBounds'
 import BrowserSidebar from '../components/browser/BrowserSidebar.vue'
 import BrowserToolbar from '../components/browser/BrowserToolbar.vue'
 import FavoritesView from '../components/browser/FavoritesView.vue'
+import AutoListingView from '../components/browser/AutoListingView.vue'
 import BrowserRightPanel from '../components/browser/BrowserRightPanel.vue'
 
 /* ══ 组合函数实例化与显式接线（无全局单例 store） ══ */
@@ -78,6 +79,7 @@ const {
   activePlatformName,
   selectPlatform,
   selectWebBrowser,
+  selectFxg,
 } = nav
 const {
   favorites,
@@ -287,7 +289,13 @@ onMounted(async () => {
   }
 })
 
-// 模式切换：浏览器模式 ↔ 收藏记录模式
+// 模式切换：浏览器模式 ↔ 收藏记录模式 ↔ 自动上架面板
+// 注意：打开抖店统一走 watch('browser' + navId='autolisting') → selectFxg 单一路径，
+// 避免面板直调 + watch 回环造成双重 attachPlatform（每次 attach 会 loadURL 重载页面）。
+function openFxg() {
+  activeNavId.value = 'autolisting'
+  browseMode.value = 'browser'
+}
 watch(browseMode, async (mode) => {
   const t = (window as any).tintin
   if (mode === 'browser') {
@@ -295,6 +303,9 @@ watch(browseMode, async (mode) => {
     const navId = activeNavId.value || 'web'
     if (navId === 'web') {
       await selectWebBrowser()
+    } else if (navId === 'autolisting') {
+      // 自动上架打开的抖店分区会话（从收藏等视图切回时恢复 attach）
+      await selectFxg()
     } else {
       await selectPlatform(navId)
     }
@@ -309,6 +320,15 @@ watch(browseMode, async (mode) => {
     }
     // 刷新收藏列表
     await loadFavorites()
+  } else if (mode === 'autolisting') {
+    // 切到自动上架面板：detach BrowserView 释放资源
+    if (isElectronShell.value) {
+      try {
+        if (t?.browser?.detachAll) {
+          await t.browser.detachAll()
+        }
+      } catch (_) {}
+    }
   }
 })
 
@@ -417,6 +437,12 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
           </div>
 
           </div>
+
+        <!-- 自动上架面板（P3 迁移自系统设置扩展卡） -->
+        <AutoListingView
+          v-else-if="browseMode === 'autolisting'"
+          @open-fxg="openFxg"
+        />
 
         <!-- 收藏记录模式 -->
         <FavoritesView

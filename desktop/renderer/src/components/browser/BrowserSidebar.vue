@@ -19,15 +19,31 @@ defineEmits<{
 <template>
   <aside class="browser-sidebar" :class="{ open: leftDrawerOpen }">
     <div class="side-scroll custom-scroll">
+      <!-- 平台组：网页浏览器 + 常用平台 -->
+      <div class="side-group-title">平台</div>
       <div class="platform-grid">
         <button
-          v-for="item in sidebarItems"
+          v-for="item in sidebarItems.filter(i => i.group === 'platform')"
           :key="item.id"
           class="platform-btn"
           :class="{ active: !!item.active }"
           @click="$emit('select-item', item)"
         >
           <span class="platform-badge" :class="item.id">{{ item.badge }}</span>
+          <span class="platform-name">{{ item.name }}</span>
+        </button>
+      </div>
+      <!-- 功能扩展组：不与平台混排（自动上架在收藏记录上方，2026-08-27 裁决） -->
+      <div class="side-group-title ext">功能扩展</div>
+      <div class="platform-grid">
+        <button
+          v-for="item in sidebarItems.filter(i => i.group === 'ext')"
+          :key="item.id"
+          class="platform-btn"
+          :class="{ active: !!item.active }"
+          @click="$emit('select-item', item)"
+        >
+          <span class="platform-badge ext-badge">{{ item.badge }}</span>
           <span class="platform-name">{{ item.name }}</span>
         </button>
       </div>
@@ -108,6 +124,25 @@ defineEmits<{
   display: grid;
   grid-template-columns: 1fr;
   gap: 8px;
+}
+
+/* 分组标题（平台 / 功能扩展，两组不混排） */
+.side-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  padding: 2px 4px;
+  margin-bottom: 6px;
+}
+.side-group-title.ext {
+  margin-top: 14px;
+}
+
+/* 功能扩展组徽标（非平台色，用中性底色） */
+.platform-badge.ext-badge {
+  background: var(--surface-container-high, #3a3f47);
+  color: var(--foreground);
+  font-size: 12px;
 }
 
 .platform-btn {

@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // platform-meta.js — 平台定义 + URL→平台识别 + 详情页白名单（从 thickShell-ipc.js 原样拆出，无逻辑改动）
-//   C14 接口一致性：platforms 5 个 = 抖音/视频号/快手/小红书/B站（另含 web/youtube/jimeng 扩展位）
+//   C14 接口一致性：platforms 5 个 = 抖音/视频号/快手/小红书/B站
+//   （另含 web/youtube/jimeng 扩展位 + fxg 抖店分区：仅自动上架使用，不进左栏平台组）
 // ═══════════════════════════════════════════════════════════════
 
 const { URL } = require('node:url')
@@ -15,6 +16,8 @@ const PLATFORM_DEFS = {
   bilibili:    { name: 'B站',    partition: 'persist:tintin-bili',     seedUrl: 'https://www.bilibili.com',       extractor: 'extractors/bilibili.ts' },
   youtube:     { name: 'YouTube', partition: 'persist:tintin-youtube', seedUrl: 'https://www.youtube.com',        extractor: 'extractors/youtube.ts' },
   jimeng:      { name: '即梦AI', partition: 'persist:tintin-jimeng',   seedUrl: 'https://jimeng.jianying.com',     extractor: 'extractors/jimeng.ts' },
+  // fxg 抖店工作台：自动上架载体分区（V2 PRD 十四章；无 extractor、无详情页嗅探模式）
+  fxg:         { name: '抖店',   partition: 'persist:tintin-fxg',      seedUrl: 'https://fxg.jinritemai.com',     extractor: null },
 }
 const PLATFORM_IDS = Object.keys(PLATFORM_DEFS)
 

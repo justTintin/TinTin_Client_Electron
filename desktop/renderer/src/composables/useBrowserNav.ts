@@ -28,12 +28,14 @@ export interface PlatformTab {
   badge: string
   active?: boolean
 }
-export type BrowseMode = 'browser' | 'favorites'
+export type BrowseMode = 'browser' | 'favorites' | 'autolisting'
 export interface SidebarItem {
   id: string
   name: string
   badge: string
-  type: 'browser' | 'favorites' | 'platform'
+  type: 'browser' | 'favorites' | 'platform' | 'autolisting'
+  /** 左栏分组：platform=平台组（网页浏览器+平台）；ext=功能扩展组（自动上架/收藏记录），两组不混排（2026-08-27 裁决） */
+  group: 'platform' | 'ext'
   active?: boolean
 }
 export interface HistoryItem {
@@ -74,6 +76,7 @@ export interface UseBrowserNavReturn {
   activePlatformName: ComputedRef<string>
   selectPlatform: (id: string, loadDefaultUrl?: boolean) => Promise<void>
   selectWebBrowser: () => Promise<void>
+  selectFxg: () => Promise<void>
   historyItems: Ref<HistoryItem[]>
   visitHistory: (item: HistoryItem) => Promise<void>
 }
@@ -157,10 +160,11 @@ const platforms = ref<PlatformTab[]>([
 const browseMode = ref<BrowseMode>('browser')
 
 /* ── 统一导航项：网页浏览器 + 收藏记录 + 常用平台（单一激活态） ── */
-// 当前选中的导航项 ID（'web' | 'favorites' | 平台 ID）
+// 当前选中的导航项 ID（'web' | 'favorites' | 'autolisting' | 平台 ID）
 const activeNavId = ref<string>('web')
 const isWebBrowser = computed(() => activeNavId.value === 'web')
 const isFavorites = computed(() => activeNavId.value === 'favorites')
+const isAutoListing = computed(() => activeNavId.value === 'autolisting')
 const activePlatformId = computed<BrowserPlatformId | null>(() => {
   if (isWebBrowser.value || isFavorites.value) return null
   const id = activeNavId.value as BrowserPlatformId
@@ -168,18 +172,23 @@ const activePlatformId = computed<BrowserPlatformId | null>(() => {
 })
 
 const sidebarItems = computed<SidebarItem[]>(() => [
-  { id: 'web', name: '网页浏览器', badge: '🌐', type: 'browser', active: isWebBrowser.value },
+  // ── 平台组（网页浏览器 + 常用平台）──
+  { id: 'web', name: '网页浏览器', badge: '🌐', type: 'browser', group: 'platform', active: isWebBrowser.value },
   ...platforms.value.map(p => ({
-    id: p.id, name: p.name, badge: p.badge, type: 'platform' as const,
+    id: p.id, name: p.name, badge: p.badge, type: 'platform' as const, group: 'platform' as const,
     active: activeNavId.value === p.id,
   })),
-  { id: 'favorites', name: '收藏记录', badge: '📑', type: 'favorites', active: isFavorites.value },
+  // ── 功能扩展组（不与平台混排；自动上架在收藏记录上方，2026-08-27 裁决）──
+  { id: 'autolisting', name: '自动上架', badge: '⬆', type: 'autolisting', group: 'ext', active: isAutoListing.value },
+  { id: 'favorites', name: '收藏记录', badge: '📑', type: 'favorites', group: 'ext', active: isFavorites.value },
 ])
 
 function onSidebarItemClick(item: SidebarItem): void {
   activeNavId.value = item.id
   if (item.type === 'favorites') {
     browseMode.value = 'favorites'
+  } else if (item.type === 'autolisting') {
+    browseMode.value = 'autolisting'
   } else if (item.type === 'browser') {
     browseMode.value = 'browser'
     void selectWebBrowser()
@@ -302,6 +311,32 @@ async function selectWebBrowser(): Promise<void> {
   }
 }
 
+// ── 自动上架：打开抖店工作台分区会话（P3 迁移；载体 = 内置分区 persist:tintin-fxg，
+//    替代原外挂 Chrome CDP(9222) + bridge(8123)，2026-08-27 裁决）──
+const FXG_SEED_URL = 'https://fxg.jinritemai.com'
+async function selectFxg(): Promise<void> {
+  // 左栏激活态保持在「自动上架」；主区切回 browser 模式由 fxg BrowserView 覆盖
+  activeNavId.value = 'autolisting'
+  browseMode.value = 'browser'
+  if (!isElectronShell.value) {
+    addressUrl.value = FXG_SEED_URL
+    return
+  }
+  try {
+    const t = (window as any).tintin
+    const r = await t.browser.attachPlatform('fxg')
+    if (r?.success && r?.data) {
+      addressUrl.value = r.data.currentUrl || FXG_SEED_URL
+      navCan.back = !!r.data.canGoBack
+      navCan.forward = !!r.data.canGoForward
+    }
+    await nextTick()
+    layoutWiring.scheduleRecalcBounds()
+  } catch (e) {
+    console.warn('[Browser] attachPlatform(fxg) failed:', e)
+  }
+}
+
 /* ── 浏览历史（左栏，设计稿 tag-item 样式） ─────────────── */
 
 const historyItems = ref<HistoryItem[]>([
@@ -330,7 +365,7 @@ return {
   addressEditable, getActivePlatformId, onUrlEnter, navBack, navForward,
   navReload, platforms, browseMode, activeNavId, isWebBrowser, isFavorites,
   activePlatformId, sidebarItems, onSidebarItemClick, detectPlatformFromUrl,
-  activePlatformName, selectPlatform, selectWebBrowser, historyItems, visitHistory,
+  activePlatformName, selectPlatform, selectWebBrowser, selectFxg, historyItems, visitHistory,
 }
 }
 

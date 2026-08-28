@@ -10,16 +10,27 @@ node_modules/
 # 构建产物
 desktop/renderer/dist/
 dist/
+dist-*/
+desktop/dist-*/
 *.app
 *.exe
 *.msi
 *.nupkg
 *.blockmap
 
+# Electron 下载缓存（国内镜像落地目录）
+desktop/.electron-cache/
+
+# 浏览器扩展程序包与解包产物（运行时资源，体积大且非工程源码）
+assets/
+
 # 临时调试脚本与截图（非工程代码）
 find_window.ps1
 screenshot_step1.png
 screenshot_step1.ps1
+debug-*.md
+trae-debug-log-*.ndjson
+desktop/probe-ext.js
 
 # 日志与临时文件
 *.log

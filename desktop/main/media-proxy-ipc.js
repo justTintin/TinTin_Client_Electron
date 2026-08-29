@@ -47,18 +47,37 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
+  // M4 对齐 openapi 契约 Body_remove_subtitle_vsr_remove_post：
+  //   file（multipart 文件）+ inpaint_mode/sub_areas/purpose/watermark_text/
+  //   mode/mask_dilate/mask_expand_y/sttn_max_load_num；sub_areas='' 表示智能识别
   ipcMain.handle('vsr:remove', async (event, payload, onProgressChannel) => {
     try {
       const p = payload || {}
       if (!p.video) throw new Error('vsr:remove missing `video` Blob')
       const fields = {}
-      fields.video = p.video
-      if (p.mode)              fields.mode  = p.mode
-      if (Array.isArray(p.bboxes)) fields.bboxes = JSON.stringify(p.bboxes)
+      // { path } 包装 → multipartUpload 按本地路径读取文件内容上传（字段名必须为 file）
+      fields.file = typeof p.video === 'string' ? { path: p.video } : p.video
+      if (p.inpaint_mode)      fields.inpaint_mode      = p.inpaint_mode
+      if (p.sub_areas !== undefined && p.sub_areas !== null) fields.sub_areas = String(p.sub_areas)
+      if (p.purpose)           fields.purpose           = p.purpose
+      if (p.watermark_text)    fields.watermark_text    = p.watermark_text
+      if (p.mode)              fields.mode              = p.mode
+      if (p.mask_dilate !== undefined)      fields.mask_dilate      = String(p.mask_dilate)
+      if (p.mask_expand_y !== undefined)    fields.mask_expand_y    = String(p.mask_expand_y)
+      if (p.sttn_max_load_num !== undefined) fields.sttn_max_load_num = String(p.sttn_max_load_num)
       const onProgress = onProgressChannel
         ? (percent) => event.sender.send(onProgressChannel, percent)
         : undefined
-      return await multipartUpload(API_ENDPOINTS.vsr.remove, fields, onProgress)
+      try {
+        return await multipartUpload(API_ENDPOINTS.vsr.remove, fields, onProgress)
+      } catch (err) {
+        // 5xx/422 细节透出（对照原客户端「服务端返回 {status}: {text[:300]}」口径）
+        if (err && err.status) {
+          const detail = err.response ? JSON.stringify(err.response).slice(0, 300) : ''
+          throw new Error(detail ? `服务端返回 ${err.status}: ${detail}` : `服务端返回 ${err.status}`)
+        }
+        throw err
+      }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 

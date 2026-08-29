@@ -1,8 +1,12 @@
 <script setup lang="ts">
-// WbSidebar.vue — 工作台左侧会话侧栏（纯展示）
+// WbSidebar.vue — 工作台左侧会话侧栏（纯展示 + 行内编辑态）
 // 结构：新建会话按钮 / 分组会话列表 / 底部（任务队列 / 通知中心带未读徽标 / 系统设置）
 // 分组数据由容器经 useWorkbenchSessions 的 sessionsByGroup + groupLabels 组装传入
-import type { SessionGroup } from '@/composables/useWorkbenchSessions'
+// W7：每项 hover 显示「重命名 / 删除」图标按钮（用户偏好图标入口）；
+//     重命名为行内编辑（input + Enter 确认 / Esc 取消 / 失焦提交），
+//     业务持久化经 emit('rename-commit') 转发到容器 → useWorkbenchSessions.renameSession。
+import { nextTick, ref } from 'vue'
+import type { Session, SessionGroup } from '@/composables/useWorkbenchSessions'
 
 defineProps<{
   /** 分组后的会话数据（今天/昨天/更早） */
@@ -17,11 +21,36 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'select', id: string): void
   (e: 'create'): void
+  (e: 'delete', id: string): void
+  (e: 'rename-commit', id: string, title: string): void
   (e: 'open-scheduled'): void
   (e: 'toggle-taskqueue'): void
   (e: 'toggle-notifications'): void
   (e: 'open-settings'): void
 }>()
+
+/* ── W7 行内编辑态（同一时刻至多一个会话处于编辑） ── */
+const editingId = ref('')
+const editText = ref('')
+const editInput = ref<HTMLInputElement | null>(null)
+
+function startRename(s: Session, e: Event): void {
+  e.stopPropagation()
+  editingId.value = s.id
+  editText.value = s.title
+  nextTick(() => editInput.value?.focus())
+}
+
+function commitRename(id: string): void {
+  if (editingId.value !== id) return
+  const title = editText.value.trim()
+  editingId.value = ''
+  if (title) emit('rename-commit', id, title)
+}
+
+function cancelRename(): void {
+  editingId.value = ''
+}
 </script>
 
 <template>
@@ -59,9 +88,35 @@ const emit = defineEmits<{
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
-            <div class="session-text">
+            <!-- W7 行内编辑态：input + Enter 确认 / Esc 取消 / 失焦提交 -->
+            <input
+              v-if="editingId === s.id"
+              ref="editInput"
+              v-model="editText"
+              class="session-rename-input"
+              @click.stop
+              @keyup.enter="commitRename(s.id)"
+              @keyup.esc="cancelRename"
+              @blur="commitRename(s.id)"
+            >
+            <div v-else class="session-text">
               <div class="session-title">{{ s.title }}</div>
               <div class="session-sub">{{ s.subtitle }}</div>
+            </div>
+            <!-- W7 hover 操作：重命名（铅笔）/ 删除（垃圾桶），点击不触发切换 -->
+            <div v-if="editingId !== s.id" class="session-actions" @click.stop>
+              <button class="session-action" title="重命名" @click="startRename(s, $event)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+              <button class="session-action session-action--danger" title="删除" @click="emit('delete', s.id)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
             </div>
           </div>
         </template>
@@ -165,6 +220,62 @@ const emit = defineEmits<{
 .session-item.active {
   background: var(--primary);
   color: var(--primary-foreground);
+}
+
+/* ─── W7：行内重命名输入 ─── */
+.session-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  font-size: var(--font-size-body);
+  color: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+.session-item.active .session-rename-input {
+  color: var(--foreground);
+}
+
+/* ─── W7：hover 操作按钮（默认隐藏，hover 会话项时显示） ─── */
+.session-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--easing-default);
+}
+.session-item:hover .session-actions,
+.session-item:focus-within .session-actions {
+  opacity: 1;
+}
+.session-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  opacity: 0.85;
+  transition: all var(--duration-fast) var(--easing-default);
+}
+.session-action:hover {
+  background: rgba(128, 128, 128, 0.18);
+  opacity: 1;
+}
+.session-item.active .session-action:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.session-action--danger:hover {
+  color: var(--error);
+}
+.session-item.active .session-action--danger:hover {
+  color: #fff;
+  background: rgba(239, 68, 68, 0.7);
 }
 
 .session-text {

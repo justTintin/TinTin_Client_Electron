@@ -29,9 +29,10 @@ _detectShell()
 const _c9Timer = setTimeout(() => { isElectronShell.value = false }, 2000)
 
 // Tab 配置：标识 + 显示名 + 路由
+// D2 批次1：浏览器 Tab 已迁出主应用（独立渲染入口 src/browser/ + 独立 preload），
+// 顶栏改留「打开浏览器窗口」按钮占位（见 header-right），按钮行为批次2 接 IPC。
 const tabs: Array<{ key: TabKey; label: string; to: RouteLocationRaw }> = [
   { key: 'workbench', label: '工作台', to: '/workbench' },
-  { key: 'browser', label: '浏览器', to: '/browser' },
   { key: 'media-tools', label: '媒体工具', to: '/media-tools' }
 ]
 
@@ -69,6 +70,19 @@ async function switchTab(tab: TabKey, to: RouteLocationRaw): Promise<void> {
   } catch (_) { /* detachAll 失败不影响路由跳转 */ }
   appStore.setActiveTab(tab)
   router.push(to)
+}
+
+/** 打开浏览器独立窗口（D4 批次2：browserWindow:open —— 主进程创建独立 BrowserWindow + 挂载 BrowserView）
+ *  opts.hotspot=true：hotspot 到点触发时打开，窗口就绪后主进程补发导航信号（浏览器域自含订阅导航） */
+async function openBrowserWindow(opts?: { hotspot?: boolean; count?: number | null }): Promise<void> {
+  try {
+    await (window as any).tintin?.browserWindow?.open(opts)
+  } catch (e) {
+    console.warn('[App] 打开浏览器窗口失败:', e)
+  }
+}
+function onOpenBrowserWindow(): void {
+  void openBrowserWindow()
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -151,16 +165,19 @@ async function _initTitleBarState(): Promise<void> {
 watch(isElectronShell, (v) => { if (v) _initTitleBarState() }, { immediate: true })
 
 // ══════════════════════════════════════════════════════════════
-// P4 hotspot 到点触发订阅：定时任务采集完成后 → bump 信号（Browser.vue
-// watch 后热榜导航）+ 切浏览器 Tab。仅 Electron 壳内有此事件。
+// P4 hotspot 到点触发订阅：定时任务采集完成后 → 打开浏览器窗口。仅 Electron 壳内有此事件。
+// D5 批次2：浏览器 Tab 已迁出主应用（独立窗口自含订阅 scheduled:hotspot-trigger），
+// 本订阅负责「打开/聚焦浏览器窗口」（窗口未开时主进程补发导航信号）。
 // ══════════════════════════════════════════════════════════════
 let _unsubHotspot: (() => void) | null = null
 function _bindHotspotTrigger(): void {
   const t = (window as any).tintin
   if (t?.scheduled?.onScheduledHotspot) {
-    _unsubHotspot = t.scheduled.onScheduledHotspot(() => {
-      appStore.bumpHotspotNav()
-      switchTab('browser', '/browser')
+    _unsubHotspot = t.scheduled.onScheduledHotspot((payload) => {
+      // D5 批次2：不再 bump 主应用信号/切 Tab（浏览器 Tab 已迁出主应用）——
+      // 打开独立浏览器窗口；浏览器窗口内自含订阅 scheduled:hotspot-trigger
+      // → navigateToHotspot 已就位（窗口未开时由主进程 openBrowserWindow 补发信号）
+      void openBrowserWindow({ hotspot: true, count: payload?.count })
     })
   }
 }
@@ -188,7 +205,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'electron-shell': isElectronShell }">
+  <div class="app-shell" :class="{ 'electron-shell': isElectronShell, 'is-fullscreen': isElectronShell && !!winState?.fullscreen }">
     <!-- ═══ P1.5 厚壳化：自绘标题栏（36px，C3/C9）═══ -->
     <!-- 仅 Electron 壳内显示；拖拽区使用 -webkit-app-region: drag；三控件使用 no-drag -->
     <header
@@ -237,6 +254,21 @@ onBeforeUnmount(() => {
           <span>内存 {{ systemStats.mem }}%</span>
           <span>GPU {{ systemStats.gpu }}%</span>
         </div>
+
+        <!-- D2 批次1：浏览器已拆为独立渲染入口/独立窗口；本按钮为入口占位，批次2 接 IPC -->
+        <button
+          class="open-browser-btn"
+          type="button"
+          title="打开浏览器窗口（独立窗口，批次2 接入）"
+          @click="onOpenBrowserWindow"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M2 12h20" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+          浏览器
+        </button>
 
         <!-- 窗口三控件：最小化 / 最大化 / 关闭 -->
         <div class="title-bar-controls" aria-label="窗口控制">
@@ -404,6 +436,12 @@ onBeforeUnmount(() => {
 .wc-close:hover { background: #E81123; color: #FFFFFF; }
 .wc-close:active { background: #C40E1C; filter: brightness(0.95); }
 
+/* 全屏时隐藏自绘标题栏（winState.fullscreen 订阅已就位：thickShell-ipc 广播
+   enter/leave-full-screen）→ 内容区占满全屏（对齐原生全屏观感） */
+.app-shell.is-fullscreen .app-header {
+  display: none;
+}
+
 /* ─── 顶栏 ─── */
 .app-header {
   flex: 0 0 var(--size-page-header-height);
@@ -502,6 +540,29 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   font-size: var(--font-size-caption);
   color: var(--foreground-muted);
+}
+
+/* ─── D2 批次1：打开浏览器独立窗口按钮（占位；批次2 接 IPC） ─── */
+.open-browser-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-container);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.open-browser-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 /* ─── 主内容区 ─── */

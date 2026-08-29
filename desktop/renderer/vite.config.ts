@@ -47,7 +47,11 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       input: {
-        main: path.resolve(__dirname, 'index.html')
+        // 主应用入口（工作台/媒体工具/设置）
+        main: path.resolve(__dirname, 'index.html'),
+        // 浏览器域独立渲染入口（独立 BrowserWindow + 独立 preload，
+        // 批次1：浏览器域与主应用物理解耦；构建产物 dist/browser/）
+        browser: path.resolve(__dirname, 'browser/index.html')
       },
       output: {
         manualChunks: {

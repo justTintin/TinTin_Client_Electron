@@ -17,14 +17,26 @@ const http = require('node:http')
 const { URL } = require('node:url')
 const fs = require('node:fs')
 const path = require('node:path')
-const os = require('node:os')
+const { createMontageProxyIpc } = require('./montage-proxy-ipc')
+// machine_id 稳定派生（W11 口径：config-store 'machineId' 缓存优先 + SHA256 前 16 位派生写回）
+const { resolveMachineIdSync } = require('./machine-id')
 
-// 获取 machine_id（与 V2 PySide6 客户端一致，从 ai_config.json 读取或生成）
+// 获取 machine_id（稳定口径：config-store 'machineId' 复用 → V2 ai_config 遗留 → 派生写回）
 let cachedMachineId = null
 
 function getMachineId() {
   if (cachedMachineId) return cachedMachineId
-  // 尝试从配置文件读取
+  // config-store 'machineId'（client-task-thread 已写回则直接复用同一值，会话隔离一致）
+  if (_configStore && typeof _configStore.get === 'function') {
+    try {
+      const cached = _configStore.get('machineId')
+      if (cached) {
+        cachedMachineId = String(cached)
+        return cachedMachineId
+      }
+    } catch (e) {}
+  }
+  // 回退：V2 老客户端 ai_config.json machine_id（老实例已注册场景）
   const configPaths = [
     path.resolve(__dirname, '..', '..', '..', 'studio', 'config', 'ai_config.json'),
     path.resolve(__dirname, '..', '..', 'config', 'ai_config.json')
@@ -40,13 +52,23 @@ function getMachineId() {
       } catch (e) {}
     }
   }
-  // 回退：用 hostname 生成
-  cachedMachineId = os.hostname() + '-' + Date.now().toString(36)
+  // 稳定派生（同步采集 → SHA256 前 16 位，写回 config-store 保证幂等）
+  cachedMachineId = resolveMachineIdSync({ store: _configStore })
   return cachedMachineId
 }
 
-// 从 ai_config.json 读取服务端地址
+// electron-store 引用（main.js 创建后注入，声明前移至 getServerUrl 之上）
+let _configStore = null
+
+// 从 electron-store（若已注入）→ ai_config.json → 默认值 解析服务端地址：
+// 设置页保存 'server.url' 后立即生效（httpRequest / env:serverPing 均经此函数）
 function getServerUrl() {
+  if (_configStore && typeof _configStore.get === 'function') {
+    try {
+      const u = _configStore.get('server.url')
+      if (u) return String(u).replace(/\/$/, '')
+    } catch (e) {}
+  }
   const configPaths = [
     path.resolve(__dirname, '..', '..', '..', 'studio', 'config', 'ai_config.json'),
     path.resolve(__dirname, '..', '..', 'config', 'ai_config.json')
@@ -70,15 +92,19 @@ function getServerUrl() {
 const API_ENDPOINTS = {
   health: { capabilities: '/health/capabilities', check: '/health/check' },
   stats:  { workbench: '/stats/workbench' },
-  llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list', models: '/llm/models', providers: '/llm/providers' },
+  llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list', models: '/llm/models' },
   asr:    { transcribe: '/whisper/transcribe' },
   tts:    { generate: '/voxcpm/tts', cloneVoice: '/voxcpm/clone-voice', voicesList: '/voices/list', voicesSamples: '/voices/samples' },
   workflow:{ run: '/workflow/run' },
   material: {
     list: '/material/list', search: '/material/search', serve: '/material/serve',
-    ocr: '/material/ocr', stockSearch: '/material/stock_search', scoreClip: '/material/score-clip'
+    ocr: '/material/ocr', stockSearch: '/material/stock_search', scoreClip: '/material/score-clip',
+    webDownload: '/material/web_download', webDownloadStatus: (id) => `/material/web_download/${id}`,
+    enqueueAnalysis: '/material/enqueue_analysis', scan: '/material/scan'
   },
-  montage: { split: '/montage/split', concat: '/montage/concat', beatSync: '/montage/beat', auto: '/montage/auto-mix' },
+  montage: { split: '/montage/split', concat: '/montage/concat', beat: '/montage/beat', bgm: '/montage/bgm', auto: '/montage/auto-mix' },
+  audio:   { beatmap: '/audio/beatmap' },
+  prompt:  { video: '/prompt/video' },
   vsr:     { enhance: '/vsr/enhance', remove: '/vsr/remove' },
   rembg:   { matting: '/rembg/matting' },
   vision:  { reversePrompt: '/vision/reverse-prompt' },
@@ -86,6 +112,7 @@ const API_ENDPOINTS = {
   storyboard: { scripts: '/api/storyboard/scripts', scriptItem: (id) => `/api/storyboard/scripts/${id}` },
   agent: {
     registry: '/agent/registry',
+    agents: '/agent/agents',
     tasks: '/agent/tasks',
     taskItem:        (id) => `/agent/tasks/${id}`,
     taskConfirm:     (id) => `/agent/tasks/${id}/confirm`,
@@ -98,6 +125,8 @@ const API_ENDPOINTS = {
     chat: '/agent/chat',
     sessions: '/agent/sessions',
     sessionItem:     (id) => `/agent/sessions/${id}`,
+    sessionAttachments:     (id) => `/agent/sessions/${id}/attachments`,
+    sessionAttachmentItem:  (id, key) => `/agent/sessions/${id}/attachments/${key}`,
   },
   tasks: {
     unifiedList: '/tasks/unified',
@@ -215,7 +244,18 @@ function multipartUpload(urlPath, fields, onProgress) {
     const parts = []
     let totalSize = 0
 
-    for (const [key, value] of Object.entries(fields)) {
+    // 数组值展开为同名多 part（如 /montage/concat 的 files[] List[UploadFile]、
+    // /montage/beat 的 videos[]，对照原客户端 requests files=[("files", ...)*n] 口径）
+    const entries = []
+    for (const [key, value] of Object.entries(fields || {})) {
+      if (Array.isArray(value)) {
+        for (const v of value) entries.push([key, v])
+      } else {
+        entries.push([key, value])
+      }
+    }
+
+    for (const [key, value] of entries) {
       let header = `--${boundary}\r\n`
       if (value instanceof fs.ReadStream || (value && typeof value.pipe === 'function')) {
         // 文件流
@@ -365,14 +405,13 @@ function isExpectedOfflineError(err) {
   return false
 }
 
-// electron-store 引用（main.js 创建后注入）：getServerUrl 优先读 'server.url'，
-// 让设置页「服务端地址」配置即时生效（回退 ai_config.json → 默认地址）
-let _configStore = null
 function setConfigStore(store) { _configStore = store }
 
 const { createMediaProxyIpc } = require('./media-proxy-ipc')
+const { createAgentChatIpc } = require('./agent-chat-ipc')
+const { createMaterialImportIpc } = require('./material-import')
 
-function createServerProxy(ipcMain) {
+function createServerProxy(ipcMain, ctx) {
   // GET
   ipcMain.handle('server:get', async (event, path, params) => {
     try {
@@ -611,6 +650,12 @@ function createServerProxy(ipcMain) {
   // --- 媒体域（rembg/vsr/vision/asr/tts）外迁 media-proxy-ipc.js（单文件 ≤800 行铁律）──
   createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError })
 
+  // --- 智能体对话域（工作台 AI 对话真实链路 P1）外迁 agent-chat-ipc.js（同上铁律）──
+  createAgentChatIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, isExpectedOfflineError, getMachineId })
+
+  // --- B8 素材入库域（material:import 等，外迁 material-import.js，同上铁律）──
+  createMaterialImportIpc(ipcMain, { httpRequest, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError, app: (ctx && ctx.app) || null })
+
   // --- workflow（CoverMaker 一键成片编排）-----------------------------------------
   ipcMain.handle('workflow:run', async (_e, payload) => {
     try {
@@ -625,25 +670,19 @@ function createServerProxy(ipcMain) {
   ipcMain.handle('llm:chat', async (_e, payload) => {
     try {
       const p = payload || {}
-      if (!p.model || !Array.isArray(p.messages)) throw new Error('llm:chat requires model+messages[]')
-      const res = await httpRequest('POST', API_ENDPOINTS.llm.chatCompletions, {
-        body: { model: p.model, messages: p.messages, temperature: p.temperature, stream: false }
-      })
+      // openapi 契约 ChatRequest.model 默认 ""（服务端使用其默认模型），只强制 messages[]
+      if (!Array.isArray(p.messages)) throw new Error('llm:chat requires messages[]')
+      const body = { model: p.model || '', messages: p.messages, temperature: p.temperature, stream: false }
+      const res = await httpRequest('POST', API_ENDPOINTS.llm.chatCompletions, { body, timeout: 180000 })
       return res.data
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
-  // 模型列表（设置页「默认模型」下拉数据源，对照原版 GET /llm/models）
+  // 模型列表（设置页「默认模型」下拉数据源，对照原版 GET /llm/models；
+  // 用户裁决 2026-08-28：LLM 凭证由服务端持有，客户端不再读取 Provider 配置）
   ipcMain.handle('llm:models', async () => {
     try {
       const res = await httpRequest('GET', API_ENDPOINTS.llm.models, { timeout: 8000 })
       return res.data || { models: [], providers: [] }
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-  // Provider 配置回显（API Key 脱敏 / Base URL 由服务端管理，客户端只读展示）
-  ipcMain.handle('llm:providers', async () => {
-    try {
-      const res = await httpRequest('GET', API_ENDPOINTS.llm.providers, { timeout: 8000 })
-      return res.data || { providers: {} }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
   ipcMain.handle('llm:adjustCopywriting', async (_e, payload) => {
@@ -712,22 +751,10 @@ function createServerProxy(ipcMain) {
       return await multipartUpload(API_ENDPOINTS.montage.split, fields, onProgress)
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
-  ipcMain.handle('montage:concat', async (_e, payload) => {
-    try {
-      const p = payload || {}
-      if (!Array.isArray(p.paths) || p.paths.length < 2) throw new Error('montage:concat requires paths[]>=2')
-      const res = await httpRequest('POST', API_ENDPOINTS.montage.concat, { body: p })
-      return res.data
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-  ipcMain.handle('montage:beatSync', async (_e, payload) => {
-    try {
-      const p = payload || {}
-      if (!p.video_path || !p.audio_path) throw new Error('montage:beatSync requires video_path+audio_path')
-      const res = await httpRequest('POST', API_ENDPOINTS.montage.beatSync, { body: p })
-      return res.data
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
+  // --- montage / audio-beatmap / prompt-video（montage-proxy-ipc.js 域）------
+  // M6/M8 条目⑥⑦：concat/beat 改 multipart（原 JSON body 与契约不符）、
+  // 新增 bgm / beatmap / prompt:video，详见 montage-proxy-ipc.js 头注
+  createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpectedOfflineError })
 
   // --- storyboard -----------------------------------------------------
   ipcMain.handle('storyboard:listScripts', async (_e, params) => {

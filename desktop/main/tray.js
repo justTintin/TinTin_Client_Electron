@@ -1,16 +1,20 @@
 const { app, Tray, Menu, nativeImage } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
+const browserWindow = require('./browser-window')
 
 let tray = null
 
 function createTray() {
-  // 图标路径
-  const iconPath = path.join(__dirname, '..', '..', 'build', 'tray-icon.png')
+  // 图标路径：与界面左上角"钉"形 Logo 同源
+  // 打包后 __dirname=<app>/resources/app.asar/main，'..'×2 已是 <app>/resources，不能再拼 'resources'
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icons', 'icon.png')
+    : path.join(__dirname, '..', '..', 'resources', 'icons', 'icon.png')
   let icon
   if (fs.existsSync(iconPath)) {
     icon = nativeImage.createFromPath(iconPath)
-    icon.setTemplateImage(true)
+    // Windows 托盘显示彩色"钉"形图标，不做 template 单色化
   } else {
     icon = nativeImage.createEmpty()
   }
@@ -28,6 +32,20 @@ function createTray() {
           if (win.isMinimized()) win.restore()
           win.show()
           win.focus()
+        }
+      }
+    },
+    // D4：浏览器独立窗口关闭=隐藏，托盘可再唤起（未创建时直接创建，默认尺寸）
+    {
+      label: '显示浏览器窗口',
+      click: () => {
+        const bw = browserWindow.getBrowserWindow()
+        if (bw) {
+          if (bw.isMinimized()) bw.restore()
+          bw.show()
+          bw.focus()
+        } else {
+          browserWindow.openBrowserWindow({ store: null }).catch(() => {})
         }
       }
     },

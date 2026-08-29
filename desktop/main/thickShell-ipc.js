@@ -49,11 +49,20 @@ function createThickShellIpc(ipcMain, ctx) {
    * ctx = {
    *   store,                 // electron-store（A2 共享）
    *   getMainWindow: ()=> BrowserWindow,
+   *   getBrowserWindow: ()=> BrowserWindow|null,  // D4：BrowserView 挂载/广播目标（浏览器独立窗口）
    *   downloadManager?,
    *   EventBus?,            // 下载总线（broadcast downloads:progress/done）
    * }
    */
-  const { store, getMainWindow, EventBus } = ctx
+  const { store, getMainWindow, getBrowserWindow, EventBus } = ctx
+
+  /** D4：BrowserView 挂载/广播目标窗口（浏览器独立窗口；未创建返回 null，调用点防御） */
+  function _browserWin() {
+    try {
+      const w = getBrowserWindow && getBrowserWindow()
+      return w && !w.isDestroyed() ? w : null
+    } catch (_) { return null }
+  }
 
   /** 从 electron-store 解析当前实际主题（light/dark）：system 模式下默认 light */
   function _resolveThemePref() {
@@ -66,8 +75,8 @@ function createThickShellIpc(ipcMain, ctx) {
     } catch (_) { return 'light' }
   }
 
-  // BrowserView 实例池控制器（订阅 key 保持每实例随机后缀语义）
-  const viewCtl = createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref: _resolveThemePref })
+  // BrowserView 实例池控制器（订阅 key 保持每实例随机后缀语义；挂载目标 = 浏览器独立窗口）
+  const viewCtl = createViewPoolCtl({ getWindow: _browserWin, EventBus, resolveThemePref: _resolveThemePref })
   const viewPool = viewCtl.viewPool
 
   // 初始化扩展管理器（userData/extensions），并在启动时把已装扩展加载到各平台隔离 session
@@ -79,15 +88,23 @@ function createThickShellIpc(ipcMain, ctx) {
   })
 
   // ─────────────────────────── win:* 5 条 ───────────────────────────
-  // 给 win:* 事件订阅者一个专用 channel：每次主窗口状态变化时广播
+  // 给 win:* 事件订阅者一个专用 channel：每次窗口状态变化时广播
   const stateSubKey = 'thickShell:state-change'
 
+  /** D4：多窗口分发——主窗口（自绘标题栏）+ 浏览器窗口（bounds 重算）各自收自己的状态 */
   function _broadcastState() {
     try {
-      const w = getMainWindow && getMainWindow()
-      if (!w || w.isDestroyed()) return
-      const payload = _snapshotWindowState(w)
-      w.webContents.send(stateSubKey, payload)
+      const targets = []
+      const mw = getMainWindow && getMainWindow()
+      if (mw && !mw.isDestroyed()) targets.push(mw)
+      const bw = _browserWin()
+      if (bw) targets.push(bw)
+      targets.forEach((w) => {
+        try {
+          const payload = _snapshotWindowState(w)
+          w.webContents.send(stateSubKey, payload)
+        } catch (_) {}
+      })
     } catch (_) { /* ignore */ }
   }
 
@@ -110,58 +127,77 @@ function createThickShellIpc(ipcMain, ctx) {
     } catch (_) { return null }
   }
 
+  /** 幂等绑定窗口状态事件（每个窗口只绑一次） */
+  function _bindWindowStateEvents(w) {
+    if (!w || w.isDestroyed() || w.__stateBound) return
+    w.__stateBound = true
+    const evts = ['maximize', 'unmaximize', 'minimize', 'restore', 'resize', 'move', 'focus', 'blur', 'enter-full-screen', 'leave-full-screen']
+    evts.forEach(ev => w.on(ev, () => _broadcastState()))
+  }
+
+  /** IPC 调用方窗口匹配（主窗口/浏览器窗口；无匹配返回 null） */
+  function _windowFromSender(sender) {
+    try {
+      if (!sender || sender.isDestroyed?.()) return null
+      const mw = getMainWindow && getMainWindow()
+      if (mw && !mw.isDestroyed() && mw.webContents === sender) return mw
+      const bw = _browserWin()
+      if (bw && bw.webContents === sender) return bw
+    } catch (_) {}
+    return null
+  }
+
   // 在创建窗口之后的广播注册：通过主事件循环监听（onReady->createMainWindow 之后绑定）
-  let _stateBound = false
   setImmediate(() => {
-    // 每 50ms 轮询一次，等到 getMainWindow() 返回实例；最多 3s
+    // 每 50ms 轮询一次，绑定主窗口事件；浏览器窗口可能晚创建，
+    // 存在则一并绑定，不存在则停（其订阅由 win:onStateChange 按 sender 兜底绑定）；最多 10s
     let attempts = 0
     const timer = setInterval(() => {
       attempts++
       try {
-        const w = getMainWindow && getMainWindow()
-        if (w && !w.isDestroyed() && !_stateBound) {
-          _stateBound = true
-          clearInterval(timer)
-          const evts = ['maximize', 'unmaximize', 'minimize', 'restore', 'resize', 'move', 'focus', 'blur', 'enter-full-screen', 'leave-full-screen']
-          evts.forEach(ev => w.on(ev, () => _broadcastState()))
-        }
+        const mw = getMainWindow && getMainWindow()
+        if (mw && !mw.isDestroyed()) _bindWindowStateEvents(mw)
+        const bw = _browserWin()
+        if (bw) _bindWindowStateEvents(bw)
+        const mwOk = !mw || mw.isDestroyed() || mw.__stateBound
+        const bwOk = !bw || bw.__stateBound
+        if ((mwOk && bwOk) || attempts > 200) clearInterval(timer)
       } catch (_) {}
-      if (attempts > 60) clearInterval(timer)
     }, 50)
   })
 
-  ipcMain.handle('win:getState', () => {
+  ipcMain.handle('win:getState', (event) => {
     try {
-      const w = getMainWindow && getMainWindow()
+      const w = _windowFromSender(event.sender) || (getMainWindow && getMainWindow())
       if (!w || w.isDestroyed()) return { success: false, error: 'NO_WINDOW' }
       return { success: true, data: _snapshotWindowState(w) }
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('win:minimize', () => {
+  ipcMain.handle('win:minimize', (event) => {
     try {
-      const w = getMainWindow && getMainWindow()
+      const w = _windowFromSender(event.sender) || (getMainWindow && getMainWindow())
       if (!w || w.isDestroyed()) return { success: false, error: 'NO_WINDOW' }
       w.minimize()
       return { success: true }
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('win:toggleMaximize', () => {
+  ipcMain.handle('win:toggleMaximize', (event) => {
     try {
-      const w = getMainWindow && getMainWindow()
+      const w = _windowFromSender(event.sender) || (getMainWindow && getMainWindow())
       if (!w || w.isDestroyed()) return { success: false, error: 'NO_WINDOW' }
       if (w.isMaximized()) w.unmaximize(); else w.maximize()
       return { success: true, data: _snapshotWindowState(w) }
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('win:close', () => {
+  ipcMain.handle('win:close', (event) => {
     try {
-      const w = getMainWindow && getMainWindow()
+      const w = _windowFromSender(event.sender) || (getMainWindow && getMainWindow())
       if (!w || w.isDestroyed()) return { success: false, error: 'NO_WINDOW' }
-      // 默认行为：关闭按钮 → 隐藏到托盘（不退出进程），托盘菜单"退出"才真正 quit
-      // 规格：B11/B12 关闭隐藏到托盘，防止用户误关丢任务
+      // 默认行为：关闭按钮 → 隐藏（主窗口=隐藏到托盘不退出；浏览器窗口=隐藏可再唤起），
+      // 规格：B11/B12 关闭隐藏，防止用户误关丢任务；托盘菜单"退出"才真正 quit
       try { w.hide() } catch (_) { w.close() }
       return { success: true }
     } catch (e) { return { success: false, error: e.message } }
@@ -170,9 +206,11 @@ function createThickShellIpc(ipcMain, ctx) {
   // win:onStateChange：渲染层调用一次 → 返回一个订阅 id，后续通过 stateSubKey 推送
   // 保持对称：off 用 id 移除（由于只需要 1 个 listener，这里简化为：收到订阅时标记 listener 已注册，webContents销毁自动清理）
   let _stateSubRegistered = false
-  ipcMain.handle('win:onStateChange', () => {
+  ipcMain.handle('win:onStateChange', (event) => {
     try {
       _stateSubRegistered = true  // 告知主循环已有人监听（保留钩子位）
+      // D4：浏览器窗口晚创建时按 sender 兜底绑定状态事件（保证 bounds 重算链路）
+      _bindWindowStateEvents(_windowFromSender(event.sender))
       return { success: true, channel: stateSubKey }
     } catch (e) { return { success: false, error: e.message } }
   })
@@ -180,11 +218,11 @@ function createThickShellIpc(ipcMain, ctx) {
   async function attachPlatform(platformId, seedUrlOverride, skipSeed) {
     if (!PLATFORM_IDS.includes(platformId)) throw new Error('BROWSER_PLATFORM_UNKNOWN: ' + platformId)
     const entry = viewCtl.getOrCreateView(platformId, seedUrlOverride)
-    const mw = getMainWindow && getMainWindow()
-    if (!mw || mw.isDestroyed()) throw new Error('NO_MAIN_WINDOW')
+    const target = _browserWin()
+    if (!target) throw new Error('NO_BROWSER_WINDOW')
     // 先 detach 其他，确保只挂一个
-    viewCtl.detachAllFrom(mw)
-    mw.addBrowserView(entry.view)
+    viewCtl.detachAllFrom(target)
+    target.addBrowserView(entry.view)
 
     // 默认导航到 seed URL（点击平台标签 = 跳转到平台首页）
     // skipSeed=true 时跳过（用于初始加载场景，由渲染层控制初始 URL）
@@ -203,7 +241,7 @@ function createThickShellIpc(ipcMain, ctx) {
     }
     // 默认 1024x700 窗口下的 bounds（渲染层会紧接着调用 browser:setBounds 重算）
     try {
-      const [w, h] = mw.getSize()
+      const [w, h] = target.getSize()
       entry.view.setBounds({ x: 400, y: 160, width: Math.max(320, w - 420), height: Math.max(200, h - 180) })
     } catch (_) {}
 
@@ -229,11 +267,10 @@ function createThickShellIpc(ipcMain, ctx) {
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  // browser:detachAll（切工作台/关设置 Tab 调用，禁止原生层级盖其他 Tab）
+  // browser:detachAll（切模式/关页面调用，禁止原生层级盖其他 Tab；挂载窗口 = 浏览器窗口）
   ipcMain.handle('browser:detachAll', () => {
     try {
-      const mw = getMainWindow && getMainWindow()
-      viewCtl.detachAllFrom(mw)
+      viewCtl.detachAllFrom(_browserWin())
       return { success: true }
     } catch (e) { return { success: false, error: e.message } }
   })
@@ -248,10 +285,10 @@ function createThickShellIpc(ipcMain, ctx) {
       const entry = viewPool.get(platformId)
       if (!entry) throw new Error('BROWSER_VIEW_NOT_ATTACHED')
       if (!entry.view) throw new Error('BROWSER_VIEW_NOT_ATTACHED')
-      const mw = getMainWindow && getMainWindow()
-      if (!mw || mw.isDestroyed()) throw new Error('NO_MAIN_WINDOW')
-      const views = mw.getBrowserViews?.() || []
-      if (!views.includes(entry.view)) mw.addBrowserView(entry.view)
+      const target = _browserWin()
+      if (!target) throw new Error('NO_BROWSER_WINDOW')
+      const views = target.getBrowserViews?.() || []
+      if (!views.includes(entry.view)) target.addBrowserView(entry.view)
 
       // C5 裁剪负值/过小尺寸
       const expected = {
@@ -273,11 +310,11 @@ function createThickShellIpc(ipcMain, ctx) {
       const deltaPx = viewCtl.maxDelta(expected, actual)
       const withinTolerance = deltaPx <= viewCtl.BOUNDS_TOLERANCE_PX
 
-      // 广播 bounds-changed（调试面板用，不影响主路径）
+      // 广播 bounds-changed（调试面板用，不影响主路径）→ 浏览器窗口
       try {
-        const mw2 = getMainWindow && getMainWindow()
-        if (mw2 && !mw2.isDestroyed()) {
-          mw2.webContents.send(viewCtl.keys.boundsChangedKey, { platformId, expected, actual, deltaPx, withinTolerance, ts: Date.now() })
+        const target = _browserWin()
+        if (target) {
+          target.webContents.send(viewCtl.keys.boundsChangedKey, { platformId, expected, actual, deltaPx, withinTolerance, ts: Date.now() })
         }
       } catch (_) {}
 
@@ -303,8 +340,8 @@ function createThickShellIpc(ipcMain, ctx) {
       if (!platformId || !PLATFORM_IDS.includes(platformId)) throw new Error('BROWSER_PLATFORM_UNKNOWN')
       const entry = viewPool.get(platformId)
       if (!entry || !entry.view) throw new Error('BROWSER_VIEW_NOT_ATTACHED')
-      const mw = getMainWindow && getMainWindow()
-      if (!mw || mw.isDestroyed()) throw new Error('NO_MAIN_WINDOW')
+      const target = _browserWin()
+      if (!target) throw new Error('NO_BROWSER_WINDOW')
 
       // 1) 主进程实际
       let actual
@@ -314,10 +351,10 @@ function createThickShellIpc(ipcMain, ctx) {
       } catch (_) { actual = null }
       if (!actual) throw new Error('VIEW_GET_BOUNDS_FAILED')
 
-      // 2) 是否挂载在主窗口
-      const attached = (mw.getBrowserViews?.() || []).includes(entry.view)
+      // 2) 是否挂载在浏览器窗口
+      const attached = (target.getBrowserViews?.() || []).includes(entry.view)
       // 3) 是否在窗口可见范围内
-      const [winW, winH] = mw.getSize?.() || [0, 0]
+      const [winW, winH] = target.getSize?.() || [0, 0]
       const visible =
         attached &&
         actual.x >= -1 && actual.y >= -1 &&
@@ -638,6 +675,7 @@ function createThickShellIpc(ipcMain, ctx) {
     PLATFORM_DEFS,
     getView: (id) => viewPool.get(id)?.view || null,
     getPool: () => viewPool,
+    getOrCreateView: (id, seedUrlOverride) => viewCtl.getOrCreateView(id, seedUrlOverride), // B12：自动上架引擎复用 fxg 分区视图
     detachAllFrom: viewCtl.detachAllFrom,
   }
 }

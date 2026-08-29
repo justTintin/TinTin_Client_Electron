@@ -7,9 +7,10 @@ const { initUpdater } = require('./updater')
 const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore } = require('./server-proxy')
 const { createDownloadManager } = require('./download-manager')
 const { createFfmpegGate } = require('./ffmpeg-gate')
+const browserWindow = require('./browser-window')
 
-// 统一 userData 路径：dev 模式用 package.json name，打包模式用 productName，
-// 必须显式 setName 保持一致，否则 BrowserView 的 persist:* 分区（登录态）会丢失
+// 统一 userData 路径（dev 用 name、打包用 productName，必须显式 setName 保持一致，
+// 否则 BrowserView 的 persist:* 分区（登录态）会丢失）
 try { app.setName('tintin-client-electron') } catch (_) {}
 
 // ── A2 双模式推理模块（§1.5）──
@@ -24,14 +25,13 @@ const { createThickShellIpc } = require('./thickShell-ipc')
 const { createMediaDownloader } = require('./media-downloader')
 const { createMediaStorage } = require('./media-storage')
 // 本地定时任务（P2 移植：schtasks CRUD + 到点触发接管）
-const localScheduler = require('./local-scheduler')
-const { purgeDeprecatedExtKeys } = require('./config-migrate')
-// agent 任务 LLM 拆解（对照 agent_router.build_plan，P2 补齐）
-const agentPlan = require('./agent-plan')
+const localScheduler = require('./local-scheduler'); const { purgeDeprecatedExtKeys } = require('./config-migrate')
+const agentPlan = require('./agent-plan') // agent 任务 LLM 拆解（对照 agent_router.build_plan，P2 补齐）
+const { startClientTaskThread } = require('./client-task-thread') // W11：客户端任务下发闭环（轮询领取→执行→上报）
+const { createDailyAssetsIpc } = require('./daily-assets'); const { createCreatorsStoreIpc } = require('./creators-store'); const { createAutoListingIpc } = require('./auto-listing/ipc'); const { createOfficeIpc } = require('./office-ipc') // B12：自动上架主进程引擎 + 办公能力（office:* 4 条）
 
-// electron-store：CommonJS 兼容；失败兜底内存 store（绝不阻塞启动，P1 红线）
-let Store = null
-try { Store = require('electron-store') } catch (_) { Store = null }
+// config-store：自建分域 JSON 配置存储（B 整改 2026-08-28，零第三方依赖；应用根/config 分域，失败兜底内存 store）
+const { createConfigStore, resolveConfigBasePath } = require('./config-store')
 
 let mainWindow = null
 let crashRecoveryCount = 0
@@ -40,28 +40,24 @@ const MAX_CRASH_RECOVERY = 3
 // 历史面板子窗口
 let historyPanelWindow = null
 let _historyBlurTimer = null
-
-function openHistoryPanel(items, anchorX, anchorY) {
+// D4 锚点修正：按调用方窗口 parentWin 定位——主窗口传相对坐标加偏移；浏览器窗口
+// 渲染层已用 __WINDOW_BOUNDS__ 换算为屏幕绝对坐标不偏移；面板 setParentWindow 跟随调用方
+function openHistoryPanel(items, anchorX, anchorY, parentWin) {
   if (historyPanelWindow && !historyPanelWindow.isDestroyed()) {
     closeHistoryPanel()
   }
-  
   const panelWidth = 380
   const panelHeight = 420
-  
+  const base = parentWin && !parentWin.isDestroyed() ? parentWin : mainWindow
   // 计算位置：使用屏幕绝对坐标
   let x = anchorX || 100
   let y = anchorY || 100
-  
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const winBounds = mainWindow.getBounds()
-    // 如果坐标是相对于主窗口的，需要加上窗口偏移
-    if (anchorX !== undefined && anchorY !== undefined) {
-      // 传入的是相对主窗口的坐标，需要转换为屏幕坐标
+  if (base) {
+    const winBounds = base.getBounds()
+    if (base !== browserWindow.getBrowserWindow() && anchorX !== undefined && anchorY !== undefined) {
       x = winBounds.x + anchorX
       y = winBounds.y + anchorY
     }
-    
     // 确保面板在屏幕上合理位置
     const { screen } = require('electron')
     const display = screen.getDisplayMatching({ x, y, width: panelWidth, height: panelHeight })
@@ -95,7 +91,7 @@ function openHistoryPanel(items, anchorX, anchorY) {
     }
   })
   
-  historyPanelWindow.setParentWindow(mainWindow)
+  historyPanelWindow.setParentWindow(base)
   
   const panelHtml = path.join(__dirname, 'history-panel.html')
   historyPanelWindow.loadFile(panelHtml)
@@ -138,20 +134,21 @@ function closeHistoryPanel() {
   }
 }
 
-/* ─────────── 浮动面板：扩展/设置（独立原生 BrowserWindow，天然在 BrowserView 之上 ───────────
-   与历史面板同款方案：主进程创建子窗口加载独立 HTML，渲染层仅传锚点坐标。 */
+/* ─────────── 浮动面板：扩展/设置（独立原生 BrowserWindow，天然在 BrowserView 之上；
+   与历史面板同款方案：主进程创建子窗口加载独立 HTML，渲染层仅传锚点坐标）─────────── */
 let floatingPanelWindow = null
 let _fpReady = false
 let _fpBlurTimer = null
 
-function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, anchorY, data) {
+// D4 锚点修正：同 openHistoryPanel（浏览器窗口已传绝对坐标不偏移；主窗口加偏移），面板挂调用方窗口
+function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, anchorY, data, parentWin) {
   _closeFloatingPanel()
+  const base = parentWin && !parentWin.isDestroyed() ? parentWin : mainWindow
   let x = anchorX || 100
   let y = anchorY || 100
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const winBounds = mainWindow.getBounds()
-    // 传入的是相对主窗口的坐标，转换为屏幕绝对坐标
-    if (anchorX !== undefined && anchorY !== undefined) {
+  if (base) {
+    const winBounds = base.getBounds()
+    if (base !== browserWindow.getBrowserWindow() && anchorX !== undefined && anchorY !== undefined) {
       x = winBounds.x + anchorX
       y = winBounds.y + anchorY
     }
@@ -181,7 +178,7 @@ function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, an
       contextIsolation: false,
     }
   })
-  floatingPanelWindow.setParentWindow(mainWindow)
+  floatingPanelWindow.setParentWindow(base)
   floatingPanelWindow.__panelName = name
   floatingPanelWindow.loadFile(path.join(__dirname, htmlFile))
   floatingPanelWindow.once('ready-to-show', () => {
@@ -298,6 +295,7 @@ function _saveWindowState(store, mainWindow) {
 let sharedCtx = {
   store: null,
   getMainWindow: () => mainWindow,
+  getBrowserWindow: () => browserWindow.getBrowserWindow(), // D4：BrowserView 挂载目标（未创建返回 null）
   downloadManager: null,
   EventBus: null,
 }
@@ -308,6 +306,10 @@ function createMainWindow(store) {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
 
   const preloadPath = path.join(__dirname, '..', 'preload', 'preload.js')
+  // 应用图标：与界面左上角"钉"形 Logo 同源（打包后 process.resourcesPath/icons）
+  const appIconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icons', 'icon.png')
+    : path.join(__dirname, '..', '..', 'resources', 'icons', 'icon.png')
   const isMac = process.platform === 'darwin'
   const ws = _validateBoundsOnDisplay(_loadWindowState(store))
 
@@ -319,6 +321,8 @@ function createMainWindow(store) {
     minWidth: 1024,
     minHeight: 700,
     show: false,
+    // 窗口/任务栏图标（Windows 下 exe 未嵌图标时的兜底）
+    icon: fs.existsSync(appIconPath) ? appIconPath : undefined,
     // 背景色兜底（渲染端接管整体背景，只有 resize 瞬间露这点颜色）
     backgroundColor: '#ffffff',
     title: '',
@@ -407,7 +411,7 @@ function createMainWindow(store) {
 
   // ══════════════════════════════════════════════════════════════
   // B11/B12 关闭按钮 → 隐藏到托盘（不退出进程）；托盘菜单"退出"才真正 app.quit()
-  // 关键：调用 app.quit() 时会再次触发 close，此时 _userQuit = true → 真正关闭
+  // （app.quit() 会再次触发 close，此时 _userQuit = true → 真正关闭）
   // ══════════════════════════════════════════════════════════════
   let _userQuit = false
   app.on('before-quit', () => { _userQuit = true })
@@ -468,11 +472,10 @@ if (!gotTheLock) {
     app.quit()
   }
 } else {
-  // 到点触发中继（P4，编排在 local-scheduler.setupTriggerRelay）：
-  // hotspot = 自动采集热榜（对照原版 auto_quit=True 无感语义）→ 拉窗切浏览器 Tab；
-  // agent = plan 优先提交服务端
+  // P4 到点触发中继（local-scheduler.setupTriggerRelay：hotspot 采集→切 Tab；agent 提交服务端）
   const triggerRelay = localScheduler.setupTriggerRelay({
     getWindow: () => mainWindow,
+    getExtraWindow: () => browserWindow.getBrowserWindow(), // D5：hotspot 广播到浏览器窗口（自含订阅导航）
     getUserDataDir: () => app.getPath('userData'),
     progressChannel: 'scheduled:capture-progress',
   })
@@ -494,30 +497,25 @@ protocol.registerSchemesAsPrivileged([
 
 app.whenReady().then(() => {
     // E1: DPI 缩放：让 Chromium 高 DPI 支持更稳定（Intel 核显 150% 不贴偏 BrowserView bounds）
-    try { app.commandLine.appendSwitch('high-dpi-support', '1') } catch(_){}
+    try { app.commandLine.appendSwitch('high-dpi-support', '1') } catch (_){}
 
     // ───────────── A2 双模式推理：初始化上下文（§1.5 + §2.3 冷启动检查）─────────────
-    // 1. Persistent store（electron-store，失败回退内存 Map，绝不阻塞启动）
+    // 1. Persistent store（config-store 分域 JSON，失败回退内存 Map，绝不阻塞启动）
     let store
     try {
-      if (Store) {
-        store = new Store({ name: 'app-config', defaults: {
+      store = createConfigStore({
+        // D6：配置移应用目录（应用根可写 → <应用根>/config，只读区回退 userData/config；旧分域目录 legacyBasePath 一次性合并迁移）
+        basePath: resolveConfigBasePath(app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd(), app.getPath('userData')),
+        legacyPath: path.join(app.getPath('userData'), 'app-config.json'),
+        legacyBasePath: path.join(app.getPath('userData'), 'config'),
+        defaults: {
           'inference.mode': 'server-only',
           'inference.lastVerifyAt': 0,
           'inference.fallbackHistory': [],
-        }})
-      } else {
-        // 内存兜底
-        const _mem = new Map()
-        store = {
-          get: (k, d) => _mem.has(k) ? _mem.get(k) : d,
-          set: (k, v) => _mem.set(k, v),
-          delete: (k) => _mem.delete(k),
-          has: (k) => _mem.has(k),
-        }
-      }
+        },
+      })
     } catch (e) {
-      console.warn('[A2] electron-store 初始化失败，回退内存 Map：', e.message)
+      console.warn('[A2] config-store 初始化失败，回退内存 Map：', e.message)
       const _mem = new Map()
       store = { get: (k, d) => _mem.has(k) ? _mem.get(k) : d, set: (k, v) => _mem.set(k, v), delete: (k) => _mem.delete(k), has: (k) => _mem.has(k) }
     }
@@ -542,13 +540,16 @@ app.whenReady().then(() => {
     //     （BrowserView attach / BrowserWindow 构造完成后才会渲染 App.vue，
     //      避免渲染层 window.tintin.win 调用时 IPC 还没注册而静默超时）
     // ══════════════════════════════════════════════════════════════
-    createThickShellIpc(ipcMain, sharedCtx)
+    const thickShell = createThickShellIpc(ipcMain, sharedCtx)
+    // B12：自动上架引擎（BrowserView persist:tintin-fxg + executeJavaScript + CDP debugger）
+    createAutoListingIpc(ipcMain, { store, app, getBrowserWindow: () => browserWindow.getBrowserWindow(), getOrCreateView: (id, seed) => thickShell.getOrCreateView(id, seed) })
 
     // Phase 1: 媒体下载器（yt-dlp + 流式下载 + FFmpeg 合并）
     createMediaDownloader(ipcMain, {
       app,
       store,
       getMainWindow: () => mainWindow,
+      getBrowserWindow: () => browserWindow.getBrowserWindow(), // D5：下载进度广播到浏览器窗口
       // 下载浮窗打开期间同步接收进度广播（注册表状态推送到面板）
       getDownloadsPanel: () => (floatingPanelWindow
         && !floatingPanelWindow.isDestroyed()
@@ -557,6 +558,7 @@ app.whenReady().then(() => {
 
     // Phase 3: 媒体持久化（嗅探历史 + 下载记录 + 设置）
     createMediaStorage(ipcMain, { store })
+    createDailyAssetsIpc(ipcMain, { store, app }); createCreatorsStoreIpc(ipcMain, { app, getBrowserWindow: () => browserWindow.getBrowserWindow() }); createOfficeIpc(ipcMain, { getMainWindow: () => mainWindow }) // 办公能力 office:*（主窗口 + 浏览器窗口共用）
 
     // 5. 注册 A2 12 条 IPC handlers（C14 白名单：config 2 + model 4 + inference 2 + ocr 1 + knowledge 3）
     createA2Ipc(ipcMain, { store, modelManager: null, inferenceRouter: null, vectorStore: null, httpRequest: null })
@@ -624,7 +626,7 @@ app.whenReady().then(() => {
     }
 
     // ───────────── 原有模块初始化 ─────────────
-    createServerProxy(ipcMain)
+    createServerProxy(ipcMain, { app, store })
     const dm = createDownloadManager(ipcMain, getWorkspacePath())
     sharedCtx.downloadManager = dm
     // 下载总线暴露（BrowserView will-download → 全局 EventBus）
@@ -633,13 +635,23 @@ app.whenReady().then(() => {
     createFfmpegGate(ipcMain, getStudioRoot())
     createTray()
     initUpdater()
-    // 环境与维护 / 扩展插件：真实主进程操作（服务端探测、清缓存、CDP 检测）
+    // 环境与维护（服务端探测/清缓存/CDP/环境检测）
     const { createEnvIpc } = require('./env-ipc')
-    createEnvIpc(ipcMain, { getServerUrl })
+    createEnvIpc(ipcMain, { getServerUrl, studioRoot: getStudioRoot() })
+
+    // 飞书连接测试（条目⑩ S6，对照原 _test_feishu L584-600；getCfg 读 electron-store 补全 Secret）
+    const { createFeishuIpc } = require('./feishu-ipc')
+    createFeishuIpc(ipcMain, { getCfg: (key) => store.get(key) })
+
+    // S8 平台接入 + S9 自启动（platform-ipc.js）
+    const { createPlatformIpc } = require('./platform-ipc')
+    createPlatformIpc(ipcMain, { httpRequest, getCfg: (k) => store.get(k), setCfg: (k, v) => store.set(k, v) })
 
     createMainWindow(store)
-
-    // 本地定时任务 IPC（P2 移植）+ 首启到点参数接管
+    // W11：客户端任务下发闭环（对标原 client_task_thread.py：5s 领取→引导浏览器下载→report；启动不阻塞）
+    startClientTaskThread({ store, app, getWindow: () => mainWindow, getBrowserWindow: () => browserWindow.getBrowserWindow(), openBrowserWindow: (o) => browserWindow.openBrowserWindow({ store, ...(o || {}) }) })
+    // D4：浏览器独立窗口 IPC（browserWindow:open —— 主窗口按钮 / hotspot 到点打开）
+    browserWindow.registerBrowserWindowIpc(ipcMain, { store })
     ipcMain.handle('scheduled:list', () => localScheduler.listTasks())
     ipcMain.handle('scheduled:create', (_e, payload) => localScheduler.createTask(payload || {}))
     ipcMain.handle('scheduled:run', (_e, taskName) => localScheduler.runNow(taskName))
@@ -677,9 +689,7 @@ ipcMain.on('app:relaunch', () => {
 })
 
 // IPC: 历史面板
-ipcMain.on('history:open', (event, items, anchorX, anchorY) => {
-  openHistoryPanel(items, anchorX, anchorY)
-})
+ipcMain.on('history:open', (event, items, anchorX, anchorY) => openHistoryPanel(items, anchorX, anchorY, BrowserWindow.fromWebContents(event.sender) || mainWindow))
 ipcMain.on('history:close', () => {
   closeHistoryPanel()
 })
@@ -710,15 +720,12 @@ ipcMain.handle('history:clear', async () => {
   }
 })
 
-// IPC: 浮动面板（扩展/设置/下载 → 独立原生窗口，渲染层只传锚点坐标）
-ipcMain.on('browser:openExtensionsPanel', (e, x, y) =>
-  _openFloatingPanel('extensions', 'extensions-panel.html', 380, 440, x, y, null))
+// IPC: 浮动面板（扩展/设置/下载 → 独立原生窗口，渲染层只传锚点坐标；D4：按 sender 窗口定位挂父）
+ipcMain.on('browser:openExtensionsPanel', (e, x, y) => _openFloatingPanel('extensions', 'extensions-panel.html', 380, 440, x, y, null, BrowserWindow.fromWebContents(e.sender) || mainWindow))
 ipcMain.on('browser:closeExtensionsPanel', () => _closeFloatingPanel())
-ipcMain.on('browser:openSettingsPanel', (e, x, y, data) =>
-  _openFloatingPanel('settings', 'settings-panel.html', 420, 470, x, y, data))
+ipcMain.on('browser:openSettingsPanel', (e, x, y, data) => _openFloatingPanel('settings', 'settings-panel.html', 420, 470, x, y, data, BrowserWindow.fromWebContents(e.sender) || mainWindow))
 ipcMain.on('browser:closeSettingsPanel', () => _closeFloatingPanel())
-ipcMain.on('browser:openDownloadsPanel', (e, x, y) =>
-  _openFloatingPanel('downloads', 'downloads-panel.html', 400, 480, x, y, null))
+ipcMain.on('browser:openDownloadsPanel', (e, x, y) => _openFloatingPanel('downloads', 'downloads-panel.html', 400, 480, x, y, null, BrowserWindow.fromWebContents(e.sender) || mainWindow))
 ipcMain.on('browser:closeDownloadsPanel', () => _closeFloatingPanel())
 
 // IPC: dialog
@@ -786,6 +793,4 @@ app.on('window-all-closed', () => {
 })
 
 // 捕获未处理异常
-process.on('uncaughtException', (err) => {
-  console.error('[Main] Uncaught exception:', err)
-})
+process.on('uncaughtException', (err) => { console.error('[Main] Uncaught exception:', err) })

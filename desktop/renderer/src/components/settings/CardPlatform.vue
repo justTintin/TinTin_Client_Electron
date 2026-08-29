@@ -1,28 +1,30 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// CardPlatform — 平台接入卡（LLM 设置 / 服务接入，纯展示组件）
-// 模板自 Settings.vue L349-434 原样迁出（IRON-08）；
+// CardPlatform — 服务端卡（统一服务端地址 / 模型设置，纯展示组件）
+// 2026-08-28「服务端配置业务对齐」用户裁决改造：
+//   · 只有一个统一服务端地址（保存后联动各功能，自动拉取模型列表）
+//   · 删除 Provider / API Key / URL 展示与独立「LLM 测试连接」
+//     （LLM 凭证由服务端持有，模型列表从服务端拉取）
+//   · 按功能测试连接（LLM/OCR/向量/TTS/ASR；探测逻辑在 useSettingsGeneral）
 // 表单值经可写 computed 代理转为 update:* 上抛，容器接线到
 // useSettingsGeneral；无专属样式（全部走 settings-shared.css）。
 // ═══════════════════════════════════════════════════════════════
 
 import { computed } from 'vue'
+import type { FuncTestResult } from '../../composables/useSettingsGeneral'
 
 const props = defineProps<{
   platTabs: string[]
   activeTab: string
   modelOptions: string[]
   defaultModel: string
-  apiKey: string
-  baseUrl: string
-  providerName: string
-  providerLoaded: boolean
   webSearch: boolean
   savingLlm: boolean
-  testingLlm: boolean
   serverDesc: string
   serverUrl: string
   savingServerUrl: boolean
+  testingFuncs: boolean
+  funcResults: FuncTestResult[]
 }>()
 
 const emit = defineEmits<{
@@ -33,7 +35,8 @@ const emit = defineEmits<{
   (e: 'save-llm'): void
   (e: 'save-server-url'): void
   (e: 'refresh-server'): void
-  (e: 'test-llm'): void
+  (e: 'test-func', name: string): void
+  (e: 'test-funcs-all'): void
 }>()
 
 /* 可写代理：模板保持原 v-model 写法，改动经 update:* 上抛容器 */
@@ -59,8 +62,8 @@ const curServerUrl = computed({
   <section class="luo-card">
     <div class="luo-card-head">
       <div>
-        <h2 class="luo-card-title">平台接入</h2>
-        <p class="luo-card-desc">配置大模型 API、服务账号与联网能力。</p>
+        <h2 class="luo-card-title">服务端</h2>
+        <p class="luo-card-desc">配置统一服务端地址；模型与各功能能力均由服务端提供，凭证不出服务端。</p>
       </div>
     </div>
 
@@ -77,8 +80,50 @@ const curServerUrl = computed({
     </div>
 
     <div class="setting-list">
-      <!-- LLM 设置（模型选择本地保存；Key/URL 由服务端 Provider 管理，只读回显） -->
-      <div v-if="curTab === 'LLM 设置'">
+      <!-- 服务端：单一统一地址 + 显式保存 + 总连通 / 按功能测试 -->
+      <div v-if="curTab === '服务端'">
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">服务端地址</div>
+            <div class="setting-desc">唯一统一地址，保存后立即生效并联动全部功能</div>
+          </div>
+          <div class="server-url-row">
+            <input v-model="curServerUrl" type="text" class="input w-56" placeholder="http://192.168.x.x:8000" />
+            <button class="btn-secondary-sm primary-sm" :disabled="savingServerUrl" @click="emit('save-server-url')">
+              {{ savingServerUrl ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">总连通测试</div>
+            <div class="setting-desc">{{ serverDesc }}</div>
+          </div>
+          <button class="btn-secondary-sm" @click="emit('refresh-server')">测试连接</button>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">按功能测试连接</div>
+            <div class="setting-desc">对各功能端点（openapi 实际路径）分别发最小请求</div>
+          </div>
+          <button class="btn-secondary-sm" :disabled="testingFuncs" @click="emit('test-funcs-all')">
+            {{ testingFuncs ? '测试中…' : '全部测试' }}
+          </button>
+        </div>
+        <div v-for="r in funcResults" :key="r.name" class="setting-row">
+          <div>
+            <div class="setting-label func-name">
+              <span class="func-dot" :class="r.ok === true ? 'ok' : r.ok === false ? 'no' : 'idle'" />
+              {{ r.name }}
+            </div>
+            <div class="setting-desc">{{ r.message }}</div>
+          </div>
+          <button class="btn-secondary-sm" @click="emit('test-func', r.name)">测试</button>
+        </div>
+      </div>
+
+      <!-- 模型：列表来自服务端（凭证由服务端持有，客户端只选模型） -->
+      <div v-else>
         <div class="setting-row">
           <div>
             <div class="setting-label">默认模型</div>
@@ -87,24 +132,6 @@ const curServerUrl = computed({
           <select v-model="curModel" class="input w-56">
             <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
           </select>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">API Key</div>
-            <div class="setting-desc">由服务端 Provider 统一管理，此处仅回显</div>
-          </div>
-          <span class="input w-72 readonly-field" :title="apiKey || '服务端离线，无法读取'">
-            {{ apiKey || (providerLoaded ? '未配置' : '服务端离线，无法读取') }}
-          </span>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">Base URL</div>
-            <div class="setting-desc">{{ providerName ? `${providerName} · 由服务端管理` : '由服务端 Provider 统一管理' }}</div>
-          </div>
-          <span class="input w-72 readonly-field" :title="baseUrl || '服务端离线，无法读取'">
-            {{ baseUrl || (providerLoaded ? '未配置' : '服务端离线，无法读取') }}
-          </span>
         </div>
         <div class="setting-row">
           <div>
@@ -132,56 +159,27 @@ const curServerUrl = computed({
           </button>
         </div>
       </div>
-
-      <!-- 服务接入 -->
-      <div v-else>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">服务端地址</div>
-            <div class="setting-desc">AI 推理服务地址，保存后立即生效并重新探测</div>
-          </div>
-          <div class="server-url-row">
-            <input v-model="curServerUrl" type="text" class="input w-56" placeholder="http://192.168.x.x:8000" />
-            <button class="btn-secondary-sm" :disabled="savingServerUrl" @click="emit('save-server-url')">
-              {{ savingServerUrl ? '保存中…' : '保存' }}
-            </button>
-          </div>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">本地服务端</div>
-            <div class="setting-desc">{{ serverDesc }}</div>
-          </div>
-          <button class="btn-secondary-sm" @click="emit('refresh-server')">刷新状态</button>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">LLM 连接测试</div>
-            <div class="setting-desc">向当前模型发送一条探测消息以校验接入</div>
-          </div>
-          <button class="btn-secondary-sm primary-sm" :disabled="testingLlm" @click="emit('test-llm')">
-            {{ testingLlm ? '测试中…' : '测试连接' }}
-          </button>
-        </div>
-      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-/* 只读回显字段（Key/URL 由服务端管理）：弱化输入框外观 */
-.readonly-field {
-  display: inline-block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0.85;
-  cursor: default;
-}
 /* 服务端地址行：输入框 + 保存按钮并排 */
 .server-url-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
+/* 功能测试状态点：绿=正常 / 红=失败 / 灰=未测试 */
+.func-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.func-dot.ok { background: var(--success); }
+.func-dot.no { background: var(--error); }
+.func-dot.idle { background: var(--muted-foreground); opacity: 0.45; }
 </style>

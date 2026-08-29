@@ -7,6 +7,8 @@
     "jsx": "preserve",
     "sourceMap": true,
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -25,6 +27,7 @@
     "renderer/src/**/*.d.ts",
     "renderer/src/**/*.tsx",
     "renderer/src/**/*.vue",
+    "renderer/browser/**/*.ts",
     "types/**/*.d.ts"
   ],
   "exclude": ["node_modules", "renderer/dist"]

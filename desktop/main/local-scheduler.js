@@ -295,20 +295,30 @@ const hotspotCapture = require('./hotspot-capture')
  * 到点触发中继：主进程注入窗口/目录句柄，本模块负责完整编排。
  * hotspot：自动采集今日热榜（隐藏 BrowserView，对照原版
  *          launch_hotspot_capture(auto_quit=True) 无感语义）→ 完成后拉窗
- *          + 发 scheduled:hotspot-trigger（渲染层切浏览器 Tab + 热榜导航）；
+ *          + 发 scheduled:hotspot-trigger（主窗口 App.vue 打开浏览器窗口；
+ *          浏览器独立窗口自含订阅 navigateToHotspot）；
  * agent：runScheduledTrigger（plan 优先提交服务端）。
+ * @param {{ getWindow: ()=>BrowserWindow, getExtraWindow?: ()=>BrowserWindow|null,
+ *           getUserDataDir: ()=>string, progressChannel: string }} deps
  */
-function setupTriggerRelay({ getWindow, getUserDataDir, progressChannel }) {
+function setupTriggerRelay({ getWindow, getExtraWindow, getUserDataDir, progressChannel }) {
   let pendingHotspot = null
   function sendHotspotTrigger(count) {
+    const countVal = typeof count === 'number' ? count : null
+    const payload = { count: countVal }
     const win = getWindow()
     if (!win) {
-      pendingHotspot = { count: typeof count === 'number' ? count : null }
+      pendingHotspot = { count: countVal }
       return
     }
     if (win.isMinimized()) win.restore()
     win.focus()
-    win.webContents.send('scheduled:hotspot-trigger', { count: typeof count === 'number' ? count : null })
+    win.webContents.send('scheduled:hotspot-trigger', payload)
+    // D5：浏览器独立窗口也收 hotspot 触发（自含订阅 onScheduledHotspot → navigateToHotspot）
+    try {
+      const extra = getExtraWindow && getExtraWindow()
+      if (extra && !extra.isDestroyed()) extra.webContents.send('scheduled:hotspot-trigger', payload)
+    } catch (_) {}
     pendingHotspot = null
   }
   /** 窗口未就绪时暂存 → did-finish-load 后补发 */

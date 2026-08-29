@@ -19,12 +19,6 @@ const routes: RouteRecordRaw[] = [
     meta: { tab: 'workbench', title: '工作台' }
   },
   {
-    path: '/browser',
-    name: 'browser',
-    component: () => import('@/views/Browser.vue'),
-    meta: { tab: 'browser', title: '浏览器' }
-  },
-  {
     path: '/media-tools',
     name: 'media-tools',
     component: () => import('@/views/MediaTools.vue'),

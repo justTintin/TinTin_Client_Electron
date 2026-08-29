@@ -1,95 +1,122 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// ReversePromptVideo.vue — 视频反推提示词
-// 上传视频 → 设置抽帧数/数量/风格/语言 → POST /vision/reverse-prompt
-// （与图片版同端点，附带 frame_count）
-// 结果以卡片形式展示（中/英文本 + 风格标签），每张卡片可复制
+// ReversePromptVideo.vue — 视频反推提示词（M6 条目⑦）
+// 对齐原客户端 gui/prompt_reverse_page.py：
+//   预览播放器 + 时间轴选段（拖拽手柄/整窗平移 + 数值输入，≤30s，对照
+//   _VideoTimeline L210-420）→ 仅把选中段随 POST /prompt/video 提交
+//   （start_sec/end_sec，无本地裁切，对照 _VideoPromptWorker L461-502）
+//   → 任务轮询（对照 _poll_task_result L128-188）→ 分段结果展示（_format_result）
+// 组件只绘制 + 事件转发；选段约束/轮询状态机/结果分段全部在
+// reversePromptVideoLogic.ts（纯函数）与 useReversePromptVideo.ts（编排）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import TButton from '@/components/common/TButton.vue'
-import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
-import { useFilePicker } from '@/composables/useFilePicker'
+import { useReversePromptVideo } from '@/composables/useReversePromptVideo'
 
-/** 单条反推结果 */
-interface PromptItem {
-  zh?: string
-  en?: string
-  style_tags?: string[]
+const V = useReversePromptVideo()
+
+// ── 预览播放器 ──
+const videoEl = ref<HTMLVideoElement | null>(null)
+
+function onLoadedMetadata(e: Event): void {
+  const v = e.target as HTMLVideoElement
+  V.setDuration(v.duration || 0)
+  void captureFrames()
+}
+function onTimeUpdate(e: Event): void {
+  V.setCurrentTime((e.target as HTMLVideoElement).currentTime)
+}
+/** 播放头跳到选段起点（对照原版双击选区跳播的便捷语义） */
+function seekTo(t: number): void {
+  const v = videoEl.value
+  if (v && Number.isFinite(t)) v.currentTime = Math.max(0, Math.min(t, V.duration.value))
 }
 
-const styleOptions: SelectOption[] = [
-  { label: '通用', value: 'general' },
-  { label: 'Midjourney', value: 'midjourney' },
-  { label: 'Stable Diffusion', value: 'stable-diffusion' },
-  { label: '商品摄影', value: 'product-photo' }
-]
-const languageOptions: SelectOption[] = [
-  { label: '中文', value: 'zh' },
-  { label: '英文', value: 'en' },
-  { label: '中英双语', value: 'zh+en' }
-]
+// ── 时间轴：抽帧缩略图（对照 _extract_frames 均匀抽帧；失败 → 波形条回退）──
+const THUMB_W = 96
+const THUMB_H = 54
 
-// ── 表单状态 ──
-const frameCount = ref<number>(1)   // 抽帧数量 1-10
-const count = ref<number>(4)        // 生成数量 1-8
-const style = ref('general')
-const language = ref('zh+en')
-
-// ── 运行状态 ──
-const isProcessing = ref(false)
-const errorMsg = ref('')
-const results = ref<PromptItem[]>([])
-const copiedIndex = ref(-1)
-
-const canStart = computed(() => !!filePath.value && !isProcessing.value)
-
-// ── 文件选择 + 拖拽（共享 composable，选中后清结果区） ──
-const { filePath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
-  useFilePicker({
-    dialogTitle: '选择视频',
-    filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm'] }],
-    onPicked: () => { results.value = [] },
+async function captureFrames(): Promise<void> {
+  const times = V.frameTimes()
+  const src = V.resolveSrc(V.filePath.value)
+  if (!times.length || !src) return
+  const v = document.createElement('video')
+  v.src = src
+  v.muted = true
+  v.preload = 'auto'
+  v.crossOrigin = 'anonymous'
+  const canvas = document.createElement('canvas')
+  canvas.width = THUMB_W
+  canvas.height = THUMB_H
+  const ctx = canvas.getContext('2d')
+  const out: string[] = []
+  await new Promise<void>((res) => {
+    v.onloadeddata = () => res()
+    v.onerror = () => res()
+    setTimeout(res, 4000)
   })
-
-/** 提交反推 */
-async function startReverse() {
-  if (!filePath.value) return
-  isProcessing.value = true
-  errorMsg.value = ''
-  results.value = []
-  try {
-    const res = await window.tintin.server.visionReversePrompt({
-      file: filePath.value as unknown as Blob,
-      frame_count: frameCount.value,
-      count: count.value,
-      style: style.value,
-      language: language.value,
+  for (const t of times) {
+    await new Promise<void>((res) => {
+      v.onseeked = () => res()
+      try { v.currentTime = Math.min(t, Math.max(0, (v.duration || t) - 0.05)) } catch { res() }
+      setTimeout(res, 1500) // seek 兜底，避免坏帧卡住
     })
-    const raw = (res as any)
-    results.value = Array.isArray(raw) ? raw : raw?.prompts || []
-    if (results.value.length === 0) {
-      errorMsg.value = '未返回任何提示词'
-    }
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-    window.tintin.shell.showNotification('视频反推失败', errorMsg.value)
-  } finally {
-    isProcessing.value = false
+    try {
+      ctx?.drawImage(v, 0, 0, THUMB_W, THUMB_H)
+      out.push(canvas.toDataURL('image/jpeg', 0.6))
+    } catch { break }
   }
+  V.setThumbs(out)
 }
 
-/** 复制单条提示词 */
-async function copyPrompt(item: PromptItem, index: number) {
-  const text = [item.zh, item.en].filter(Boolean).join('\n\n')
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    copiedIndex.value = index
-    setTimeout(() => (copiedIndex.value = -1), 1500)
-  } catch {
-    window.tintin.shell.showNotification('复制失败', '请手动选择文本复制')
-  }
+/** 伪波形条高（对照原版 _gen_waveform 失败回退随机条 L245-258；这里确定性伪随机） */
+const waveBars = Array.from({ length: 64 }, (_, i) =>
+  18 + Math.round(46 * Math.abs(Math.sin(i * 12.9898 + 1.234) * 43758.5453 % 1)))
+
+// ── 选段拖拽（指针 x → 秒，转发 composable 纯函数约束）──
+const stripEl = ref<HTMLElement | null>(null)
+let dragMode: 'left' | 'right' | 'move' | null = null
+
+function xToTime(clientX: number): number {
+  const el = stripEl.value
+  if (!el || !V.duration.value) return 0
+  const rect = el.getBoundingClientRect()
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  return ratio * V.duration.value
 }
+function pointerDown(e: PointerEvent): void {
+  if (!V.duration.value) return
+  const t = xToTime(e.clientX)
+  const thresholdSec = (10 / (stripEl.value?.getBoundingClientRect().width || 1)) * V.duration.value
+  dragMode = V.hitMode(t, thresholdSec)
+  if (dragMode) V.dragTo(dragMode, t)
+}
+function pointerMove(e: PointerEvent): void {
+  if (!dragMode) return
+  V.dragTo(dragMode, xToTime(e.clientX))
+}
+function pointerUp(): void {
+  dragMode = null
+}
+
+// ── 数值输入（对照原版可直接键入起止的便捷语义；走统一 validateRange）──
+const inputStart = ref(0)
+const inputEnd = ref(0)
+watch([V.selStart, V.selEnd], ([s, e]) => {
+  inputStart.value = Number(s.toFixed(2))
+  inputEnd.value = Number(e.toFixed(2))
+}, { immediate: true })
+const rangeError = ref('')
+function applyInputs(): void {
+  rangeError.value = V.setRange(Number(inputStart.value), Number(inputEnd.value))
+}
+
+const leftPct = computed(() =>
+  V.duration.value ? `${(V.selStart.value / V.duration.value) * 100}%` : '0%')
+const widthPct = computed(() =>
+  V.duration.value ? `${((V.selEnd.value - V.selStart.value) / V.duration.value) * 100}%` : '0%')
+const playheadPct = computed(() =>
+  V.duration.value ? `${(V.currentTime.value / V.duration.value) * 100}%` : '0%')
 </script>
 
 <template>
@@ -97,104 +124,147 @@ async function copyPrompt(item: PromptItem, index: number) {
     <!-- 视频选择 -->
     <div
       class="dropzone"
-      :class="{ 'is-active': isDragging, 'has-file': !!filePath }"
-      @click="pickFile"
-      @drop.prevent="onDrop"
-      @dragover.prevent="onDragOver"
-      @dragleave.prevent="onDragLeave"
+      :class="{ 'is-active': V.isDragging.value, 'has-file': !!V.filePath.value }"
+      @click="V.pickFile"
+      @drop.prevent="V.onDrop"
+      @dragover.prevent="V.onDragOver"
+      @dragleave.prevent="V.onDragLeave"
     >
-      <svg v-if="!filePath" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <svg v-if="!V.filePath.value" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
       </svg>
       <div class="dropzone__text">
-        <template v-if="!filePath">
+        <template v-if="!V.filePath.value">
           <span class="dropzone__main">点击选择视频或拖拽到此处</span>
-          <span class="dropzone__hint">支持 MP4 / MOV / WEBM</span>
+          <span class="dropzone__hint">支持 MP4 / MOV / AVI / MKV / WEBM</span>
         </template>
         <template v-else>
-          <span class="dropzone__main">{{ fileName }}</span>
+          <span class="dropzone__main">{{ V.fileName.value }}</span>
           <span class="dropzone__hint">点击重新选择</span>
         </template>
       </div>
     </div>
 
-    <!-- 参数 -->
-    <div class="form-grid">
-      <div class="form-field">
-        <label class="form-label">抽帧数量（1-10）</label>
-        <input
-          v-model.number="frameCount"
-          type="number"
-          min="1"
-          max="10"
-          class="text-input"
-          :disabled="isProcessing"
+    <!-- 预览 + 时间轴选段 -->
+    <template v-if="V.filePath.value">
+      <div class="preview-row">
+        <video
+          ref="videoEl"
+          class="preview"
+          :src="V.resolveSrc(V.filePath.value)"
+          controls
+          preload="metadata"
+          @loadedmetadata="onLoadedMetadata"
+          @timeupdate="onTimeUpdate"
         />
+        <div class="range-side">
+          <span class="range-side__title">选段（≤ {{ V.MAX_WINDOW_SEC }} 秒）</span>
+          <span class="range-side__range">{{ V.rangeText.value }}</span>
+          <div class="range-side__inputs">
+            <label>起(s)<input v-model.number="inputStart" type="number" step="0.1" min="0" :max="V.duration.value" @change="applyInputs" :disabled="V.polling.value" /></label>
+            <label>止(s)<input v-model.number="inputEnd" type="number" step="0.1" min="0" :max="V.duration.value" @change="applyInputs" :disabled="V.polling.value" /></label>
+          </div>
+          <span v-if="rangeError" class="range-side__err">{{ rangeError }}</span>
+        </div>
       </div>
-      <div class="form-field">
-        <label class="form-label">生成数量（1-8）</label>
-        <input
-          v-model.number="count"
-          type="number"
-          min="1"
-          max="8"
-          class="text-input"
-          :disabled="isProcessing"
-        />
+
+      <!-- 时间轴条：缩略图（或波形回退）+ 选区 + 播放头 -->
+      <div
+        ref="stripEl"
+        class="strip"
+        @pointerdown.prevent="pointerDown"
+        @pointermove="pointerMove"
+        @pointerup="pointerUp"
+        @pointerleave="pointerUp"
+      >
+        <template v-if="V.thumbs.value.length">
+          <img v-for="(src, i) in V.thumbs.value" :key="i" class="strip__thumb" :src="src" alt="" />
+        </template>
+        <template v-else>
+          <span v-for="(h, i) in waveBars" :key="i" class="strip__bar" :style="{ height: h + '%' }" />
+        </template>
+        <!-- 选区窗口 -->
+        <div
+          class="strip__sel"
+          :style="{ left: leftPct, width: widthPct }"
+          @dblclick.prevent="seekTo(V.selStart.value)"
+        >
+          <span class="strip__handle strip__handle--l" title="拖拽调整起点" />
+          <span class="strip__win-label">{{ V.rangeText.value }}</span>
+          <span class="strip__handle strip__handle--r" title="拖拽调整终点" />
+        </div>
+        <span class="strip__playhead" :style="{ left: playheadPct }" />
       </div>
-      <div class="form-field">
-        <label class="form-label">风格</label>
-        <TSelect v-model="style" :options="styleOptions" :disabled="isProcessing" />
-      </div>
-      <div class="form-field">
-        <label class="form-label">语言</label>
-        <TSelect v-model="language" :options="languageOptions" :disabled="isProcessing" />
-      </div>
-    </div>
+      <div class="strip-scale"><span>{{ V.fmtSecLabel(0) }}</span><span>{{ V.fmtSecLabel(Math.floor(V.duration.value / 2)) }}</span><span>{{ V.fmtSecLabel(Math.floor(V.duration.value)) }}</span></div>
+    </template>
 
     <!-- 操作区 -->
     <div class="action-row">
       <TButton
-        label="开始反推"
+        label="开始反推选段"
         icon="play"
-        :disabled="!canStart"
-        :loading="isProcessing"
-        @click="startReverse"
+        :disabled="!V.canSubmit.value"
+        :loading="V.submitting.value || V.polling.value"
+        @click="V.submit"
       />
+      <TButton
+        v-if="V.polling.value"
+        label="取消等待"
+        icon="close"
+        variant="secondary"
+        @click="V.cancelPolling"
+      />
+      <span v-if="V.statusText.value" class="status">{{ V.statusText.value }}</span>
     </div>
 
     <!-- 错误提示 -->
-    <div v-if="errorMsg" class="error-msg">
+    <div v-if="V.errorMessage.value" class="error-msg">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10" />
         <line x1="12" y1="8" x2="12" y2="12" />
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
-      <span>{{ errorMsg }}</span>
+      <span>{{ V.errorMessage.value }}</span>
     </div>
 
-    <!-- 结果卡片 -->
-    <div v-if="results.length" class="result-list">
-      <div v-for="(item, idx) in results" :key="idx" class="prompt-card">
-        <div class="prompt-card__head">
-          <span class="prompt-card__index">#{{ idx + 1 }}</span>
-          <TButton
-            :label="copiedIndex === idx ? '已复制' : '复制'"
-            :icon="copiedIndex === idx ? 'check' : 'download'"
-            size="small"
-            variant="secondary"
-            @click="copyPrompt(item, idx)"
-          />
-        </div>
-        <p v-if="item.zh" class="prompt-card__text prompt-card__text--zh">{{ item.zh }}</p>
-        <p v-if="item.en" class="prompt-card__text prompt-card__text--en">{{ item.en }}</p>
-        <div v-if="item.style_tags && item.style_tags.length" class="tag-row">
-          <span v-for="tag in item.style_tags" :key="tag" class="tag">{{ tag }}</span>
-        </div>
+    <!-- 结果分段卡片（对照 _format_result 分段） -->
+    <div v-if="V.segments.value.length" class="result-card">
+      <div class="result-card__head">
+        <span class="result-card__title">反推结果</span>
+        <TButton
+          label="复制全部"
+          icon="download"
+          size="small"
+          variant="secondary"
+          @click="copyAll"
+        />
+      </div>
+      <div v-for="(seg, i) in V.segments.value" :key="i" class="result-seg">
+        <span v-if="seg.label" class="result-seg__label">{{ seg.label }}</span>
+        <p class="result-seg__text">{{ seg.text }}</p>
       </div>
     </div>
   </div>
 </template>
+
+<script lang="ts">
+export default {
+  // 复制全部分段（clipboard 失败 → 系统通知回退；DOM/剪贴板操作留在组件层）
+  methods: {
+    async copyAll(): Promise<void> {
+      const text = this.$.setupState.V.segments.value
+        .map((s) => (s.label ? `【${s.label}】\n${s.text}` : s.text))
+        .join('\n\n')
+      try {
+        await navigator.clipboard.writeText(text)
+        window.tintin.shell.showNotification('已复制', '反推结果已复制到剪贴板')
+      } catch {
+        window.tintin.shell.showNotification('复制失败', '请手动选择文本复制')
+      }
+    },
+  },
+}
+</script>
 
 <style scoped>
 .tool-form {
@@ -240,47 +310,154 @@ async function copyPrompt(item: PromptItem, index: number) {
   color: var(--muted-foreground);
 }
 
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+.preview-row {
+  display: flex;
   gap: var(--space-4);
+  align-items: stretch;
 }
-.form-field {
+.preview {
+  flex: 1 1 420px;
+  min-width: 0;
+  max-height: 300px;
+  background: #000;
+  border-radius: var(--radius-lg);
+  outline: none;
+}
+.range-side {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-.form-label {
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  color: var(--foreground-muted);
-}
-.text-input {
-  width: 100%;
-  height: var(--size-input-height);
-  padding: 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);
   background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  min-width: 220px;
+}
+.range-side__title {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  color: var(--foreground);
+}
+.range-side__range {
+  font-size: var(--font-size-caption);
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+.range-side__inputs {
+  display: flex;
+  gap: var(--space-2);
+}
+.range-side__inputs label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  flex: 1;
+}
+.range-side__inputs input {
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--space-2);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--foreground);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-caption);
   outline: none;
-  transition: border-color var(--duration-fast) var(--easing-default),
-    box-shadow var(--duration-fast) var(--easing-default);
 }
-.text-input:focus {
+.range-side__inputs input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--ring);
 }
-.text-input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.range-side__err {
+  font-size: 11px;
+  color: var(--error);
+}
+
+.strip {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  height: 64px;
+  padding: 2px;
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+}
+.strip__thumb {
+  flex: 1 1 0;
+  min-width: 0;
+  object-fit: cover;
+  height: 100%;
+  opacity: 0.85;
+}
+.strip__bar {
+  flex: 1 1 0;
+  min-width: 0;
+  align-self: center;
+  background: var(--primary);
+  opacity: 0.35;
+  border-radius: 1px;
+}
+.strip__sel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 2px solid var(--primary);
+  background: rgba(46, 204, 113, 0.12);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.strip__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: var(--primary);
+}
+.strip__handle--l { left: 0; border-radius: 2px 0 0 2px; }
+.strip__handle--r { right: 0; border-radius: 0 2px 2px 0; }
+.strip__win-label {
+  font-size: 11px;
+  color: var(--foreground);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.strip__playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--error, #ef4444);
+  pointer-events: none;
+}
+.strip-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
 }
 
 .action-row {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+}
+.status {
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
 }
 
 .error-msg {
@@ -295,56 +472,41 @@ async function copyPrompt(item: PromptItem, index: number) {
   font-size: var(--font-size-caption);
 }
 
-.result-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: var(--space-4);
-}
-.prompt-card {
+.result-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
   padding: var(--space-4);
   background: var(--surface-container);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
 }
-.prompt-card__head {
+.result-card__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
-.prompt-card__index {
+.result-card__title {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-semibold);
+  color: var(--foreground);
+}
+.result-seg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.result-seg__label {
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
   color: var(--primary);
 }
-.prompt-card__text {
+.result-seg__text {
   margin: 0;
   font-size: var(--font-size-body);
   line-height: var(--line-height-relaxed);
+  color: var(--foreground);
   white-space: pre-wrap;
   word-break: break-word;
-}
-.prompt-card__text--zh {
-  color: var(--foreground);
-}
-.prompt-card__text--en {
-  color: var(--foreground-muted);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-mono);
-}
-.tag-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin-top: var(--space-1);
-}
-.tag {
-  padding: 2px var(--space-2);
-  font-size: var(--font-size-eyebrow);
-  color: var(--accent);
-  background: rgba(167, 139, 250, 0.12);
-  border-radius: var(--radius-full);
 }
 </style>

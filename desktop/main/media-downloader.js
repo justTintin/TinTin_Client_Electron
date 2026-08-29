@@ -257,7 +257,7 @@ function _getFfmpegPath(app, dirname) {
 }
 
 function createMediaDownloader(ipcMain, ctx) {
-  const { app, getMainWindow, getDownloadsPanel, store } = ctx
+  const { app, getMainWindow, getBrowserWindow, getDownloadsPanel, store } = ctx
   _loadHistory(app)
 
   // 下载目录解析：用户设置(store: downloadDir) > Windows 下载文件夹 > userData/downloads 兜底
@@ -291,6 +291,11 @@ function createMediaDownloader(ipcMain, ctx) {
       const mw = getMainWindow && getMainWindow()
       if (mw && !mw.isDestroyed()) {
         mw.webContents.send('browser:downloads-updated', msg)
+      }
+      // D5：浏览器独立窗口（useBrowserDownloads 订阅 browser:downloads-updated 渲染进度卡）
+      const bw = getBrowserWindow && getBrowserWindow()
+      if (bw && !bw.isDestroyed()) {
+        bw.webContents.send('browser:downloads-updated', msg)
       }
       const panel = getDownloadsPanel && getDownloadsPanel()
       if (panel && !panel.isDestroyed()) {

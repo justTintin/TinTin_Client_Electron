@@ -12,10 +12,16 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { useSettingsGeneral } from '../composables/useSettingsGeneral'
+import { useSettingsAccounts } from '../composables/useSettingsAccounts'
+import { useSettingsIntegration } from '../composables/useSettingsIntegration'
+import { useEnvCheck } from '../composables/useEnvCheck'
 import SettingsSidebar, { type SettingsMenuItem } from '../components/settings/SettingsSidebar.vue'
 import CardPlatform from '../components/settings/CardPlatform.vue'
+import CardPlatformIntegration from '../components/settings/CardPlatformIntegration.vue'
+import CardAccountLogin from '../components/settings/CardAccountLogin.vue'
 import CardTheme from '../components/settings/CardTheme.vue'
 import CardEnvMaint from '../components/settings/CardEnvMaint.vue'
+import CardSystem from '../components/settings/CardSystem.vue'
 import CardA2Inference from '../components/settings/CardA2Inference.vue'
 import CardAbout from '../components/settings/CardAbout.vue'
 
@@ -24,8 +30,11 @@ const appStore = useAppStore()
 
 /* ── 左侧菜单 ──────────────────────────────────────────────── */
 const menuItems = ref<SettingsMenuItem[]>([
-  { id: 'platform',   label: '平台接入',   desc: 'LLM · 服务接入',       icon: 'platform' },
+  { id: 'platform',   label: '平台接入',   desc: '服务端 · 模型',        icon: 'platform' },
+  { id: 'account',    label: '账号与登录', desc: '飞书 · 即梦 · 抖音',   icon: 'account' },
+  { id: 'integration', label: '数字人平台', desc: '数字人 · ComfyUI · RunningHub', icon: 'env' },
   { id: 'local',      label: '本地配置',   desc: '数据路径 · 代理',      icon: 'local' },
+  { id: 'system',     label: '系统与运行', desc: '自启动 · 缓存 · LUT',  icon: 'env' },
   { id: 'theme',      label: '外观主题',   desc: '亮色 / 暗色 / 跟随',   icon: 'theme' },
   { id: 'env',        label: '环境与维护', desc: '服务 · 日志 · 缓存',   icon: 'env' },
   { id: 'inference',  label: '本地推理能力', desc: 'OCR · 向量 · 封面', icon: 'inference' },
@@ -38,20 +47,14 @@ function backToWorkbench() {
   router.push('/')
 }
 
-/* ── 平台接入 / 本地配置 / 环境维护：useSettingsGeneral 单实例接线 ── */
+/* ── 服务端 / 本地配置 / 环境维护：useSettingsGeneral 单实例接线 ── */
 const {
   platTabs,
   activePlatTab,
   modelOptions,
   defaultModel,
-  apiKey,
-  baseUrl,
-  providerName,
-  providerLoaded,
   webSearch,
   savingLlm,
-  testingLlm,
-  testLlm,
   saveLlm,
   loadLlmCfg,
   localTabs,
@@ -62,15 +65,78 @@ const {
   serverUrl,
   savingServerUrl,
   saveServerUrl,
+  testingFuncs,
+  funcResults,
+  testFunction,
+  perFunctionTest,
   logLevel,
   cacheClearing,
   actionHint,
   pingServer,
-  restartServer,
   clearCache,
   saveLogLevel,
   loadEnvCfg,
+  logFiles,
+  logsDir,
+  loadLogList,
+  openLogFile,
+  machineCode,
 } = useSettingsGeneral()
+
+/* ── 账号与登录卡：飞书配置 + 即梦登录态（useSettingsAccounts 单实例） ── */
+const {
+  feishu,
+  FEISHU_FIELDS: accountFeishuFields,
+  fieldValue: feishuFieldValue,
+  appSecretMasked,
+  feishuSaving,
+  feishuHint,
+  feishuTestBusy,
+  feishuTestResult,
+  loadFeishuCfg,
+  saveFeishu,
+  testFeishu,
+  jimengState,
+  jimengChecking,
+  checkJimeng,
+  douyinState,
+  douyinChecking,
+  checkDouyin,
+} = useSettingsAccounts()
+
+/* ── S8 平台接入 + S9 系统与运行（useSettingsIntegration 单实例） ── */
+const {
+  PLATFORM_TABS: integrationTabs,
+  activePlatTab: integrationTab,
+  workflowId,
+  comfyuiHost,
+  comfyuiPort,
+  rhApiKeyInput,
+  rhApiKeyMasked,
+  rhBaseUrl,
+  rhUsePersonalQueue,
+  saving: integrationSaving,
+  hint: integrationHint,
+  testBusy: integrationTestBusy,
+  testResult: integrationTestResult,
+  savePlatform,
+  testPlatform,
+  autoStart,
+  autoStartLoading,
+  toggleAutoStart,
+  cacheDir,
+  pickCacheDir,
+  lutList,
+  addLut,
+  removeLut,
+  sysInfoRows,
+  sysInfoLoading,
+  loadSysInfo,
+  loadIntegrationCfg,
+} = useSettingsIntegration()
+
+/* ── 环境检测（条目⑪ 口径重定义）：服务端连通/能力健康 + 本地资源 ── */
+const { envRows, envChecking, runEnvCheck } = useEnvCheck()
 
 /** 日志级别变更：先写回状态再持久化（对齐原 v-model + @change=saveLogLevel） */
 async function onLogLevelChange(v: string) {
@@ -103,7 +169,11 @@ onMounted(() => {
   // 加载真实配置并探测本地服务端
   ;(async () => {
     await loadEnvCfg()
-    await loadLlmCfg() // LLM 对接：本地偏好回读 + 服务端模型列表/Provider 回显
+    await loadLlmCfg() // LLM 对接：本地偏好回读 + 服务端模型列表拉取
+    await loadFeishuCfg() // 条目⑩：飞书配置回读（Secret 不回显，仅脱敏标记）
+    void checkJimeng() // 条目⑩：即梦登录态自动检测（失败静默不阻塞）
+    void checkDouyin() // S9：抖音登录态自动检测（失败静默不阻塞）
+    void loadIntegrationCfg() // S8 平台接入 + S9 自启动/缓存/LUT/系统信息
   })()
   pingServer()
 })
@@ -132,26 +202,69 @@ onBeforeUnmount(() => {
           <p class="p-sub">配置平台连接、本地环境、扩展与版本信息。</p>
         </header>
 
-        <!-- 一、平台接入卡（LLM 设置 / 服务接入，对齐设计稿） -->
+        <!-- 一、服务端卡（统一服务端地址 / 模型设置，2026-08-28 业务对齐） -->
         <CardPlatform
           :plat-tabs="platTabs"
           v-model:active-tab="activePlatTab"
           :model-options="modelOptions"
           v-model:default-model="defaultModel"
-          :api-key="apiKey"
-          :base-url="baseUrl"
-          :provider-name="providerName"
-          :provider-loaded="providerLoaded"
           v-model:web-search="webSearch"
           :saving-llm="savingLlm"
-          :testing-llm="testingLlm"
           :server-desc="serverDesc"
           v-model:server-url="serverUrl"
           :saving-server-url="savingServerUrl"
+          :testing-funcs="testingFuncs"
+          :func-results="funcResults"
           @save-llm="saveLlm"
           @save-server-url="saveServerUrl"
           @refresh-server="pingServer"
-          @test-llm="testLlm"
+          @test-func="testFunction"
+          @test-funcs-all="perFunctionTest"
+        />
+
+        <!-- 一+、账号与登录卡（条目⑩：飞书七字段 + 即梦/抖音登录态；凭据脱敏） -->
+        <CardAccountLogin
+          :fields="accountFeishuFields"
+          :get-field="feishuFieldValue"
+          :app-secret-masked="appSecretMasked"
+          :saving="feishuSaving"
+          :hint="feishuHint"
+          :test-busy="feishuTestBusy"
+          :test-result="feishuTestResult"
+          :jimeng-state="jimengState"
+          :jimeng-checking="jimengChecking"
+          :douyin-state="douyinState"
+          :douyin-checking="douyinChecking"
+          @field-input="(k: string, v: string) => { feishu[k] = v }"
+          @save="saveFeishu"
+          @test-conn="testFeishu"
+          @check-jimeng="checkJimeng"
+          @check-douyin="checkDouyin"
+        />
+
+        <!-- 一++、数字人平台卡（S8：数字人/ComfyUI/RunningHub 接入配置+测试连接） -->
+        <CardPlatformIntegration
+          :tabs="integrationTabs"
+          v-model:active-tab="integrationTab"
+          :workflow-id="workflowId"
+          :comfyui-host="comfyuiHost"
+          :comfyui-port="comfyuiPort"
+          :rh-api-key-input="rhApiKeyInput"
+          :rh-api-key-masked="rhApiKeyMasked"
+          :rh-base-url="rhBaseUrl"
+          :rh-use-personal-queue="rhUsePersonalQueue"
+          :saving="integrationSaving"
+          :hint="integrationHint"
+          :test-busy="integrationTestBusy"
+          :test-result="integrationTestResult"
+          @update:workflowId="(v: string) => workflowId = v"
+          @update:comfyuiHost="(v: string) => comfyuiHost = v"
+          @update:comfyuiPort="(v: string) => comfyuiPort = v"
+          @update:rhApiKeyInput="(v: string) => rhApiKeyInput = v"
+          @update:rhBaseUrl="(v: string) => rhBaseUrl = v"
+          @update:rhUsePersonalQueue="(v: boolean) => rhUsePersonalQueue = v"
+          @save="savePlatform"
+          @test-conn="testPlatform"
         />
 
         <!-- 二、本地配置卡 -->
@@ -193,27 +306,49 @@ onBeforeUnmount(() => {
         <!-- 二+、外观主题卡（本地配置分组：亮/暗/跟随系统 3 档） -->
         <CardTheme />
 
-        <!-- 三、环境与维护卡（对齐设计稿：服务状态、日志与存储管理） -->
+        <!-- 三、环境与维护卡（服务状态、日志查看、存储管理；2026-08-28 去重启/对齐原客户端） -->
         <CardEnvMaint
           :server-running="serverRunning"
           :server-desc="serverDesc"
-          :server-busy="serverBusy"
           :log-level="logLevel"
           :cache-clearing="cacheClearing"
           :action-hint="actionHint"
-          @restart="restartServer"
+          :env-rows="envRows"
+          :env-checking="envChecking"
+          :log-files="logFiles"
+          :logs-dir="logsDir"
           @change-loglevel="onLogLevelChange"
           @clear="clearCache"
+          @run-env-check="runEnvCheck"
+          @refresh-logs="loadLogList"
+          @open-log="openLogFile"
+        />
+
+        <!-- 三+、系统与运行卡（S9：自启动/缓存目录/LUT/系统信息） -->
+        <CardSystem
+          :auto-start="autoStart"
+          :auto-start-loading="autoStartLoading"
+          :cache-dir="cacheDir"
+          :lut-list="lutList"
+          :sys-info-rows="sysInfoRows"
+          :sys-info-loading="sysInfoLoading"
+          :hint="integrationHint"
+          @toggle-autostart="toggleAutoStart"
+          @pick-cache-dir="pickCacheDir"
+          @add-lut="addLut"
+          @remove-lut="removeLut"
+          @refresh-sysinfo="loadSysInfo"
         />
 
         <!-- 三+、扩展插件 · A2 本地推理能力（§1.5.4 规格） -->
         <CardA2Inference ref="a2Ref" />
 
-        <!-- 四、关于卡 -->
+        <!-- 四、关于卡（含本机机器码） -->
         <CardAbout
           :app-version="appVersion"
           :build-date="buildDate"
           :channel="channel"
+          :machine-code="machineCode"
         />
       </div>
     </main>

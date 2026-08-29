@@ -21,6 +21,7 @@
 
 const { ipcMain } = require('electron')
 const { API_ENDPOINTS } = require('./server-proxy')
+const logger = require('./logger')
 
 function createA2Ipc(ipcMain, ctx) {
   /**
@@ -43,25 +44,40 @@ function createA2Ipc(ipcMain, ctx) {
   }
 
   // ======== 0. config:* 2 条（渲染层通用配置持久化） ========
+  // 每次读写打一条日志：设置页「服务端地址保存丢失」类问题的现场排查依据
   _handle('config:get', (_e, key, defaultValue) => {
     try {
       if (typeof key === 'undefined') return { success: true, data: store?.store ?? null }
-      return { success: true, data: store ? store.get(key, defaultValue) : defaultValue }
+      const data = store ? store.get(key, defaultValue) : defaultValue
+      try { logger.logInfo('config', `get '${key}' -> ${data === undefined ? 'undefined' : 'value(len=' + String(JSON.stringify(data)).length + ')'}`) } catch (_) {}
+      return { success: true, data }
     } catch (e) { return { success: false, error: e.message, data: defaultValue } }
   })
 
   _handle('config:set', (_e, keyOrObject, value) => {
     try {
-      if (!store) return { success: false, error: 'STORE_NOT_INITIALIZED' }
+      if (!store) {
+        try { logger.logWarn('config', `set REJECTED: store not initialized (memory fallback missing)`) } catch (_) {}
+        return { success: false, error: 'STORE_NOT_INITIALIZED' }
+      }
       if (keyOrObject !== null && typeof keyOrObject === 'object' && !Array.isArray(keyOrObject)) {
         for (const [k, v] of Object.entries(keyOrObject)) store.set(k, v)
+        try { logger.logInfo('config', `set batch(${Object.keys(keyOrObject).join(',')}) ok`) } catch (_) {}
       } else if (typeof keyOrObject === 'string') {
         store.set(keyOrObject, value)
+        // 回读验证真实落盘（electron-store 写失败/内存兜底时在此显式暴露）
+        const back = store.get(keyOrObject, undefined)
+        const persisted = JSON.stringify(back) === JSON.stringify(value)
+        try { logger.logInfo('config', `set '${keyOrObject}' -> ${persisted ? 'persisted' : 'NOT persisted (readback mismatch)'}`) } catch (_) {}
+        if (!persisted) return { success: false, error: 'PERSIST_VERIFY_FAILED' }
       } else {
         throw new Error('config:set expects key:string or object record')
       }
       return { success: true }
-    } catch (e) { return { success: false, error: e.message } }
+    } catch (e) {
+      try { logger.logError('config', `set failed: ${e.message}`) } catch (_) {}
+      return { success: false, error: e.message }
+    }
   })
 
   // ======== 1. model:* 4 条 ========

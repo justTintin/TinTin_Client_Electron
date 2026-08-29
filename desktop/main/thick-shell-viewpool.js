@@ -11,9 +11,11 @@ const { _bilibiliHelperInstalled, _findBilibiliHelperDir, _injectBilibiliHelper,
 
 /**
  * 创建视图池控制器（每个 thickShell IPC 实例一次；订阅 key 保持每实例随机后缀语义）
- * @param {{ getMainWindow: ()=>BrowserWindow, EventBus?: any, resolveThemePref: ()=>string }} deps
+ * 挂载/广播目标窗口：D3/D4 后为浏览器独立窗口（getWindow 由 thickShell-ipc.js 注入
+ *   getBrowserWindow，未创建返回 null 时调用点全部防御跳过，绝不落到主窗口）。
+ * @param {{ getWindow: ()=>BrowserWindow, EventBus?: any, resolveThemePref: ()=>string }} deps
  */
-function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
+function createViewPoolCtl({ getWindow, EventBus, resolveThemePref }) {
   /** BrowserView 实例池：5 平台懒创建，partition 严格隔离 */
   const viewPool = new Map()  // platformId → { view, crashRecoveryCount, platformId, seedUrlOverride, lastBounds }
   const MAX_CRASH_VIEW = 3
@@ -59,7 +61,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
       return existing
     }
 
-    const mw = getMainWindow && getMainWindow()
+    const mw = getWindow && getWindow()
     if (!mw) throw new Error('NO_MAIN_WINDOW')
     // partition 隔离的 session：必须用 session 模块静态方法 fromPartition（实例上没有该方法）
     const sess = session.fromPartition(def.partition, { cache: true })
@@ -127,7 +129,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
           const isDetail = isDetailPage(pageUrl, platformId)
           if (!isDetail) {
             try {
-              const mw2 = getMainWindow && getMainWindow()
+              const mw2 = getWindow && getWindow()
               if (mw2 && !mw2.isDestroyed()) {
                 mw2.webContents.send(mediaSniffedSubKey, {
                   platformId,
@@ -142,7 +144,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
             return
           }
           try {
-            const mw2 = getMainWindow && getMainWindow()
+            const mw2 = getWindow && getWindow()
             if (mw2 && !mw2.isDestroyed()) {
               mw2.webContents.send(mediaSniffedSubKey, { platformId, ...media, ts: Date.now() })
             }
@@ -182,7 +184,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
       })
     } catch (_) {}
 
-    // did-navigate → 推送到 mainWindow：让渲染层刷新🔒胶囊地址栏
+    // did-navigate → 推送到挂载窗口（D4 后为浏览器独立窗口）：让渲染层刷新🔒胶囊地址栏
     wc.on('did-navigate', (_e, url) => {
       // 更新 viewPool 中的 currentUrl，用于媒体嗅探智能判断
       const entry = viewPool.get(platformId)
@@ -190,7 +192,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
       // 检测 URL 实际所属平台（可能与 BrowserView 的 platformId 不同）
       const detectedPlatform = detectPlatformFromUrl(url)
       try {
-        const mw2 = getMainWindow && getMainWindow()
+        const mw2 = getWindow && getWindow()
         if (mw2 && !mw2.isDestroyed()) mw2.webContents.send('browser:url-updated', { platformId, detectedPlatform, url, ts: Date.now() })
       } catch (_) {}
     })
@@ -200,7 +202,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
       if (entry) entry.currentUrl = url
       const detectedPlatform = detectPlatformFromUrl(url)
       try {
-        const mw2 = getMainWindow && getMainWindow()
+        const mw2 = getWindow && getWindow()
         if (mw2 && !mw2.isDestroyed()) mw2.webContents.send('browser:url-updated', { platformId, detectedPlatform, url, ts: Date.now(), inPage: true })
       } catch (_) {}
     })
@@ -220,7 +222,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
     // Cherry Studio：did-stop-loading 广播 browser:view-ready → 渲染层收到立刻强制重算 bounds（防止页面首帧布局跳动后 BrowserView 没跟上）
     wc.on('did-stop-loading', () => {
       try {
-        const mw2 = getMainWindow && getMainWindow()
+        const mw2 = getWindow && getWindow()
         if (mw2 && !mw2.isDestroyed()) {
           mw2.webContents.send(viewReadySubKey, {
             platformId,
@@ -240,7 +242,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
       try {
         const jsonStr = message.slice('[TINTIN_BILI_DL]'.length)
         const payload = JSON.parse(jsonStr)
-        const mw2 = getMainWindow && getMainWindow()
+        const mw2 = getWindow && getWindow()
         if (mw2 && !mw2.isDestroyed() && _biliExtDlSubRegistered) {
           mw2.webContents.send(biliExtDlSubKey, {
             platformId,
@@ -254,7 +256,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
     // will-download → 挂全局下载总线 EventBus（下载徽章红点）
     wc.session.on('will-download', (_event, item, webContents) => {
       try {
-        const mw2 = getMainWindow && getMainWindow()
+        const mw2 = getWindow && getWindow()
         // 主流程：若有全局下载管理器 EventBus，先尝试广播 downloads:start（让其统一调度）
         if (EventBus && typeof EventBus.emit === 'function') {
           const filename = item.getFilename()
@@ -319,7 +321,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
       console.warn(`[ThickShell::${platformId}] BrowserView crashed (${entry.crashRecoveryCount}/${MAX_CRASH_VIEW})`)
       if (entry.crashRecoveryCount > MAX_CRASH_VIEW) {
         try {
-          const mw2 = getMainWindow && getMainWindow()
+          const mw2 = getWindow && getWindow()
           if (mw2 && !mw2.isDestroyed()) {
             mw2.webContents.send('browser:platform-error', {
               platformId,
@@ -335,7 +337,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
         try {
           // 从池里移除旧 view（若仍 attach，先 detach）
           try {
-            const mw3 = getMainWindow && getMainWindow()
+            const mw3 = getWindow && getWindow()
             if (mw3 && !mw3.isDestroyed()) {
               const curr = mw3.getBrowserViews?.() || []
               if (curr.includes(view)) mw3.removeBrowserView(view)
@@ -345,7 +347,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
           viewPool.delete(platformId)
           // 重新创建（递归进此函数），并自动 attach
           const recreated = _getOrCreateView(platformId, seedUrlOverride || def.seedUrl)
-          const mw4 = getMainWindow && getMainWindow()
+          const mw4 = getWindow && getWindow()
           if (mw4 && !mw4.isDestroyed()) {
             try { mw4.addBrowserView(recreated.view) } catch (_) {}
           }
@@ -378,7 +380,7 @@ function createViewPoolCtl({ getMainWindow, EventBus, resolveThemePref }) {
             if (!_biliExtDlSubRegistered) return
             wc2.executeJavaScript(BILI_DL_EXTRACT_SCRIPT).then((res) => {
               if (!res || !res.downloads || !res.downloads.length) return
-              const mw3 = getMainWindow && getMainWindow()
+              const mw3 = getWindow && getWindow()
               if (mw3 && !mw3.isDestroyed()) {
                 mw3.webContents.send(biliExtDlSubKey, {
                   platformId,

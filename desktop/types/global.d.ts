@@ -125,6 +125,32 @@ declare interface TintinBridgeServer {
     payload: AgentAPI.RegisterArtifactRequest
   ): Promise<IpcError<ArtifactItem>>
 
+  // ---------- agent chat（工作台 AI 对话真实链路 P1）----------
+  /** GET /agent/agents（智能体列表；离线 null / 5xx {error}，解析见 workbenchChatContext.parseAgentsResponse） */
+  agentAgents(): Promise<IpcError<AgentAPI.AgentsResponse>>
+  /** POST /agent/chat（max_rounds 默认 3、stream:false；sessionId 续接服务端会话；离线 null / 5xx {error}） */
+  agentChat(
+    payload: AgentAPI.ChatIpcRequest
+  ): Promise<IpcError<AgentAPI.ChatResponse>>
+  /** GET /agent/sessions?machine_id=&limit=（machine_id 主进程注入） */
+  agentSessions(params?: {
+    limit?: number
+  }): Promise<IpcError<AgentAPI.SessionsResponse>>
+  /** DELETE /agent/sessions/{id}（素材池一并清理） */
+  agentSessionDelete(id: string): Promise<IpcError<{ ok: boolean }>>
+  /** GET /agent/sessions/{id}/attachments（会话素材池列表） */
+  agentSessionAttachments(
+    id: string
+  ): Promise<IpcError<AgentAPI.SessionAttachmentsResponse>>
+  /** POST /agent/sessions/{id}/attachments（materialId 引用素材库 | filePath 上传本地附件） */
+  agentSessionAttachmentAdd(payload: {
+    id: string
+    materialId?: number | string
+    filePath?: string
+  }, onProgress?: (percent: number) => void): Promise<IpcError<AgentAPI.SessionAttachmentAddResponse>>
+  /** DELETE /agent/sessions/{id}/attachments/{key}（key=入池返回的 file_ref） */
+  agentSessionAttachmentRemove(id: string, key: string): Promise<IpcError<{ ok: boolean }>>
+
   // ---------- tasks ----------
   tasksUnifiedList(
     params?: TasksAPI.UnifiedListRequest
@@ -193,8 +219,6 @@ declare interface TintinBridgeServer {
   }): Promise<IpcError<any>>
   /** GET /llm/models → 设置页「默认模型」下拉数据源（离线返回 null 或 {error}） */
   llmModels(): Promise<IpcError<LLMAPI.LlmModelsResponse>>
-  /** GET /llm/providers → Provider 配置回显（api_key 脱敏，服务端管理） */
-  llmProviders(): Promise<IpcError<LLMAPI.LlmProvidersResponse>>
 
   // ---------- material ----------
   materialList(
@@ -208,13 +232,31 @@ declare interface TintinBridgeServer {
     onProgress?: (percent: number) => void
   ): Promise<IpcError<MaterialAPI.OcrResponse>>
 
-  // ---------- montage ----------
+  // ---------- montage / audio / prompt（M6/M8 条目⑥⑦ 服务端链路）----------
+  montageSplit(
+    payload: MontageAPI.SplitRequest,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<MontageAPI.SplitResponse>>
   montageConcat(
-    payload: MontageAPI.ConcatRequest
+    payload: MontageAPI.ConcatRequest,
+    onProgress?: (percent: number) => void
   ): Promise<IpcError<MontageAPI.ConcatResponse>>
-  montageBeatSync(
-    payload: MontageAPI.BeatSyncRequest
-  ): Promise<IpcError<MontageAPI.BeatSyncResponse>>
+  montageBeat(
+    payload: MontageAPI.BeatRequest,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<MontageAPI.BeatResponse>>
+  montageBgm(
+    payload: MontageAPI.BgmRequest,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<MontageAPI.BgmResponse>>
+  audioBeatmap(
+    payload: MontageAPI.BeatmapRequest,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<MontageAPI.BeatmapResponse>>
+  promptVideo(
+    payload: MontageAPI.PromptVideoRequest,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<MontageAPI.PromptVideoResponse>>
 
   // ---------- storyboard ----------
   storyboardListScripts(params?: {
@@ -416,6 +458,23 @@ declare interface TintinBridgeBrowser {
   uninstallExtension(id: string): Promise<{ success: boolean; message?: string }>
   /** 扩展列表变更订阅（安装/卸载后主进程广播） */
   onExtensionsChanged(cb: () => void): () => void
+  /** 列出平台 partition cookies（条目⑧ 登录态检测链路；cookie 字段已摘要化，不含 value） */
+  cookieList(platformId: string): Promise<{
+    success: boolean
+    data?: { platformId: string; count: number; cookies: Array<{
+      name: string; domain: string; path: string; secure: boolean; httpOnly: boolean; session: boolean; expirationDate?: number
+    }> }
+    error?: string
+  }>
+  /** 清除平台 partition cookies */
+  cookieClear(platformId: string): Promise<{ success: boolean; error?: string }>
+}
+
+// --------------------------------------------------------------------
+// 条目⑩ 账号与登录：飞书连接测试（凭据补全在主进程，明文不出展示层）
+// --------------------------------------------------------------------
+declare interface TintinBridgeFeishu {
+  testConn(payload: { appId: string; appSecret: string }): Promise<{ ok: boolean; message: string }>
 }
 
 // --------------------------------------------------------------------
@@ -444,6 +503,42 @@ declare interface TintinBridgeKnowledge {
   vectorSearch(payload: any): Promise<any>
 }
 
+// --------------------------------------------------------------------
+// D4 浏览器域独立窗口（browserWindow:open —— 主窗口按钮 / hotspot 到点打开）
+// --------------------------------------------------------------------
+declare interface TintinBridgeBrowserWindow {
+  /** 打开浏览器独立窗口（单实例：已存在 → 恢复 + 聚焦；hotspot=true 时窗口就绪后补发热点导航信号） */
+  open(opts?: { hotspot?: boolean; count?: number | null }): Promise<{
+    success: boolean
+    created?: boolean
+    error?: string
+  }>
+}
+
+// --------------------------------------------------------------------
+// 办公能力集成（office:* 主进程 handler，PRD §4.2）
+// 主窗口经 tintin.office.*（preload.js），浏览器窗口经 tintinBrowser.office.*
+// （browser-preload.js），通道同源复用（office:saveFile / openPath /
+//   previewDocx / readXlsx）；错误态统一 { error }，取消保存返回 { saved:false }。
+// --------------------------------------------------------------------
+declare interface TintinBridgeOffice {
+  /** 系统保存对话框 + 写入；返回 {saved:true,path} | {saved:false}(取消) | {error} */
+  saveFile(payload: {
+    filename: string
+    ext: 'docx' | 'xlsx'
+    data: ArrayBuffer | Uint8Array
+  }): Promise<{ saved: boolean; path?: string; error?: string }>
+  /** 系统默认程序打开（shell.openPath）→ {ok} | {ok:false,error} */
+  openPath(filePath: string): Promise<{ ok: boolean; error?: string }>
+  /** docx → HTML（mammoth 主进程转换 + 样式注入）→ {html} | {error} */
+  previewDocx(filePath: string): Promise<{ html?: string; error?: string }>
+  /** xlsx → 多 Sheet 表格（exceljs 读，首 200 行截断）→ {sheets} | {error} */
+  readXlsx(filePath: string): Promise<{
+    sheets?: Array<{ name: string; rows: any[][] }>
+    error?: string
+  }>
+}
+
 declare interface TintinBridge {
   app: TintinBridgeApp
   dialog: TintinBridgeDialog
@@ -455,6 +550,10 @@ declare interface TintinBridge {
   // P1.5 厚壳化
   win: TintinBridgeWin
   browser: TintinBridgeBrowser
+  // D4 浏览器域独立窗口
+  browserWindow: TintinBridgeBrowserWindow
+  // 办公能力集成（office:*）
+  office: TintinBridgeOffice
   // A2 双模式
   config: TintinBridgeConfig
   model: TintinBridgeModel
@@ -463,6 +562,12 @@ declare interface TintinBridge {
   knowledge: TintinBridgeKnowledge
   // P2 本地定时任务（schtasks）
   scheduled: TintinBridgeScheduled
+  // 条目⑩ 账号与登录（飞书）
+  feishu: TintinBridgeFeishu
+  clientTasks: TintinBridgeClientTasks // W11 客户端任务活动订阅（client-task:activity → 任务队列实时刷新）
+}
+declare interface TintinBridgeClientTasks {
+  /** 订阅客户端任务活动事件（返回取消函数） */ onActivity(cb: (payload: { type?: string; task_id?: string; ok?: boolean; status?: string }) => void): () => void
 }
 
 // --------------------------------------------------------------------
@@ -515,9 +620,180 @@ declare interface TintinBridgeScheduled {
   onScheduledHotspot(cb: (payload?: { count?: number | null }) => void): () => void
 }
 
+// --------------------------------------------------------------------
+// D3 浏览器域独立 preload：window.tintinBrowser（browser-preload.js）
+// 浏览器域（src/browser/）只经本命名空间走 IPC，与 window.tintin（主应用）隔离。
+// 复用既有类型：TintinBridgeBrowser / TintinBridgeScheduled /
+//   TintinBridgeConfig / TintinBridgeWin（见上）。
+// --------------------------------------------------------------------
+declare interface TintinBrowserBridgeBrowser extends TintinBridgeBrowser {
+  /** 列出已装扩展（含内置 B站助手 + 用户安装扩展；preload.js 亦暴露但原类型缺漏，此处补全） */
+  extensionList(): Promise<{ success: boolean; data?: { installed: boolean; extensions?: Array<{
+    id: string; name: string; version: string; path?: string; icon?: string | null; builtin?: boolean; description?: string
+  }> } }>
+  exportCookies(platformId: string, destPath: string): Promise<{ success: boolean; count?: number; error?: string }>
+  getCookieStatus(platformId: string): Promise<{ success: boolean; platformId?: string; hasLoginCookie?: boolean; cookies?: any[] }>
+  getCurrentUrl(platformId: string): Promise<{ success: boolean; platformId?: string; url?: string; title?: string }>
+  // B9 每日素材（main/daily-assets.js）：按日期扫描下载目录 + 文件定位/打开
+  getDailyAssets(): Promise<{ success: boolean; data?: Array<{
+    date: string
+    files: Array<{ name: string; path: string; size: number; type: 'video' | 'image' | 'text' | 'file' }>
+  }>; error?: string }>
+  revealFile(filePath: string): Promise<{ success: boolean; error?: string }>
+  openFilePath(filePath: string): Promise<{ success: boolean; error?: string }>
+}
+
+declare interface TintinBrowserMediaDownload {
+  start(params: {
+    taskId: string
+    url: string
+    audioUrl?: string
+    filename?: string
+    title?: string
+    referer?: string
+    platformId?: string
+    subDir?: string
+    useYtdlp?: boolean
+  }): Promise<{ success: boolean; taskId?: string; error?: string }>
+  pause(taskId: string): Promise<{ success: boolean; error?: string }>
+  cancel(taskId: string): Promise<{ success: boolean; error?: string }>
+  /** 共享 channel：browser:downloads-updated（{ taskId, status, progress, speed, downloaded, totalSize, filename }） */
+  onProgress(cb: (p: any) => void): () => void
+}
+
+declare interface TintinBrowserMediaStorage {
+  getSniffed(): Promise<{ success: boolean; data?: any[] }>
+  saveSniffed(list: any[]): Promise<{ success: boolean }>
+  getDownloads(): Promise<{ success: boolean; data?: any[] }>
+  saveDownloads(list: any[]): Promise<{ success: boolean }>
+  getSettings(): Promise<{ success: boolean; data?: any }>
+  saveSettings(s: any): Promise<{ success: boolean }>
+  getFavorites(): Promise<{ success: boolean; data?: any[] }>
+  saveFavorites(list: any[]): Promise<{ success: boolean }>
+  addFavorite(item: any): Promise<{ success: boolean; data?: any[] }>
+  removeFavorite(url: string): Promise<{ success: boolean; data?: any[] }>
+  export(format: string, filePath: string): Promise<{ success: boolean }>
+  import(filePath: string): Promise<{ success: boolean }>
+  clearHistory(type: string): Promise<{ success: boolean }>
+  openDownloadDir(): Promise<{ success: boolean }>
+}
+
+declare interface TintinBrowserHistory {
+  open(items: Array<{ index: number; url: string; title: string; timestamp: number }>, x: number, y: number): void
+  close(): void
+  onNavigate(cb: (index: number) => void): () => void
+  onCleared(cb: () => void): () => void
+}
+
+// --------------------------------------------------------------------
+// B10 达人/创作者库（main/creators-store.js）：达人 JSON 存储 + 主页全量采集
+//   采集清单条目落 userData/creators/collected.json（B8 素材库衔接点）
+// --------------------------------------------------------------------
+declare interface TintinBrowserCreatorItem {
+  id: string
+  platform: string
+  name: string
+  homepageUrl?: string
+  addedAt?: number
+}
+declare interface TintinBrowserCollectedItem {
+  platform: string
+  creatorId: string
+  creatorName: string
+  title: string
+  url: string
+  source: string
+  date: string
+  collectedAt: string
+}
+declare interface TintinBrowserCreators {
+  getCreators(): Promise<{ success: boolean; data?: TintinBrowserCreatorItem[]; error?: string }>
+  addCreator(creator: TintinBrowserCreatorItem): Promise<{ success: boolean; data?: TintinBrowserCreatorItem[]; error?: string }>
+  deleteCreator(payload: { id: string; platform: string }): Promise<{ success: boolean; data?: TintinBrowserCreatorItem[]; error?: string }>
+  getCollected(): Promise<{ success: boolean; data?: TintinBrowserCollectedItem[]; error?: string }>
+  collectFromCreator(payload: { creator: TintinBrowserCreatorItem }): Promise<{
+    success: boolean
+    data?: { count: number; items: TintinBrowserCollectedItem[]; profileUrl: string }
+    error?: string
+  }>
+  /** 采集进度推送：{ phase } */
+  onCollectProgress(cb: (p: { phase: string }) => void): () => void
+}
+
+// --------------------------------------------------------------------
+// B8 素材入库（main/material-import.js）：采集清单/每日素材 →
+//   /material/web_download 异步下载任务 → 本地导入任务记录 → 可选分析队列
+//   imported 状态：submitted（待处理）/ failed（失败+原因）/ imported（已入库）
+// --------------------------------------------------------------------
+declare interface TintinBrowserImportTask {
+  taskId: string
+  url: string
+  title?: string
+  platform?: string
+  shareName?: string
+  status?: 'submitted' | 'imported' | 'failed' | string
+  submittedAt?: string
+  updatedAt?: string
+}
+declare interface TintinBrowserMaterialImport {
+  /** 提交入库：{ items: 采集条目[] | 每日素材[{name,path,...}], opts?: { shareName?, maxFilesize?, format?, enqueueAnalysis? } } */
+  import(payload: {
+    items: Array<Record<string, any>>
+    opts?: {
+      shareName?: string
+      maxFilesize?: number
+      format?: string
+      enqueueAnalysis?: boolean
+    }
+  }): Promise<{
+    success: boolean
+    error?: string
+    data?: {
+      submitted: number
+      failed: number
+      duplicates: number
+      noUrl: number
+      markedCount: number
+      tasks: TintinBrowserImportTask[]
+      results: Array<{ url: string; taskId?: string; error?: string }>
+      analysis?: unknown
+      analysisError?: unknown
+      firstError?: string
+    }
+  }>
+  /** 本地导入任务记录（去重/状态跟踪） */
+  listTasks(): Promise<{ success: boolean; data?: TintinBrowserImportTask[]; error?: string }>
+  /** 轮询服务端下载任务状态（GET /material/web_download/{task_id}）并回写本地记录 */
+  status(taskId: string): Promise<{
+    success: boolean
+    data?: { taskId: string; status: 'submitted' | 'imported' | 'failed' | string; raw: unknown }
+    error?: string
+  } | null>
+}
+
+// --------------------------------------------------------------------
+// B12 自动上架：tintinBrowser.autoListing 类型见 types/auto-listing.d.ts
+//   （7 条 IPC + 订阅式进度 channel 'auto-listing:progress'）
+// --------------------------------------------------------------------
+declare interface TintinBrowserBridge {
+  browser: TintinBrowserBridgeBrowser
+  mediaDownload: TintinBrowserMediaDownload
+  mediaStorage: TintinBrowserMediaStorage
+  history: TintinBrowserHistory
+  scheduled: TintinBridgeScheduled
+  config: TintinBridgeConfig
+  win: TintinBridgeWin
+  creators: TintinBrowserCreators
+  materialImport: TintinBrowserMaterialImport
+  autoListing: TintinBrowserAutoListing
+  /** 办公能力集成（office:* 主进程 handler，与主应用同通道复用） */
+  office: TintinBridgeOffice
+}
+
 declare global {
   interface Window {
     tintin: Readonly<TintinBridge>
+    tintinBrowser: Readonly<TintinBrowserBridge>
   }
 }
 

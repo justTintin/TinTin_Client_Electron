@@ -176,8 +176,15 @@ export const API_PATHS = {
   montage: {
     split:    '/montage/split',
     concat:   '/montage/concat',
-    beatSync: '/montage/beat',
+    beat:     '/montage/beat',
+    bgm:      '/montage/bgm',
     auto:     '/montage/auto-mix',
+  },
+  audio: {
+    beatmap:  '/audio/beatmap',
+  },
+  prompt: {
+    video:    '/prompt/video',
   },
   vsr: {
     enhance: '/vsr/enhance',      // V3 S2
@@ -249,7 +256,7 @@ export type ApiPathLeaf =
 //    | MaterialAPI.OcrRequest      | Contract.Body_ocr_image_material_ocr_post | 请求字段：image: Blob ↔ file: string
 //    | MaterialAPI.OCRResponse     | Contract.OCRResponse                      | 响应字段：过渡版缺 filename/total，多 boxes
 //    | ASRAPI.TranscribeRequest    | Contract.Body_transcribe_whisper_..._post | 请求字段：audio ↔ file
-//    | VSRAPI.RemoveRequest        | Contract.Body_remove_subtitle_vsr_remove  | 字段集合与命名不完全对齐
+//    | VSRAPI.RemoveRequest        | Contract.Body_remove_subtitle_vsr_remove  | 2026-08-28 M4 已对齐（video 路径 ↔ file multipart）
 //    | Rembg/VSR/Workflow…Request  | 契约 paths[X].post.requestBody            | 本文件声明为 Blob，契约用 multipart File
 //
 //    新业务代码请使用 paths[path].method.parameters / responses 精确引用，
@@ -292,7 +299,8 @@ export namespace LLMAPI {
     content: string
   }
   export interface ChatCompletionsRequest {
-    model: string
+    /** openapi 契约默认 ""（服务端使用其默认模型），客户端允许不传 */
+    model?: string
     messages: ChatMessage[]
     temperature?: number
     stream?: boolean
@@ -469,24 +477,9 @@ export namespace MaterialAPI {
   }
 }
 
-export namespace MontageAPI {
-  export interface BeatSyncRequest {
-    video_path:  string
-    audio_path:  string
-    sensitivity?: number
-  }
-  export interface BeatSyncResponse {
-    task_id:     string
-    beat_points: number[]
-    cuesheet:    Array<{ cut_at: number; duration: number }>
-  }
-  export interface ConcatRequest {
-    paths:       string[]
-    output_path?: string
-    transition?: 'none' | 'fade' | 'dissolve'
-  }
-  export type ConcatResponse = { task_id: string; output_path: string; duration_s: number }
-}
+// M6/M8 条目⑥⑦：MontageAPI 命名空间原样迁至 ./server-api-montage（IRON-02 拆分，
+// server-api.ts 收敛回 800 行内）；原位 re-export 保持既有引用路径不变。
+export { MontageAPI } from './server-api-montage'
 
 export namespace VSRAPI {
   // V3 S2 POST /vsr/enhance
@@ -504,12 +497,22 @@ export namespace VSRAPI {
     task_id:               string
     estimated_wait_sec:    number
   }
+  // M4 对齐 openapi Contract.Body_remove_subtitle_vsr_remove_post（POST /vsr/remove，
+  // multipart）：video 为本地路径（主进程按字段名 file 读文件上传）；sub_areas 为
+  // JSON 字符串——''=智能识别，[[ymin,ymax,xmin,xmax],...]=矩形（相对坐标），
+  // [[[x,y]×4],...]=多边形（相对坐标）；mode 缺省由服务端按 sub_areas 推断。
   export interface RemoveRequest {
-    video:                 Blob
-    mode?:                 'watermark' | 'subtitle' | 'both'
-    bboxes?:               Array<[number, number, number, number]>  // 水印区域（可选，否则自动识别）
+    video:                string
+    inpaint_mode?:        'sttn_det' | 'sttn_auto' | 'lama' | 'propainter' | 'diffuseraser' | string
+    sub_areas?:           string
+    mode?:                'auto' | 'manual' | ''
+    purpose?:             'subtitle' | 'watermark' | ''
+    watermark_text?:      string
+    mask_dilate?:         number        // 0~51，-1=使用服务端配置
+    mask_expand_y?:       number        // 0~100，-1=使用服务端配置
+    sttn_max_load_num?:   number        // 1~300
   }
-  export type RemoveResponse = { task_id: string; estimated_wait_sec: number }
+  export type RemoveResponse = { task_id: string; [extra: string]: unknown }
 }
 
 export namespace RembgAPI {
@@ -563,6 +566,18 @@ export namespace AgentAPI {
   // S1 GET /agent/registry
   export type RegistryResponse = CapabilityRegistryItem[]
 
+  // GET /agent/agents — 智能体列表（工作台快捷条/斜杠菜单数据源；
+  // 响应自由格式：兼容 {agents:[…]} 与裸数组；exposed=False 由渲染层过滤）
+  export interface AgentsItem {
+    agent_id: string
+    name?: string
+    version?: string
+    exposed?: boolean
+    desc?: string
+    description?: string
+  }
+  export type AgentsResponse = { agents?: AgentsItem[] } | AgentsItem[]
+
   // S2 POST /agent/tasks — 提交编排计划
   export interface SubmitTaskRequest {
     plan_id?:          string
@@ -607,6 +622,79 @@ export namespace AgentAPI {
     metadata?:    Record<string, any>
   }
   export type RegisterArtifactResponse = ArtifactItem
+
+  // ── 工作台 AI 对话真实链路（P1，契约核对自 openapi-latest.json /agent/*）──
+
+  /** POST /agent/chat 请求（JSON 分支；stream=false，max_rounds 服务端循环轮数） */
+  export interface ChatRequest {
+    message:              string
+    /** OpenAI 风格历史（不含本轮 message，客户端 trimHistory 后传入） */
+    history?:             Array<{ role: 'user' | 'assistant'; content: string }>
+    agent_id?:            string
+    model?:               string
+    max_rounds?:          number
+    /** 'plan' = 转编排任务：先拆 plan 交 S2 编排执行，响应含 task_id */
+    mode?:                'plan' | 'chat'
+    /** 传则续接服务端持久化会话（素材池自动注入）；不传则新建并回显 */
+    session_id?:          string
+    /** 多租户隔离（主进程 getMachineId 注入 body，与 X-Machine-ID 头同值） */
+    machine_id?:          string
+    stream?:              boolean
+  }
+
+  /** 渲染层 → IPC 的 chat 请求（camelCase；agent-chat-ipc 负责映射上表 snake 契约字段） */
+  export interface ChatIpcRequest {
+    message:              string
+    history?:             ChatRequest['history']
+    model?:               string
+    /** 轻量建会话用 1（原版 create_session 口径）；缺省主进程补 3 */
+    maxRounds?:           number
+    mode?:                'plan'
+    sessionId?:           string
+  }
+  /** POST /agent/chat 响应 */
+  export interface ChatResponse {
+    reply:                string
+    session_id?:          string
+    /** mode=plan 时返回（编排任务 id，供编排任务页轮询） */
+    task_id?:             string
+    attachments?:         any[]
+    tool_calls?:          any[]
+  }
+
+  /** GET /agent/sessions 条目（machine_id 隔离） */
+  export interface SessionItem {
+    session_id:  string
+    title?:      string
+    updated_at?: string
+    created_at?: string
+    [k: string]: any
+  }
+  /** GET /agent/sessions?machine_id=&limit= 响应 */
+  export interface SessionsResponse {
+    sessions?:    SessionItem[]
+    /** 兼容数组直返形态 */
+    items?:       SessionItem[]
+  }
+
+  /** GET/POST /agent/sessions/{id}/attachments 条目（会话素材池） */
+  export interface SessionAttachment {
+    name:         string
+    file_ref:     string
+    media_type?:  string
+    source?:      string
+    added_at?:    string
+  }
+  /** GET /agent/sessions/{id}/attachments 响应 */
+  export interface SessionAttachmentsResponse {
+    attachments:  SessionAttachment[]
+  }
+  /** POST /agent/sessions/{id}/attachments 响应（multipart：file | material_id） */
+  export interface SessionAttachmentAddResponse {
+    attachment?:  SessionAttachment
+    item?:        SessionAttachment
+    attachments?: SessionAttachment[]
+  }
 }
 
 export namespace TasksAPI {

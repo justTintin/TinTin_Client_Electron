@@ -129,25 +129,37 @@ export const useServerStore = defineStore('server', () => {
 
   /**
    * 拉取服务端能力清单（V3 PRD S4 /health/capabilities）。
+   * 在线判定单一真相源：与设置区「测试连接」同一 IPC 通道 env:serverPing
+   * （主进程 pingServer(getServerUrl())，地址每次实时读 electron-store 'server.url'），
+   * 保证保存地址/测试连接后标题栏状态胶囊与设置区判定一致。
+   * /health/capabilities 降级为能力数据填充：不可达/异常只清能力表，不改变在线态。
    * 服务端不可达 / window.tintin 未就绪 → 静默置 offline，不抛错。
    */
   async function checkCapabilities(): Promise<void> {
     status.value = 'checking'
     try {
-      if (!window.tintin?.server?.healthCapabilities) {
-        status.value = 'offline'
-        return
-      }
-      const resp = await window.tintin.server.healthCapabilities()
-      // resp 可能是 null（离线态）或 { error }（业务错误）或正常响应
-      if (!resp || (resp as any)?.error) {
+      // 无 env 桥（纯浏览器预览）→ 回退按 healthCapabilities 判定（原行为）
+      const ping = await (window as any).tintin?.env?.serverPing?.()
+      if (ping && ping.online === false) {
         _applyCapabilitiesResponse(undefined)
         status.value = 'offline'
         return
       }
-      _applyCapabilitiesResponse(resp as HealthAPI.CapabilitiesResponse)
+      let capsOk = false
+      if (window.tintin?.server?.healthCapabilities) {
+        try {
+          const resp = await window.tintin.server.healthCapabilities()
+          // resp 可能是 null（离线态）或 { error }（业务错误）或正常响应
+          if (resp && !(resp as any)?.error) {
+            _applyCapabilitiesResponse(resp as HealthAPI.CapabilitiesResponse)
+            capsOk = true
+          }
+        } catch (_err) { /* 能力拉取失败不影响在线态 */ }
+      }
+      if (!capsOk) _applyCapabilitiesResponse(undefined)
       status.value = 'online'
     } catch (_err) {
+      _applyCapabilitiesResponse(undefined)
       status.value = 'offline'
     }
   }

@@ -4,10 +4,21 @@
 // 图层编辑：背景 / 商品图 / 文本 / Logo → 选择尺寸与数量
 // → POST /workflow/run（封面工作流 JSON）→ SSE 流式进度
 // → 结果画廊，逐张下载
+// 契约核对 2026-08-29：openapi-latest.json 无 /workflow/run 端点（相近端点：
+//   /workflows/{workflow_id}/run 为 multipart 路径式、/workflow/execute 为
+//   引擎级 multipart 执行，均非当前 JSON 提交形态）→ 契约缺失，保留现有
+//   提交结构，待服务端核对后对齐（docs BUSINESS_ALIGNMENT M5 行已登记）。
+// M5 增量（用户裁决：接受服务端模板渲染链路，补模板选择 + AI 文案参数）：
+//   · 封面模板（可选）：openapi 契约无封面模板列表接口 → 暂手动输入模板标识
+//     （对齐 CoverRequest.template），契约补充后改下拉/网格，见 cover-workflow-logic.ts
+//   · AI 文案：封面参考文案（对齐原版 copy_input）→ 服务端 LLM（llm:chat，
+//     契约存在）提炼标题/副标题 → 填 aiTitle/aiSubtitle → 随提交透传 title。
+// 提交参数编组/文案解析在 cover-workflow-logic.ts（纯函数可单测）。
 // ═══════════════════════════════════════════════════════════════
 import { ref, computed, onBeforeUnmount } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
+import { buildCoverWorkflow, parseAiCopyJson } from './cover-workflow-logic'
 
 type SizeRatio = '1:1' | '9:16' | '16:9'
 
@@ -43,6 +54,12 @@ const { filePath: productPath, fileName: productName } = product  // 商品图
 const textContent = ref('')           // 文本内容
 const { filePath: logoPath, fileName: logoName } = logo            // Logo
 
+// ── M5：模板与 AI 文案参数 ──
+const templateId = ref('')            // 封面模板标识（可选，契约无列表接口暂手动填写）
+const copyText = ref('')              // 封面参考文案（原版 copy_input，AI 提炼标题/副标题用）
+const aiTitle = ref('')               // AI 建议/手动填写的标题（随提交透传 title）
+const aiSubtitle = ref('')            // AI 建议的副标题（可编辑，辅助文案）
+
 // ── 参数 ──
 const size = ref<SizeRatio>('1:1')
 const count = ref<number>(4)
@@ -50,6 +67,7 @@ const count = ref<number>(4)
 // ── 运行状态 ──
 const runId = ref('')
 const isProcessing = ref(false)
+const aiGenerating = ref(false)
 const progress = ref(0)
 const statusText = ref('')
 const errorMsg = ref('')
@@ -75,18 +93,65 @@ async function pickLogo() { await logo.pickFile() }
 
 const resolveSrc = product.resolveSrc
 
-/** 构建封面工作流 JSON */
+/** 构建封面工作流 JSON（纯函数在 cover-workflow-logic.ts） */
 function buildWorkflow(): Record<string, unknown> {
-  return {
-    type: 'cover',
+  return buildCoverWorkflow({
     size: size.value,
     count: count.value,
-    layers: {
-      background: bgTransparent.value ? { transparent: true } : { color: bgColor.value },
-      product: productPath.value ? { file: productPath.value } : null,
-      text: textContent.value ? { content: textContent.value } : null,
-      logo: logoPath.value ? { file: logoPath.value } : null
+    bgColor: bgColor.value,
+    bgTransparent: bgTransparent.value,
+    productPath: productPath.value,
+    textContent: textContent.value,
+    logoPath: logoPath.value,
+    template: templateId.value,
+    title: aiTitle.value
+  })
+}
+
+/**
+ * M5 AI 文案：封面参考文案 → 服务端 LLM（llm:chat，契约存在）提炼
+ * 标题/副标题（对齐原版 _ai_suggest + CoverTextAIWorker：sys prompt 只输出
+ * JSON {"title","subtitle"}，temperature=0.6）。
+ */
+const AI_COPY_SYSTEM_PROMPT =
+  '你是短视频封面文案专家。根据提供的文案提炼封面用的【标题】与【副标题】：' +
+  '标题≤10字、强冲击；副标题≤16字、补充信息。只输出 JSON：{"title": "...", "subtitle": "..."}，不要多余内容。'
+
+async function aiSuggestCopy() {
+  const src = copyText.value.trim()
+  if (!src || isProcessing.value || aiGenerating.value) return
+  aiGenerating.value = true
+  errorMsg.value = ''
+  statusText.value = 'AI 建议中…'
+  try {
+    const t = window.tintin.server
+    if (!t?.llmChat) throw new Error('服务端 LLM 不可用')
+    const r = await t.llmChat({
+      model: '',
+      messages: [
+        { role: 'system', content: AI_COPY_SYSTEM_PROMPT },
+        { role: 'user', content: `文案：\n${src}` }
+      ],
+      temperature: 0.6
+    })
+    if (r === null || r === undefined) throw new Error('服务端离线或未返回内容')
+    if ('error' in r && r.error) throw new Error(String(r.error))
+    const content = String(r?.choices?.[0]?.message?.content || '')
+    const parsed = parseAiCopyJson(content)
+    if (parsed) {
+      aiTitle.value = parsed.title
+      aiSubtitle.value = parsed.subtitle
+      statusText.value = '已生成标题/副标题，可修改后生成'
+    } else {
+      aiTitle.value = content.slice(0, 20) // 原版 safe_json_parse 失败 → 整段截断作标题
+      aiSubtitle.value = ''
+      statusText.value = 'AI 返回无法解析，已截断填入标题'
     }
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+    statusText.value = '失败'
+  } finally {
+    aiGenerating.value = false
   }
 }
 
@@ -273,6 +338,62 @@ onBeforeUnmount(() => destroySse())
       </div>
     </div>
 
+    <!-- M5：模板与 AI 文案参数（保持服务端模板渲染链路，不引入画布编辑器） -->
+    <div class="form-grid">
+      <div class="form-field">
+        <label class="form-label">封面模板（可选）</label>
+        <input
+          v-model="templateId"
+          type="text"
+          class="text-input"
+          placeholder="模板标识（模板库列表接口契约未就绪，暂手动填写）"
+          :disabled="isProcessing"
+        />
+      </div>
+      <div class="form-field">
+        <label class="form-label">封面标题（随提交透传 title）</label>
+        <input
+          v-model="aiTitle"
+          type="text"
+          class="text-input"
+          placeholder="AI 建议或手动填写"
+          :disabled="isProcessing"
+        />
+      </div>
+    </div>
+
+    <!-- M5：AI 文案生成（封面参考文案 → 服务端 LLM 提炼标题/副标题，对齐原版 _ai_suggest） -->
+    <div class="layer">
+      <div class="layer__head">
+        <span class="layer__title">封面文案（AI 提炼标题/副标题）</span>
+      </div>
+      <textarea
+        v-model="copyText"
+        class="text-area"
+        rows="2"
+        placeholder="粘贴商品卖点/脚本文案，AI 据此生成标题与副标题（可选）"
+        :disabled="isProcessing || aiGenerating"
+      />
+      <div class="layer__row">
+        <input
+          v-model="aiSubtitle"
+          type="text"
+          class="text-input"
+          placeholder="副标题（AI 生成或手动填写）"
+          :disabled="isProcessing || aiGenerating"
+        />
+        <TButton
+          label="AI 建议标题/副标题"
+          icon="edit"
+          size="small"
+          variant="secondary"
+          :loading="aiGenerating"
+          :disabled="isProcessing || !copyText.trim()"
+          @click="aiSuggestCopy"
+        />
+      </div>
+    </div>
+
     <!-- 操作区 -->
     <div class="action-row">
       <TButton
@@ -343,6 +464,16 @@ onBeforeUnmount(() => destroySse())
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+/* M5：AI 文案行（副标题输入 + 建议按钮 水平排列） */
+.layer__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.layer__row .text-input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .layer__title {
   font-size: var(--font-size-body);

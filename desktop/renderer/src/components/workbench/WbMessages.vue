@@ -1,20 +1,76 @@
 <script setup lang="ts">
 // WbMessages.vue — 工作台聊天消息主区（纯展示）
 // 结构：小屏汉堡按钮 / 消息流（用户/AI 消息与脚本镜头卡片）
+//   · W8：AI 回复含成片视频资产（m.video）→ 气泡内视频卡片（播放/下载）；
+//         播放=主窗口内 HTML5 <video> 弹窗（复用 VideoPreview，src 直连服务端 URL）；
+//         下载=事件转发容器 → chat.downloadVideoAsset（业务在 composable）。
+//   · W9：AI 气泡 hover 显示图标操作栏（引用 / 重新生成[仅最后一条 AI 回复]），
+//         仅绘制 + 事件转发。
 // messageListRef 在本组件内部自持：「发送后 nextTick 滚动」经容器桥接到 expose 的
 // scrollToBottom，「初始滚动」由本组件 onMounted 完成——与原容器 onMounted 时机等价。
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import type { ChatMessage } from '@/composables/useWorkbenchChat'
+import type { VideoAsset } from '@/composables/workbenchChatLogic'
+import { detectChatAssets } from '@/composables/workbenchChatLogic'
+import VideoPreview from '@/components/common/VideoPreview.vue'
 
-defineProps<{
+const props = defineProps<{
   messages: ChatMessage[]
+  /** 会话无可导出内容（无用户消息）→ 导出按钮禁用（PRD E1） */
+  exportDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'toggle-sidebar'): void
+  (e: 'quote-message', id: string): void
+  (e: 'regenerate-message', id: string): void
+  (e: 'download-video', asset: VideoAsset): void
+  (e: 'export-word'): void
+  (e: 'export-excel'): void
+  (e: 'assets-ready', id: string): void
+  (e: 'preview-assets', id: string): void
 }>()
 
 const listRef = ref<HTMLDivElement | null>(null)
+
+/** 重新生成仅对最后一条 AI 回复提供（对齐 W9 口径；语义为替换该轮回答） */
+const lastAiId = computed(() => {
+  const msgs = props.messages
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'ai' && !msgs[i].status) return msgs[i].id
+  }
+  return ''
+})
+
+/* ── W10：对话资产识别 → 气泡「预览」图标 + 资产出现自动展开 ── */
+
+/** 含可预览资产的 AI 消息 id 集合（「预览」图标显示条件；detectChatAssets 无资产不显示） */
+const assetMessageIds = computed(() => {
+  const ids = new Set<string>()
+  for (const m of props.messages) {
+    if (m.role === 'ai' && !m.status && detectChatAssets(m.content).length) ids.add(m.id)
+  }
+  return ids
+})
+
+/** 最后一条含资产的 AI 气泡出现/内容更新（新回复到达、重新生成、切换会话）→ 通知容器自动展开 */
+let lastAssetEmitted = { id: '', content: '' }
+watch(lastAiId, (id) => {
+  if (!id) return
+  const m = props.messages.find((x) => x.id === id)
+  if (!m || !detectChatAssets(m.content).length) return
+  if (lastAssetEmitted.id === id && lastAssetEmitted.content === m.content) return
+  lastAssetEmitted = { id, content: m.content }
+  emit('assets-ready', id)
+})
+
+// 成片视频播放弹窗（主窗口内 <video>，src 直连服务端 URL；失败由 VideoPreview 错误态兜底）
+const playSrc = ref('')
+const playVisible = ref(false)
+function playVideo(url: string) {
+  playSrc.value = url
+  playVisible.value = true
+}
 
 /** 原 Workbench 内 scrollToBottom 实现，逐字等价（nextTick 包裹 + scrollTop 置底） */
 function scrollToBottom() {
@@ -51,7 +107,7 @@ defineExpose({ scrollToBottom })
           class="message-row"
           :class="m.role"
         >
-          <div class="message" :class="m.role">
+          <div class="message" :class="[m.role, m.status]">
             <p>{{ m.content }}</p>
             <!-- 脚本镜头卡片（AI 消息附带） -->
             <div v-if="m.shots?.length" class="shots-card">
@@ -63,11 +119,77 @@ defineExpose({ scrollToBottom })
                 <div class="shot-desc">{{ shot.desc }}</div>
               </template>
             </div>
+            <!-- W8 成片视频资产卡片（回复含视频地址时挂播放/下载，原版 set_asset_actions） -->
+            <div v-if="m.video" class="video-card">
+              <span class="video-title">
+                {{ m.video.taskId ? `成片（任务 #${m.video.taskId}）` : '成片视频' }}
+              </span>
+              <button class="video-btn" title="播放对话生成的成片视频" @click="playVideo(m.video.url)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3" /></svg>
+                播放
+              </button>
+              <button class="video-btn" title="把成片保存到本地文件" @click="emit('download-video', m.video)">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                下载
+              </button>
+            </div>
+            <!-- W9 消息操作栏（AI 气泡 hover 显示）：引用 / 重新生成（仅最后一条 AI 回复）+
+                 办公能力：导出当前会话全部消息为 Word/Excel（PRD §3.1，空会话禁用 E1） -->
+            <div v-if="m.role === 'ai' && !m.status" class="msg-actions">
+              <!-- W10 对话资产预览（detectChatAssets 有资产时显示；点击 → 容器检测资产并展开右侧面板） -->
+              <button
+                v-if="assetMessageIds.has(m.id)"
+                class="act-btn"
+                title="在右侧预览本条回复中的资产（代码/文案/表格）"
+                @click="emit('preview-assets', m.id)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                预览
+              </button>
+              <button
+                class="act-btn"
+                title="把本条回复引用到输入框，补充指令后再发送"
+                @click="emit('quote-message', m.id)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 7H6a3 3 0 0 0-3 3v5a3 3 0 0 0 3 3h1v-3H6v-2h4V7zm10 0h-4a3 3 0 0 0-3 3v5a3 3 0 0 0 3 3h1v-3h-1v-2h4V7z" /></svg>
+                引用
+              </button>
+              <button
+                v-if="m.id === lastAiId"
+                class="act-btn"
+                title="用上一条问题重新生成回答（新回复替换本条）"
+                @click="emit('regenerate-message', m.id)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
+                重新生成
+              </button>
+              <button
+                class="act-btn"
+                title="导出当前会话全部消息为 Word 文档"
+                :disabled="exportDisabled"
+                @click="emit('export-word')"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><text x="9" y="19" font-size="9" font-weight="bold" fill="currentColor">W</text></svg>
+                导出 Word
+              </button>
+              <button
+                class="act-btn"
+                title="导出当前会话全部消息为 Excel 摘要表"
+                :disabled="exportDisabled"
+                @click="emit('export-excel')"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="4" x2="9" y2="20" /><line x1="15" y1="4" x2="15" y2="20" /><text x="5.5" y="18" font-size="6" fill="currentColor">XLS</text></svg>
+                导出 Excel
+              </button>
+            </div>
           </div>
         </div>
       </div>
     </div>
   </main>
+
+  <!-- W8 成片视频播放弹窗（主窗口内 HTML5 <video>，复用 VideoPreview） -->
+  <VideoPreview :visible="playVisible" :src="playSrc" @close="playVisible = false" />
 </template>
 
 <style scoped>
@@ -134,6 +256,17 @@ defineExpose({ scrollToBottom })
   margin: 0;
 }
 
+/* 「思考中…」占位 / 失败提示气泡（ChatMessage.status） */
+.message.pending {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.message.error {
+  border-color: var(--destructive, #e5484d);
+  color: var(--destructive, #e5484d);
+}
+
 /* 脚本镜头卡片 */
 .shots-card {
   margin-top: var(--space-3);
@@ -164,6 +297,87 @@ defineExpose({ scrollToBottom })
 
 .shot-desc {
   font-size: var(--font-size-body);
+  color: var(--muted-foreground);
+}
+
+/* W8 成片视频资产卡片（原版 set_asset_actions：气泡内容下方挂播放/下载） */
+.video-card {
+  margin-top: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container);
+}
+
+.video-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--font-size-caption);
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted-foreground);
+  transition: all var(--duration-fast);
+}
+
+.video-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* W9 消息操作栏：AI 气泡 hover 显示（图标按钮，原版操作栏 hover 化） */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: var(--space-2);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--easing-default);
+}
+
+.message.ai:hover .msg-actions {
+  opacity: 1;
+}
+
+.act-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: var(--radius-md);
+  color: var(--muted-foreground);
+  transition: all var(--duration-fast);
+}
+
+.act-btn:hover {
+  background: var(--surface-container-high);
+  color: var(--foreground);
+}
+
+.act-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent;
   color: var(--muted-foreground);
 }
 

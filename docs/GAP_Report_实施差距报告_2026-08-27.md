@@ -118,5 +118,67 @@
 - 每页实现均须通过：门禁（node --check + typecheck + 零残留）→ dev 环境手动验收（对照原客户端 `studio/gui` 对应 .py 行为逐项核对）→ 打包产物更新验证 → IRON-09 提交
 - 四页为「核心链路」，须按 IRON-04 同步补单元测试（先红后绿）
 
+## 六、服务端配置业务对齐（2026-08-28 用户裁决）
+
+### 6.1 错误现状（裁决前）
+
+此前移植时错误地把 LLM 做成了客户端凭证形态，偏离原客户端业务模型：
+
+1. 设置页展示 Provider / API Key（服务端脱敏回显）/ Base URL 只读字段，并有独立「LLM 测试连接」（`llm:chat` 发 `ping` 消息探测）
+2. IPC 链路存在 `llm:providers`（GET /llm/providers）专门用于凭证回显
+3. 设置页分段「LLM 设置 / 服务接入」割裂；「服务接入」内同时存在「本地服务端」与「服务端地址」两个概念
+4. `getServerUrl` 实际从未读取 electron-store `'server.url'`（`setConfigStore` 注入后成死代码），设置页保存服务端地址后并不生效——保存 → 联动链路断裂
+
+### 6.2 原客户端流程（证据）
+
+原客户端（`D:\Project\TinTin_AI_Agent_Main\studio\gui`）只有一个统一服务端地址，配置后联动各功能服务地址：
+
+- `main_window_aiconfig.py` L26-L53：`_collect_all_config_from_ui` 统一收集 `compute_server_url`（L50-L52「统一服务端地址」）与各功能地址（Whisper/CLIP/OCR/VoxCPM）
+- `main_window_aiconfig.py` L89-L115：`_on_server_url_changed` 服务端地址变更即时联动各 Tab（视觉/Whisper/CLIP/OCR 直接同步，VoxCPM 追加 `/voxcpm/tts` 后缀）
+- `main_window_pages.py` L670-L739：「模型配置」页顶部「服务端地址（统一配置）」输入 + 「保存全部」；LLM 分组内 `llm_api_key_input` 已 `setVisible(False)` 隐藏（L724-L726 注释：API Key 已隐藏，保留属性避免保存/测试代码崩溃）——即原客户端就不在客户端展示 API Key
+- 模型列表从服务端拉取
+
+### 6.3 整改后流程（本次落地）
+
+1. **唯一统一服务端地址**：electron-store `'server.url'` 单一键（经 IPC 持久化）；保存后主进程 `getServerUrl` 立即生效（`httpRequest` / `env:serverPing` 均经它）→ 自动 ping 总连通 + 从服务端拉取模型列表（GET /llm/models）
+2. **删除 Provider/API Key/URL UI 与 IPC**：`llm:providers` 通道（handler / preload 方法 / 类型声明）全部移除；LLM 凭证由服务端持有，客户端只选模型
+3. **取消独立「LLM 测试连接」，改为按功能分别测试**（端点全部核对自根目录 openapi-latest.json，无臆造）：
+
+| 功能 | 端点 | 判定 |
+|---|---|---|
+| LLM · 模型列表 | GET /llm/models | 2xx 且 `models` 数组非空；顺带刷新下拉数据源 |
+| OCR · 文字识别 | POST /material/ocr | 该域无健康端点：发最小空请求，服务端校验响应（4xx）= 端点可达 |
+| 向量 · 图文检索 | GET /clip/health | 2xx |
+| TTS · 语音合成 | GET /voxcpm/health | 2xx |
+| ASR · 语音识别 | GET /whisper/health | 2xx |
+
+   离线（ECONNREFUSED 等）由主进程按既有约定静默返回 null 判失败；每项支持单独测试 + 「全部测试」并行；总连通测试 = `env:serverPing`（GET /health，含延迟）
+4. **不动的部分**：inference-router 本地推理/回退逻辑、CardA2Inference.vue（核查确认其无独立服务端地址输入，无 server.url 重复）
+
+### 6.4 改动文件清单
+
+| 文件 | 改动 |
+|---|---|
+| [desktop/main/server-proxy.js](../desktop/main/server-proxy.js) | 移除 `llm:providers` handler 与 `API_ENDPOINTS.llm.providers`；`getServerUrl` 打通 electron-store `'server.url'` 优先读取（修复 setConfigStore 注入死代码，`_configStore` 声明前移） |
+| [desktop/preload/preload.js](../desktop/preload/preload.js) | 删 `llmProviders` 方法 |
+| [desktop/types/global.d.ts](../desktop/types/global.d.ts) | 删 `llmProviders` 声明 |
+| [desktop/renderer/src/composables/useSettingsGeneral.ts](../desktop/renderer/src/composables/useSettingsGeneral.ts) | 删 provider 脱敏展示与 `llm:providers` 调用、删独立 `testLlm`；新增 `perFunctionTest()` / `testFunction()` 与 `funcResults`；`fetchLlm` 拆出 `applyModels`（保存地址成功后自动拉取模型列表） |
+| [desktop/renderer/src/components/settings/CardPlatform.vue](../desktop/renderer/src/components/settings/CardPlatform.vue) | 改造为「服务端」卡：单一地址输入 + 显式保存 + 总连通测试 + 按功能测试（行内结果点与文案）；「模型」分页仅模型下拉/联网搜索/保存 |
+| [desktop/renderer/src/views/Settings.vue](../desktop/renderer/src/views/Settings.vue) | 容器接线同步（删 provider 系 props 与 `@test-llm`；接 `@test-func` / `@test-funcs-all`）；侧栏菜单 desc 更新为「服务端 · 模型」 |
+| [desktop/tests/server-proxy-serverurl.test.mjs](../desktop/tests/server-proxy-serverurl.test.mjs) | 新增 3 项单测（先红后绿）：getServerUrl store 优先 / 无 store 回退 / providers 端点废弃 |
+
+> 说明：`desktop/types/server-api.ts` 的 `LlmProvider` / `LlmProvidersResponse` 与 `api-contract.generated.ts` 的 `/llm/providers` 为**服务端 API 契约定义**（服务端 openapi 实有该端点），非客户端死引用，按契约层保留不删。
+
+### 6.5 门禁记录（2026-08-28）
+
+| # | 门禁 | 结果 |
+|---|---|---|
+| 1 | `node --check` main/server-proxy.js + preload/preload.js | ✅ 通过 |
+| 2 | `npm run typecheck` | ✅ 通过 |
+| 3 | `node --test tests/*.test.mjs`（原 22 + 新增 3） | ✅ 25/25 |
+| 4 | 单文件行数 ≤800（最大 server-proxy.js 724） | ✅ 通过 |
+| 5 | 零残留 Grep（llm:providers / llmProviders / apiKey / testingLlm / test-llm 等） | ✅ 仅测试文件 2 处「已废弃」断言说明（防回归注释，非死引用） |
+| 6 | `npm run build:renderer` | ✅ 通过（2.12s） |
+
 ---
 *报告基于 2026-08-27 代码库实际状态核实生成；浏览器章节证据：commit 9d2bd9c / daff559 / 840cf7f / edf2a93。*

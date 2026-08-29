@@ -102,6 +102,20 @@ const server = {
   agentTaskAction:       (params)  => ipcRenderer.invoke('agent:taskAction', params),
   agentRegisterArtifact: (payload) => ipcRenderer.invoke('agent:registerArtifact', payload),
 
+  // ---------- agent chat（工作台 AI 对话真实链路 P1）----------
+  // GET /agent/agents（智能体列表；工作台快捷条/斜杠菜单数据源）
+  agentAgents:                  ()        => ipcRenderer.invoke('agent:agents'),
+  // POST /agent/chat（max_rounds=3、stream:false；sessionId=服务端会话续接）
+  agentChat:                    (payload) => ipcRenderer.invoke('agent:chat', payload),
+  // 服务端会话列表（machine_id 隔离）
+  agentSessions:                (params)  => ipcRenderer.invoke('agent:sessions', params),
+  // 删除服务端会话（素材池一并清理）
+  agentSessionDelete:           (id)      => ipcRenderer.invoke('agent:sessionDelete', { id }),
+  // 会话素材池列表 / 入池（filePath=本地附件 | materialId=素材库引用）/ 移除
+  agentSessionAttachments:      (id)      => ipcRenderer.invoke('agent:sessionAttachments', { id }),
+  agentSessionAttachmentAdd:    (p, onProgress) => _withUploadProgress(onProgress, 'agent:sessionAttachmentAdd', p),
+  agentSessionAttachmentRemove: (id, key) => ipcRenderer.invoke('agent:sessionAttachmentRemove', { id, key }),
+
   // ---------- scheduled（P2 本地定时任务，schtasks）----------
   scheduledList:   () => ipcRenderer.invoke('scheduled:list'),
   scheduledCreate: (payload) => ipcRenderer.invoke('scheduled:create', payload),
@@ -154,19 +168,21 @@ const server = {
   // ---------- llm ----------
   llmChat:               (payload) => ipcRenderer.invoke('llm:chat', payload),
   llmAdjustCopywriting:  (payload) => ipcRenderer.invoke('llm:adjustCopywriting', payload),
-  // 设置页 LLM 对接（P5）：模型列表 / Provider 配置回显（Key 脱敏，服务端管理）
+  // 设置页 LLM 对接（P5）：模型列表（服务端持有凭证，用户裁决 2026-08-28 废弃 Provider 回显）
   llmModels:             () => ipcRenderer.invoke('llm:models'),
-  llmProviders:          () => ipcRenderer.invoke('llm:providers'),
 
   // ---------- material ----------
   materialList:       (params)  => ipcRenderer.invoke('material:list', params),
   materialStockSearch:(payload) => ipcRenderer.invoke('material:stockSearch', payload),
   materialOcr:        (p, onProgress) => _withUploadProgress(onProgress, 'material:ocr', p),
 
-  // ---------- montage ----------
+  // ---------- montage / audio / prompt（M6/M8 条目⑥⑦ 服务端链路）----------
   montageSplit:    (p, onProgress) => _withUploadProgress(onProgress, 'montage:split', p),
-  montageConcat:   (payload) => ipcRenderer.invoke('montage:concat', payload),
-  montageBeatSync: (payload) => ipcRenderer.invoke('montage:beatSync', payload),
+  montageConcat:   (p, onProgress) => _withUploadProgress(onProgress, 'montage:concat', p),
+  montageBeat:     (p, onProgress) => _withUploadProgress(onProgress, 'montage:beat', p),
+  montageBgm:      (p, onProgress) => _withUploadProgress(onProgress, 'montage:bgm', p),
+  audioBeatmap:    (p, onProgress) => _withUploadProgress(onProgress, 'audio:beatmap', p),
+  promptVideo:     (p, onProgress) => _withUploadProgress(onProgress, 'prompt:video', p),
 
   // ---------- storyboard ----------
   storyboardListScripts: (params)  => ipcRenderer.invoke('storyboard:listScripts', params),
@@ -206,6 +222,19 @@ const config = {
     ipcRenderer.invoke('config:get', key, defaultValue).then(r => r?.success ? r.data : defaultValue),
   set: (keyOrObject, value) =>
     ipcRenderer.invoke('config:set', keyOrObject, value).then(r => r?.success ? true : false),
+}
+
+// ── D4：浏览器域独立窗口（browserWindow:open —— 主窗口按钮 / hotspot 到点打开）──
+const browserWindow = {
+  open: (opts) => ipcRenderer.invoke('browserWindow:open', opts),
+}
+
+// ── 办公能力集成（office:* 主进程 handler，PRD §4.2；浏览器窗口同通道复用）──
+const office = {
+  saveFile: (payload) => ipcRenderer.invoke('office:saveFile', payload),
+  openPath: (filePath) => ipcRenderer.invoke('office:openPath', filePath),
+  previewDocx: (filePath) => ipcRenderer.invoke('office:previewDocx', filePath),
+  readXlsx: (filePath) => ipcRenderer.invoke('office:readXlsx', filePath),
 }
 
 // ── P1.5 厚壳化：win:* 5 条（自绘标题栏 + 窗口状态存取，§1.3.1 A3）──
@@ -425,6 +454,34 @@ const env = {
   serverPing:    ()      => ipcRenderer.invoke('env:serverPing'),
   restartService:()      => ipcRenderer.invoke('env:restartService'),
   clearCache:    ()      => ipcRenderer.invoke('env:clearCache'),
+  // 条目⑪ 环境检测（口径重定义）：服务端连通 + 本地资源（ffmpeg/磁盘/os/cpu/ram）
+  detectEnv:     ()      => ipcRenderer.invoke('env:detectEnv'),
+  // 日志区块（对齐原客户端日志查看页）：文件列表 + 打开单个日志文件
+  logList:       ()      => ipcRenderer.invoke('env:logList'),
+  openLog:       (name)  => ipcRenderer.invoke('env:openLog', name),
+  // 关于卡·本机机器码（原始系统信息，渲染层 SHA256 摘要）
+  getMachineInfo:()      => ipcRenderer.invoke('env:getMachineInfo'),
+}
+
+// ── feishu：飞书连接测试（条目⑩ S6；凭据补全在主进程，明文不出展示层）──
+const feishu = {
+  testConn: (payload) => ipcRenderer.invoke('feishu:testConn', payload),
+}
+
+// ── S8 平台接入（数字人/ComfyUI/RunningHub 配置+测试，platform-ipc.js）──
+const platform = {
+  getConfig: () => ipcRenderer.invoke('platform:getConfig'),
+  saveComfyui: (payload) => ipcRenderer.invoke('platform:saveComfyui', payload),
+  saveRunninghub: (payload) => ipcRenderer.invoke('platform:saveRunninghub', payload),
+  saveDigitalHuman: (payload) => ipcRenderer.invoke('platform:saveDigitalHuman', payload),
+  testComfyui: () => ipcRenderer.invoke('platform:testComfyui'),
+  testRunninghub: () => ipcRenderer.invoke('platform:testRunninghub'),
+}
+
+// ── S9 系统与运行：自启动开关（app.setLoginItemSettings，与托盘同通道一致）──
+const system = {
+  getAutoStart: () => ipcRenderer.invoke('system:getAutoStart'),
+  setAutoStart: (enabled) => ipcRenderer.invoke('system:setAutoStart', enabled),
 }
 
 // ── 历史面板（独立子窗口，浮于 BrowserView 之上）──
@@ -443,6 +500,16 @@ const history = {
   },
 }
 
+// ── W11：客户端任务活动订阅（client-task-thread.js 推送任务完成事件，
+//     工作台任务队列订阅后实时刷新，补充 30s 轮询）──
+const clientTasks = {
+  onActivity: (cb) => {
+    const handler = (_e, payload) => cb(payload)
+    ipcRenderer.on('client-task:activity', handler)
+    return () => ipcRenderer.removeListener('client-task:activity', handler)
+  },
+}
+
 // ── 暴露到渲染进程（window.tintin）──
 contextBridge.exposeInMainWorld('tintin', {
   app,
@@ -456,16 +523,27 @@ contextBridge.exposeInMainWorld('tintin', {
   // P1.5 厚壳化
   win,
   browser,
+  // D4：浏览器域独立窗口
+  browserWindow,
+  // 办公能力集成（office:*）
+  office,
   // Phase 1: 媒体下载器
   mediaDownload,
   // Phase 3: 媒体持久化
   mediaStorage,
   // 历史面板
   history,
+  // W11：客户端任务活动订阅（client-task:activity → 工作台任务队列实时刷新）
+  clientTasks,
   // A2 扩展（§1.5 双模式）
   model,
   inference,
   ocr,
   knowledge,
   env,
+  // 条目⑩ 账号与登录（飞书连接测试）
+  feishu,
+  // S8 平台接入 + S9 系统与运行
+  platform,
+  system,
 })

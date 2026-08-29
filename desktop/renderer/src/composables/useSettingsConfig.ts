@@ -27,8 +27,9 @@ export async function readCfg(key: string, def: string | boolean): Promise<strin
   try { return (await getTintin().config.get(key)) ?? def } catch (_) { return def }
 }
 
-/** 写配置到 electron-store（无 IPC 静默） */
-export async function writeCfg(key: string, val: any): Promise<void> {
-  if (!hasConfig()) return
-  try { await getTintin().config.set(key, val) } catch (_) {}
+/** 写配置到 electron-store（返回主进程确认结果；无 IPC / 异常 / success:false 均为 false，
+ *  调用方可据此判断「是否真的持久化成功」——此前静默吞错导致保存失败仍提示已保存） */
+export async function writeCfg(key: string, val: any): Promise<boolean> {
+  if (!hasConfig()) return false
+  try { return (await getTintin().config.set(key, val)) === true } catch (_) { return false }
 }

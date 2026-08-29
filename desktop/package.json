@@ -86,16 +86,7 @@
       "main/**/*",
       "preload/**/*",
       "config/**/*",
-      "renderer/dist/**/*",
-      "!node_modules/**/*",
-      "node_modules/adm-zip/**/*",
-      "node_modules/better-sqlite3/**/*",
-      "node_modules/onnxruntime-node/**/*",
-      "node_modules/exceljs/**/*",
-      "node_modules/docx/**/*",
-      "node_modules/mammoth/**/*",
-      "node_modules/{@fast-csv,archiver,archiver-utils,async,balanced-match,base64-js,big-integer,binary,bl,bluebird,brace-expansion,buffer,buffer-crc32,buffer-indexof-polyfill,buffers,chainsaw,compress-commons,crc-32,crc32-stream,dayjs,duplexer2,end-of-stream,fast-csv,fs-constants,fs.realpath,fstream,glob,graceful-fs,ieee754,immediate,inflight,inherits,jszip,lazystream,lie,listenercount,lodash.defaults,lodash.difference,lodash.escaperegexp,lodash.flatten,lodash.groupby,lodash.isboolean,lodash.isequal,lodash.isfunction,lodash.isnil,lodash.isplainobject,lodash.isundefined,lodash.union,lodash.uniq,minimatch,mkdirp,normalize-path,once,pako,path-is-absolute,readable-stream,readdir-glob,rimraf,safe-buffer,saxes,setimmediate,string_decoder,tar-stream,tmp,traverse,undici-types,unzipper,util-deprecate,uuid,wrappy,xmlchars,zip-stream}/**/*",
-      "node_modules/{@xmldom/xmldom,argparse,dingbat-to-unicode,duck,hash.js,lop,minimalistic-assert,nanoid,option,underscore,xml,xml-js,xmlbuilder}/**/*"
+      "renderer/dist/**/*"
     ],
     "win": {
       "icon": "../resources/icons/icon.ico"

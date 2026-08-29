@@ -19,6 +19,7 @@
 import { ref, computed } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
+import ToolBackBar from './ToolBackBar.vue'
 import { buildClipPlan, buildPlanFromText } from '@/composables/liveClipLogic'
 import type { ClipPlanItem } from '@/composables/liveClipLogic'
 import { parseTranscriptionResponse } from '@/composables/srtUtils'
@@ -173,6 +174,9 @@ const doneCount = computed(() => clips.value.filter((c) => c.state === 'done').l
 
 <template>
   <div class="liveclip" style="display: flex; flex-direction: column; gap: var(--space-5); max-width: 980px;">
+
+    <!-- 统一返回栏（与内嵌工具页界面一致） -->
+    <ToolBackBar emoji="📡" title="直播切片" group="创作" />
 
     <!-- 顶部步骤条 -->
     <div class="step-bar">

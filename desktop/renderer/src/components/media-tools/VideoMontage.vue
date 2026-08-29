@@ -11,6 +11,7 @@
 import { ref } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
+import ToolBackBar from './ToolBackBar.vue'
 import { useVideoMontage } from '@/composables/useVideoMontage'
 
 const STEPS = ['1. 素材解析', '2. BGM 节拍/卡点', '3. AI 编排', '4. 合成']
@@ -56,6 +57,9 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
 
 <template>
   <div class="montage" style="display: flex; flex-direction: column; gap: var(--space-5); max-width: 980px;">
+
+    <!-- 统一返回栏（与内嵌工具页界面一致） -->
+    <ToolBackBar emoji="✂️" title="智能混剪" group="创作" />
 
     <!-- 顶部步骤条 -->
     <div class="step-bar">

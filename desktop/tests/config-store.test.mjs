@@ -240,38 +240,37 @@ test('迁移：无旧文件 / 非法 JSON 不抛错不阻塞启动', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════
-// D6 配置移应用目录：路径探测（可写/不可写模拟）+ 旧目录→新目录迁移 + 回退
+// D6 配置固定 userData/config：路径决策 + 旧目录迁移 + 幂等（2026-08-30 修正）
 // ═══════════════════════════════════════════════════════════════
 
-test('D6 resolveConfigBasePath：应用根/config 可写 → basePath=应用根/config（真实探测）', () => {
+test('D6 resolveConfigBasePath：配置固定 userData/config（跨版本/打包保留）', () => {
   const appRoot = makeTmpDir()
   const userData = makeTmpDir()
   const r = resolveConfigBasePath(appRoot, userData)
-  assert.equal(r.basePath, path.join(appRoot, 'config'))
+  assert.equal(r.basePath, path.join(userData, 'config'))
   assert.equal(r.writable, true)
   assert.equal(r.fallback, false)
-  // 探测副作用：config 目录已被运行时创建（随应用走）
-  assert.ok(fs.existsSync(path.join(appRoot, 'config')), '可写时 config 目录应在应用根创建')
+  // 不再写应用根：换打包目录（dist-时间戳）不丢配置
+  assert.ok(!r.basePath.startsWith(appRoot + path.sep), '配置不应落在应用根目录')
+  assert.ok(!fs.existsSync(path.join(appRoot, 'config')), '应用根不应创建 config 目录')
 })
 
-test('D6 resolveConfigBasePath：不可写模拟（Program Files 只读区）→ 回退 userData/config', () => {
+test('D6 resolveConfigBasePath：不可写模拟注入仍返回 userData/config', () => {
   const appRoot = makeTmpDir()
   const userData = makeTmpDir()
   const r = resolveConfigBasePath(appRoot, userData, () => false)
   assert.equal(r.basePath, path.join(userData, 'config'))
-  assert.equal(r.writable, false)
-  assert.equal(r.fallback, true)
-  // 回退路径指向 userData 而非应用根
-  assert.ok(!r.basePath.startsWith(appRoot + path.sep))
+  assert.equal(r.writable, true)
+  assert.equal(r.fallback, false)
 })
 
-test('D6 resolveConfigBasePath：可写模拟注入 → 路径拼接正确且无副作用', () => {
+test('D6 resolveConfigBasePath：可写模拟注入仍返回 userData/config（无应用根副作用）', () => {
   const appRoot = makeTmpDir()
   const userData = makeTmpDir()
   const r = resolveConfigBasePath(appRoot, userData, () => true)
-  assert.equal(r.basePath, path.join(appRoot, 'config'))
-  assert.equal(r.fallback, false)
-  assert.ok(!fs.existsSync(path.join(appRoot, 'config')), '注入探测不产生真实目录副作用')
+  assert.equal(r.basePath, path.join(userData, 'config'))
+  assert.equal(r.writable, true)
+  assert.ok(!fs.existsSync(path.join(appRoot, 'config')), '注入探测不产生应用根目录副作用')
 })
 
 test('D6 migrateLegacyBasePath：旧 userData/config → 新路径逐域合并迁移，旧域文件改名 .bak', () => {

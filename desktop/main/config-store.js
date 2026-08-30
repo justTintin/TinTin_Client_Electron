@@ -138,21 +138,18 @@ function probeWritableDir(dir) {
 }
 
 /**
- * D6：解析配置根目录（纯函数，可脱离 electron 单测）。
- * 决策：应用根/config 可写 → 用应用根（随应用走、可见可改可备份）；
- *       不可写（打包装到 Program Files 等只读区）→ 回退 %APPDATA%/userData/config。
- * @param {string} appRoot 应用根目录（打包=exe 所在目录；dev=process.cwd()）
+ * 配置根目录解析（纯函数，可脱离 electron 单测）。
+ * D6 修正（2026-08-30 用户裁决）：配置固定存 userData/config。
+ * 原 D6 设计「应用根/config 可写 → 随应用走」在本项目时间戳打包工作流下会丢配置：
+ * 每次打包生成新目录（dist-时间戳），配置若写旧 exe 目录 → 换新包即丢失。
+ * 用户诉求「系统设置跨打包保留」→ 统一写 %APPDATA%/userData/config，
+ * 跨版本/跨打包目录稳定且始终可写，无需可写探测。
+ * @param {string} appRoot 应用根目录（保留参数，兼容调用方；不再参与决策）
  * @param {string} userDataDir %APPDATA% 下的 userData（app.getPath('userData')）
- * @param {(dir: string) => boolean} [probeWritable] 可写探测函数（默认真实 fs 探测；测试注入模拟）
  * @returns {{basePath: string, writable: boolean, fallback: boolean}}
  */
-function resolveConfigBasePath(appRoot, userDataDir, probeWritable) {
-  const canWrite = (typeof probeWritable === 'function') ? probeWritable : probeWritableDir
-  const appConfigDir = path.join(appRoot, 'config')
-  if (canWrite(appConfigDir)) {
-    return { basePath: appConfigDir, writable: true, fallback: false }
-  }
-  return { basePath: path.join(userDataDir, 'config'), writable: false, fallback: true }
+function resolveConfigBasePath(appRoot, userDataDir) {
+  return { basePath: path.join(userDataDir || appRoot, 'config'), writable: true, fallback: false }
 }
 
 /**

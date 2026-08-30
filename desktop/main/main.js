@@ -504,8 +504,8 @@ app.whenReady().then(() => {
     let store
     try {
       store = createConfigStore({
-        // D6：配置移应用目录（应用根可写 → <应用根>/config，只读区回退 userData/config；旧分域目录 legacyBasePath 一次性合并迁移）
-        basePath: resolveConfigBasePath(app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd(), app.getPath('userData')),
+        // D6：配置固定 userData/config（跨版本/打包保留；resolveConfigBasePath 返回对象，取 .basePath 字段）
+        basePath: resolveConfigBasePath(app.isPackaged ? path.dirname(app.getPath('exe')) : process.cwd(), app.getPath('userData')).basePath,
         legacyPath: path.join(app.getPath('userData'), 'app-config.json'),
         legacyBasePath: path.join(app.getPath('userData'), 'config'),
         defaults: {

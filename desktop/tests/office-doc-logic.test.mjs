@@ -11,6 +11,13 @@ import assert from 'node:assert/strict'
 
 const D = await import('../renderer/src/composables/officeDocLogic.ts')
 
+/** 本地当天日期 YYYY-MM-DD（与 officeDocLogic 默认标题同口径，避免跨天硬编码失效） */
+function todayStr() {
+  const d = new Date()
+  const p2 = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`
+}
+
 // ── 时间格式化 ──
 
 test('formatSeconds：秒 → HH:MM:SS（转写时间轴 `[00:00:03]` 口径）', () => {
@@ -87,7 +94,7 @@ test('buildChatDocxStructure：标题/元信息/分隔线/角色标头/内容齐
 
 test('buildChatDocxStructure：默认标题 `会话 YYYY-MM-DD` + 角色标头带时间（无 metaLines → heading+divider 骨架）', () => {
   const s = D.buildChatDocxStructure([{ role: 'user', content: 'x', time: '2026-08-29 09:12' }])
-  assert.match(s.title, /^会话 2026-08-29$/)
+  assert.match(s.title, new RegExp(`^会话 ${todayStr()}$`))
   // 无 metaLines：blocks = [heading, divider, role, para]
   assert.equal(s.blocks[0].type, 'heading')
   assert.equal(s.blocks[1].type, 'divider')
@@ -135,7 +142,7 @@ test('buildTranscriptDocxStructure：标题/元信息/SRT 时间轴段', () => {
     ],
     { filename: 'demo.mp4', durationSec: 120, transcribeTime: '2026-08-29 09:12' },
   )
-  assert.match(s.title, /^转写 demo\.mp4 2026-08-29$/)
+  assert.match(s.title, new RegExp(`^转写 demo\\.mp4 ${todayStr()}$`))
   assert.ok(s.metaLines.some((m) => m.includes('源文件：demo.mp4')))
   assert.ok(s.metaLines.some((m) => m.includes('时长：00:02:00')))
   assert.ok(s.metaLines.some((m) => m.includes('转写时间：2026-08-29 09:12')))

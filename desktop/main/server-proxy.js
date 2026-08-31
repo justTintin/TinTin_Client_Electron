@@ -616,6 +616,22 @@ function createServerProxy(ipcMain, ctx) {
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
+  // --- scheduled（服务端定时任务执行记录，对齐原 scheduled_tasks_page.py 执行状态页）
+  ipcMain.handle('scheduled:tasksList', async (_e, params) => {
+    try {
+      const path = resolveEndpoint(API_ENDPOINTS.scheduled.tasks, params || {})
+      const res = await httpRequest('GET', path)
+      return res.data || { tasks: [], total: 0, page: 1, size: 20 }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+  ipcMain.handle('scheduled:taskItem', async (_e, { id }) => {
+    try {
+      if (!id) throw new Error('scheduled:taskItem missing id')
+      const res = await httpRequest('GET', API_ENDPOINTS.scheduled.taskItem(id))
+      return res.data
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
   // --- tasks ----------------------------------------------------------
   ipcMain.handle('tasks:unifiedList', async (_e, params) => {
     try {

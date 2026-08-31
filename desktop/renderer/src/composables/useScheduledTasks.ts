@@ -1,15 +1,20 @@
 // ═══════════════════════════════════════════════════════════════
-// useScheduledTasks — 定时任务管理域（P2 移植）
-// 对照基准：原客户端 scheduled_tasks_mgmt_page.py + local_scheduler.py。
-// 本地任务（schtasks）经 window.tintin.scheduled IPC；
-// 最近编排任务（GET /agent/tasks 根任务、waiting_user_input 人工确认，
-// 命名对齐原版 scheduled_tasks_mgmt_page.py L262「最近编排任务」）
-// 经 window.tintin.server 通用通道（契约：types/server-api.ts AgentAPI）。
+// useScheduledTasks — 定时任务管理域（P2 移植；2026-08-31 结构澄清）
+// 对照基准：原客户端 scheduled_tasks_mgmt_page.py + scheduled_tasks_page.py。
+// 领域划分（2026-08-31 用户裁决：编排任务也是定时任务——云端智能体类型
+// 到点提交服务端 Orchestrator 执行产生的实例，属执行结果而非独立板块）：
+//   · 注册域：本地 schtasks 任务清单（本地热点采集 + 云端智能体两类注册项）
+//   · 执行结果域：①编排任务执行实例（GET /agent/tasks 根任务，等待确认
+//     可继续）②服务端定时任务执行记录（GET /scheduled/tasks，成片类）
+// 非定时任务的执行结果走工作台左下角「任务队列」（/tasks/unified，另域）。
+// 本地任务（schtasks）经 window.tintin.scheduled IPC；服务端数据经
+// window.tintin.server 业务方法（契约：types/server-api.ts）。
 // ═══════════════════════════════════════════════════════════════
 
 import { computed, ref } from 'vue'
 import type { TintinBridgeScheduledTask, TintinBridgeAgentPlan } from '../../../types/global'
-import type { AgentAPI } from '../../../types/server-api'
+import type { AgentAPI, ScheduledAPI } from '../../../types/server-api'
+import { toSchedExecRows, type SchedExecRow } from './scheduledExecLogic'
 
 /** 任务类型标签（对齐原版 _TYPE_LABEL） */
 export const TYPE_LABEL: Record<string, string> = {
@@ -227,7 +232,8 @@ export function useScheduledTasks() {
     detailTask.value = null
   }
 
-  /* ── 最近编排任务域（GET /agent/tasks 根任务；命名对齐原版 L262） ── */
+  /* ── 执行结果域①：编排任务执行实例（云端智能体定时任务到点执行产生；
+     GET /agent/tasks 根任务；对齐原版 mgmt_page L262「最近编排任务」） ── */
   interface AgentTaskRow {
     id: string
     goal: string
@@ -258,6 +264,45 @@ export function useScheduledTasks() {
     }
   }
 
+  /* ── 执行结果域②：服务端定时任务执行记录（成片类定时任务到点执行；
+     GET /scheduled/tasks，对齐原 scheduled_tasks_page.py 执行状态页） ── */
+  const schedExecRows = ref<SchedExecRow[]>([])
+  const schedExecLoading = ref(false)
+
+  async function loadSchedExec() {
+    if (schedExecLoading.value) return
+    schedExecLoading.value = true
+    try {
+      const data = await window.tintin.server.scheduledTasksList({ page: 1, size: 20 })
+      const list = (data && !('error' in data) && (data.tasks || data.items)) || []
+      schedExecRows.value = toSchedExecRows(list)
+    } catch (_) {
+      schedExecRows.value = []
+    } finally {
+      schedExecLoading.value = false
+    }
+  }
+
+  /** 执行记录详情（GET /scheduled/tasks/{id}：params/error_msg/result 全量） */
+  const schedItem = ref<ScheduledAPI.TaskExecRecord | null>(null)
+  const schedItemLoading = ref(false)
+
+  async function openSchedItem(id: string): Promise<void> {
+    schedItemLoading.value = true
+    try {
+      const rec = await window.tintin.server.scheduledTaskItem(id)
+      schedItem.value = rec && !('error' in rec) ? rec : null
+    } catch (_) {
+      schedItem.value = null
+    } finally {
+      schedItemLoading.value = false
+    }
+  }
+
+  function closeSchedItem(): void {
+    schedItem.value = null
+  }
+
   /** waiting_user_input 节点人工确认 → 继续执行（POST /agent/tasks/{id}/confirm） */
   async function confirmAgent(id: string) {
     notice.value = ''
@@ -276,16 +321,19 @@ export function useScheduledTasks() {
      capsLoading）——智能体已展示在输入框下快捷条，抽屉内重复展示无价值。 */
 
   return {
-    // 本地任务域
+    // 注册域（本地 schtasks：热点采集 + 云端智能体两类注册项）
     tasks, loading, creating, notice, form, formError,
     load, create, runNow, remove,
     // agent 任务拆解（对照原版 build_plan）
     currentPlan, splitting, splitPlan,
     // 今日热点采集
     capturing, captureProgress, captureNow,
-    // 编排任务详情
+    // 执行结果域：编排任务详情弹窗（/tasks/unified/{id} 子步骤树）
     detailTask, detailLoading, openDetail, closeDetail,
-    // 最近编排任务域
-    agentTasks, agentLoading, loadAgent, confirmAgent
+    // 执行结果域①：编排任务执行实例（/agent/tasks）
+    agentTasks, agentLoading, loadAgent, confirmAgent,
+    // 执行结果域②：服务端定时任务执行记录（/scheduled/tasks）
+    schedExecRows, schedExecLoading, loadSchedExec,
+    schedItem, schedItemLoading, openSchedItem, closeSchedItem
   }
 }

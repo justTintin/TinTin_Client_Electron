@@ -151,6 +151,10 @@ const server = {
   tasksProgress:         (id)           => ipcRenderer.invoke('tasks:progress', { id }),
   tasksDownloadResult:   (id, savePath) => ipcRenderer.invoke('tasks:downloadResult', { id, savePath }),
 
+  // ---------- scheduled（服务端定时任务执行记录，对齐原 scheduled_tasks_page.py）----------
+  scheduledTasksList: (params) => ipcRenderer.invoke('scheduled:tasksList', params),
+  scheduledTaskItem:  (id)     => ipcRenderer.invoke('scheduled:taskItem', { id }),
+
   // ---------- V3 S1~S3 媒体工具（上传类，支持 onProgress）----------
   rembgSubmit:          (p, onProgress) => _withUploadProgress(onProgress, 'rembg:submit', p),
   vsrSubmit:            (p, onProgress) => _withUploadProgress(onProgress, 'vsr:submit', p),

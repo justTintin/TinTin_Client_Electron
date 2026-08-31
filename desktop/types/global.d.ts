@@ -14,6 +14,7 @@ import type {
   WorkflowAPI,
   AgentAPI,
   TasksAPI,
+  ScheduledAPI,
   StoryboardAPI,
   SystemAPI,
   CapabilityRegistryItem,
@@ -158,6 +159,15 @@ declare interface TintinBridgeServer {
   tasksUnifiedItem(id: string): Promise<IpcError<AgentAPI.TaskNode>>
   tasksProgress(id: string): Promise<IpcError<TasksAPI.ProgressResponse>>
   tasksDownloadResult(id: string, savePath: string): Promise<IpcError<string>>
+
+  // ---------- scheduled（服务端定时任务执行记录，对齐原 scheduled_tasks_page.py）----------
+  scheduledTasksList(params?: {
+    status?: string
+    task_type?: string
+    page?: number
+    size?: number
+  }): Promise<IpcError<{ tasks?: any[]; items?: any[]; total?: number }>>
+  scheduledTaskItem(id: string): Promise<IpcError<ScheduledAPI.TaskExecRecord>>
 
   // ---------- V3 S1~S3 媒体工具 ----------
   rembgSubmit(

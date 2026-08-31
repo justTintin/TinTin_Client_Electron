@@ -730,6 +730,25 @@ export namespace ScheduledAPI {
     last_run_at?:    string
     next_run_at?:    string
   }
+  /**
+   * 服务端定时任务执行记录（GET /scheduled/tasks，对齐原 scheduled_tasks_page.py 列字段：
+   * id, task_type, title, params, status, progress, error_msg, result, created_at,
+   * updated_at, completed_at）
+   */
+  export interface TaskExecRecord {
+    id:           number | string
+    task_type:    string
+    title:        string
+    params?:      Record<string, any>
+    status:       string                              // pending/running/completed/failed
+    progress:     number
+    error_msg?:   string
+    result?:      Record<string, any> | null          // 如 { video_url }（成片产出）
+    created_at?:  string
+    updated_at?:  string
+    completed_at?: string
+    score?:       number                              // 总分（评价类任务）
+  }
 }
 
 export namespace StoryboardAPI {

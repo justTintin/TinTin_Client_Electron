@@ -1,51 +1,66 @@
 // ═══════════════════════════════════════════════════════════════
 // useWorkbenchTasks — 工作台任务队列域（条目⑫ 去 mock + 轮询）
-// 数据源（对齐原 main_window_pages.py 任务队列页 L1246-1478 字段语义）：
-//   真实服务端任务：/tasks/unified 统一任务中心（tasksStore，复用既有
-//   轮询通道 fetchProgress /tasks/{id}）——工作台对话转编排任务、
-//   浏览器/媒体工具提交的服务端任务都在此列表（原演示假数据已删除）。
-// 轮询（复用 useVideoRepair 的 setInterval 模式）：抽屉打开期间
-//   · 5s：对 running/pending 行调 tasksStore.fetchProgress 回填进度/状态
-//   · 30s：整表 fetchTasks 刷新；关闭抽屉立即停止
+// 数据源（2026-08-31 修正，对齐原客户端双页口径）：
+//   · /agent/tasks 编排任务（agentTaskList，root_only=true）——工作台对话
+//     「转编排任务」创建的 a_ 任务（原 scheduled_tasks_mgmt_page.py L472-495
+//     编排任务概览口径：goal/status/progress/created_at）
+//   · /tasks 执行层计算任务（tasksList）——浏览器/媒体工具提交的服务端任务
+//     （原 main_window_pages.py 任务队列页 L1360 同步服务端口径）
+//   注：原先走的 /tasks/unified 在服务端契约中不存在（openapi-latest.json
+//   无此路径，404 → 空页），是「任务列表无任务消息」的根因。
+// 轮询（复用抽屉打开期间 setInterval 模式）：打开期间每 5s 重拉双源列表
+//   （列表已含 progress，无需逐行进度轮询）；关闭抽屉立即停止。
+//   另订阅 client-task:activity 实时推送触发刷新。
 // 展示字段对齐原七列口径：状态/进度/结果打开（openTaskResult）。
 // 编组纯函数在 taskQueueLogic.ts（有单测），本文件只做状态与 IPC 编排。
 // ═══════════════════════════════════════════════════════════════
 
 import { ref, computed, onBeforeUnmount } from 'vue'
-import { useTasksStore } from '@/stores/tasks'
 import {
   statusText,
   mapServerTaskRow,
+  type ServerTaskLike,
 } from './taskQueueLogic'
 import type { TaskRow } from './taskQueueLogic'
 
 // 重导出（WbTaskDrawer 等组件按原路径 import，唯一定义点在 taskQueueLogic）
 export { statusText }
-export type { TaskRow }
+export type { TaskRow, ServerTaskLike }
 
-/** 进度轮询间隔（对照 useVideoRepair POLL_INTERVAL_MS=3000；列表口径 5s） */
-const PROGRESS_POLL_MS = 5000
-/** 整表刷新间隔（进度轮询每 6 次触发一次 fetchTasks） */
-const LIST_REFRESH_EVERY = 6
+/** 任务轮询间隔（列表含进度字段，整表重拉即可） */
+const POLL_MS = 5000
+/** 双源各取条数（编排任务置顶 + 执行任务，合并后交给抽屉） */
+const FETCH_LIMIT = 10
 
 function getBridge(): any {
   return (window as any).tintin
 }
 
-export function useWorkbenchTasks() {
-  const tasksStore = useTasksStore()
+/** /agent/tasks 响应归一：{count,tasks} 或裸数组 → 条目数组 */
+function normAgentTasks(data: any): ServerTaskLike[] {
+  if (Array.isArray(data)) return data
+  return Array.isArray(data?.tasks) ? data.tasks : []
+}
 
+export function useWorkbenchTasks() {
   /** 任务队列抽屉是否展开 */
   const taskQueueOpen = ref(false)
 
-  /* ── 展示列表：服务端任务（空态由抽屉空态兜底，无假数据） ── */
+  /* ── 原始条目（编排任务在前，执行任务在后；映射在 computed 完成） ── */
+  const rawTasks = ref<ServerTaskLike[]>([])
+
+  /* ── 展示列表：编排任务（a_ 前缀）置顶，类型缺省标「编排任务」 ── */
   const taskRows = computed<TaskRow[]>(() =>
-    (tasksStore.page.items || []).slice(0, 10).map(mapServerTaskRow),
+    rawTasks.value.map((t) =>
+      mapServerTaskRow({
+        ...t,
+        type: String(t.type || t.capability_key || t.capability || '编排任务'),
+      }),
+    ),
   )
 
-  /* ── 轮询（抽屉打开期间）：进度回填 + 整表刷新 ── */
+  /* ── 轮询（抽屉打开期间）：整表重拉双源 ── */
   let pollTimer: ReturnType<typeof setInterval> | null = null
-  let pollTick = 0
 
   function stopPolling(): void {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
@@ -53,23 +68,11 @@ export function useWorkbenchTasks() {
 
   function startPolling(): void {
     stopPolling()
-    pollTick = 0
-    pollTimer = setInterval(() => {
-      pollTick += 1
-      // 30s 整表刷新（新任务/被清任务出现）
-      if (pollTick % LIST_REFRESH_EVERY === 0) { void loadTasks() }
-      // 5s 进度回填：仅 running/pending 行（复用 tasksStore.fetchProgress 通道，
-      // 其内部把结果同步回 page.items[idx]，computed 自动更新 UI）
-      for (const t of tasksStore.page.items || []) {
-        const s = String(t.status || '')
-        if (s === 'completed' || s === 'failed' || s === 'cancelled') continue
-        void tasksStore.fetchProgress(t.id)
-      }
-    }, PROGRESS_POLL_MS)
+    pollTimer = setInterval(() => { void loadTasks() }, POLL_MS)
   }
 
   /* ── W11：client-task:activity 实时订阅（client-task-thread.js 任务完成
-       推送 → 整表刷新，补充 30s 轮询的实时性；事件频率低，刷新代价可接受）── */
+       推送 → 整表刷新，补充 5s 轮询的实时性；事件频率低，刷新代价可接受）── */
   let stopActivity: (() => void) | null = null
   try {
     const t = getBridge()
@@ -94,14 +97,24 @@ export function useWorkbenchTasks() {
   }
 
   /**
-   * 打开时拉取服务端任务（统一任务中心）。
-   * 异常分支：网络失败/5xx 在 tasksStore._patchResponse 内归一为空页 → 空态展示，
-   * 此处仅兜底 IPC 未就绪（纯预览模式），不阻塞抽屉打开。
+   * 拉取服务端任务（双源合并：/agent/tasks 编排 + /tasks 执行层）。
+   * 异常分支：离线/失败归一为空数组 → 空态展示；双源同时不可用则清空
+   * 列表（与原空页口径一致），不阻塞抽屉打开。
    */
   async function loadTasks(): Promise<void> {
-    try {
-      await tasksStore.fetchTasks({ page: 1, page_size: 10 })
-    } catch (_e) { /* ignore：纯预览模式无 IPC 不阻塞 */ }
+    const t = getBridge()
+    if (!t?.server) return // 纯预览模式无 IPC 不阻塞
+    const [agent, exec] = await Promise.all([
+      t.server.agentTaskList
+        ? t.server.agentTaskList({ root_only: true, limit: FETCH_LIMIT }).catch(() => null)
+        : Promise.resolve(null),
+      t.server.tasksList
+        ? t.server.tasksList({ limit: FETCH_LIMIT }).catch(() => null)
+        : Promise.resolve(null),
+    ])
+    const agentItems = normAgentTasks(agent)
+    const execItems = Array.isArray(exec?.items) ? exec.items : []
+    rawTasks.value = [...agentItems, ...execItems]
   }
 
   /**

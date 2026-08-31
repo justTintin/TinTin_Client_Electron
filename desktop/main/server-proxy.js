@@ -129,6 +129,7 @@ const API_ENDPOINTS = {
     sessionAttachmentItem:  (id, key) => `/agent/sessions/${id}/attachments/${key}`,
   },
   tasks: {
+    list:        '/tasks',
     unifiedList: '/tasks/unified',
     unifiedItem: (id) => `/tasks/unified/${id}`,
     item:        (id) => `/tasks/${id}`,
@@ -635,6 +636,17 @@ function createServerProxy(ipcMain, ctx) {
   })
 
   // --- tasks ----------------------------------------------------------
+  // GET /tasks：执行层计算任务列表（原 main_window_pages.py 任务队列页 L1360
+  // 数据源；裸数组或 {tasks:[…]}，参数 limit/status/type/type_prefix/model）
+  ipcMain.handle('tasks:list', async (_e, params) => {
+    try {
+      const path = resolveEndpoint(API_ENDPOINTS.tasks.list, params || {})
+      const res = await httpRequest('GET', path)
+      const data = res.data
+      const items = Array.isArray(data) ? data : (data?.tasks || data?.items || [])
+      return { items, total: items.length }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
   ipcMain.handle('tasks:unifiedList', async (_e, params) => {
     try {
       const path = resolveEndpoint(API_ENDPOINTS.tasks.unifiedList, params || {})

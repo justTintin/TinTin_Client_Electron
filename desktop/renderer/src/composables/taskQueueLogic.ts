@@ -6,7 +6,10 @@
 //     queued/waiting_user_input/paused/cancelled 文案
 //   · 进度语义（L1420）：processing→progress 值；completed→100；其它→0
 //   · 结果展示（详情区 L1317-1341）：结果为 url / 本地路径时可「打开」
-// 数据源编组：/tasks/unified 服务端任务（统一任务中心）。
+// 数据源编组（2026-08-31 修正）：/agent/tasks 编排任务（对话转编排的 a_ 任务，
+// 含 goal/status/progress）+ /tasks 执行层计算任务（原任务队列页 L1360）。
+// 注：原实现的 /tasks/unified 在服务端契约中不存在（openapi-latest.json 无此
+// 路径），导致任务列表永远为空（2026-08-31 用户反馈）。
 // ═══════════════════════════════════════════════════════════════
 
 /** 展示行（useWorkbenchTasks/WbTaskDrawer 消费） */
@@ -28,13 +31,21 @@ export interface ServerTaskLike {
   id?: string
   title?: string
   name?: string
+  /** 编排任务目标（/agent/tasks；原 scheduled_tasks_mgmt_page.py L492 首列口径） */
+  goal?: string
   capability_key?: string
+  capability?: string
   type?: string
   status?: string
   progress?: number
   stage?: string
   result_preview?: string
+  /** 执行层任务结果（/tasks 原任务队列页详情区 result 字段） */
+  result?: string
   error_message?: string
+  /** 执行层任务错误（/tasks，原 L1336 t.get("error")） */
+  error?: string
+  error_msg?: string
   created_at?: string
   updated_at?: string
 }
@@ -46,6 +57,7 @@ export interface ServerTaskLike {
 export function statusText(s: string): string {
   const map: Record<string, string> = {
     completed: '已完成',
+    done: '已完成', // 展示层三档状态回查（WbTaskDrawer 页脚 statusText(t.status)）
     processing: '处理中',
     running: '处理中',
     pending: '排队中',
@@ -73,6 +85,8 @@ function rowEta(t: ServerTaskLike): string {
   const s = String(t.status || '')
   if (s === 'completed') return '已完成'
   if (t.error_message) return `失败： ${t.error_message}`
+  if (t.error_msg) return `失败： ${t.error_msg}`
+  if (t.error) return `失败： ${t.error}`
   if (s === 'waiting_user_input') return '等待确认'
   if (s === 'cancelled') return '已取消'
   if (s === 'failed') return '失败'
@@ -81,12 +95,11 @@ function rowEta(t: ServerTaskLike): string {
   return '处理中'
 }
 
-/**
- * 进度语义对齐原 L1420：processing→progress 值，completed→100，其它→0
- */
+/** 进度语义对齐原 L1420：processing/running→progress 值，completed→100，其它→0
+ *  （编排任务用 running，执行层用 processing，两口径都要取真实进度） */
 function rowProgress(t: ServerTaskLike): number {
   const s = String(t.status || '')
-  if (s === 'processing') return Math.max(0, Math.min(100, Number(t.progress) || 0))
+  if (s === 'processing' || s === 'running') return Math.max(0, Math.min(100, Number(t.progress) || 0))
   if (s === 'completed') return 100
   return 0
 }
@@ -99,7 +112,7 @@ function rowProgress(t: ServerTaskLike): number {
 export function extractResultTarget(
   t: ServerTaskLike | null | undefined,
 ): { kind: 'url' | 'path'; value: string } | null {
-  const raw = String(t?.result_preview || '').trim()
+  const raw = String(t?.result_preview || t?.result || '').trim()
   if (!raw) return null
   const urlMatch = raw.match(/https?:\/\/[^\s（）()，,]+/)
   if (urlMatch) return { kind: 'url', value: urlMatch[0] }
@@ -116,8 +129,8 @@ export function mapServerTaskRow(t: ServerTaskLike): TaskRow {
   const s = String(t.status || '')
   return {
     id: String(t.id ?? ''),
-    title: String(t.title || t.name || '任务'),
-    type: String(t.capability_key || t.type || '媒体工具'),
+    title: String(t.title || t.name || t.goal || '任务'),
+    type: String(t.capability_key || t.capability || t.type || '媒体工具'),
     progress: rowProgress(t),
     status: rowStatus(s),
     eta: rowEta(t),

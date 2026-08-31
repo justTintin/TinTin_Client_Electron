@@ -150,6 +150,8 @@ const server = {
   },
 
   // ---------- tasks ----------
+  // GET /tasks：执行层计算任务列表（任务队列抽屉数据源之一，另见 agentTaskList）
+  tasksList:             (params)       => ipcRenderer.invoke('tasks:list', params),
   tasksUnifiedList:      (params)       => ipcRenderer.invoke('tasks:unifiedList', params),
   tasksUnifiedItem:      (id)           => ipcRenderer.invoke('tasks:unifiedItem', { id }),
   tasksProgress:         (id)           => ipcRenderer.invoke('tasks:progress', { id }),

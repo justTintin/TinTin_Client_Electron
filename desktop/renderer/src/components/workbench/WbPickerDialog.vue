@@ -47,7 +47,8 @@ function onPick(item: PickerItem) {
 </script>
 
 <template>
-  <TDialog :visible="visible" :title="title" width="560px" :show-footer="false" @close="emit('close')">
+  <!-- 2026-08-31 用户裁决：弹窗放大到主界面 80%，vw/vh 随窗口缩放 -->
+  <TDialog :visible="visible" :title="title" width="80vw" :show-footer="false" @close="emit('close')">
     <div class="picker">
       <div class="picker-search">
         <input
@@ -87,6 +88,8 @@ function onPick(item: PickerItem) {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  /* 弹窗高度 ≈ 主界面 80vh（扣除 TDialog 头部/内边距）；列表区弹性填满并滚动 */
+  height: calc(80vh - 120px);
 }
 
 .picker-search {
@@ -132,8 +135,8 @@ function onPick(item: PickerItem) {
 }
 
 .picker-list {
+  flex: 1 1 auto;
   min-height: 160px;
-  max-height: 320px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;

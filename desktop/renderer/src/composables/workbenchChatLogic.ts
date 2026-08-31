@@ -68,29 +68,65 @@ export interface AgentReply {
   reply: string
   sessionId: string
   taskId: string
+  /** mode=agent：编排任务已自动执行（status=running） */
   isPlan: boolean
+  /** mode=plan：计划草稿待确认（status=pending_approval，服务端不启动） */
+  isDraft: boolean
+  /** 服务端随草稿响应携带的确认端点（approve；空则客户端回落 taskConfirm） */
+  confirmPath: string
 }
 
-/** mode=plan 无 reply 含 task_id → 编排提示文本（原版 agent_client L287-291 文案） */
+/** mode=agent 无 reply 含 task_id → 编排提示文本（原版 agent_client L287-291 文案；
+ *  2026-08-31 对齐 Electron 实际 UI：编排任务在「定时任务」抽屉/「任务队列」看） */
 export function planReplyText(taskId: string): string {
-  return ` 已创建编排任务：\`${taskId}\`，服务端将自动执行。\n可在「编排任务」页查看进度与产物。`
+  return ` 已创建编排任务：\`${taskId}\`，服务端将自动执行。\n可在左侧「定时任务」抽屉（执行结果）或左下角「任务队列」查看进度与产物。`
 }
 
-/** 解析 /agent/chat 响应；空回复且非编排任务 → null（触发「服务端未返回内容」） */
+/** mode=plan 草稿响应 plan 字段 → 计划草稿文本（string 直接用；
+ *  数组/对象格式化；空 → task_id 提示兜底） */
+export function planSummaryText(plan: unknown, taskId: string): string {
+  if (typeof plan === 'string' && plan.trim()) return plan
+  if (plan != null && typeof plan === 'object') {
+    try { return JSON.stringify(plan, null, 2) } catch { /* 序列化失败走兜底 */ }
+  }
+  return `服务端已生成计划草稿：\`${taskId}\`，请确认执行。`
+}
+
+/**
+ * 底部任务选择器（2026-08-31 用户裁决：替换原「转编排任务」勾选）：
+ * · off=普通对话（mode=chat，即时回复）；agent=智能体（mode=agent，拆解后自动执行）；
+ * · plan-confirm=计划任务（mode=plan，服务端建 pending_approval 草稿，
+ *   客户端 POST /agent/tasks/{id}/approve 确认后才执行）
+ */
+export type PlanExecMode = 'off' | 'agent' | 'plan-confirm'
+
+/** 解析 /agent/chat 响应（mode = 请求 mode：chat/agent/plan，服务端三档契约 2026-08-31）：
+ *  · chat：即时回复，不建任务；
+ *  · agent：{task_id, status:'running'} → 编排提示文本（isPlan）；
+ *  · plan：{plan, task_id, status:'pending_approval', confirm} → 计划草稿（isDraft）；
+ *  空回复且非任务 → null（触发「服务端未返回内容」） */
 export function extractAgentReply(data: unknown, mode?: string): AgentReply | null {
   if (!data || typeof data !== 'object') return null
   const d = data as Record<string, any>
   const reply = String(d.reply || '')
   const sessionId = String(d.session_id || '')
   const taskId = String(d.task_id || '')
+  const status = String(d.status || '')
+  const confirmPath = String(d.confirm || '')
   let text = reply
   let isPlan = false
-  if (!text && mode === 'plan' && taskId) {
+  let isDraft = false
+  if (!text && mode === 'agent' && taskId) {
     text = planReplyText(taskId)
     isPlan = true
   }
+  // 计划任务档：服务端建 pending_approval 草稿不启动，气泡展示计划待确认
+  if (mode === 'plan' && (status === 'pending_approval' || (!text && taskId))) {
+    isDraft = true
+    if (!text) text = planSummaryText(d.plan, taskId)
+  }
   if (!text) return null
-  return { reply: text, sessionId, taskId, isPlan }
+  return { reply: text, sessionId, taskId, isPlan, isDraft, confirmPath }
 }
 
 /** 解析 /llm/chat/completions 响应（OpenAI 格式）；异常 → null */

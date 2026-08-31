@@ -14,7 +14,8 @@ import {
   type HistoryMessage,
   type ChatMode,
   type ChatAttachment,
-  type VideoAsset
+  type VideoAsset,
+  type PlanExecMode
 } from './workbenchChatLogic'
 import {
   buildContextText,
@@ -37,6 +38,11 @@ export interface ChatMessage {
   shots?: Array<{ index: number; label: string; desc: string }>
   /** W8：回复含成片视频资产 → 气泡挂播放/下载（原版 set_asset_actions） */
   video?: VideoAsset
+  /** 计划任务模式（mode=plan）：该回复是服务端 pending_approval 计划草稿，可确认执行 */
+  confirmable?: boolean
+  /** 草稿对应的服务端任务 id 与确认端点（approve；确认时优先使用） */
+  draftTaskId?: string
+  draftConfirmPath?: string
 }
 
 /** 发送后超时自动恢复输入（原版 _on_busy_timeout L1438-1445 口径） */
@@ -90,8 +96,8 @@ export function useWorkbenchChat(options?: {
   /* ── 模式 / 模型（定稿 2026-08-28：模式分段与模型下拉移除，
      模型切换只在系统设置；输入区只读 llm.defaultModel 偏好） ── */
   const mode = ref<ChatMode>('agent')
-  /** 「转编排任务」开关（原版 chk_plan L1130-1135：默认勾选） */
-  const planMode = ref<boolean>(true)
+  /** 任务选择器（原版 chk_plan L1130-1135 勾选 → 2026-08-31 改三档选择器） */
+  const planMode = ref<PlanExecMode>('agent')
   /** 服务端模型偏好（llm.defaultModel；空 = 服务端默认模型） */
   const selectedModel = ref<string>('')
 
@@ -222,6 +228,22 @@ export function useWorkbenchChat(options?: {
     if (mode.value === 'agent' && sessionId.value) void uploadToPool(att)
   }
 
+  /**
+   * 音频库条目加入上下文（2026-08-31「选择素材」弹窗音频 tab）：音频非
+   * 产品素材 → infoOnly 信息胶囊不入素材池，随上下文文本拼【参考音频】。
+   */
+  function addCtxAudio(item: Record<string, unknown>) {
+    const name = String(item?.filename || item?.title || item?.name || '').trim()
+    if (!name || attachments.value.some((a) => a.infoOnly && a.name === name)) return
+    attachments.value.push({
+      name,
+      path: '',
+      state: 'pooled',
+      infoOnly: true,
+      material: { ...item, media_type: 'audio' }
+    })
+  }
+
   function setBubble(id: string, content: string, status?: ChatMessage['status']) {
     const bubble = messages.value.find((m) => m.id === id)
     if (bubble) {
@@ -266,8 +288,8 @@ export function useWorkbenchChat(options?: {
         role: 'ai',
         content:
           '你好，我是 TinTin 智能体助手。\n\n' +
-          '可以直接说需求，我会拆解并帮你执行；\n' +
-          '勾选「转编排任务」后，对话会先转为编排任务提交服务端自动执行（回复返回任务 ID）。'
+          '可以直接说需求；底部选择器切「智能体」会把对话转编排任务拆解执行；\n' +
+          '切「计划任务」先出计划草稿，点「确认执行」后才提交服务端执行。'
       }
     ]
   }
@@ -301,6 +323,53 @@ export function useWorkbenchChat(options?: {
   }
 
   /**
+   * 「确认执行」（计划任务档两段式第二步，2026-08-31 新契约）：服务端 mode=plan
+   * 已建 pending_approval 草稿，此处 POST /agent/tasks/{id}/approve 确认后才执行
+   * （端点优先用草稿响应携带的 confirm；approve 不可用时回落 taskConfirm）。
+   */
+  async function confirmPlanExec() {
+    if (sending.value) return
+    const lastAi = [...messages.value].reverse().find((m) => m.role === 'ai')
+    if (!lastAi?.confirmable || !lastAi.draftTaskId) return
+    const taskId = lastAi.draftTaskId
+    const t = getTintin()
+    if (!t?.server) {
+      setBubble(lastAi.id, '网络不可用，无法确认执行，请稍后重试。', 'error')
+      return
+    }
+    // approve 优先（agent_chat.py 新契约 confirm 字段）；失败回落既有 taskConfirm 端点
+    const paths = [lastAi.draftConfirmPath || '', `/agent/tasks/${taskId}/approve`, `/agent/tasks/${taskId}/confirm`]
+    let ok = false
+    let lastErr = ''
+    for (const path of paths.filter(Boolean)) {
+      try {
+        const r: unknown = await t.server.post(path)
+        if (r === null) { lastErr = OFFLINE_TEXT; continue }
+        if (r && typeof r === 'object' && 'error' in (r as Record<string, unknown>) && (r as Record<string, unknown>).error) {
+          lastErr = String((r as Record<string, unknown>).error)
+          continue
+        }
+        ok = true
+        break
+      } catch (err) {
+        lastErr = err instanceof Error ? err.message : String(err)
+      }
+    }
+    if (!ok) {
+      setBubble(lastAi.id, `确认执行失败：${lastErr || '服务端未响应'}（任务 ${taskId}）`, 'error')
+      return
+    }
+    lastAi.confirmable = false
+    lastAi.content = `${lastAi.content}\n\n✅ 已确认，任务 \`${taskId}\` 开始执行。\n可在左侧「定时任务」抽屉（执行结果）或左下角「任务队列」查看进度与产物。`
+    // 确认结果同步进 history 尾条（重载会话后草稿状态一致）
+    const lastHist = history.value[history.value.length - 1]
+    if (lastHist && lastHist.role === 'assistant') {
+      lastHist.content = `${lastHist.content}\n\n✅ 已确认，任务 \`${taskId}\` 开始执行。`
+    }
+    persist()
+  }
+
+  /**
    * 发送一条消息（原版 _send_text 链路）；regenBubbleId 非空时为「重新生成」：
    * 不新建用户气泡，新回复替换该旧助手气泡（原版 L1237-1239 regen 分支）。
    */
@@ -319,6 +388,9 @@ export function useWorkbenchChat(options?: {
       target.content = '思考中…'
       target.status = 'pending'
       target.video = undefined // 内容被替换 → 清旧回复挂的资产按钮（原版 set_text L520-527）
+      target.confirmable = false
+      target.draftTaskId = undefined
+      target.draftConfirmPath = undefined
     } else {
       messages.value.push({ id: `u${Date.now()}`, role: 'user', content: text })
       history.value = trimHistory([...history.value, { role: 'user', content: text }])
@@ -338,6 +410,8 @@ export function useWorkbenchChat(options?: {
     }, BUSY_TIMEOUT_MS)
 
     let replyText = ''
+    // 计划任务档草稿信息（agent 分支解析，落气泡时用：parsed 作用域在分支内）
+    let draftInfo: { taskId: string; confirmPath: string } | null = null
     try {
       const t = getTintin()
       if (!t?.server) throw new ChatFlowError(OFFLINE_TEXT)
@@ -346,6 +420,10 @@ export function useWorkbenchChat(options?: {
       const prevHistory = regenBubbleId
         ? [...history.value]
         : history.value.slice(0, -1)
+      // 2026-08-31 修复：history 元素来自 ref 深层响应式（Vue Proxy），直接经 IPC
+      // 结构化克隆会抛「An object could not be cloned」（多轮对话第二轮起必现）→
+      // 发送前深拷贝成纯对象（与 loadSession 的纯化口径一致）
+      const plainHistory: HistoryMessage[] = JSON.parse(JSON.stringify(prevHistory))
       if (mode.value === 'agent') {
         // 首轮发送且有待入池附件 → 先轻量建会话再一次性入池（原版 L622-632：
         // create_session 失败则中断发送并提示，附件保持 pending 待重试）。
@@ -373,11 +451,13 @@ export function useWorkbenchChat(options?: {
           atts: attachments.value,
           poolMode: true
         })
+        // 任务选择器三档 → 服务端 mode（chat/agent/plan，agent_chat.py 2026-08-31 契约）
+        const reqMode = planMode.value === 'off' ? 'chat' : planMode.value === 'agent' ? 'agent' : 'plan'
         const r: AgentAPI.ChatResponse | null | { error: string } = await t.server.agentChat({
           message: appendContextText(text, agentCtx),
-          history: prevHistory.length ? prevHistory : undefined,
+          history: plainHistory.length ? plainHistory : undefined,
           model: selectedModel.value || undefined,
-          mode: planMode.value ? 'plan' : undefined,
+          mode: reqMode,
           sessionId: sessionId.value || undefined
         })
         if (gen !== generation) return // 用户已切换/新建会话：丢弃迟到回复
@@ -385,9 +465,13 @@ export function useWorkbenchChat(options?: {
         if (r && typeof r === 'object' && 'error' in r && r.error) {
           throw new ChatFlowError(`出错了：${r.error}`)
         }
-        const parsed = extractAgentReply(r, planMode.value ? 'plan' : undefined)
+        const parsed = extractAgentReply(r, reqMode)
         if (!parsed) throw new ChatFlowError('服务端未返回内容，请稍后重试')
         replyText = parsed.reply
+        // 计划任务档：服务端 pending_approval 草稿 → 带出任务 id 与确认端点
+        if (parsed.isDraft && parsed.taskId) {
+          draftInfo = { taskId: parsed.taskId, confirmPath: parsed.confirmPath }
+        }
         // 会话续接：首次保存服务端 session_id（原版 _on_reply_ok L1374-1377）
         if (parsed.sessionId && !sessionId.value) {
           sessionId.value = parsed.sessionId
@@ -402,7 +486,7 @@ export function useWorkbenchChat(options?: {
           atts: attachments.value,
           poolMode: false
         })
-        const msgs = buildLlmMessages(prevHistory, appendContextText(text, ctxText))
+        const msgs = buildLlmMessages(plainHistory, appendContextText(text, ctxText))
         const r: LLMAPI.ChatCompletionsResponse | null | { error: string } =
           await t.server.llmChat({
             model: selectedModel.value || undefined,
@@ -421,6 +505,16 @@ export function useWorkbenchChat(options?: {
 
       // 回复落气泡 + history（原版 _on_reply_ok L1378-1382）
       setBubble(pendingId, replyText)
+      // 计划任务档（mode=plan）：本回复是服务端 pending_approval 草稿 → 挂任务 id
+      // 与确认端点，用户点「确认执行」后 POST approve（服务端才启动执行）
+      if (draftInfo) {
+        const bubble = messages.value.find((m) => m.id === pendingId)
+        if (bubble) {
+          bubble.confirmable = true
+          bubble.draftTaskId = draftInfo.taskId
+          bubble.draftConfirmPath = draftInfo.confirmPath
+        }
+      }
       history.value = trimHistory([...history.value, { role: 'assistant', content: replyText }])
       persist(replyText)
       // W8：回复含成片视频资产 → 气泡挂播放/下载（原版 _on_reply_ok L1387-1390）
@@ -532,6 +626,7 @@ export function useWorkbenchChat(options?: {
     sending,
     mode,
     planMode,
+    confirmPlanExec,
     selectedModel,
     sessionId,
     attachments,
@@ -552,6 +647,7 @@ export function useWorkbenchChat(options?: {
     addCtxScript,
     removeCtxScript,
     addCtxMaterial,
+    addCtxAudio,
     downloadVideoAsset,
     quoteMessage,
     handleRegenerate

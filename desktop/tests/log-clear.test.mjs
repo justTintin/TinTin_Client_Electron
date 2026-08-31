@@ -35,9 +35,12 @@ beforeEach(() => {
 })
 
 test('clearLogFile：清空成功 → ok，文件保留且内容归零', () => {
-  const name = 'client-20260831.log'
+  // 用当日日期文件名：清空审计行（logInfo）按天分文件写到当天的 client-YYYYMMDD.log，
+  // 硬编码日期会在跨天后必挂（2026-09-01 教训）
+  const d = new Date()
+  const name = `client-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.log`
   fs.mkdirSync(logsRoot, { recursive: true })
-  fs.writeFileSync(path.join(logsRoot, name), '[2026-08-31] [INFO] [t] hello\n', 'utf8')
+  fs.writeFileSync(path.join(logsRoot, name), '[INFO] [t] hello\n', 'utf8')
   const r = logger.clearLogFile(name)
   assert.equal(r.ok, true)
   assert.equal(fs.existsSync(path.join(logsRoot, name)), true) // 文件保留

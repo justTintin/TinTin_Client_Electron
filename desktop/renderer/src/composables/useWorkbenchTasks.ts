@@ -29,8 +29,8 @@ export type { TaskRow, ServerTaskLike }
 
 /** 任务轮询间隔（列表含进度字段，整表重拉即可） */
 const POLL_MS = 5000
-/** 双源各取条数（编排任务置顶 + 执行任务，合并后交给抽屉） */
-const FETCH_LIMIT = 10
+/** 双源各取条数（2026-08-31 用户反馈充满后看不全：10→20；抽屉列表已可滚动） */
+const FETCH_LIMIT = 20
 
 function getBridge(): any {
   return (window as any).tintin

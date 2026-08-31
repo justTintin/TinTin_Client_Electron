@@ -312,12 +312,64 @@ export function buildContextText(input: ContextTextInput): string {
   const info = (atts || []).filter((a) => a && a.infoOnly && a.path)
   const infoText = buildAttachmentText(info)
   if (infoText) parts.push(infoText)
+  // 音频库条目（2026-08-31「选择素材」弹窗音频 tab）：infoOnly 信息胶囊，
+  // 不入素材池（音频非产品素材），任何模式下拼【参考音频】文本
+  const audios = (atts || []).filter((a) => a && a.infoOnly && !a.path && a.material)
+  for (const a of audios) parts.push('【参考音频】\n' + audioSummary(a.material as Record<string, unknown>))
   return parts.join('\n\n')
 }
 
 /** 用户原文 + 上下文拼装（原版 _send_text L1244-1246：f"{text}\n\n{ctx}"） */
 export function appendContextText(text: string, ctx: string): string {
   return ctx ? `${text}\n\n${ctx}` : text
+}
+
+/* ── 音频库条目（2026-08-31「选择素材」弹窗音频 tab） ─────────── */
+
+/** 音频上下文文本：文件名/类型/分类/风格/时长（字段容错：/audio/library 契约自由格式） */
+export function audioSummary(item: Record<string, unknown>): string {
+  const name = String(item?.filename || item?.title || item?.name || '').trim() || '未命名'
+  const lines = [`文件名:${name}`, '类型:音频']
+  for (const [key, label] of [
+    ['category', '分类'],
+    ['genre', '风格'],
+    ['emotion', '情绪'],
+    ['tags', '标签']
+  ] as const) {
+    const val = String((item as Record<string, unknown>)?.[key] || '').trim()
+    if (val) lines.push(`${label}:${val}`)
+  }
+  const dur = Number(item?.duration || item?.duration_sec || 0)
+  if (dur > 0) lines.push(`时长:${Math.round(dur)}秒`)
+  return lines.join('\n')
+}
+
+/* ── 媒体预览 URL（「选择素材」弹窗预览；无鉴权流式端点，<img>/<video>/<audio> 直接加载） ── */
+
+/** 服务端相对根拼接：去尾斜杠；serverUrl 为空（未连通）→ 空串（预览区显示占位） */
+function mediaBaseUrl(serverUrl: string): string {
+  return String(serverUrl || '').trim().replace(/\/$/, '')
+}
+
+/** 素材原文件流（GET /material/serve?material_id=，视频预览/图片预览共用） */
+export function buildMediaServeUrl(serverUrl: string, materialId: string | number): string {
+  const base = mediaBaseUrl(serverUrl)
+  const mid = String(materialId ?? '').trim()
+  return base && mid ? `${base}/material/serve?material_id=${encodeURIComponent(mid)}` : ''
+}
+
+/** 素材缩略图（GET /material/thumbnail?material_id=，卡片网格用） */
+export function buildMediaThumbUrl(serverUrl: string, materialId: string | number): string {
+  const base = mediaBaseUrl(serverUrl)
+  const mid = String(materialId ?? '').trim()
+  return base && mid ? `${base}/material/thumbnail?material_id=${encodeURIComponent(mid)}` : ''
+}
+
+/** 音频库文件流（GET /audio/library/{audio_id}/file，底部播放条用） */
+export function buildAudioFileUrl(serverUrl: string, audioId: string | number): string {
+  const base = mediaBaseUrl(serverUrl)
+  const aid = String(audioId ?? '').trim()
+  return base && aid ? `${base}/audio/library/${encodeURIComponent(aid)}/file` : ''
 }
 
 /* ── 弹窗列表容错解析（服务端自由格式响应） ─────────────────── */

@@ -26,6 +26,7 @@ import { useWorkbenchChat } from '@/composables/useWorkbenchChat'
 import { useWorkbenchAgents } from '@/composables/useWorkbenchAgents'
 import { useSkills } from '@/composables/useSkills'
 import { mergeSkillCandidates, buildSkillWakeText, applyWakePrefix } from '@/composables/skillsLogic'
+import { buildAgentWakeText } from '@/composables/workbenchChatContext'
 import { useWorkbenchNotifications } from '@/composables/useWorkbenchNotifications'
 import { useWorkbenchTasks } from '@/composables/useWorkbenchTasks'
 import { useOfficeExport } from '@/composables/useOfficeExport'
@@ -71,11 +72,11 @@ const {
   ctxScripts,
   handleSend,
   handleKeydown,
+  confirmPlanExec,
   openSettings,
   loadSession,
   resetToWelcome,
   initModel,
-  setMode,
   addAttachments,
   addScreenshots,
   removeAttachment,
@@ -84,21 +85,19 @@ const {
   addCtxScript,
   removeCtxScript,
   addCtxMaterial,
+  addCtxAudio,
   downloadVideoAsset,
   quoteMessage,
   handleRegenerate
 } = chat
 
-/* ── 智能体快捷条域（2026-08-31 用户裁决：移除「对话」llm 直连入口，
-   快捷条仅服务端智能体 + 本地技能，见 skillsAll） ── */
+/* ── 智能体快捷条域（2026-08-31 用户裁决：移除「对话」llm 直连入口；
+   快捷条为纯列表不持有选中态，点击条目=插唤醒词，见 onSelectEntry） ── */
 const {
   entries: agentEntries,
   errorMessage: agentsError,
-  selectedKey: agentSelectedKey,
   loadAgents,
-  setSkills,
-  selectEntry,
-  syncSelectionWithMode
+  setSkills
 } = useWorkbenchAgents()
 
 /* ── 技能域（原版 _load_agents：技能与智能体一起更新进快捷条/斜杠菜单） ── */
@@ -182,32 +181,18 @@ function onPickScript(item: PickerItem) {
   addCtxScript(item as CtxScriptItem)
 }
 
-/** 快捷条选中：切换对话模式。原「模式切换即新会话」在多会话列表下
- *  来回切换会不停堆积空会话（2026-08-31 用户反馈）：优先复用目标模式
- *  最近的已有会话（消息域装载同 onSelectSession 口径），仅该模式无任何
- *  会话时才新建；真正开新对话用侧栏「新建」按钮。 */
+/** 快捷条点击（2026-08-31 用户裁决：智能体条只是列表，不应有选择态；
+ *  调用统一走输入框——点击条目 = 注入唤醒前缀，与 / 菜单同口径
+ *  （原版 _on_agent_selected L1537-1549 applyWakePrefix：换选时剥离旧前缀）。 */
 function onSelectEntry(key: string) {
-  const r = selectEntry(key)
-  if (!r.changed || !r.mode) return
-  const latest = sessions.latestOfMode(r.mode)
-  if (latest) {
-    sessions.selectSession(latest.id)
-    const s = sessions.getActive()
-    if (s) {
-      loadSession({ serverSessionId: s.serverSessionId, messages: s.messages, mode: s.mode })
-      syncSelectionWithMode(s.mode) // 复用会话 → 快捷条选中态对齐该会话模式
-    }
-  } else {
-    setMode(r.mode)
-    sessions.createSession(r.mode)
-  }
-  // 技能条目：切换会话后注入唤醒前缀（原版 _on_agent_selected L1537-1549：
-  // 请按技能【name】执行：instruction，换选时剥离旧前缀）
-  if (r.entry?.kind === 'skill') {
-    const sk = skillsAll.value.find((x) => `skill:${x.id}` === key)
-    if (sk) inputText.value = applyWakePrefix(inputText.value, buildSkillWakeText(sk))
-    nextTick(() => composerComp.value?.focus())
-  }
+  const entry = agentEntries.value.find((e) => e.key === key)
+  if (!entry) return
+  const wake =
+    entry.kind === 'skill'
+      ? buildSkillWakeText(skillsAll.value.find((x) => `skill:${x.id}` === key))
+      : buildAgentWakeText(entry)
+  inputText.value = applyWakePrefix(inputText.value, wake)
+  nextTick(() => composerComp.value?.focusEnd())
 }
 
 /* ── W9：引用回复（业务在 chat.quoteMessage，纯函数在 logic 层；聚焦/光标桥接输入区） ── */
@@ -231,7 +216,6 @@ onMounted(async () => {
       messages: active.messages,
       mode: active.mode
     })
-    syncSelectionWithMode(active.mode) // 恢复会话模式 → 快捷条选中态对齐
   } else {
     resetToWelcome() // 无持久化会话（或空会话）→ 欢迎语新对话
   }
@@ -247,7 +231,6 @@ function onSelectSession(id: string) {
   const s = sessions.getActive()
   if (s) {
     loadSession({ serverSessionId: s.serverSessionId, messages: s.messages, mode: s.mode })
-    syncSelectionWithMode(s.mode) // 切换会话 → 快捷条选中态对齐该会话模式
   }
 }
 
@@ -271,7 +254,6 @@ async function onDeleteSession(id: string) {
         messages: next.messages,
         mode: next.mode
       })
-      syncSelectionWithMode(next.mode)
     } else {
       resetToWelcome()
     }
@@ -469,6 +451,7 @@ async function onExportTasks() {
         @toggle-sidebar="toggleSidebarPanel"
         @quote-message="onQuoteMessage"
         @regenerate-message="onRegenerateMessage"
+        @confirm-plan="confirmPlanExec"
         @download-video="downloadVideoAsset"
         @export-word="onExportWord"
         @export-excel="onExportExcel"
@@ -488,7 +471,6 @@ async function onExportTasks() {
         :ctx-product="ctxProduct"
         :ctx-scripts="ctxScripts"
         :entries="agentEntries"
-        :selected-key="agentSelectedKey"
         :agents="agentList"
         @send="handleSend"
         @keydown="handleKeydown"
@@ -530,6 +512,7 @@ async function onExportTasks() {
       :visible="showMaterial"
       @close="showMaterial = false"
       @pick="onPickMaterial"
+      @pick-audio="addCtxAudio"
     />
     <WbPickScriptDialog
       :visible="showScript"

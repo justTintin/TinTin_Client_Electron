@@ -132,6 +132,15 @@ const emit = defineEmits<{
   color: var(--foreground);
 }
 
+/* 列表体：填满剩余高度并滚动（2026-08-31 用户反馈：充满后无法滚动看更多；
+   自持副本原先漏掉了本规则，致内容溢出不滚动） */
+.notify-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-4);
+}
+
 /* 顶部「导出 Excel」（PRD §3.2⑤ 任务报告） */
 .taskq-export-btn {
   display: inline-flex;

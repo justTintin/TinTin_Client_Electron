@@ -67,17 +67,38 @@ test('buildLlmMessages：末位为 assistant → 追加本轮 user', () => {
   assert.deepEqual(msgs[2], { role: 'user', content: 'q2' })
 })
 
-test('extractAgentReply：正常响应映射 reply/session_id', () => {
-  const r = L.extractAgentReply({ reply: '答案', session_id: 's-1', attachments: [], tool_calls: [] })
-  assert.deepEqual(r, { reply: '答案', sessionId: 's-1', taskId: '', isPlan: false })
+test('extractAgentReply：正常响应映射 reply/session_id（chat 档默认无任务）', () => {
+  const r = L.extractAgentReply({ reply: '答案', session_id: 's-1', attachments: [], tool_calls: [] }, 'chat')
+  assert.deepEqual(r, { reply: '答案', sessionId: 's-1', taskId: '', isPlan: false, isDraft: false, confirmPath: '' })
 })
 
-test('extractAgentReply：mode=plan 无 reply 含 task_id → 编排提示文本', () => {
-  const r = L.extractAgentReply({ reply: '', session_id: 's-2', task_id: 'a_123' }, 'plan')
+test('extractAgentReply：mode=agent 无 reply 含 task_id → 编排提示文本（isPlan）', () => {
+  const r = L.extractAgentReply({ reply: '', session_id: 's-2', task_id: 'a_123', status: 'running' }, 'agent')
   assert.equal(r.isPlan, true)
+  assert.equal(r.isDraft, false)
   assert.equal(r.taskId, 'a_123')
   assert.ok(r.reply.includes('a_123'))
   assert.ok(r.reply.includes('编排任务'))
+})
+
+test('extractAgentReply：mode=plan pending_approval → 计划草稿（isDraft + confirm 端点）', () => {
+  const r = L.extractAgentReply(
+    { reply: '', session_id: 's-4', task_id: 'a_456', status: 'pending_approval',
+      plan: '1. 拍摄； 2. 剪辑； 3. 发布', confirm: '/agent/tasks/a_456/approve' },
+    'plan'
+  )
+  assert.equal(r.isDraft, true)
+  assert.equal(r.isPlan, false)
+  assert.equal(r.taskId, 'a_456')
+  assert.equal(r.confirmPath, '/agent/tasks/a_456/approve')
+  assert.ok(r.reply.includes('拍摄'))
+})
+
+test('planSummaryText：string 直用 / 对象格式化 / 空 → task_id 提示兑底', () => {
+  assert.equal(L.planSummaryText('计划文本', 'a_1'), '计划文本')
+  assert.equal(L.planSummaryText({ steps: ['a'] }, 'a_2'), JSON.stringify({ steps: ['a'] }, null, 2))
+  assert.ok(L.planSummaryText(undefined, 'a_3').includes('a_3'))
+  assert.ok(L.planSummaryText('', 'a_4').includes('a_4'))
 })
 
 test('extractAgentReply：空回复且无 task_id → null（触发「服务端未返回内容」）', () => {

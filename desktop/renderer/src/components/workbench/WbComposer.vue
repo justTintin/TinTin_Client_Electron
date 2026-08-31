@@ -3,9 +3,9 @@
 // 结构：上下文胶囊行（产品/素材池/脚本/本地附件，原版「上下文」区）
 //   → textarea 输入框（加宽）→ 容器内底部工具行：上传图标 + 选择产品/素材/脚本
 //     入口 + 右下发送图标（保持最右）
-//   → 智能体快捷条独立一行（输入框容器外部下方；首项「对话」= llm 直连；
-//     超出宽度折叠进「更多」浮层）+ 列表失败提示
-//   → 提示行：Enter 快捷键说明 + 转编排任务开关（agent 模式）
+//   → 智能体快捷条独立一行（输入框容器外部下方；2026-08-31 用户裁决：
+//     纯列表不持有选中态，点击条目=插唤醒词；超出宽度折叠进「更多」浮层）+ 列表失败提示
+//   → 提示行：Enter 快捷键说明 + 任务选择器（agent 模式：对话/智能体/计划任务三档）
 // 技能入口：工具行「⚙技能」打开技能管理弹窗（open-skills → 容器），本地技能
 //   与智能体同构合并进快捷条/斜杠菜单（skillsLogic，原版 _on_agents_loaded 口径）。
 // 移除：模式分段切换与模型下拉（模型只读 llm.defaultModel 偏好，系统设置可改）。
@@ -14,7 +14,7 @@
 // 仅绘制 + 事件转发：模式/附件/上下文业务在 useWorkbenchChat /
 // useWorkbenchAgents，弹窗与会话编排在本容器（Workbench.vue）。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { ChatMode, ChatAttachment } from '@/composables/workbenchChatLogic'
+import type { ChatMode, ChatAttachment, PlanExecMode } from '@/composables/workbenchChatLogic'
 import {
   type QuickEntry,
   type WorkbenchAgent,
@@ -43,8 +43,9 @@ const props = defineProps<{
   sending?: boolean
   /** 对话模式：agent=智能体 / llm=通用对话（快捷条选中，容器编排新会话） */
   mode?: ChatMode
-  /** 「转编排任务」开关（原版 chk_plan L1130-1135 默认勾选，仅智能体模式展示） */
-  planMode?: boolean
+  /** 任务选择器（2026-08-31 用户裁决：替换「转编排任务」勾选，三档）：
+   *  off=对话 / agent=智能体（拆解执行）/ plan-confirm=计划任务（确认后执行） */
+  planMode?: PlanExecMode
   /** 会话附件上下文胶囊（含素材库引用 materialId 与本地文件两类） */
   attachments?: ChatAttachment[]
   /** 产品上下文胶囊（单选覆盖） */
@@ -53,8 +54,6 @@ const props = defineProps<{
   ctxScripts?: CtxScriptItem[]
   /** 智能体快捷条条目（服务端智能体 + 本地技能，useWorkbenchAgents） */
   entries?: QuickEntry[]
-  /** 当前选中条目 key（智能体=agent_id，技能=skill:<id>；空=未选中） */
-  selectedKey?: string
   /** 服务端智能体 + 本地技能（斜杠候选数据源，技能 source='skill'） */
   agents?: (WorkbenchAgent | SkillCandidate)[]
 }>()
@@ -63,7 +62,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'send'): void
   (e: 'keydown', ev: KeyboardEvent): void
-  (e: 'update:planMode', value: boolean): void
+  (e: 'update:planMode', value: PlanExecMode): void
   (e: 'attachments-picked', paths: string[]): void
   /** 剪贴板截图贴入附件池（截图只提供信息，不入素材池） */
   (e: 'screenshots-picked', paths: string[]): void
@@ -178,7 +177,7 @@ function onDrop(e: DragEvent) {
 }
 
 function onPlanToggle(e: Event) {
-  emit('update:planMode', (e.target as HTMLInputElement).checked)
+  emit('update:planMode', (e.target as HTMLSelectElement).value as PlanExecMode)
 }
 
 /* ── 斜杠菜单（原版 _SlashPopup：/ 或 /关键字 唤起候选，选中插唤醒词） ── */
@@ -311,7 +310,13 @@ function attLabel(a: ChatAttachment): string {
 }
 
 function attTitle(a: ChatAttachment): string {
-  const head = a.materialId ? materialSummary((a.material || {}) as CtxMaterialItem) : a.path
+  const head = a.materialId
+    ? materialSummary((a.material || {}) as CtxMaterialItem)
+    : a.material
+      ? materialSummary(a.material as CtxMaterialItem) // 音频等 infoOnly 信息胶囊：无 materialId 也能看摘要
+      : a.path
+  // 信息胶囊（截图/参考音频）不入素材池，状态文案不同于普通附件
+  if (a.infoOnly) return `${head}\n信息上下文（随消息文本携带，不入素材池）`
   return `${head}\n${STATE_LABEL[a.state]}`
 }
 
@@ -328,7 +333,7 @@ defineExpose({ focus, focusEnd })
         class="ctx-pill ctx-pill--product"
         :title="productSummary(ctxProduct)"
       >
-        {{ productLabel(ctxProduct) }}
+        <span class="pill-text">{{ productLabel(ctxProduct) }}</span>
         <button class="pill-x" aria-label="移除产品" @click="emit('remove-product')">×</button>
       </span>
       <span
@@ -338,7 +343,7 @@ defineExpose({ focus, focusEnd })
         :class="a.state"
         :title="attTitle(a)"
       >
-        {{ attLabel(a) }}
+        <span class="pill-text">{{ attLabel(a) }}</span>
         <button class="pill-x" :aria-label="'移除 ' + a.name" @click="emit('remove-attachment', i)">×</button>
       </span>
       <span
@@ -347,7 +352,7 @@ defineExpose({ focus, focusEnd })
         class="ctx-pill ctx-pill--script"
         :title="scriptSummary(s)"
       >
-        {{ scriptLabel(s) }}
+        <span class="pill-text">{{ scriptLabel(s) }}</span>
         <button class="pill-x" :aria-label="'移除脚本 ' + s.topic" @click="emit('remove-script', i)">×</button>
       </span>
     </div>
@@ -435,7 +440,7 @@ defineExpose({ focus, focusEnd })
     </div>
     </div>
 
-    <!-- 底部信息行：智能体快捷条（含「对话」首项）在左，「转编排任务」在右——
+    <!-- 底部信息行：智能体快捷条（纯列表，点击插唤醒词）在左，「转编排任务」在右——
          2026-08-30 用户裁决：快捷条不单独占行，并入本行转编排任务之前 -->
     <div class="input-foot">
       <div ref="quickbarRef" class="quick-bar">
@@ -443,7 +448,6 @@ defineExpose({ focus, focusEnd })
           v-for="e in visibleEntries"
           :key="e.key"
           class="quick-pill"
-          :class="{ active: e.key === selectedKey }"
           type="button"
           :title="e.desc"
           @click="emit('select-entry', e.key)"
@@ -476,13 +480,18 @@ defineExpose({ focus, focusEnd })
       </div>
 
       <span class="foot-hint">Enter 发送，Shift + Enter 换行，输入 / 唤起智能体</span>
+      <!-- 任务选择器（2026-08-31 用户裁决：替换「转编排任务」勾选）：
+           对话 / 智能体（拆解执行）/ 计划任务（先出计划待确认） -->
       <label
         v-if="mode === 'agent'"
         class="plan-check"
-        title="勾选后对话先转为编排任务提交服务端自动执行（回复返回任务 ID）"
+        title="智能体：对话转编排任务拆解执行；计划任务：先出计划草稿，点「确认执行」后才提交"
       >
-        <input type="checkbox" :checked="planMode" @change="onPlanToggle" />
-        转编排任务
+        <select class="plan-select" :value="planMode ?? 'agent'" @change="onPlanToggle">
+          <option value="off">对话</option>
+          <option value="agent">智能体</option>
+          <option value="plan-confirm">计划任务</option>
+        </select>
       </label>
     </div>
 
@@ -609,7 +618,7 @@ defineExpose({ focus, focusEnd })
   padding: 0 10px;
   font-size: 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: var(--surface-container);
   color: var(--muted-foreground);
   white-space: nowrap;
@@ -630,7 +639,8 @@ defineExpose({ focus, focusEnd })
   display: flex;
   align-items: center;
   gap: 6px;
-  overflow: hidden;
+  /* 不加 overflow:hidden：「更多」浮层绝对定位于本条上方，裁剪会吞掉浮层
+     （2026-08-31 用户反馈点击更多无反应的根因）；条目宽度由 fitQuickBar 控住 */
 }
 
 .quick-pill {
@@ -640,7 +650,8 @@ defineExpose({ focus, focusEnd })
   padding: 0 13px;
   font-size: 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  /* 2026-08-31 用户反馈：与界面圆角统一（原 999px 全圆与输入容器 radius-lg 不一致） */
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--muted-foreground);
   white-space: nowrap;
@@ -652,12 +663,6 @@ defineExpose({ focus, focusEnd })
 .quick-pill:hover {
   border-color: var(--primary);
   color: var(--primary);
-}
-
-.quick-pill.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-foreground);
 }
 
 .quick-more-pop {
@@ -711,12 +716,19 @@ defineExpose({ focus, focusEnd })
   padding: 2px 4px 2px 10px;
   font-size: 12px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: var(--surface-container);
   color: var(--foreground);
-  white-space: nowrap;
+}
+
+/* 文本子元素压缩截断：保证删除按钮永不被长文本挤出胶囊可视区
+   （2026-08-31 用户反馈：× 被裁掉看不到） */
+.pill-text {
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ctx-pill--product {
@@ -745,6 +757,7 @@ defineExpose({ focus, focusEnd })
 }
 
 .pill-x {
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   line-height: 1;
@@ -754,6 +767,7 @@ defineExpose({ focus, focusEnd })
   justify-content: center;
   color: inherit;
   font-size: 13px;
+  border: 1px solid transparent;
 }
 
 .pill-x:hover {

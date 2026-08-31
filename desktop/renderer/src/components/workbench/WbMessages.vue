@@ -24,6 +24,7 @@ const emit = defineEmits<{
   (e: 'toggle-sidebar'): void
   (e: 'quote-message', id: string): void
   (e: 'regenerate-message', id: string): void
+  (e: 'confirm-plan'): void
   (e: 'download-video', asset: VideoAsset): void
   (e: 'export-word'): void
   (e: 'export-excel'): void
@@ -161,6 +162,14 @@ function toggleFold(id: string) {
               <button class="video-btn" title="把成片保存到本地文件" @click="emit('download-video', m.video)">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                 下载
+              </button>
+            </div>
+            <!-- 计划任务模式（plan-confirm）：本回复是计划草稿 → 确认后以 mode=plan 重发执行 -->
+            <div v-if="m.confirmable" class="confirm-card">
+              <span class="confirm-hint">这是服务端计划草稿，确认后才开始执行</span>
+              <button class="confirm-btn" title="确认计划并以编排任务提交执行" @click="emit('confirm-plan')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                确认执行
               </button>
             </div>
             <!-- W9 消息操作栏（AI 气泡 hover 显示）：引用 / 重新生成（仅最后一条 AI 回复）+
@@ -380,6 +389,42 @@ function toggleFold(id: string) {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface-container);
+}
+
+.confirm-card {
+  margin-top: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 10px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-lg);
+  background: var(--surface-container);
+}
+
+.confirm-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.confirm-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.confirm-btn:hover {
+  filter: brightness(1.08);
 }
 
 .video-title {

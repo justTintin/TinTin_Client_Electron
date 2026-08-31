@@ -267,3 +267,41 @@ test('searchErrorText：网络失败/5xx 异常分支文案', () => {
   assert.ok(C.searchErrorText(null).includes('网络异常'))
   assert.ok(C.searchErrorText(new Error('HTTP 500')).includes('HTTP 500'))
 })
+
+/* ── 选择素材弹窗·双 tab（2026-08-31 用户需求：图视预览 + 音频播放条） ── */
+
+test('audioSummary：文件名/类型/分类/风格/时长（字段容错多回退）', () => {
+  const t = C.audioSummary({ filename: 'BGM-轻快.mp3', category: '背景音乐', genre: '电子', duration: 32.6 })
+  assert.ok(t.includes('文件名:BGM-轻快.mp3'))
+  assert.ok(t.includes('类型:音频'))
+  assert.ok(t.includes('分类:背景音乐'))
+  assert.ok(t.includes('风格:电子'))
+  assert.ok(t.includes('时长:33秒'))
+  // 缺字段回退：title/name 回退 + 空 duration 不出行
+  const t2 = C.audioSummary({ title: '开场音效' })
+  assert.ok(t2.includes('文件名:开场音效'))
+  assert.ok(!t2.includes('时长:'))
+})
+
+test('buildMediaServeUrl / buildMediaThumbUrl / buildAudioFileUrl：拼接与空值防护', () => {
+  assert.equal(C.buildMediaServeUrl('http://s:8000/', 12), 'http://s:8000/material/serve?material_id=12')
+  assert.equal(C.buildMediaThumbUrl('http://s:8000', 'ab'), 'http://s:8000/material/thumbnail?material_id=ab')
+  assert.equal(C.buildAudioFileUrl('http://s:8000', 7), 'http://s:8000/audio/library/7/file')
+  // serverUrl 空（未连通）或 id 空 → 空串（预览区显示占位）
+  assert.equal(C.buildMediaServeUrl('', 12), '')
+  assert.equal(C.buildMediaServeUrl('http://s:8000', ''), '')
+  assert.equal(C.buildAudioFileUrl('', 7), '')
+})
+
+test('buildContextText：音频 infoOnly 信息胶囊任何模式都拼【参考音频】（不入素材池）', () => {
+  const atts = [
+    { name: 'BGM-轻快.mp3', path: '', state: 'pooled', infoOnly: true, material: { filename: 'BGM-轻快.mp3', category: '背景音乐', media_type: 'audio' } }
+  ]
+  const agent = C.buildContextText({ product: null, scripts: [], atts, poolMode: true })
+  assert.ok(agent.includes('【参考音频】'))
+  assert.ok(agent.includes('文件名:BGM-轻快.mp3'))
+  assert.ok(agent.includes('分类:背景音乐'))
+  const llm = C.buildContextText({ product: null, scripts: [], atts, poolMode: false })
+  assert.ok(llm.includes('【参考音频】'))
+  assert.ok(!llm.includes('【附件】'), '无 path 的音频胶囊不走【附件】分支')
+})

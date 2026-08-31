@@ -43,7 +43,7 @@ function pingServer(url) {
   })
 }
 
-function createEnvIpc(ipcMain, { getServerUrl, studioRoot }) {
+function createEnvIpc(ipcMain, { getServerUrl, studioRoot, getMachineId }) {
   // 日志初始化（环境与维护卡「日志」区块数据源；写 %APPDATA%/logs/client-YYYYMMDD.log）
   // 首条启动日志同时记录启动时生效的服务端地址（getServerUrl 读取链路排查锚点）
   try {
@@ -143,6 +143,13 @@ function createEnvIpc(ipcMain, { getServerUrl, studioRoot }) {
     info.source = info.machineGuid ? 'machine-guid' : (info.mac ? 'mac' : 'hostname')
     try { logger.logInfo('machine', `machine info collected: source=${info.source}`) } catch (_) {}
     return info
+  })
+
+  // ── 产品资料等按机器码隔离的服务端接口：渲染层取 machine_id 作路径参数
+  //    （与 server-proxy 注入的 X-Machine-ID 头同值，同一 config-store 口径）
+  ipcMain.handle('env:getMachineId', () => {
+    try { return { ok: true, machineId: String(getMachineId?.() || '') } }
+    catch (e) { return { ok: false, machineId: '', error: String(e?.message || e) } }
   })
 
   // ── 剪贴板截图 → 附件池：截图只提供信息（不入服务端素材池；素材池是产品素材），

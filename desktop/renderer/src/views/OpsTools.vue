@@ -2,9 +2,10 @@
 // ═══════════════════════════════════════════════════════════════
 // OpsTools.vue — 运营工具（卡片 Launcher，模式对齐 MediaTools.vue）
 // 落地文档 2026-08-30 §三：两大组 4 大模块（骨架占位，分批实施）
-//   运营素材：产品库 / 企业知识库
-//   视频营销：视频数据预估 / 视频营销选题
-// 后续补：产品文案生成、分镜脚本生成（复用入口，组件同目录）
+//   方案脚本：产品资料 / 企业知识库
+//   视频运营：视频数据预估 / 视频营销选题
+// 2026-08-30 用户裁决：飞书脚本创作不移植；产品文案创作、分镜脚本创作
+//   划归媒体工具 Tab（组件同目录 components/ops-tools/，由 MediaTools 引用）。
 // ═══════════════════════════════════════════════════════════════
 
 import { shallowRef, defineAsyncComponent, type Component } from 'vue'
@@ -26,17 +27,17 @@ interface ToolItem {
   status?: 'ready' | 'planned'
 }
 
-/* 分组与模块（落地文档 2026-08-30 §三 卡片清单） */
-const GROUPS = ['运营素材', '视频营销'] as const
+/* 分组与模块（落地文档 2026-08-30 §三 定稿卡片清单） */
+const GROUPS = ['方案脚本', '视频运营'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
-  运营素材: [
-    { id: 'product-library', title: '产品库', desc: '品/品牌/型号树状管理（含同步），复制产品摘要转文案', group: '运营素材', emoji: '📦', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtProductLibrary.vue')), status: 'planned' },
-    { id: 'knowledge-base',  title: '企业知识库', desc: '结构化分类 + 分类文档 + 参考素材列表', group: '运营素材', emoji: '📚', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtKnowledgeBase.vue')), status: 'planned' },
+  方案脚本: [
+    { id: 'product-library', title: '产品资料', desc: '品类/品牌/型号树状管理，服务端同步', group: '方案脚本', emoji: '📦', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtProductLibrary.vue')), status: 'ready' },
+    { id: 'knowledge-base',  title: '我的知识库', desc: '风格化画像 + 参考素材蒸馏', group: '方案脚本', emoji: '📚', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtKnowledgeBase.vue')), status: 'planned' },
   ],
-  视频营销: [
-    { id: 'video-score',    title: '视频数据预估', desc: '关键帧 → 视觉模型预估视频数据表现', group: '视频营销', emoji: '📈', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoScore.vue')), status: 'planned' },
-    { id: 'video-marketing', title: '视频营销选题', desc: '爆款运营视频拆解 + 品牌 + 文案仿写选题', group: '视频营销', emoji: '🎯', accent: 'linear-gradient(135deg,#10B981 0%,#14B8A6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoMarketing.vue')), status: 'planned' },
+  视频运营: [
+    { id: 'video-score',    title: '视频评价预测', desc: '关键帧 → 视觉模型预测视频表现', group: '视频运营', emoji: '📈', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoScore.vue')), status: 'planned' },
+    { id: 'video-marketing', title: '视频营销检测', desc: '研判是否营销视频 + 品类 + 改进建议', group: '视频运营', emoji: '🎯', accent: 'linear-gradient(135deg,#10B981 0%,#14B8A6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoMarketing.vue')), status: 'planned' },
   ],
 }
 
@@ -82,7 +83,7 @@ function backToGrid() {
     <template v-else>
       <div class="page-head">
         <h1 class="page-title">运营工具</h1>
-        <p class="page-sub">产品库 · 企业知识库 · 视频数据预估 · 视频营销选题</p>
+        <p class="page-sub">产品资料 · 我的知识库 · 视频评价预测 · 视频营销检测</p>
       </div>
 
       <div v-for="g in GROUPS" :key="g" class="group-block">

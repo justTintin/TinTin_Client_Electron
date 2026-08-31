@@ -472,6 +472,8 @@ const env = {
   openLog:       (name)  => ipcRenderer.invoke('env:openLog', name),
   // 关于卡·本机机器码（原始系统信息，渲染层 SHA256 摘要）
   getMachineInfo:()      => ipcRenderer.invoke('env:getMachineInfo'),
+  // 机器码（与 X-Machine-ID 头同值；产品资料等按机器码隔离接口的路径参数）
+  getMachineId:  ()      => ipcRenderer.invoke('env:getMachineId'),
   // 剪贴板截图 → 本地临时 PNG（截图只提供信息，不入素材池）
   pasteImage:    ()      => ipcRenderer.invoke('env:pasteImage'),
 }

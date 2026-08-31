@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const { createTray } = require('./tray')
 const { initUpdater } = require('./updater')
-const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore } = require('./server-proxy')
+const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore, getMachineId } = require('./server-proxy')
 const { createDownloadManager } = require('./download-manager')
 const { createFfmpegGate } = require('./ffmpeg-gate')
 const browserWindow = require('./browser-window')
@@ -639,7 +639,7 @@ app.whenReady().then(() => {
     initUpdater()
     // 环境与维护（服务端探测/清缓存/CDP/环境检测）
     const { createEnvIpc } = require('./env-ipc')
-    createEnvIpc(ipcMain, { getServerUrl, studioRoot: getStudioRoot() })
+    createEnvIpc(ipcMain, { getServerUrl, studioRoot: getStudioRoot(), getMachineId })
 
     // 飞书连接测试（条目⑩ S6，对照原 _test_feishu L584-600；getCfg 读 electron-store 补全 Secret）
     const { createFeishuIpc } = require('./feishu-ipc')

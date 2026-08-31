@@ -51,9 +51,9 @@ const props = defineProps<{
   ctxProduct?: CtxProductItem | null
   /** 脚本上下文胶囊（按 id 去重多选） */
   ctxScripts?: CtxScriptItem[]
-  /** 智能体快捷条条目（首项「对话」+ 服务端智能体，useWorkbenchAgents） */
+  /** 智能体快捷条条目（服务端智能体 + 本地技能，useWorkbenchAgents） */
   entries?: QuickEntry[]
-  /** 当前选中条目 key（llm 直连=CHAT_ENTRY_KEY，智能体=agent_id） */
+  /** 当前选中条目 key（智能体=agent_id，技能=skill:<id>；空=未选中） */
   selectedKey?: string
   /** 服务端智能体 + 本地技能（斜杠候选数据源，技能 source='skill'） */
   agents?: (WorkbenchAgent | SkillCandidate)[]
@@ -372,7 +372,7 @@ defineExpose({ focus, focusEnd })
         ref="textareaRef"
         v-model="innerText"
         class="chat-input"
-        rows="4"
+        rows="3"
         placeholder="输入消息，/ 唤起智能体…"
         @keydown="onKeydown"
         @paste="onPaste"
@@ -526,7 +526,7 @@ defineExpose({ focus, focusEnd })
 .chat-input {
   display: block;
   width: 100%;
-  min-height: 112px;
+  min-height: 88px;
   padding: var(--space-4) var(--space-4) var(--space-2);
   background: transparent;
   border: none;

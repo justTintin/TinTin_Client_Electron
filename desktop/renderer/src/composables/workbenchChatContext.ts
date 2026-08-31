@@ -4,7 +4,8 @@
 // 业务口径对照原客户端 gui/agent_home_page.py：
 //   · parseAgentsResponse   = 原 _AgentLoader L707-725（GET /agent/agents
 //                             兼容 {agents}|裸数组，过滤 exposed=False）
-//   · buildQuickEntries     = 快捷条首项固定「对话」（llm 直连）+ 服务端智能体
+//   · buildQuickEntries     = 快捷条服务端智能体列表（2026-08-31 用户裁决：
+//                             移除首项「对话」llm 直连入口，实际不用）
 //   · isAgentPrefix         = 原 _SlashPopup.is_agent_prefix L254-259
 //   · filterSlashCandidates = 原 _SlashPopup.show_for L294-298（名称/描述过滤）
 //   · detectSlashKeyword    = 原 _ChatInput._on_text_changed L191（/([^\s/]*)$）
@@ -28,24 +29,14 @@ export interface WorkbenchAgent {
   desc: string
 }
 
-/** 快捷条条目：kind=llm 固定「对话」首项；kind=agent 服务端智能体；
- *  kind=skill 本地技能（2026-08-31 技能入口移植，key 带 skill: 前缀） */
+/** 快捷条条目：kind=agent 服务端智能体；kind=skill 本地技能
+ *  （2026-08-31 用户裁决：移除「对话」llm 直连入口，实际不用；
+ *   存量 llm 会话仅保留可读，新会话全部走智能体链路） */
 export interface QuickEntry {
   key: string
-  kind: 'llm' | 'agent' | 'skill'
+  kind: 'agent' | 'skill'
   name: string
   desc: string
-}
-
-/** 「对话」条目 key（llm 直连模式） */
-export const CHAT_ENTRY_KEY = '__chat__'
-
-/** 「对话」快捷条首项（= 基础 llm 直连模式，模型取 llm.defaultModel 偏好） */
-export const CHAT_QUICK_ENTRY: QuickEntry = {
-  key: CHAT_ENTRY_KEY,
-  kind: 'llm',
-  name: '对话',
-  desc: '基础大模型直连对话（模型在「系统设置」配置）'
 }
 
 /**
@@ -73,12 +64,10 @@ export function parseAgentsResponse(data: unknown): WorkbenchAgent[] {
   return out
 }
 
-/** 快捷条条目：首项固定「对话」+ 服务端智能体（原版每行 10 个改按宽度收纳） */
+/** 快捷条条目：服务端智能体（原版每行 10 个改按宽度收纳；
+ *  2026-08-31 移除首项「对话」，llm 直连入口实际不用） */
 export function buildQuickEntries(agents: WorkbenchAgent[]): QuickEntry[] {
-  return [
-    CHAT_QUICK_ENTRY,
-    ...agents.map((a) => ({ key: a.id || a.name, kind: 'agent' as const, name: a.name, desc: a.desc }))
-  ]
+  return agents.map((a) => ({ key: a.id || a.name, kind: 'agent' as const, name: a.name, desc: a.desc }))
 }
 
 /* ── 斜杠菜单（原版 _SlashPopup） ──────────────────────────── */

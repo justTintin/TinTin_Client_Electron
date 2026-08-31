@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════
 // workbench-context-logic.test.mjs — 工作台输入区重排·纯逻辑单测
 // 被测：renderer/src/composables/workbenchChatContext.ts（纯函数，无 vue 依赖）
 // 对照原客户端 gui/agent_home_page.py：
@@ -55,22 +55,18 @@ test('parseAgentsResponse：异常/脏数据 → 空数组（回退仅「对话�
   assert.deepEqual(C.parseAgentsResponse({ agents: [null, 42, { name: 'n' }] }).length, 1)
 })
 
-/* ── 快捷条条目（首项固定「对话」） ─────────────────────────── */
+/* ── 快捷条条目（仅 agent，llm 直连入口已移除） ───────────────── */
 
-test('buildQuickEntries：首项固定「对话」(llm)，其余为 agent', () => {
+test('buildQuickEntries：仅 agent 条目（2026-08-31 用户裁决：移除「对话」首项）', () => {
   const r = C.buildQuickEntries(AGENTS.filter((a) => a.id !== 'hidden'))
-  assert.equal(r.length, 3)
-  assert.equal(r[0].key, C.CHAT_ENTRY_KEY)
-  assert.equal(r[0].kind, 'llm')
-  assert.equal(r[0].name, '对话')
+  assert.equal(r.length, 2)
+  assert.equal(r[0].kind, 'agent')
+  assert.equal(r[0].name, '文案大师')
   assert.equal(r[1].kind, 'agent')
-  assert.equal(r[1].name, '文案大师')
 })
 
-test('buildQuickEntries：空列表 → 仅「对话」项（失败回退口径）', () => {
-  const r = C.buildQuickEntries([])
-  assert.equal(r.length, 1)
-  assert.equal(r[0].name, '对话')
+test('buildQuickEntries：空列表 → 空条目（失败回退快捷条暂不可用）', () => {
+  assert.deepEqual(C.buildQuickEntries([]), [])
 })
 
 /* ── 斜杠菜单（原版 _SlashPopup 口径） ─────────────────────── */

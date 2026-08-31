@@ -89,7 +89,8 @@ const {
   handleRegenerate
 } = chat
 
-/* ── 智能体快捷条域（首项「对话」= llm 直连；本地技能合并展示，见 skillsAll） ── */
+/* ── 智能体快捷条域（2026-08-31 用户裁决：移除「对话」llm 直连入口，
+   快捷条仅服务端智能体 + 本地技能，见 skillsAll） ── */
 const {
   entries: agentEntries,
   errorMessage: agentsError,
@@ -117,7 +118,7 @@ const {
 const skillsAll = computed<SkillEntry[]>(() => [...skillBuiltin.value, ...skillUser.value])
 watch(skillsAll, (list) => setSkills(list), { immediate: true }) // 列表变更 → 快捷条重建
 
-/** 斜杠候选数据源：服务端智能体（去「对话」首项）+ 本地技能（原版 L1519 顺序） */
+/** 斜杠候选数据源：服务端智能体（仅 agent 条目）+ 本地技能（原版 L1519 顺序） */
 const agentList = computed(() =>
   mergeSkillCandidates(
     agentEntries.value
@@ -235,7 +236,7 @@ onMounted(async () => {
     resetToWelcome() // 无持久化会话（或空会话）→ 欢迎语新对话
   }
   void initModel()
-  void loadAgents() // 智能体快捷条/斜杠菜单数据源（失败回退仅「对话」）
+  void loadAgents() // 智能体快捷条/斜杠菜单数据源（失败快捷条暂不可用）
   void loadSkills() // 本地技能（内置+已安装）→ 合并进快捷条/斜杠菜单（原版 _load_agents 同步加载）
 })
 

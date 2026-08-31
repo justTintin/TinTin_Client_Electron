@@ -86,6 +86,24 @@ onMounted(() => {
 })
 
 defineExpose({ scrollToBottom })
+
+/* ── 长回复折叠（2026-08-31）：超长 AI 气泡默认折叠（max-height + 底部渐隐），
+   展开/收起按消息 id 记忆；纯展示层处理，阈值只判断是否显示切换按钮 */
+const FOLD_LINE_THRESHOLD = 18
+const FOLD_CHAR_THRESHOLD = 800
+
+function isFoldable(content: string): boolean {
+  return content.split('\n').length > FOLD_LINE_THRESHOLD || content.length > FOLD_CHAR_THRESHOLD
+}
+
+const expandedIds = ref(new Set<string>())
+
+function toggleFold(id: string) {
+  const s = new Set(expandedIds.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  expandedIds.value = s
+}
 </script>
 
 <template>
@@ -108,7 +126,19 @@ defineExpose({ scrollToBottom })
           :class="m.role"
         >
           <div class="message" :class="[m.role, m.status]">
-            <p>{{ m.content }}</p>
+            <div
+              class="bubble-body"
+              :class="{ folded: m.role === 'ai' && isFoldable(m.content) && !expandedIds.has(m.id) }"
+            >
+              <p>{{ m.content }}</p>
+            </div>
+            <button
+              v-if="m.role === 'ai' && isFoldable(m.content)"
+              class="fold-btn"
+              @click="toggleFold(m.id)"
+            >
+              {{ expandedIds.has(m.id) ? '收起' : '展开全文' }}
+            </button>
             <!-- 脚本镜头卡片（AI 消息附带） -->
             <div v-if="m.shots?.length" class="shots-card">
               <template v-for="shot in m.shots" :key="shot.index">
@@ -197,6 +227,9 @@ defineExpose({ scrollToBottom })
 .chat-main {
   position: relative;
   flex: 1 1 auto;
+  /* flex 子项默认 min-height:auto（不小于内容高度）——缺失会导致长会话把本块
+     撑高、输入框被推出容器且消息列表 overflow-y 永不触发（2026-08-31 修复） */
+  min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -211,7 +244,8 @@ defineExpose({ scrollToBottom })
 }
 
 .messages-inner {
-  max-width: 48rem;
+  /* 与输入区 input-wrap/ctx-pills/input-foot 同宽（64rem，2026-08-31 对齐） */
+  max-width: 64rem;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -254,6 +288,41 @@ defineExpose({ scrollToBottom })
 
 .message p {
   margin: 0;
+  /* 保留原文换行；长单词/URL 断行，防撑破气泡 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 长回复折叠：折叠态限高 + 底部渐隐（仅 AI 气泡，渐变色对齐气泡底色） */
+.bubble-body.folded {
+  position: relative;
+  max-height: 360px;
+  overflow: hidden;
+}
+
+.bubble-body.folded::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  background: linear-gradient(transparent, var(--card));
+}
+
+.fold-btn {
+  margin-top: var(--space-1);
+  align-self: flex-start;
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: var(--radius-md);
+  color: var(--primary);
+  transition: all var(--duration-fast);
+}
+
+.fold-btn:hover {
+  background: var(--surface-container-high);
 }
 
 /* 「思考中…」占位 / 失败提示气泡（ChatMessage.status） */

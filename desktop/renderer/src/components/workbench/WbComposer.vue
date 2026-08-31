@@ -194,12 +194,17 @@ const slashOpen = computed(() => {
   return isAgentPrefix(props.agents || [], slashKeyword.value)
 })
 
-/** 光标前文本段变化后重算斜杠关键字（原版 _ChatInput._on_text_changed L189-192） */
+/** 光标前文本段变化后重算斜杠关键字（原版 _ChatInput._on_text_changed L189-192）。
+ *  修复：仅在关键字变化时重置选中索引——keyup 也触发本函数，若无条件清零，
+ *  ↑↓ 选中后一松手索引就被归零（表现为高亮跳回第一个/在每个候选间跳动）。 */
 function updateSlash() {
   const el = textareaRef.value
   if (!el) return
-  slashKeyword.value = detectSlashKeyword(el.value, el.selectionStart ?? el.value.length)
-  slashIndex.value = 0
+  const kw = detectSlashKeyword(el.value, el.selectionStart ?? el.value.length)
+  if (kw !== slashKeyword.value) slashIndex.value = 0
+  slashKeyword.value = kw
+  // 候选数收缩（关键字变长）时收敛越界索引
+  if (slashIndex.value >= slashCandidates.value.length) slashIndex.value = 0
 }
 
 function closeSlash() {

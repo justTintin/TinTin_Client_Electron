@@ -78,6 +78,22 @@ export const useAppStore = defineStore('app', () => {
     pendingHotspotNav.value = Date.now()
   }
 
+  // 产品文案创作 → 分镜脚本创作 的跨卡草案信号（对齐 pendingHotspotNav 模式）：
+  // OtProductCopywriting.goToStoryboard 写入，OtStoryboard 挂载时消费并清空
+  const pendingStoryboard = ref<{ copyText: string; product: Record<string, string> } | null>(null)
+
+  /** 写入分镜草案（文案创作卡 → 分镜脚本卡） */
+  function setPendingStoryboard(draft: { copyText: string; product: Record<string, string> }): void {
+    pendingStoryboard.value = draft
+  }
+
+  /** 消费并清空分镜草案（一次性信号） */
+  function takePendingStoryboard(): { copyText: string; product: Record<string, string> } | null {
+    const d = pendingStoryboard.value
+    pendingStoryboard.value = null
+    return d
+  }
+
   // 客户端版本号，由 main 进程注入
   const version = ref<string>('3.0.0')
 
@@ -163,6 +179,9 @@ export const useAppStore = defineStore('app', () => {
     activeTab,
     pendingHotspotNav,
     bumpHotspotNav,
+    pendingStoryboard,
+    setPendingStoryboard,
+    takePendingStoryboard,
     version,
     sidebarCollapsed,
     themeMode,

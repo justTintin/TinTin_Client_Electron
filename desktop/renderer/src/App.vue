@@ -33,6 +33,7 @@ const _c9Timer = setTimeout(() => { isElectronShell.value = false }, 2000)
 // 顶栏改留「打开浏览器窗口」按钮占位（见 header-right），按钮行为批次2 接 IPC。
 const tabs: Array<{ key: TabKey; label: string; to: RouteLocationRaw }> = [
   { key: 'workbench', label: '工作台', to: '/workbench' },
+  { key: 'ops-tools', label: '运营工具', to: '/ops-tools' },
   { key: 'media-tools', label: '媒体工具', to: '/media-tools' }
 ]
 

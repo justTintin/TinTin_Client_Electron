@@ -7,7 +7,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
 /** 主 Tab + 设置页标识 */
-export type TabKey = 'workbench' | 'browser' | 'media-tools' | 'settings'
+export type TabKey = 'workbench' | 'browser' | 'ops-tools' | 'media-tools' | 'settings'
 
 /** 外观主题模式 */
 export type ThemeMode = 'light' | 'dark' | 'system'

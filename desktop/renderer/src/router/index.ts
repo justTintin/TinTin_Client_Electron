@@ -19,6 +19,13 @@ const routes: RouteRecordRaw[] = [
     meta: { tab: 'workbench', title: '工作台' }
   },
   {
+    // 运营工具（落地文档 2026-08-30：产品库/企业知识库/视频打分预估/视频营销选题）
+    path: '/ops-tools',
+    name: 'ops-tools',
+    component: () => import('@/views/OpsTools.vue'),
+    meta: { tab: 'ops-tools', title: '运营工具' }
+  },
+  {
     path: '/media-tools',
     name: 'media-tools',
     component: () => import('@/views/MediaTools.vue'),

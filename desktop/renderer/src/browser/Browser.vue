@@ -30,6 +30,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useBrowserNav } from './composables/useBrowserNav'
 import type { BrowserNavWiring, BrowserPlatformId } from './composables/useBrowserNav'
 import { useBrowserFavorites } from './composables/useBrowserFavorites'
@@ -106,6 +107,14 @@ const {
   selectWebBrowser,
   selectFxg,
 } = nav
+
+const router = useRouter()
+/** 左栏底部「服务端」入口（2026-08-31）：在浏览器中打开系统设置里配置的服务端
+ *  接口地址（config 'server.url'）；未配置时回退跳系统设置并定位到服务端地址配置。
+ *  组件卸载时 onBeforeUnmount 已 detachAll（C6），BrowserView 不会泄漏到设置页 */
+function onOpenServerSettings() {
+  void nav.openServerHome(() => router.push('/settings?focus=server'))
+}
 const {
   favorites,
   favoritesCount,
@@ -479,6 +488,7 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
         :left-drawer-open="leftDrawerOpen"
         :login-states="loginApi.loginStates.value"
         @select-item="onSidebarItemClick"
+        @open-server="onOpenServerSettings"
       />
 
       <!-- 中间主区：BrowserView host / 收藏记录列表 -->

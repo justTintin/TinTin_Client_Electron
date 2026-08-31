@@ -16,8 +16,8 @@
 //   · 账号与登录：删除「抖音」tab（保留飞书/即梦）
 // ═══════════════════════════════════════════════════════════════
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { useSettingsGeneral } from '../composables/useSettingsGeneral'
 import { useSettingsAccounts } from '../composables/useSettingsAccounts'
@@ -35,6 +35,7 @@ import CardA2Inference from '../components/settings/CardA2Inference.vue'
 import CardAbout from '../components/settings/CardAbout.vue'
 
 const router = useRouter()
+const route = useRoute()
 const appStore = useAppStore()
 
 /* ── 左侧菜单（顺序与右侧卡片流一致，供 scrollspy 对位） ───── */
@@ -222,6 +223,13 @@ onMounted(() => {
     void loadIntegrationCfg() // 自启动/缓存目录/LUT/系统信息
   })()
   pingServer()
+  // 跨页定位：浏览器左栏「服务端」入口 → /settings?focus=server（2026-08-31）。
+  // 平台接入卡的 tab 默认即「服务端」，这里显式置一次防止未来默认值变更；
+  // nextTick 等右区 DOM 就绪后滚动到平台接入区（onMenuSelect 自带 spy 锁）。
+  if (route.query.focus === 'server') {
+    activePlatTab.value = '服务端'
+    void nextTick(() => onMenuSelect('platform'))
+  }
 })
 
 onBeforeUnmount(() => {

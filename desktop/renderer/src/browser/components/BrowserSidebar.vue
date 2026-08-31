@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// BrowserSidebar — 浏览器页左栏（模式切换 + 平台网格）展示组件
+// BrowserSidebar — 浏览器页左栏（模式切换 + 平台网格 + 底部服务端入口）展示组件
 // 模板与样式来源：views/Browser.vue 原 template L1440-1455 +
 // style .browser-sidebar/.mode-*/.platform-*/.tag-* 区段（类名/结构不变）
 import type { SidebarItem } from '../composables/useBrowserNav'
@@ -17,6 +17,8 @@ defineProps<{
 
 defineEmits<{
   (e: 'select-item', item: SidebarItem): void
+  /** 底部固定「服务端」入口：跳系统设置·服务端接口地址（2026-08-31） */
+  (e: 'open-server'): void
 }>()
 </script>
 
@@ -58,6 +60,13 @@ defineEmits<{
           <span class="platform-name">{{ item.name }}</span>
         </button>
       </div>
+    </div>
+    <!-- 底部固定：服务端（不随上方列表滚动；点击在浏览器中打开系统设置配置的服务端地址，未配置时由容器跳设置页） -->
+    <div class="side-foot">
+      <button class="server-btn" title="打开系统设置中配置的服务端地址" @click="$emit('open-server')">
+        <span class="platform-badge ext-badge">服</span>
+        <span class="platform-name">服务端</span>
+      </button>
     </div>
   </aside>
 </template>
@@ -128,6 +137,36 @@ defineEmits<{
 :root.dark .mode-btn.active,
 .dark .mode-btn.active {
   background: rgba(99, 102, 241, 0.16);
+}
+
+/* ─── 底部固定：服务端入口（样式对齐 platform-btn，顶部分隔线隔离滚动区） ─── */
+.side-foot {
+  flex: 0 0 auto;
+  padding: 10px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.server-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  color: var(--foreground);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all var(--duration-fast);
+  text-align: left;
+}
+.server-btn:hover {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 /* 平台网格 */

@@ -84,6 +84,8 @@ export interface UseBrowserNavReturn {
   navigateToCreatorHomepage: (creator: { platform?: string; homepageUrl?: string; name?: string }) => Promise<void>
   /** W11：客户端任务引导下载（任务 URL → 识别平台 → 切平台页并导航） */
   navigateToUrl: (url: string) => Promise<void>
+  /** 左栏底部「服务端」入口：导航到 config 'server.url'；未配置时回退 onMissing */
+  openServerHome: (onMissing?: () => void) => Promise<void>
   historyItems: Ref<HistoryItem[]>
   visitHistory: (item: HistoryItem) => Promise<void>
 }
@@ -445,6 +447,29 @@ async function visitHistory(item: HistoryItem): Promise<void> {
   } catch (_) {}
 }
 
+/* ── 左栏底部「服务端」入口（2026-08-31）：打开系统设置里配置的服务端地址 ── */
+/** 左栏底部「服务端」：读取 config 'server.url'（系统设置·平台接入里配置的唯一
+ *  服务端地址，与工作台/媒体工具同源）→ 切网页浏览器模式并导航到该地址。
+ *  未配置 / 读取失败时回退 onMissing（由容器跳系统设置定位到服务端地址配置）。 */
+async function openServerHome(onMissing?: () => void): Promise<void> {
+  let url = ''
+  try {
+    const t = (window as any).tintinBrowser
+    url = String((await t?.config?.get?.('server.url')) || '').trim()
+  } catch (_) { /* 读失败按未配置处理 */ }
+  if (!url) { onMissing?.(); return }
+  if (!isElectronShell.value) { addressUrl.value = url; return }
+  try {
+    await selectWebBrowser()
+    const r = await (window as any).tintinBrowser.browser.navigate({ platformId: 'web', url })
+    if (r?.success && r?.data) {
+      addressUrl.value = url
+      navCan.back = !!r.data.canGoBack
+      navCan.forward = !!r.data.canGoForward
+    }
+  } catch (_) { /* 导航失败保持当前视图 */ }
+}
+
 return {
   isElectronShell, _detectShell, DEFAULT_BROWSER_URL, addressUrl, navCan,
   addressEditable, getActivePlatformId, onUrlEnter, navBack, navForward,
@@ -452,7 +477,7 @@ return {
   isDailyAssets, isCreators,
   activePlatformId, sidebarItems, onSidebarItemClick, detectPlatformFromUrl,
   activePlatformName, selectPlatform, selectWebBrowser, selectFxg, navigateToCreatorHomepage,
-  navigateToUrl,
+  navigateToUrl, openServerHome,
   historyItems, visitHistory,
 }
 }

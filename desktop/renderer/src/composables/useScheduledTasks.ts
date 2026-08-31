@@ -2,7 +2,8 @@
 // useScheduledTasks — 定时任务管理域（P2 移植）
 // 对照基准：原客户端 scheduled_tasks_mgmt_page.py + local_scheduler.py。
 // 本地任务（schtasks）经 window.tintin.scheduled IPC；
-// 云端编排任务（GET /agent/tasks 根任务、waiting_user_input 人工确认）
+// 最近编排任务（GET /agent/tasks 根任务、waiting_user_input 人工确认，
+// 命名对齐原版 scheduled_tasks_mgmt_page.py L262「最近编排任务」）
 // 经 window.tintin.server 通用通道（契约：types/server-api.ts AgentAPI）。
 // ═══════════════════════════════════════════════════════════════
 
@@ -226,7 +227,7 @@ export function useScheduledTasks() {
     detailTask.value = null
   }
 
-  /* ── 云端编排任务域（GET /agent/tasks 根任务） ── */
+  /* ── 最近编排任务域（GET /agent/tasks 根任务；命名对齐原版 L262） ── */
   interface AgentTaskRow {
     id: string
     goal: string
@@ -271,35 +272,8 @@ export function useScheduledTasks() {
     }
   }
 
-  /* ── 云端智能体能力清单（GET /agent/registry，executor=server） ── */
-  interface AgentCap { id: string; name: string; description: string; api: string }
-  const agentCaps = ref<AgentCap[]>([])
-  const capsLoading = ref(false)
-
-  async function loadRegistry() {
-    if (capsLoading.value) return
-    capsLoading.value = true
-    try {
-      const reg = await window.tintin.server.agentRegistry()
-      // /agent/registry 返回能力项数组（V2 §13.3，server.ts store 亦按数组消费）；
-      // 兼容历史 {capabilities:[...]} 包裹结构
-      const raw: unknown = (reg && !('error' in reg)) ? reg : null
-      const list = Array.isArray(raw) ? raw : (((raw as { capabilities?: unknown[] } | null)?.capabilities) ?? [])
-      agentCaps.value = (list as Array<Record<string, unknown>>)
-        .filter((c: Record<string, unknown>) => c.executor === 'server')
-        .map((c: Record<string, unknown>) => ({
-          id: String(c.id ?? '—'),
-          name: String(c.name ?? '—'),
-          description: String(c.description ?? '—'),
-          api: String(c.api ?? '—')
-        }))
-      if (!agentCaps.value.length) notice.value = '服务端未注册任何云端智能体，请确认服务端在线。'
-    } catch (e) {
-      notice.value = `云端智能体列表加载失败：${(e as Error).message}`
-    } finally {
-      capsLoading.value = false
-    }
-  }
+  /* 2026-08-30 用户裁决：删除「云端智能体能力」清单域（loadRegistry/agentCaps/
+     capsLoading）——智能体已展示在输入框下快捷条，抽屉内重复展示无价值。 */
 
   return {
     // 本地任务域
@@ -311,9 +285,7 @@ export function useScheduledTasks() {
     capturing, captureProgress, captureNow,
     // 编排任务详情
     detailTask, detailLoading, openDetail, closeDetail,
-    // 云端编排域
-    agentTasks, agentLoading, loadAgent, confirmAgent,
-    // 能力清单域
-    agentCaps, capsLoading, loadRegistry
+    // 最近编排任务域
+    agentTasks, agentLoading, loadAgent, confirmAgent
   }
 }

@@ -6,6 +6,9 @@
 //   测试连接对照 _test_feishu L584-600。
 // 即梦登录：原版 CLI 设备码 OAuth（L481-536）新端不可复用，口径替换为
 //   浏览器「即梦AI」平台 Tab 登录 + cookie 登录态检测（复用条目⑧链路）。
+// 2026-08-30 用户裁决：删除「抖音」tab——原客户端账号页的抖音账户管理
+//   （多账户分身/独立登录窗口）依赖独立浏览器，新端无此形态；登录态在
+//   浏览器「抖音」分区自然存在，设置页不再重复展示。
 // 业务逻辑在 composables/useSettingsAccounts.ts，本组件只绘制 + 事件转发。
 // ═══════════════════════════════════════════════════════════════
 
@@ -26,32 +29,22 @@ const props = defineProps<{
   testResult: ConnTestResult | null
   jimengState: LoginState
   jimengChecking: boolean
-  douyinState: LoginState
-  douyinChecking: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'save'): void
   (e: 'test-conn'): void
   (e: 'check-jimeng'): void
-  (e: 'check-douyin'): void
   (e: 'field-input', key: string, v: string): void
 }>()
 
-const tabs = ['飞书', '即梦', '抖音']
+const tabs = ['飞书', '即梦']
 const curTab = ref('飞书')
 
 const jimengDesc = computed(() => {
   const s = props.jimengState
   if (s === 'logged_in') return '已登录（浏览器「即梦AI」分区会话有效）'
   if (s === 'logged_out') return '未登录：请到 浏览器 → 即梦AI 登录后重试'
-  return s === 'checking' ? '检测中…' : '未检测'
-})
-
-const douyinDesc = computed(() => {
-  const s = props.douyinState
-  if (s === 'logged_in') return '已登录（浏览器「抖音」分区会话有效，sessionid cookie 命中）'
-  if (s === 'logged_out') return '未登录：请到 浏览器 → 抖音 登录后重试'
   return s === 'checking' ? '检测中…' : '未检测'
 })
 </script>
@@ -142,30 +135,6 @@ const douyinDesc = computed(() => {
             </div>
           </div>
           <span class="login-badge" :class="jimengState">{{ loginStateText(jimengState) }}</span>
-        </div>
-      </div>
-
-      <!-- ── 抖音：账号信息（S9 对齐原账号页；来源=浏览器分区 cookie 登录态） ── -->
-      <div v-else>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">抖音账号登录状态</div>
-            <div class="setting-desc">{{ douyinDesc }}</div>
-          </div>
-          <button class="btn-secondary-sm" :disabled="douyinChecking" @click="emit('check-douyin')">
-            {{ douyinChecking ? '检测中…' : '检测登录态' }}
-          </button>
-        </div>
-        <div class="setting-row">
-          <div>
-            <div class="setting-label">账号信息来源</div>
-            <div class="setting-desc">
-              浏览器「抖音」分区会话 cookie（persist:tintin-douyin，douyin.com + sessionid）；
-              昵称/头像需页面 DOM 提取（不稳定），以登录态 cookie 为准。原账号页
-              「添加新账户 / 发布视频清单」依赖平台接口，登记后置。
-            </div>
-          </div>
-          <span class="login-badge" :class="douyinState">{{ loginStateText(douyinState) }}</span>
         </div>
       </div>
     </div>

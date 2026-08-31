@@ -1,12 +1,10 @@
 // ═══════════════════════════════════════════════════════════════
-// settings-integration-logic.test.mjs — S8 平台接入 + S9 系统与运行编组单测
+// settings-integration-logic.test.mjs — S9 系统与运行编组单测
+// 2026-08-30 用户裁决：S8 平台接入（数字人/ComfyUI/RunningHub 直连配置）
+//   整体移除——三者均已通过统一服务端接入，原客户端已删除直连配置，
+//   对应 S8 用例（PLATFORM_TABS/maskKey/validateComfyui/buildComfyuiBody/
+//   validateRunninghub/buildRunninghubBody/parsePlatformStatus）同步删除。
 // 对照原客户端（以原代码为准）：
-//   · S8 数字人 Tab main_window_pages.py L990-1245：backend_selector
-//     （全部/ComfyUI/RunningHub）+ 工作流选择；服务端接口以 openapi-latest.json
-//     为准：PUT /comfyui/config（ComfyUIConfig host/port 默认 127.0.0.1:8188）、
-//     GET /comfyui/status；PUT /runninghub/config（api_key/base_url/...）、
-//     GET /runninghub/status；数字人 /digital-human/batch（workflow_id 默认
-//     2085292185062297602，无独立配置接口）
 //   · S9 LUT 配置 L2041-2120：name → path 映射（.cube/.3dl/.lut）；
 //     缓存目录 L1973-2039（local_config.cache_dir）；系统信息 L1622-1637
 // 运行：cd desktop && node --test "tests/*.test.mjs"
@@ -16,64 +14,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 const S = await import('../renderer/src/composables/settingsIntegrationLogic.ts')
-
-// ── S8 平台 Tab / 默认值 ──
-
-test('PLATFORM_TABS：数字人/ComfyUI/RunningHub 三平台（对齐原版 backend 语义）', () => {
-  assert.deepEqual([...S.PLATFORM_TABS], ['数字人', 'ComfyUI', 'RunningHub'])
-})
-
-test('COMFYUI_DEFAULTS：host 127.0.0.1 / port 8188（openapi ComfyUIConfig schema）', () => {
-  assert.equal(S.COMFYUI_DEFAULTS.host, '127.0.0.1')
-  assert.equal(S.COMFYUI_DEFAULTS.port, 8188)
-})
-
-// ── 凭据脱敏 ──
-
-test('maskKey：空值不脱敏；常规值掩码保留尾 4 位', () => {
-  assert.equal(S.maskKey(''), '')
-  assert.equal(S.maskKey('abcd'), '••••')
-  assert.equal(S.maskKey('abcdefgh'), '••••efgh')
-})
-
-// ── ComfyUI 校验 / 提交体 ──
-
-test('validateComfyui：host 必填、端口 1~65535 整数', () => {
-  assert.equal(S.validateComfyui('', 8188), '请填写 ComfyUI 地址（host）')
-  assert.equal(S.validateComfyui('127.0.0.1', 0), '端口应为 1~65535 的整数')
-  assert.equal(S.validateComfyui('127.0.0.1', 70000), '端口应为 1~65535 的整数')
-  assert.equal(S.validateComfyui('127.0.0.1', 8188), '')
-})
-
-test('buildComfyuiBody：空字段跳过、非空携带（服务端保留原值语义）', () => {
-  assert.deepEqual(S.buildComfyuiBody('', 8188), { port: 8188 })
-  assert.deepEqual(S.buildComfyuiBody('127.0.0.1', 0), { host: '127.0.0.1' })
-  assert.deepEqual(S.buildComfyuiBody('127.0.0.1', 8188), { host: '127.0.0.1', port: 8188 })
-})
-
-// ── RunningHub 校验 / 提交体 ──
-
-test('validateRunninghub：base_url 格式校验；api_key 缺省合法（服务端持有）', () => {
-  assert.equal(S.validateRunninghub('', ''), '')
-  assert.equal(S.validateRunninghub('', 'ftp://x'), 'base_url 应为 http(s)://host[:port]')
-  assert.equal(S.validateRunninghub('short', ''), 'api_key 长度不应少于 8 位')
-  assert.equal(S.validateRunninghub('rh_abcdef123456', 'https://www.runninghub.cn'), '')
-})
-
-test('buildRunninghubBody：空 api_key 跳过（保留已存值）、布尔开关显式携带', () => {
-  assert.deepEqual(S.buildRunninghubBody('', 'https://x', true), { base_url: 'https://x', use_personal_queue: true })
-  assert.deepEqual(S.buildRunninghubBody('key12345678', '', false), { api_key: 'key12345678', use_personal_queue: false })
-})
-
-// ── 平台状态响应判定 ──
-
-test('parsePlatformStatus：离线 null=fail；{error}=fail；对象存在=可达', () => {
-  assert.equal(S.parsePlatformStatus(null, 'ComfyUI').ok, false)
-  assert.equal(S.parsePlatformStatus(undefined, 'RunningHub').ok, false)
-  assert.equal(S.parsePlatformStatus({ error: 'boom' }, 'ComfyUI').ok, false)
-  assert.equal(S.parsePlatformStatus({ online: true }, 'ComfyUI').ok, true)
-  assert.equal(S.parsePlatformStatus({}, 'RunningHub').ok, true)
-})
 
 // ── S9 缓存目录 / LUT ──
 
@@ -94,6 +34,24 @@ test('normalizeLutName：去扩展名（对齐原 _add_lut_entry L2099）', () =
 test('validateLutName：空名拦截', () => {
   assert.equal(S.validateLutName(''), '请输入 LUT 显示名称')
   assert.equal(S.validateLutName('S-Log3'), '')
+})
+
+// ── 缓存目录消费端：下载默认路径拼接（对齐原 aigen L1044 cache_dir 优先语义） ──
+
+test('joinDefaultPath：目录非空 → 目录/文件名（尾分隔符归一）', () => {
+  assert.equal(S.joinDefaultPath('D:\\cache', 'montage_1.mp4'), 'D:/cache/montage_1.mp4')
+  assert.equal(S.joinDefaultPath('D:\\cache\\', 'montage_1.mp4'), 'D:/cache/montage_1.mp4')
+  assert.equal(S.joinDefaultPath('/home/u/cache/', 'render_abc.mp4'), '/home/u/cache/render_abc.mp4')
+})
+
+test('joinDefaultPath：目录为空/纯空白 → 原文件名（系统默认位置）', () => {
+  assert.equal(S.joinDefaultPath('', 'montage_1.mp4'), 'montage_1.mp4')
+  assert.equal(S.joinDefaultPath('   ', 'montage_1.mp4'), 'montage_1.mp4')
+})
+
+test('joinDefaultPath：文件名为空 → 空串（不产出「目录/」悬挂路径）', () => {
+  assert.equal(S.joinDefaultPath('D:\\cache', ''), '')
+  assert.equal(S.joinDefaultPath('', ''), '')
 })
 
 // ── S9 系统信息行 ──

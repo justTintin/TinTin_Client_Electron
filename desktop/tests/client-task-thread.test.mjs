@@ -79,17 +79,22 @@ test('buildReportFields：result 空串/undefined 不带；file_path 非字符�
   assert.equal(f.file, undefined)
 })
 
-// ── machine_id 派生（对照原版 license.get_machine_id：SHA256 前 16 位） ──
+// ── machine_id 派生（对照原版 license.get_machine_id：SHA256 前 16 位小写，
+//    seed = "mac:{12位hex}|host:{hostname}|cpu:{processor}"） ──
 
 test('deriveMachineId：SHA256 前 16 位小写 hex，同输入稳定', () => {
-  const info = { hostname: 'PC-01', platform: 'win32', machineGuid: 'ABC-123', mac: 'AA:BB:CC:DD:EE:FF' }
+  const info = { hostname: 'PC-01', platform: 'win32', machineGuid: 'ABC-123', mac: 'AA:BB:CC:DD:EE:FF', cpu: 'Intel64 Family 6' }
   const a = R.deriveMachineId(info)
   const b = R.deriveMachineId(info)
   assert.equal(a, b)
   assert.equal(a.length, 16)
   assert.match(a, /^[0-9a-f]{16}$/)
-  // 大小写/冒号归一后同值（与渲染层 machineCodeLogic.buildMachineSeed 同口径）
-  assert.equal(R.deriveMachineId({ hostname: 'pc-01', platform: 'WIN32', machineGuid: 'abc-123', mac: 'aabbccddeeff' }), a)
+  // mac 归一后同值；platform/machineGuid 不参与派生（原版无此二段）
+  assert.equal(R.deriveMachineId({ ...info, mac: 'aabbccddeeff' }), a)
+  assert.equal(R.deriveMachineId({ ...info, platform: 'linux', machineGuid: 'other' }), a)
+  // hostname/cpu 原样参与（原版未归一大小写）→ 变更即变码
+  assert.notEqual(R.deriveMachineId({ ...info, hostname: 'pc-01' }), a)
+  assert.notEqual(R.deriveMachineId({ ...info, cpu: 'AMD64' }), a)
 })
 
 test('deriveMachineId：空信息返回空串（无稳定种子不臆造）', () => {

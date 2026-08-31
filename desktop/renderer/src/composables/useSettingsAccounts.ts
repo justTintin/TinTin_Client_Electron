@@ -149,32 +149,9 @@ export function useSettingsAccounts() {
     }
   }
 
-  /* ── 抖音（S9 账号页信息）：登录态检测（cookie 特征 douyin.com+sessionid）──
-     来源：浏览器 persist:tintin-douyin 分区 cookie（复用条目⑧链路）；
-     昵称/头像需页面 DOM 提取（复杂且不稳定），以登录态 cookie 为准（说明） */
-  const douyinState = ref<LoginState>('checking')
-  const douyinChecking = ref(false)
-
-  /** 检测抖音登录态：browser:cookieList('douyin') → judgeLoginState */
-  async function checkDouyin(): Promise<void> {
-    if (douyinChecking.value) return
-    douyinChecking.value = true
-    douyinState.value = 'checking'
-    const t = getTintin()
-    try {
-      if (!t?.browser?.cookieList) {
-        douyinState.value = 'unsupported'
-        return
-      }
-      const r = await t.browser.cookieList('douyin')
-      const cookies = r?.success && r?.data ? (r.data.cookies || []) : []
-      douyinState.value = judgeLoginState('douyin', cookies)
-    } catch (_e) {
-      douyinState.value = 'logged_out'
-    } finally {
-      douyinChecking.value = false
-    }
-  }
+  /* ── 2026-08-30 用户裁决：抖音登录态检测移除 ──
+     原客户端账号页的抖音账户管理（多账户分身/独立登录窗口）依赖独立浏览器，
+     新端无此形态；登录态在浏览器「抖音」分区自然存在，设置页不再重复展示。 */
 
   return {
     // 飞书
@@ -193,9 +170,5 @@ export function useSettingsAccounts() {
     jimengState,
     jimengChecking,
     checkJimeng,
-    // 抖音（S9 账号信息）
-    douyinState,
-    douyinChecking,
-    checkDouyin,
   }
 }

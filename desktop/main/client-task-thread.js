@@ -31,8 +31,8 @@ const os = require('node:os')
 const path = require('node:path')
 const { execFile } = require('node:child_process')
 // machine_id 稳定派生（与 server-proxy getMachineId 共用口径：config-store
-// 'machineId' 缓存优先 + SHA256 前 16 位派生写回，跨重启稳定、双入口一致）
-const { deriveMachineId } = require('./machine-id')
+// 'machineIdV2' 缓存优先 + 原版 license.py 口径派生写回，跨重启稳定、双入口一致）
+const { deriveMachineId, MACHINE_ID_KEY } = require('./machine-id')
 
 // ── 常量（对照原版 client_task_worker.py L27-32）──
 const POLL_INTERVAL_MS = 5000          // 领取轮询间隔（原版 poll_interval=5）
@@ -180,9 +180,10 @@ async function runOnePoll({ machineId, pickup, executeTask, report, isRunning = 
 // 运行时装配（副作用依赖经 deps 注入，main.js 负责接线）
 // ═══════════════════════════════════════════════════════════════
 
-/** 采集本机机器码原始信息（与 env-ipc.js env:getMachineInfo L92-118 同款） */
+/** 采集本机机器码原始信息（与 env-ipc.js env:getMachineInfo 同款；
+ *  cpu 对齐原版 platform.processor()（Windows = PROCESSOR_IDENTIFIER）） */
 function collectMachineInfo() {
-  const info = { hostname: os.hostname(), platform: os.platform(), machineGuid: '', mac: '', source: '' }
+  const info = { hostname: os.hostname(), platform: os.platform(), machineGuid: '', mac: '', cpu: '', source: '' }
   try {
     for (const list of Object.values(os.networkInterfaces())) {
       for (const ni of list || []) {
@@ -191,6 +192,7 @@ function collectMachineInfo() {
       if (info.mac) break
     }
   } catch (_) {}
+  info.cpu = String(process.env.PROCESSOR_IDENTIFIER || '').trim()
   if (process.platform === 'win32') {
     info.machineGuid = new Promise((resolve) => {
       try {
@@ -207,18 +209,18 @@ function collectMachineInfo() {
 }
 
 /**
- * 稳定 machine_id：优先复用 config-store 'machineId' 缓存（跨重启稳定）；
- * 无则按 env:getMachineInfo 同源采集派生 SHA256 前 16 位并写回缓存。
+ * 稳定 machine_id：优先复用 config-store 'machineIdV2' 缓存（跨重启稳定）；
+ * 无则按 env:getMachineInfo 同源采集派生（原版 license.py 口径）并写回缓存。
  */
 async function resolveMachineId({ store, collect = collectMachineInfo }) {
   try {
-    const cached = store && typeof store.get === 'function' ? store.get('machineId') : null
+    const cached = store && typeof store.get === 'function' ? store.get(MACHINE_ID_KEY) : null
     if (cached) return String(cached)
   } catch (_) {}
   const info = await collect().catch(() => null)
   const mid = deriveMachineId(info)
   if (mid && store && typeof store.set === 'function') {
-    try { store.set('machineId', mid) } catch (_) {}
+    try { store.set(MACHINE_ID_KEY, mid) } catch (_) {}
   }
   return mid
 }

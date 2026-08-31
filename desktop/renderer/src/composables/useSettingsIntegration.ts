@@ -1,15 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
-// useSettingsIntegration — 设置页「平台接入」（S8）+「系统与运行」（S9）composable
+// useSettingsIntegration — 设置页「系统与运行」（S9）composable
 // 业务动作编排；编组/校验/脱敏纯函数在 settingsIntegrationLogic.ts（可单测）。
 //
-// S8 平台接入（对齐原 main_window_pages.py L990-1245 数字人 Tab）：
-//   · ComfyUI：PUT /comfyui/config（host/port，openapi ComfyUIConfig schema）
-//     + 测试 GET /comfyui/status —— 服务端接口存在，保存/测试均走服务端
-//   · RunningHub：PUT /runninghub/config（api_key/base_url/use_personal_queue）
-//     + 测试 GET /runninghub/status —— 服务端接口存在；api_key 服务端持有，
-//     本地不回存，已存值仅脱敏回显（maskKey），输入框只装新输入
-//   · 数字人：无独立配置接口（/digital-human/batch 默认 workflow_id
-//     2085292185062297602）→ workflowId 存本地 config integration 域
+// 2026-08-30 用户裁决：S8 平台接入（数字人/ComfyUI/RunningHub 直连配置）整体移除——
+//   三者均已通过统一服务端接入，原客户端已删除直连配置，客户端不再保留入口。
 //
 // S9 系统与运行（对齐原 L1931-2040 自启动/缓存目录 + L2041-2120 LUT +
 //   L1622-1637 系统信息）：
@@ -18,161 +12,29 @@
 //   · 缓存目录：dialog.openDir 选择 → config 'local.cacheDir'（原 local_config.cache_dir）
 //   · LUT：video.lutMap（name → path 映射，.cube/.3dl/.lut，app 域）
 //   · 系统信息：env:detectEnv local（os/cpu/ram/disk；gpu 弃检）
-// 异常口径：无 IPC（预览环境）/ 服务端离线 / 保存失败 / 参数校验拦截 四类分支齐备。
+// 异常口径：无 IPC（预览环境）/ 保存失败 / 参数校验拦截 分支齐备。
 // ═══════════════════════════════════════════════════════════════
 
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import {
-  PLATFORM_TABS,
-  COMFYUI_DEFAULTS,
-  maskKey,
-  validateComfyui,
-  validateRunninghub,
-  buildComfyuiBody,
-  buildRunninghubBody,
   validateLutName,
   normalizeLutName,
-  LUT_EXTS,
   CACHE_DIR_KEY,
   buildSysInfoRows,
 } from './settingsIntegrationLogic'
 import { getTintin, readCfg, writeCfg } from './useSettingsConfig'
 
-/** 平台测试/保存结果（null=未测试；对照原版状态标签 绿/红 语义） */
-export interface PlatformConnResult {
-  ok: boolean
-  message: string
-}
-
 export interface LutEntry { name: string; path: string }
 
 export function useSettingsIntegration() {
-  /* ── S8 平台接入 ─────────────────────────────────────────── */
-  const activePlatTab = ref<string>(PLATFORM_TABS[0])
-
-  // 数字人（本地 integration 域）
-  const workflowId = ref('')
-
-  // ComfyUI（服务端 PUT /comfyui/config）
-  const comfyuiHost = ref(COMFYUI_DEFAULTS.host)
-  const comfyuiPort = ref(String(COMFYUI_DEFAULTS.port))
-
-  // RunningHub（服务端 PUT /runninghub/config；api_key 服务端持有）
-  const rhApiKeyInput = ref('')       // 只装新输入值（不回显明文）
-  const rhApiKeyStored = ref('')      // 已保存值（脱敏展示）
-  const rhBaseUrl = ref('')
-  const rhUsePersonalQueue = ref(false)
-
-  const saving = ref(false)
-  const hint = ref('')
-  const testBusy = ref(false)
-  const testResult = ref<PlatformConnResult | null>(null)
-
-  /** 已保存 api_key 脱敏（''=未保存） */
-  const rhApiKeyMasked = computed(() => maskKey(rhApiKeyStored.value))
-
-  /** 平台配置加载（容器 onMounted 调用）：本地数字人 workflowId + 服务端配置回显 */
-  async function loadPlatformCfg(): Promise<void> {
-    workflowId.value = String((await readCfg('digitalhuman.workflowId', '')) || '')
-    const t = getTintin()
-    if (!t?.platform?.getConfig) return // 预览环境无 IPC：保留默认值
-    try {
-      const r = await t.platform.getConfig()
-      if (!r) return
-      if (r.comfyui && typeof r.comfyui === 'object') {
-        if (r.comfyui.host) comfyuiHost.value = String(r.comfyui.host)
-        if (r.comfyui.port) comfyuiPort.value = String(r.comfyui.port)
-      }
-      if (r.runninghub && typeof r.runninghub === 'object') {
-        if (r.runninghub.api_key) rhApiKeyStored.value = String(r.runninghub.api_key)
-        if (r.runninghub.base_url) rhBaseUrl.value = String(r.runninghub.base_url)
-        rhUsePersonalQueue.value = !!r.runninghub.use_personal_queue
-      }
-    } catch (_e) { /* 服务端离线静默：保留默认值 */ }
-  }
-
-  /** 显式保存（按当前 Tab 分平台提交） */
-  async function savePlatform(): Promise<void> {
-    if (saving.value) return
-    const t = getTintin()
-    if (!t?.platform) { hint.value = '预览环境：无 IPC'; setTimeout(() => { hint.value = '' }, 1500); return }
-
-    // 数字人：无服务端接口 → 本地 integration 域
-    if (activePlatTab.value === '数字人') {
-      const v = String(workflowId.value || '').trim()
-      saving.value = true
-      try {
-        const ok = await writeCfg('digitalhuman.workflowId', v)
-        hint.value = ok ? '数字人工作流 ID 已保存（本地）' : '保存失败：配置通道不可用'
-      } catch (_e) { hint.value = '保存失败' }
-      saving.value = false
-      setTimeout(() => { hint.value = '' }, 1500)
-      return
-    }
-
-    // ComfyUI：PUT /comfyui/config
-    if (activePlatTab.value === 'ComfyUI') {
-      const err = validateComfyui(comfyuiHost.value, comfyuiPort.value)
-      if (err) { hint.value = err; setTimeout(() => { hint.value = '' }, 1800); return }
-      saving.value = true
-      try {
-        const r = await t.platform.saveComfyui(buildComfyuiBody(comfyuiHost.value, comfyuiPort.value))
-        hint.value = r?.ok ? 'ComfyUI 地址已保存' : String(r?.message || '保存失败')
-        if (r?.ok) { /* 保存后回读刷新 */ await loadPlatformCfg() }
-      } catch (e) { hint.value = `保存失败：${String((e as any)?.message || e)}` }
-      saving.value = false
-      setTimeout(() => { hint.value = '' }, 1500)
-      return
-    }
-
-    // RunningHub：PUT /runninghub/config
-    const err = validateRunninghub(rhApiKeyInput.value, rhBaseUrl.value)
-    if (err) { hint.value = err; setTimeout(() => { hint.value = '' }, 1800); return }
-    saving.value = true
-    try {
-      const r = await t.platform.saveRunninghub(
-        buildRunninghubBody(rhApiKeyInput.value, rhBaseUrl.value, rhUsePersonalQueue.value),
-      )
-      hint.value = r?.ok ? 'RunningHub 配置已保存' : String(r?.message || '保存失败')
-      if (r?.ok) {
-        rhApiKeyInput.value = '' // 清明文输入
-        await loadPlatformCfg()   // 回读刷新已存 api_key（脱敏展示）
-      }
-    } catch (e) { hint.value = `保存失败：${String((e as any)?.message || e)}` }
-    saving.value = false
-    setTimeout(() => { hint.value = '' }, 1500)
-  }
-
-  /** 测试连接（ComfyUI / RunningHub，走服务端 status 接口） */
-  async function testPlatform(): Promise<void> {
-    if (testBusy.value) return
-    if (activePlatTab.value !== 'ComfyUI' && activePlatTab.value !== 'RunningHub') {
-      testResult.value = { ok: false, message: '数字人无独立测试接口（提交时经 /digital-human/batch 验证）' }
-      return
-    }
-    testBusy.value = true
-    testResult.value = null
-    const t = getTintin()
-    try {
-      if (!t?.platform) { testResult.value = { ok: false, message: '预览环境：无 IPC' }; return }
-      const r = activePlatTab.value === 'ComfyUI'
-        ? await t.platform.testComfyui()
-        : await t.platform.testRunninghub()
-      testResult.value = r || { ok: false, message: '测试失败' }
-    } catch (e) {
-      testResult.value = { ok: false, message: `测试失败：${String((e as any)?.message || e)}` }
-    } finally {
-      testBusy.value = false
-    }
-  }
-
-  /* ── S9 系统与运行 ───────────────────────────────────────── */
+  /* ── S9 系统与运行（hint 由缓存目录/LUT 保存动作复用） ────── */
   const autoStart = ref(false)
   const autoStartLoading = ref(false)
   const cacheDir = ref('')
   const lutList = ref<LutEntry[]>([])
   const sysInfoRows = ref<Array<{ label: string; value: string }>>([])
   const sysInfoLoading = ref(false)
+  const hint = ref('')
 
   /** 自启动状态（读系统真实值；托盘同通道） */
   async function loadAutoStart(): Promise<void> {
@@ -273,7 +135,6 @@ export function useSettingsIntegration() {
 
   /** 容器 onMounted 编排：全部加载 */
   async function loadIntegrationCfg(): Promise<void> {
-    await loadPlatformCfg()
     await loadAutoStart()
     cacheDir.value = String((await readCfg(CACHE_DIR_KEY, '')) || '')
     await loadLuts()
@@ -281,22 +142,6 @@ export function useSettingsIntegration() {
   }
 
   return {
-    // S8
-    PLATFORM_TABS,
-    activePlatTab,
-    workflowId,
-    comfyuiHost,
-    comfyuiPort,
-    rhApiKeyInput,
-    rhApiKeyMasked,
-    rhBaseUrl,
-    rhUsePersonalQueue,
-    saving,
-    hint,
-    testBusy,
-    testResult,
-    savePlatform,
-    testPlatform,
     // S9
     autoStart,
     autoStartLoading,
@@ -309,6 +154,7 @@ export function useSettingsIntegration() {
     sysInfoRows,
     sysInfoLoading,
     loadSysInfo,
+    hint,
     loadIntegrationCfg,
   }
 }

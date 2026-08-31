@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getTintin, readCfg } from './useSettingsConfig'
+import { getTintin, readCfg, readCacheDir } from './useSettingsConfig'
+import { joinDefaultPath } from './settingsIntegrationLogic'
 import {
   trimHistory,
   buildLlmMessages,
@@ -110,8 +111,10 @@ export function useWorkbenchChat(options?: {
      胶囊为会话内临时上下文（原版不持久化），切换/新建会话即清空 */
   const attachments = ref<ChatAttachment[]>([])
 
-  /** 单个附件入池：成功记 file_ref，失败标 failed（下次发送重试） */
+  /** 单个附件入池：成功记 file_ref，失败标 failed（下次发送重试）；
+   *  截图等 infoOnly 附件不入素材池（素材池是产品素材，截图仅提供信息） */
   async function uploadToPool(att: ChatAttachment) {
+    if (att.infoOnly) return // 截图信息附件：保持 pending，仅随上下文文本提供信息
     const t = getTintin()
     if (!t?.server?.agentSessionAttachmentAdd || !sessionId.value) {
       att.state = 'failed'
@@ -137,15 +140,22 @@ export function useWorkbenchChat(options?: {
   }
 
   /** 选择本地附件加入上下文（原版 _add_attachment_files L1759-1775：按路径去重；
-   *  已有服务端会话 → 立即后台入池；无会话 → pending，首轮发送时统一入池） */
-  function addAttachments(paths: string[]) {
+   *  已有服务端会话 → 立即后台入池；无会话 → pending，首轮发送时统一入池）。
+   *  2026-08-30：新增 infoOnly 参数——剪贴板截图等「只提供信息」附件，
+   *  标记 infoOnly 后不入素材池（素材池是产品素材），发送时仅拼上下文文本。 */
+  function addAttachments(paths: string[], infoOnly = false) {
     for (const raw of paths || []) {
       const p = String(raw || '').trim()
       if (!p || attachments.value.some((a) => a.path === p)) continue
-      const att: ChatAttachment = { name: basenameOf(p), path: p, state: 'pending' }
+      const att: ChatAttachment = { name: basenameOf(p), path: p, state: 'pending', ...(infoOnly ? { infoOnly: true } : {}) }
       attachments.value.push(att)
-      if (mode.value === 'agent' && sessionId.value) void uploadToPool(att)
+      if (mode.value === 'agent' && sessionId.value && !infoOnly) void uploadToPool(att)
     }
+  }
+
+  /** 剪贴板截图 → 截图信息附件（不入素材池；与 addAttachments 同去重口径） */
+  function addScreenshots(paths: string[]) {
+    addAttachments(paths, true)
   }
 
   /** 移除胶囊：已入池 → DELETE 素材池（原版 _remove_ctx L1619-1637：移除未生效则保留） */
@@ -338,9 +348,10 @@ export function useWorkbenchChat(options?: {
         : history.value.slice(0, -1)
       if (mode.value === 'agent') {
         // 首轮发送且有待入池附件 → 先轻量建会话再一次性入池（原版 L622-632：
-        // create_session 失败则中断发送并提示，附件保持 pending 待重试）
+        // create_session 失败则中断发送并提示，附件保持 pending 待重试）。
+        // 截图等 infoOnly 附件不入池，不参与「是否建会话」判断。
         const poolable = attachments.value.filter(
-          (a) => a.state === 'pending' || a.state === 'failed'
+          (a) => !a.infoOnly && (a.state === 'pending' || a.state === 'failed')
         )
         if (poolable.length && !sessionId.value) {
           const cr = await t.server.agentChat({ message: '会话初始化', maxRounds: 1 })
@@ -457,9 +468,11 @@ export function useWorkbenchChat(options?: {
     const t = getTintin()
     if (!t?.dialog?.saveFile || !t?.server?.downloadResult) return
     const defaultName = asset.taskId ? `render_${asset.taskId}.mp4` : 'render_video.mp4'
+    // 默认保存到缓存目录（local.cacheDir；未配置则系统默认位置，对齐原 aigen L1044）
+    const cacheDir = await readCacheDir()
     const savePath = await t.dialog.saveFile({
       title: '保存成片',
-      defaultPath: defaultName,
+      defaultPath: joinDefaultPath(cacheDir, defaultName),
       filters: [{ name: '视频文件', extensions: ['mp4', 'mov', 'webm'] }]
     })
     if (!savePath) return // 用户取消
@@ -532,6 +545,7 @@ export function useWorkbenchChat(options?: {
     initModel,
     setMode,
     addAttachments,
+    addScreenshots,
     removeAttachment,
     addCtxProduct,
     removeCtxProduct,

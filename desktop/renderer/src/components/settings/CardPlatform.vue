@@ -1,11 +1,14 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// CardPlatform — 服务端卡（统一服务端地址 / 模型设置，纯展示组件）
+// CardPlatform — 平台接入卡（统一服务端地址 / 模型设置，纯展示组件）
 // 2026-08-28「服务端配置业务对齐」用户裁决改造：
 //   · 只有一个统一服务端地址（保存后联动各功能，自动拉取模型列表）
 //   · 删除 Provider / API Key / URL 展示与独立「LLM 测试连接」
 //     （LLM 凭证由服务端持有，模型列表从服务端拉取）
 //   · 按功能测试连接（LLM/OCR/向量/TTS/ASR；探测逻辑在 useSettingsGeneral）
+// 2026-08-30 用户裁决：本卡统一叫「平台接入」，仅保留 服务端/模型 两个 tab；
+//   数字人/ComfyUI/RunningHub 已通过服务端接入（原客户端已删除直连配置），
+//   不再保留任何直连配置入口。
 // 表单值经可写 computed 代理转为 update:* 上抛，容器接线到
 // useSettingsGeneral；无专属样式（全部走 settings-shared.css）。
 // ═══════════════════════════════════════════════════════════════
@@ -62,8 +65,8 @@ const curServerUrl = computed({
   <section class="luo-card">
     <div class="luo-card-head">
       <div>
-        <h2 class="luo-card-title">服务端</h2>
-        <p class="luo-card-desc">配置统一服务端地址；模型与各功能能力均由服务端提供，凭证不出服务端。</p>
+        <h2 class="luo-card-title">平台接入</h2>
+        <p class="luo-card-desc">配置统一服务端地址与数字人 / ComfyUI / RunningHub 连接；模型与各功能能力均由服务端提供，凭证不出服务端。</p>
       </div>
     </div>
 
@@ -123,7 +126,7 @@ const curServerUrl = computed({
       </div>
 
       <!-- 模型：列表来自服务端（凭证由服务端持有，客户端只选模型） -->
-      <div v-else>
+      <div v-else-if="curTab === '模型'">
         <div class="setting-row">
           <div>
             <div class="setting-label">默认模型</div>

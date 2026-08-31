@@ -33,3 +33,8 @@ export async function writeCfg(key: string, val: any): Promise<boolean> {
   if (!hasConfig()) return false
   try { return (await getTintin().config.set(key, val)) === true } catch (_) { return false }
 }
+
+/** 读缓存目录（local.cacheDir；下载消费端默认保存路径用，对齐原 local_config.cache_dir） */
+export async function readCacheDir(): Promise<string> {
+  return String((await readCfg('local.cacheDir', '')) || '')
+}

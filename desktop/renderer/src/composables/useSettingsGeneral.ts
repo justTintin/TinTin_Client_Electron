@@ -18,7 +18,6 @@ import { formatMachineCode } from './machineCodeLogic'
 
 /* ── 常量：分段控件选项 ─────────────────────────────────────── */
 const platTabs = ['服务端', '模型']
-const localTabs = ['数据目录', '字体', '代理']
 /** 模型列表兜底选项（服务端离线时；在线数据来自 GET /llm/models，对照原版） */
 const FALLBACK_MODELS = ['GPT-4o', 'Claude 3.5 Sonnet', 'DeepSeek-V2']
 
@@ -28,9 +27,6 @@ export interface FuncTestResult {
   ok: boolean | null
   message: string
 }
-
-/** 客户端日志文件条目（env:logList 返回，新→旧） */
-export interface LogFileInfo { name: string; sizeBytes: number; mtimeMs: number }
 
 export function useSettingsGeneral() {
   /* ── 服务端 / 模型（LLM 凭证由服务端持有，客户端只选模型） ── */
@@ -55,36 +51,14 @@ export function useSettingsGeneral() {
     { name: 'ASR · 语音识别', ok: null, message: '未测试' },
   ])
 
-  /* ── 本地配置 ── */
-  const activeLocalTab = ref<string>('数据目录')
-
-  /* ── 环境与维护：本地服务端 / 日志级别 / 缓存清理（真实 IPC） ── */
-  const serverRunning = ref<boolean>(false)
+  /* ── 环境与维护：日志级别 / 缓存清理（真实 IPC） ──
+   * 2026-08-30 对齐原客户端整改：移除「本地服务端」状态区块（统一服务端
+   * 连通状态由标题栏状态胶囊展示，单一真相源 serverStore）；
+   * 日志文件列表/查看迁出至 useLogViewer（对齐原客户端日志查看页）。 */
   const serverDesc = ref<string>('http://127.0.0.1:8000 · 检测中…')
   const logLevel = ref<string>('INFO')
   const cacheClearing = ref<boolean>(false)
   const actionHint = ref<string>('')
-
-  /* ── 日志区块（对齐原客户端日志查看页）：日志文件列表 + 打开 ── */
-  const logFiles = ref<LogFileInfo[]>([])
-  const logsDir = ref<string>('')
-
-  /** 拉取客户端日志文件列表（主进程 %APPDATA%/logs，新→旧） */
-  async function loadLogList() {
-    const t = getTintin()
-    if (!t?.env?.logList) return
-    try {
-      const r = await t.env.logList()
-      if (r?.ok) { logFiles.value = r.files || []; logsDir.value = r.dir || '' }
-    } catch (_) { /* 无 IPC / 离线静默 */ }
-  }
-
-  /** 打开单个日志文件（shell.openPath，系统默认编辑器） */
-  async function openLogFile(name: string) {
-    const t = getTintin()
-    if (!t?.env?.openLog) return
-    try { await t.env.openLog(name) } catch (_) { /* 静默 */ }
-  }
 
   /* ── 关于卡·本机机器码（原始信息主进程采集，SHA256 摘要纯函数在 machineCodeLogic） ── */
   const machineCode = ref<string>('')
@@ -107,10 +81,9 @@ export function useSettingsGeneral() {
 
   async function pingServer() {
     const t = getTintin()
-    if (!t?.env) { serverRunning.value = false; serverDesc.value = '预览环境：无 IPC'; return }
+    if (!t?.env) { serverDesc.value = '预览环境：无 IPC'; return }
     try {
       const r = await t.env.serverPing()
-      serverRunning.value = !!r?.online
       // 回填当前生效的服务端地址（主进程 getServerUrl：store → ai_config.json → 默认）
       if (r?.url) serverUrl.value = r.url
       serverDesc.value = r?.online
@@ -118,7 +91,7 @@ export function useSettingsGeneral() {
         : `${r?.url || 'http://127.0.0.1:8000'} · 离线`
       // 同一 IPC 通道（env:serverPing）联动标题栏状态胶囊立刻重查
       refreshServerStatus()
-    } catch (_e) { serverRunning.value = false; serverDesc.value = '检测失败' }
+    } catch (_e) { serverDesc.value = '检测失败' }
   }
 
   /* ── LLM 对接（P5）：模型列表服务端拉取 / 配置持久化 ── */
@@ -201,10 +174,9 @@ export function useSettingsGeneral() {
 
   async function saveLogLevel() { await writeCfg('env.logLevel', logLevel.value) }
 
-  /** onMounted 时读回持久化的日志级别（容器编排调用）；顺带拉日志列表与机器码 */
+  /** onMounted 时读回持久化的日志级别（容器编排调用）；顺带加载机器码 */
   async function loadEnvCfg() {
     logLevel.value = String(await readCfg('env.logLevel', 'INFO')).toUpperCase()
-    void loadLogList()
     void loadMachineCode()
   }
 
@@ -313,11 +285,8 @@ export function useSettingsGeneral() {
     funcResults,
     testFunction,
     perFunctionTest,
-    // 本地配置
-    localTabs,
-    activeLocalTab,
+    // 本地配置：迁出（缓存目录/LUT 在 useSettingsIntegration，CardLocalConfig 卡）
     // 环境与维护
-    serverRunning,
     serverDesc,
     logLevel,
     cacheClearing,
@@ -326,11 +295,6 @@ export function useSettingsGeneral() {
     clearCache,
     saveLogLevel,
     loadEnvCfg,
-    // 日志区块（对齐原客户端日志查看页）
-    logFiles,
-    logsDir,
-    loadLogList,
-    openLogFile,
     // 关于卡·本机机器码
     machineCode,
   }

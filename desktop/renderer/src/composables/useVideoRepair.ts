@@ -24,6 +24,8 @@ import {
   type ServerWorkflow,
   type WorkflowStatusInfo,
 } from './videoRepairLogic'
+import { readCacheDir } from './useSettingsConfig'
+import { joinDefaultPath } from './settingsIntegrationLogic'
 
 function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
@@ -229,9 +231,11 @@ export function useVideoRepair() {
     }
     downloadingIdx.value = idx
     try {
+      // 默认保存到缓存目录（local.cacheDir；未配置则系统默认位置，对齐原 aigen L1044）
+      const cacheDir = await readCacheDir()
       const savePath = await window.tintin.dialog.saveFile({
         title: '保存修复结果',
-        defaultPath: defaultName,
+        defaultPath: joinDefaultPath(cacheDir, defaultName),
       })
       if (!savePath) return
       const saved = await window.tintin.server.downloadResult(url, savePath)

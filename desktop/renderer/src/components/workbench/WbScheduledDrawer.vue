@@ -1,9 +1,12 @@
 <script setup lang="ts">
 // WbScheduledDrawer.vue — 定时任务抽屉（P2 实装）
-// 对照基准：原客户端 scheduled_tasks_mgmt_page.py（两个板块 → 抽屉内两 Tab）。
+// 对照基准：原客户端 scheduled_tasks_mgmt_page.py。
+// 2026-08-30 用户裁决：取消 Tab 切换——新建/已注册任务/最近编排任务单页
+// 顺序堆叠（新建时类型已可区分「本地定时任务/云端智能体」，无需按数据源
+// 分 Tab）；删除「云端智能体能力」清单（智能体已在输入框下快捷条展示）。
 // 业务状态在 composables/useScheduledTasks.ts，本组件只做绘制与事件绑定。
 // 开关（v-if + notify-mask 遮罩 + drawer-slide/drawer-fade 过渡）由容器 Workbench.vue 持有。
-import { onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import {
   useScheduledTasks, TYPE_LABEL, agentStatusText, WEEKDAY_LABELS
 } from '@/composables/useScheduledTasks'
@@ -19,23 +22,13 @@ const {
   currentPlan, splitting, splitPlan,
   capturing, captureProgress, captureNow,
   detailTask, detailLoading, openDetail, closeDetail,
-  agentTasks, agentLoading, loadAgent, confirmAgent,
-  agentCaps, capsLoading, loadRegistry
+  agentTasks, agentLoading, loadAgent, confirmAgent
 } = useScheduledTasks()
-
-/** 抽屉内 Tab：local=本地定时任务（schtasks）；agent=云端编排（/agent/tasks） */
-const tab = ref<'local' | 'agent'>('local')
 
 onMounted(() => {
   void load()
   void loadAgent()
 })
-
-function switchTab(t: 'local' | 'agent') {
-  tab.value = t
-  if (t === 'local') void load()
-  else void loadAgent()
-}
 
 /** 时间输入兜底 HH:MM（失焦补零） */
 function normalizeTime(e: Event) {
@@ -62,19 +55,13 @@ function normalizeTime(e: Event) {
       </button>
     </header>
 
-    <!-- ─── Tab 切换（对齐原版两板块） ─── -->
-    <div class="sched-tabs">
-      <button class="sched-tab" :class="{ active: tab === 'local' }" @click="switchTab('local')">本地定时任务</button>
-      <button class="sched-tab" :class="{ active: tab === 'agent' }" @click="switchTab('agent')">云端编排</button>
-    </div>
-
     <div v-if="notice" class="sched-notice">{{ notice }}</div>
 
-    <!-- ─── 本地定时任务 ─── -->
-    <div v-if="tab === 'local'" class="sched-body">
+    <!-- ─── 单页堆叠：新建 → 已注册任务 → 最近编排任务（2026-08-30 取消 Tab） ─── -->
+    <div class="sched-body">
       <!-- 新建区 -->
       <div class="card">
-        <div class="card-title">＋ 新建本地定时任务</div>
+        <div class="card-title">＋ 新建定时任务</div>
         <div class="frow">
           <label class="flabel">任务名</label>
           <input v-model="form.name" class="finput" placeholder="任务名称" />
@@ -142,7 +129,7 @@ function normalizeTime(e: Event) {
           <button class="btn-ghost" @click="load()">刷新</button>
         </div>
         <div v-if="loading" class="muted">加载中…</div>
-        <div v-else-if="!tasks.length" class="muted">暂无本地定时任务</div>
+        <div v-else-if="!tasks.length" class="muted">暂无定时任务</div>
         <div v-for="t in tasks" :key="t.task_name" class="task-card">
           <div class="task-line">
             <span class="task-name">{{ t.name }}<template v-if="!t.registered">（未注册）</template></span>
@@ -164,10 +151,9 @@ function normalizeTime(e: Event) {
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- ─── 云端编排（/agent/tasks 根任务概览） ─── -->
-    <div v-else class="sched-body">
+      <!-- ─── 最近编排任务（服务端 /agent/tasks 根任务概览，对齐原版 L262；
+           2026-08-30 用户裁决：接在已注册任务下方，不再单独 Tab） ─── -->
       <div class="card">
         <div class="card-title list-head">
           <span>最近编排任务（等待确认可继续）</span>
@@ -193,24 +179,6 @@ function normalizeTime(e: Event) {
               {{ detailLoading ? '加载中…' : '详情' }}
             </button>
           </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title list-head">
-          <span>云端智能体能力</span>
-          <button class="btn-ghost" :disabled="capsLoading" @click="loadRegistry()">
-            {{ capsLoading ? '加载中…' : '查看云端智能体' }}
-          </button>
-        </div>
-        <div v-if="!agentCaps.length" class="muted">点「查看云端智能体」拉取服务端注册清单</div>
-        <div v-for="c in agentCaps" :key="c.id" class="cap-card">
-          <div class="task-line">
-            <span class="task-name">{{ c.name }}</span>
-            <span class="task-type agent">{{ c.id }}</span>
-          </div>
-          <div class="task-meta cap-desc">{{ c.description }}</div>
-          <div class="task-meta cap-api" :title="c.api">API：{{ c.api }}</div>
         </div>
       </div>
     </div>
@@ -291,23 +259,6 @@ function normalizeTime(e: Event) {
 }
 .sched-actions:hover {
   background: var(--secondary, rgba(255, 255, 255, 0.06));
-}
-
-/* Tab */
-.sched-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 10px 16px 0;
-}
-.sched-tab {
-  padding: 6px 12px;
-  border-radius: 8px 8px 0 0;
-  font-size: 13px;
-  color: var(--muted-foreground, #8a8f98);
-}
-.sched-tab.active {
-  background: var(--secondary, rgba(255, 255, 255, 0.06));
-  color: var(--foreground, #e6e8eb);
 }
 
 /* 提示条 */
@@ -483,20 +434,6 @@ function normalizeTime(e: Event) {
 .task-ops {
   display: flex;
   gap: 6px;
-}
-.cap-card {
-  border-bottom: 1px dashed var(--border);
-  padding-bottom: 6px;
-}
-.cap-desc {
-  white-space: normal;
-}
-.cap-api {
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block;
 }
 
 /* 拆解步骤预览 */

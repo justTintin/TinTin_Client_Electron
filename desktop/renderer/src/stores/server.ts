@@ -134,13 +134,14 @@ export const useServerStore = defineStore('server', () => {
    * 保证保存地址/测试连接后标题栏状态胶囊与设置区判定一致。
    * /health/capabilities 降级为能力数据填充：不可达/异常只清能力表，不改变在线态。
    * 服务端不可达 / window.tintin 未就绪 → 静默置 offline，不抛错。
+   * 2026-08-30 修复：无 env 桥（纯浏览器预览）时 ping 为 undefined，
+   * 原实现跳过 offline 分支后 fallthrough 到 online → 预览环境永远「服务端正常」。
    */
   async function checkCapabilities(): Promise<void> {
     status.value = 'checking'
     try {
-      // 无 env 桥（纯浏览器预览）→ 回退按 healthCapabilities 判定（原行为）
       const ping = await (window as any).tintin?.env?.serverPing?.()
-      if (ping && ping.online === false) {
+      if (!ping || ping.online === false) {
         _applyCapabilitiesResponse(undefined)
         status.value = 'offline'
         return

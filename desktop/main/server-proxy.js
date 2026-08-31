@@ -18,18 +18,18 @@ const { URL } = require('node:url')
 const fs = require('node:fs')
 const path = require('node:path')
 const { createMontageProxyIpc } = require('./montage-proxy-ipc')
-// machine_id 稳定派生（W11 口径：config-store 'machineId' 缓存优先 + SHA256 前 16 位派生写回）
-const { resolveMachineIdSync } = require('./machine-id')
+// machine_id 稳定派生（W11 口径：config-store 'machineIdV2' 缓存优先 + 原版 license.py 口径派生写回）
+const { resolveMachineIdSync, MACHINE_ID_KEY } = require('./machine-id')
 
-// 获取 machine_id（稳定口径：config-store 'machineId' 复用 → V2 ai_config 遗留 → 派生写回）
+// 获取 machine_id（稳定口径：config-store 'machineIdV2' 复用 → V2 ai_config 遗留 → 派生写回）
 let cachedMachineId = null
 
 function getMachineId() {
   if (cachedMachineId) return cachedMachineId
-  // config-store 'machineId'（client-task-thread 已写回则直接复用同一值，会话隔离一致）
+  // config-store 'machineIdV2'（client-task-thread 已写回则直接复用同一值，会话隔离一致）
   if (_configStore && typeof _configStore.get === 'function') {
     try {
-      const cached = _configStore.get('machineId')
+      const cached = _configStore.get(MACHINE_ID_KEY)
       if (cached) {
         cachedMachineId = String(cached)
         return cachedMachineId

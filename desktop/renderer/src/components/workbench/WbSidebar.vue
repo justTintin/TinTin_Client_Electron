@@ -309,6 +309,11 @@ function cancelRename(): void {
   gap: var(--space-2);
 }
 
+/* 底部入口按钮：图标+文字整体居中（2026-08-30 用户反馈） */
+.sidebar-bottom .btn {
+  justify-content: center;
+}
+
 .settings-btn {
   gap: var(--space-2);
 }
@@ -323,8 +328,12 @@ function cancelRename(): void {
   gap: var(--space-2);
 }
 
+/* 未读徽标：绝对定位按钮内右侧垂直居中（不推挤图标+文字的居中布局，2026-08-30） */
 .notify-badge {
-  margin-left: auto;
+  position: absolute;
+  right: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
   min-width: 20px;
   height: 20px;
   padding: 0 6px;

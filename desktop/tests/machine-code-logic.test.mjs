@@ -1,8 +1,9 @@
 // ═══════════════════════════════════════════════════════════════
 // machine-code-logic.test.mjs — 关于卡·本机机器码纯函数单测
 // 被测：renderer/src/composables/machineCodeLogic.ts（纯函数，无 vue/IPC 依赖）
-// 口径：buildMachineSeed 规范化拼接 → SHA-256 → 前 16 位 hex 大写 →
-//       XXXX-XXXX-XXXX-XXXX 分组；跨重启稳定（同输入同输出）。
+// 口径（2026-08-30 对齐原版 license.py get_machine_id L44-72）：
+//       seed = "mac:{12位hex}|host:{hostname}|cpu:{processor}" →
+//       SHA-256 前 16 位 hex 小写原样展示（不分组不大写）。
 // 运行：node --test "tests/*.test.mjs"
 // ═══════════════════════════════════════════════════════════════
 
@@ -17,56 +18,47 @@ const INFO = {
   platform: 'win32',
   machineGuid: '88888888-4444-4444-4444-CCCCCCCCCCCC',
   mac: 'AA-BB-CC-DD-EE-FF',
+  cpu: 'Intel64 Family 6 Model 186 Stepping 2, GenuineIntel',
   source: 'machine-guid'
 }
 
 /** 与实现同口径的独立参照实现（node:crypto），用于校验 SHA-256 摘要正确性 */
 function expectedCode(info) {
   const seed = C.buildMachineSeed(info)
-  const hex = createHash('sha256').update(seed, 'utf8').digest('hex')
-  const up = hex.slice(0, 16).toUpperCase().padEnd(16, '0')
-  return [up.slice(0, 4), up.slice(4, 8), up.slice(8, 12), up.slice(12, 16)].join('-')
+  return createHash('sha256').update(seed, 'utf8').digest('hex').slice(0, 16)
 }
 
-/* ── buildMachineSeed：规范化拼接 ─────────────────────────── */
+/* ── buildMachineSeed：原版口径拼接 ─────────────────────────── */
 
-test('buildMachineSeed：mac 去冒号/连字符小写，hostname 小写，固定 4 字段分隔', () => {
-  assert.equal(C.buildMachineSeed(INFO), 'desktop-abc123|win32|88888888-4444-4444-4444-cccccccccccc|aabbccddeeff')
+test('buildMachineSeed：mac 归一 12 位小写 hex，hostname/cpu 原样（原版 seed 口径）', () => {
+  assert.equal(
+    C.buildMachineSeed(INFO),
+    'mac:aabbccddeeff|host:DESKTOP-ABC123|cpu:Intel64 Family 6 Model 186 Stepping 2, GenuineIntel'
+  )
 })
 
-test('buildMachineSeed：null/undefined → 全空位（三个分隔符，不抛错）', () => {
-  assert.equal(C.buildMachineSeed(null), '|||')
-  assert.equal(C.buildMachineSeed(undefined), '|||')
+test('buildMachineSeed：platform/machineGuid 不参与派生（原版无此二段）', () => {
+  assert.equal(C.buildMachineSeed(INFO), C.buildMachineSeed({ ...INFO, platform: 'linux', machineGuid: 'other' }))
 })
 
-test('buildMachineSeed：字段缺失保留分隔位（拼接稳定 = 同 seed）', () => {
-  const onlyGuid = C.buildMachineSeed({ machineGuid: 'G-1', hostname: 'h', platform: 'win32', mac: '' })
-  const manual = C.buildMachineSeed({ hostname: 'h', platform: 'win32', machineGuid: 'G-1', mac: '' })
-  assert.equal(onlyGuid, manual)
-  assert.match(onlyGuid, /win32\|g-1\|$/)
+test('buildMachineSeed：null/undefined → 全空段（mac:|host:|cpu:，不抛错）', () => {
+  assert.equal(C.buildMachineSeed(null), 'mac:|host:|cpu:')
+  assert.equal(C.buildMachineSeed(undefined), 'mac:|host:|cpu:')
 })
 
-/* ── groupHex16：格式化 ───────────────────────────────────── */
-
-test('groupHex16：16 位 hex → 4×4 大写分组 XXXX-XXXX-XXXX-XXXX', () => {
-  assert.equal(C.groupHex16('0123456789abcdef'), '0123-4567-89AB-CDEF')
-  assert.equal(C.groupHex16('abcdef0123456789'), 'ABCD-EF01-2345-6789')
+test('buildMachineSeed：mac 分隔符混排/大小写归一；hostname 大小写敏感（原版未归一）', () => {
+  assert.equal(C.buildMachineSeed({ mac: 'aa:bb:cc:dd:ee:ff' }), C.buildMachineSeed({ mac: 'AA-BB-CC-DD-EE-FF' }))
+  assert.notEqual(C.buildMachineSeed({ hostname: 'PC-01' }), C.buildMachineSeed({ hostname: 'pc-01' }))
+  // cpu 两端空白 trim（采集侧可能带换行）
+  assert.equal(C.buildMachineSeed({ cpu: '  x ' }), 'mac:|host:|cpu:x')
 })
 
-test('groupHex16：非 hex 字符剔除、短输入右侧 0 补位、非法输入全 0', () => {
-  assert.equal(C.groupHex16('abcd-ef01'), 'ABCD-EF01-0000-0000')
-  assert.equal(C.groupHex16('xyz'), '0000-0000-0000-0000')
-  assert.equal(C.groupHex16(''), '0000-0000-0000-0000')
-  // 超长截断到 16 位
-  assert.equal(C.groupHex16('1234567890abcdef99'), '1234-5678-90AB-CDEF')
-})
+/* ── formatMachineCode：主入口（SHA-256 前 16 位小写原样） ─── */
 
-/* ── formatMachineCode：主入口（SHA-256 摘要 + 分组） ─────── */
-
-test('formatMachineCode：与 node:crypto 参照实现一致（SHA-256 前 16 位大写分组）', async () => {
+test('formatMachineCode：与 node:crypto 参照实现一致（SHA-256 前 16 位小写）', async () => {
   const got = await C.formatMachineCode(INFO)
   assert.equal(got, expectedCode(INFO))
-  assert.match(got, /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/)
+  assert.match(got, /^[0-9a-f]{16}$/)
 })
 
 test('formatMachineCode：确定性——同输入同输出（跨重启稳定口径）', async () => {
@@ -75,14 +67,16 @@ test('formatMachineCode：确定性——同输入同输出（跨重启稳定口
   assert.equal(a, b)
 })
 
-test('formatMachineCode：不同机器信息 → 不同机器码', async () => {
+test('formatMachineCode：不同机器信息 → 不同机器码（cpu/hostname 各自参与差异）', async () => {
   const a = await C.formatMachineCode(INFO)
-  const b = await C.formatMachineCode({ ...INFO, machineGuid: 'other-guid' })
+  const b = await C.formatMachineCode({ ...INFO, cpu: 'AMD64 Family 25 Model 33 Stepping 2, AuthenticAMD' })
+  const c = await C.formatMachineCode({ ...INFO, hostname: 'OTHER-HOST' })
   assert.notEqual(a, b)
+  assert.notEqual(a, c)
 })
 
 test('formatMachineCode：空信息也能出格式合法的机器码（全空 seed 兜底）', async () => {
   const got = await C.formatMachineCode(null)
-  assert.match(got, /^[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/)
+  assert.match(got, /^[0-9a-f]{16}$/)
   assert.equal(got, expectedCode(null))
 })

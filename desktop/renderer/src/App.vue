@@ -454,6 +454,10 @@ onBeforeUnmount(() => {
   background: var(--surface);
   border-bottom: 1px solid var(--border-subtle);
   gap: var(--space-4);
+  /* 自绘 36px 标题栏已废弃（display:none），拖拽区合并到本顶栏：
+     整条可拖动；交互控件（tab-bar/header-right/浏览器按钮/窗口三控件）各自 no-drag */
+  -webkit-app-region: drag;
+  app-region: drag;
 }
 
 .app-header .brand {

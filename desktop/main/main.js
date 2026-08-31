@@ -635,7 +635,8 @@ app.whenReady().then(() => {
     sharedCtx.EventBus = (dm && typeof dm.getEventBus === 'function') ? dm.getEventBus() : null
 
     createFfmpegGate(ipcMain, getStudioRoot())
-    createTray()
+    // 注入主窗口 getter：托盘「显示主窗口」/左键点击固定指向 mainWindow（非 getAllWindows[0]）
+    createTray(() => mainWindow)
     initUpdater()
     // 环境与维护（服务端探测/清缓存/CDP/环境检测）
     const { createEnvIpc } = require('./env-ipc')

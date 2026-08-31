@@ -80,6 +80,10 @@
       {
         "from": "../assets/bilibili-helper",
         "to": "assets/bilibili-helper"
+      },
+      {
+        "from": "../resources/skills",
+        "to": "skills"
       }
     ],
     "files": [

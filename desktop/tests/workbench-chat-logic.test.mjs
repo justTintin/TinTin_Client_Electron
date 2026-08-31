@@ -304,3 +304,34 @@ test('parseMarkdownTable：剔除分隔行，返回二维数组（单元 trim）
   const rows = L.parseMarkdownTable('| 商品 | 价格 |\n| --- | --- |\n| A | 10 |')
   assert.deepEqual(rows, [['商品', '价格'], ['A', '10']])
 })
+
+// ── latestSessionOfMode：模式切换复用最近会话（2026-08-31 用户反馈：
+//    来回切换对话/智能体不得不停新建空会话） ──
+
+const mkSessions = (rows) => rows.map(([id, mode, updatedAt]) => ({
+  id, mode, updatedAt, title: 'x', subtitle: '', serverSessionId: '', messages: []
+}))
+
+test('latestSessionOfMode：返回该模式 updatedAt 最大的会话', () => {
+  const list = mkSessions([
+    ['s1', 'llm', 100],
+    ['s2', 'agent', 300],
+    ['s3', 'llm', 200],
+    ['s4', 'agent', 150]
+  ])
+  assert.equal(L.latestSessionOfMode(list, 'llm')?.id, 's3')
+  assert.equal(L.latestSessionOfMode(list, 'agent')?.id, 's2')
+})
+
+test('latestSessionOfMode：该模式无会话 / 空列表 → null', () => {
+  const list = mkSessions([['s1', 'agent', 100]])
+  assert.equal(L.latestSessionOfMode(list, 'llm'), null)
+  assert.equal(L.latestSessionOfMode([], 'agent'), null)
+})
+
+test('latestSessionOfMode：单会话直接命中（不突变输入）', () => {
+  const list = mkSessions([['s1', 'llm', 100]])
+  const r = L.latestSessionOfMode(list, 'llm')
+  assert.equal(r?.id, 's1')
+  assert.equal(list.length, 1)
+})

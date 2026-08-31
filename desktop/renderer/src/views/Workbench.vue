@@ -20,9 +20,12 @@ import WbPickScriptDialog from '@/components/workbench/WbPickScriptDialog.vue'
 import WbNotificationDrawer from '@/components/workbench/WbNotificationDrawer.vue'
 import WbTaskDrawer from '@/components/workbench/WbTaskDrawer.vue'
 import WbScheduledDrawer from '@/components/workbench/WbScheduledDrawer.vue'
+import SkillManagerDialog from '@/components/workbench/SkillManagerDialog.vue'
 import { useWorkbenchSessions, SESSION_GROUPS } from '@/composables/useWorkbenchSessions'
 import { useWorkbenchChat } from '@/composables/useWorkbenchChat'
 import { useWorkbenchAgents } from '@/composables/useWorkbenchAgents'
+import { useSkills } from '@/composables/useSkills'
+import { mergeSkillCandidates, buildSkillWakeText, applyWakePrefix } from '@/composables/skillsLogic'
 import { useWorkbenchNotifications } from '@/composables/useWorkbenchNotifications'
 import { useWorkbenchTasks } from '@/composables/useWorkbenchTasks'
 import { useOfficeExport } from '@/composables/useOfficeExport'
@@ -38,6 +41,7 @@ import type {
   CtxMaterialItem,
   CtxScriptItem
 } from '@/composables/workbenchChatContext'
+import type { SkillEntry } from '@/composables/skillsLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
 /* ── 子组件实例引用：跨组件 DOM 行为经 expose 方法桥接 ────── */
@@ -73,6 +77,7 @@ const {
   initModel,
   setMode,
   addAttachments,
+  addScreenshots,
   removeAttachment,
   addCtxProduct,
   removeCtxProduct,
@@ -84,22 +89,76 @@ const {
   handleRegenerate
 } = chat
 
-/* ── 智能体快捷条域（首项「对话」= llm 直连；选中即切换模式=新会话） ── */
+/* ── 智能体快捷条域（首项「对话」= llm 直连；本地技能合并展示，见 skillsAll） ── */
 const {
   entries: agentEntries,
   errorMessage: agentsError,
   selectedKey: agentSelectedKey,
   loadAgents,
+  setSkills,
   selectEntry,
   syncSelectionWithMode
 } = useWorkbenchAgents()
 
-/** 斜杠候选数据源（快捷条中的智能体条目，去掉「对话」首项） */
-const agentList = computed<WorkbenchAgent[]>(() =>
-  agentEntries.value
-    .filter((e) => e.kind === 'agent')
-    .map((e) => ({ id: e.key, name: e.name, desc: e.desc }))
+/* ── 技能域（原版 _load_agents：技能与智能体一起更新进快捷条/斜杠菜单） ── */
+const skills = useSkills()
+const {
+  builtin: skillBuiltin,
+  user: skillUser,
+  loading: skillsLoading,
+  actionMsg: skillsActionMsg,
+  load: loadSkills,
+  install: installSkillSrc,
+  remove: removeSkillId
+} = skills
+
+/** 全部技能（内置 + 已安装；快捷条合并与选中回查共用） */
+const skillsAll = computed<SkillEntry[]>(() => [...skillBuiltin.value, ...skillUser.value])
+watch(skillsAll, (list) => setSkills(list), { immediate: true }) // 列表变更 → 快捷条重建
+
+/** 斜杠候选数据源：服务端智能体（去「对话」首项）+ 本地技能（原版 L1519 顺序） */
+const agentList = computed(() =>
+  mergeSkillCandidates(
+    agentEntries.value
+      .filter((e) => e.kind === 'agent')
+      .map((e) => ({ id: e.key, name: e.name, desc: e.desc })),
+    skillsAll.value
+  )
 )
+
+/* ── 技能管理弹窗（工具行「⚙技能」入口；安装/卸载后列表自动刷新） ── */
+const showSkillManager = ref(false)
+function onOpenSkills() {
+  void loadSkills()
+  showSkillManager.value = true
+}
+async function onInstallSkillFile() {
+  const t = (window as any).tintin
+  if (!t?.dialog?.openFile) return
+  const src = await t.dialog.openFile({
+    title: '选择技能文件（.md 或 .zip）',
+    filters: [
+      { name: '技能包', extensions: ['md', 'markdown', 'zip'] }
+    ]
+  })
+  if (src) await installSkillSrc(String(src))
+}
+async function onInstallSkillDir() {
+  const t = (window as any).tintin
+  if (!t?.dialog?.openDir) return
+  const src = await t.dialog.openDir({ title: '选择技能目录（含 SKILL.md）' })
+  if (src) await installSkillSrc(Array.isArray(src) ? String(src[0]) : String(src))
+}
+
+/* ── 网络异常底部 toast 条（2026-08-30 用户反馈：错误不再内嵌快捷条，
+      改为底部居中一行 + 右侧关闭；agentsError 出现新文案时自动重新显示） ── */
+const dismissedNetError = ref('')
+const netErrorVisible = computed(
+  () => !!agentsError.value && agentsError.value !== dismissedNetError.value
+)
+function dismissNetError() {
+  dismissedNetError.value = agentsError.value
+}
 
 /* ── 选择弹窗开关（产品/素材/脚本，业务在 chat 的 addCtx* 系列） ── */
 const showProduct = ref(false)
@@ -121,12 +180,31 @@ function onPickScript(item: PickerItem) {
   addCtxScript(item as CtxScriptItem)
 }
 
-/** 快捷条选中：切换对话模式并新建会话（原版「模式切换视为新会话」语义） */
+/** 快捷条选中：切换对话模式。原「模式切换即新会话」在多会话列表下
+ *  来回切换会不停堆积空会话（2026-08-31 用户反馈）：优先复用目标模式
+ *  最近的已有会话（消息域装载同 onSelectSession 口径），仅该模式无任何
+ *  会话时才新建；真正开新对话用侧栏「新建」按钮。 */
 function onSelectEntry(key: string) {
   const r = selectEntry(key)
-  if (r.changed && r.mode) {
+  if (!r.changed || !r.mode) return
+  const latest = sessions.latestOfMode(r.mode)
+  if (latest) {
+    sessions.selectSession(latest.id)
+    const s = sessions.getActive()
+    if (s) {
+      loadSession({ serverSessionId: s.serverSessionId, messages: s.messages, mode: s.mode })
+      syncSelectionWithMode(s.mode) // 复用会话 → 快捷条选中态对齐该会话模式
+    }
+  } else {
     setMode(r.mode)
     sessions.createSession(r.mode)
+  }
+  // 技能条目：切换会话后注入唤醒前缀（原版 _on_agent_selected L1537-1549：
+  // 请按技能【name】执行：instruction，换选时剥离旧前缀）
+  if (r.entry?.kind === 'skill') {
+    const sk = skillsAll.value.find((x) => `skill:${x.id}` === key)
+    if (sk) inputText.value = applyWakePrefix(inputText.value, buildSkillWakeText(sk))
+    nextTick(() => composerComp.value?.focus())
   }
 }
 
@@ -157,6 +235,7 @@ onMounted(async () => {
   }
   void initModel()
   void loadAgents() // 智能体快捷条/斜杠菜单数据源（失败回退仅「对话」）
+  void loadSkills() // 本地技能（内置+已安装）→ 合并进快捷条/斜杠菜单（原版 _load_agents 同步加载）
 })
 
 /** 切换会话：把该会话消息 / 服务端 session_id / 模式装载进消息域（原版恢复口径） */
@@ -409,16 +488,17 @@ async function onExportTasks() {
         :entries="agentEntries"
         :selected-key="agentSelectedKey"
         :agents="agentList"
-        :agents-error="agentsError"
         @send="handleSend"
         @keydown="handleKeydown"
         @update:plan-mode="planMode = $event"
         @attachments-picked="addAttachments"
+        @screenshots-picked="addScreenshots"
         @remove-attachment="removeAttachment"
         @remove-product="removeCtxProduct"
         @remove-script="removeCtxScript"
         @pick-product="showProduct = true"
         @pick-material="showMaterial = true"
+        @open-skills="onOpenSkills"
         @pick-script="showScript = true"
         @select-entry="onSelectEntry"
       />
@@ -491,6 +571,27 @@ async function onExportTasks() {
         @open-result="openTaskResult"
         @export-excel="onExportTasks"
       />
+    </Transition>
+
+    <!-- ─── 技能管理弹窗（安装 .md/.zip/目录；内置只读，用户技能可卸载） ─── -->
+    <SkillManagerDialog
+      :visible="showSkillManager"
+      :builtin="skillBuiltin"
+      :user="skillUser"
+      :loading="skillsLoading"
+      :action-msg="skillsActionMsg"
+      @close="showSkillManager = false"
+      @install-file="onInstallSkillFile"
+      @install-dir="onInstallSkillDir"
+      @remove="removeSkillId"
+    />
+
+    <!-- ─── 网络异常底部 toast 条（单行居中 + 右侧关闭；出现新文案自动重现） ─── -->
+    <Transition name="net-toast">
+      <div v-if="netErrorVisible" class="net-error-toast" role="alert">
+        <span class="net-error-text">{{ agentsError }}</span>
+        <button class="net-error-x" title="关闭" @click="dismissNetError">×</button>
+      </div>
     </Transition>
 
     <!-- ─── 办公能力：导出成功反馈 toast（已保存 + 预览 / 打开所在位置，PRD §3.4）─── -->
@@ -582,6 +683,59 @@ async function onExportTasks() {
   font-size: 12px;
   color: var(--foreground);
 }
+
+/* ─── 网络异常底部 toast 条（fixed 全窗底部居中一行 + 右侧关闭） ─── */
+.net-error-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(640px, calc(100vw - 32px));
+  padding: 9px 10px 9px 14px;
+  background: var(--surface);
+  border: 1px solid var(--destructive, #e5484d);
+  border-left-width: 4px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-4);
+  font-size: 12px;
+  color: var(--destructive, #e5484d);
+}
+.net-error-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.net-error-x {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--destructive, #e5484d);
+}
+.net-error-x:hover {
+  background: var(--surface-container-high);
+}
+.net-toast-enter-active,
+.net-toast-leave-active {
+  transition: opacity var(--duration-fast), transform var(--duration-fast);
+}
+.net-toast-enter-from,
+.net-toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
+}
+
 .export-toast__icon { color: var(--success); flex: 0 0 auto; }
 .export-toast__text {
   flex: 1 1 auto;

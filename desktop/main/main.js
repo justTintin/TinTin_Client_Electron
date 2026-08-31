@@ -29,6 +29,7 @@ const localScheduler = require('./local-scheduler'); const { purgeDeprecatedExtK
 const agentPlan = require('./agent-plan') // agent 任务 LLM 拆解（对照 agent_router.build_plan，P2 补齐）
 const { startClientTaskThread } = require('./client-task-thread') // W11：客户端任务下发闭环（轮询领取→执行→上报）
 const { createDailyAssetsIpc } = require('./daily-assets'); const { createCreatorsStoreIpc } = require('./creators-store'); const { createAutoListingIpc } = require('./auto-listing/ipc'); const { createOfficeIpc } = require('./office-ipc') // B12：自动上架主进程引擎 + 办公能力（office:* 4 条）
+const { createSkillsIpc } = require('./skill-store') // 工作台技能入口（安装/卸载/列表，2026-08-31 对齐原客户端）
 
 // config-store：自建分域 JSON 配置存储（B 整改 2026-08-28，零第三方依赖；应用根/config 分域，失败兜底内存 store）
 const { createConfigStore, resolveConfigBasePath } = require('./config-store')
@@ -559,6 +560,7 @@ app.whenReady().then(() => {
     // Phase 3: 媒体持久化（嗅探历史 + 下载记录 + 设置）
     createMediaStorage(ipcMain, { store })
     createDailyAssetsIpc(ipcMain, { store, app }); createCreatorsStoreIpc(ipcMain, { app, getBrowserWindow: () => browserWindow.getBrowserWindow() }); createOfficeIpc(ipcMain, { getMainWindow: () => mainWindow }) // 办公能力 office:*（主窗口 + 浏览器窗口共用）
+    createSkillsIpc(ipcMain, { app }) // 技能 skills:list/install/remove（内置技能随包 resources/skills）
 
     // 5. 注册 A2 12 条 IPC handlers（C14 白名单：config 2 + model 4 + inference 2 + ocr 1 + knowledge 3）
     createA2Ipc(ipcMain, { store, modelManager: null, inferenceRouter: null, vectorStore: null, httpRequest: null })

@@ -117,6 +117,12 @@ export interface ChatAttachment {
   materialId?: string
   /** 素材库原始条目（llm 模式文本拼接取 media_type/brand 等摘要字段） */
   material?: Record<string, unknown>
+  /**
+   * 只提供信息的附件（如剪贴板截图粘贴）：不入服务端素材池
+   * （素材池是产品素材；截图仅作为上下文信息文本拼入）。
+   * 2026-08-30 用户裁决：截图直接贴入附件池，不入素材池。
+   */
+  infoOnly?: boolean
 }
 
 /**
@@ -250,6 +256,22 @@ export function applySessionRename(
 export function pickSessionServerId(sessions: StoredSession[], id: string): string {
   const s = sessions.find((x) => x.id === id)
   return (s && s.serverSessionId) || ''
+}
+
+/**
+ * 指定模式下最近的一个会话（updatedAt 最大；无则 null）。
+ * 快捷条模式切换复用已有会话用：原「切换即新建」在多会话列表下
+ * 来回切换会不停堆积空会话（2026-08-31 用户反馈）。
+ */
+export function latestSessionOfMode<T extends { mode: ChatMode; updatedAt: number }>(
+  sessions: T[],
+  mode: ChatMode
+): T | null {
+  let best: T | null = null
+  for (const s of sessions) {
+    if (s && s.mode === mode && (!best || s.updatedAt > best.updatedAt)) best = s
+  }
+  return best
 }
 
 /* ── W8：回复成片视频资产识别（原 _detect_video_asset L1392-1418 三级识别） ── */

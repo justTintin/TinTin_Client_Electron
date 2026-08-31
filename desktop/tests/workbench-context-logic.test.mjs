@@ -221,6 +221,26 @@ test('buildContextText：空上下文 → 空串', () => {
   assert.equal(C.appendContextText('原文', ''), '原文')
 })
 
+test('buildContextText：infoOnly 截图附件任何模式都拼文本（不入素材池）', () => {
+  const base = {
+    product: PRODUCT,
+    scripts: [SCRIPT],
+    atts: [
+      { name: 'a.mp4', path: 'D:\\a.mp4', state: 'pooled' },
+      { name: '截图.png', path: 'D:\\paste\\x.png', state: 'pending', infoOnly: true }
+    ]
+  }
+  // agent 模式：普通附件不拼，但 infoOnly 截图必拼（服务端才能读到信息）
+  const agent = C.buildContextText({ ...base, poolMode: true })
+  assert.ok(agent.includes('【附件】'), 'agent 模式截图附件拼文本')
+  assert.ok(agent.includes('- 截图.png（D:\\paste\\x.png）'))
+  assert.ok(!agent.includes('- a.mp4'), 'agent 模式普通附件仍不拼')
+  // llm 模式：两者都拼
+  const llm = C.buildContextText({ ...base, poolMode: false })
+  assert.ok(llm.includes('- 截图.png（D:\\paste\\x.png）'))
+  assert.ok(llm.includes('- a.mp4（D:\\a.mp4）'))
+})
+
 /* ── 弹窗列表容错解析（{items}|{data}|{results}|裸数组） ────── */
 
 test('pickListItems：兼容 items/data/results/裸数组/异常空', () => {

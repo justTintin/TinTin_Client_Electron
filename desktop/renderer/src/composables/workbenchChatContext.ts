@@ -28,10 +28,11 @@ export interface WorkbenchAgent {
   desc: string
 }
 
-/** 快捷条条目：kind=llm 固定「对话」首项；kind=agent 服务端智能体 */
+/** 快捷条条目：kind=llm 固定「对话」首项；kind=agent 服务端智能体；
+ *  kind=skill 本地技能（2026-08-31 技能入口移植，key 带 skill: 前缀） */
 export interface QuickEntry {
   key: string
-  kind: 'llm' | 'agent'
+  kind: 'llm' | 'agent' | 'skill'
   name: string
   desc: string
 }
@@ -301,6 +302,7 @@ export interface ContextTextInput {
  * 对话上下文文本（原版 _build_context_text L1733-1751）：
  * agent 模式只拼【产品】【脚本】（素材/附件已入服务端素材池，每轮自动注入）；
  * llm 模式全文本拼接【产品】【素材】【脚本】【附件】，段落间 \n\n。
+ * 2026-08-30：截图等 infoOnly 附件不入素材池，任何模式下都拼入文本（服务端才能读到）。
  */
 export function buildContextText(input: ContextTextInput): string {
   const { product, scripts, atts, poolMode } = input || {}
@@ -311,11 +313,16 @@ export function buildContextText(input: ContextTextInput): string {
     for (const m of materials) parts.push('【素材】\n' + materialSummary((m.material || {}) as CtxMaterialItem))
   }
   for (const s of scripts || []) parts.push('【脚本】\n' + scriptSummary(s))
+  // 普通附件：agent 模式已入素材池不拼文本；llm 模式全拼
   if (!poolMode) {
-    const files = (atts || []).filter((a) => a && !a.materialId && a.path)
+    const files = (atts || []).filter((a) => a && !a.materialId && a.path && !a.infoOnly)
     const text = buildAttachmentText(files)
     if (text) parts.push(text)
   }
+  // 截图等 infoOnly 附件：不入素材池，任何模式都拼文本（服务端才能读到信息）
+  const info = (atts || []).filter((a) => a && a.infoOnly && a.path)
+  const infoText = buildAttachmentText(info)
+  if (infoText) parts.push(infoText)
   return parts.join('\n\n')
 }
 

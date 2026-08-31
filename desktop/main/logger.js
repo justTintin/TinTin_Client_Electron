@@ -2,7 +2,8 @@
 // logger.js — 主进程客户端日志（环境与维护卡「日志」区块的数据源）
 // 对齐原客户端日志查看页（gui/env_config_page.py / 日志相关页面）：
 //   · 应用运行关键事件写入 %APPDATA%/<userData>/logs/client-YYYYMMDD.log
-//   · 按天分文件；listLogFiles 供渲染层日志列表；openLogFile 用 shell.openPath
+//   · 按天分文件；listLogFiles 供渲染层日志列表；readLogFile 内嵌展示；
+//     clearLogFile 清空单文件（内置日志查看器「清空」，2026-08-31）
 //   · 惰性单例：main.js 启动时 initLogger(userRoot)，其他模块直接 require 使用
 //   · 所有写入失败静默（日志绝不阻塞业务，P1 红线同款约束）
 // ═══════════════════════════════════════════════════════════════
@@ -86,10 +87,48 @@ async function openLogFile(name) {
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+/** 单文件读取上限（2MB：日志查看器内嵌展示够用，超出读尾部避免渲染层卡顿） */
+const READ_CAP_BYTES = 2 * 1024 * 1024
+
+/** 读取单个日志文件内容（日志查看器内嵌展示；超上限读尾部并标记 truncated） */
+function readLogFile(name) {
+  if (!_ensureRoot()) return { ok: false, error: 'LOG_DIR_NOT_READY' }
+  if (!/^client-\d{8}\.log$/.test(String(name))) return { ok: false, error: 'INVALID_NAME' }
+  try {
+    const p = path.join(_root, String(name))
+    const st = fs.statSync(p)
+    if (st.size <= READ_CAP_BYTES) {
+      return { ok: true, content: fs.readFileSync(p, 'utf8'), truncated: false }
+    }
+    // 超上限：只读尾部 1MB（fs.openReadStream 语义等价的定长尾读）
+    const tailBytes = 1024 * 1024
+    const fd = fs.openSync(p, 'r')
+    try {
+      const buf = Buffer.alloc(tailBytes)
+      fs.readSync(fd, buf, 0, tailBytes, st.size - tailBytes)
+      return { ok: true, content: buf.toString('utf8'), truncated: true }
+    } finally { fs.closeSync(fd) }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
+/** 清空单个日志文件内容（内置日志查看器「清空」；文件保留、写入归零） */
+function clearLogFile(name) {
+  if (!_ensureRoot()) return { ok: false, error: 'LOG_DIR_NOT_READY' }
+  // 防路径穿越：与 openLogFile/readLogFile 同款白名单校验
+  if (!/^client-\d{8}\.log$/.test(String(name))) return { ok: false, error: 'INVALID_NAME' }
+  try {
+    const p = path.join(_root, String(name))
+    if (!fs.existsSync(p)) return { ok: false, error: 'NOT_FOUND' }
+    fs.writeFileSync(p, '', 'utf8')
+    logInfo('env', `log cleared by user: ${name}`)
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 /** 打开日志文件夹（revealInFolder 同源能力，供「打开日志目录」入口） */
 function revealLogsDir() {
   if (!_ensureRoot()) return false
   try { shell.showItemInFolder(_fileOfDay()); return true } catch (_) { return false }
 }
 
-module.exports = { initLogger, getLogsDir, logInfo, logWarn, logError, listLogFiles, openLogFile, revealLogsDir }
+module.exports = { initLogger, getLogsDir, logInfo, logWarn, logError, listLogFiles, openLogFile, readLogFile, clearLogFile, revealLogsDir }

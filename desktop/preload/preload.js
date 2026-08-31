@@ -17,6 +17,13 @@ const app = {
   }
 }
 
+// ── skills：工作台技能（安装/卸载/列表，对齐原客户端技能管理器）──
+const skills = {
+  list:    ()      => ipcRenderer.invoke('skills:list'),
+  install: (src)   => ipcRenderer.invoke('skills:install', src),
+  remove:  (id)    => ipcRenderer.invoke('skills:remove', id)
+}
+
 // ── dialog ──
 const dialog = {
   openFile: (params) => ipcRenderer.invoke('dialog:openFile', params),
@@ -456,11 +463,17 @@ const env = {
   clearCache:    ()      => ipcRenderer.invoke('env:clearCache'),
   // 条目⑪ 环境检测（口径重定义）：服务端连通 + 本地资源（ffmpeg/磁盘/os/cpu/ram）
   detectEnv:     ()      => ipcRenderer.invoke('env:detectEnv'),
-  // 日志区块（对齐原客户端日志查看页）：文件列表 + 打开单个日志文件
+  // 日志区块（对齐原客户端日志查看页）：文件列表 + 内嵌读取；
+  // 2026-08-31 内置操作：清空（env:logClear）+ 复制（env:copyText，通用剪贴板）
   logList:       ()      => ipcRenderer.invoke('env:logList'),
+  logRead:       (name)  => ipcRenderer.invoke('env:logRead', name),
+  logClear:      (name)  => ipcRenderer.invoke('env:logClear', name),
+  copyText:      (text)  => ipcRenderer.invoke('env:copyText', text),
   openLog:       (name)  => ipcRenderer.invoke('env:openLog', name),
   // 关于卡·本机机器码（原始系统信息，渲染层 SHA256 摘要）
   getMachineInfo:()      => ipcRenderer.invoke('env:getMachineInfo'),
+  // 剪贴板截图 → 本地临时 PNG（截图只提供信息，不入素材池）
+  pasteImage:    ()      => ipcRenderer.invoke('env:pasteImage'),
 }
 
 // ── feishu：飞书连接测试（条目⑩ S6；凭据补全在主进程，明文不出展示层）──
@@ -541,6 +554,8 @@ contextBridge.exposeInMainWorld('tintin', {
   ocr,
   knowledge,
   env,
+  // 工作台技能（安装/卸载/列表，对齐原客户端技能管理器）
+  skills,
   // 条目⑩ 账号与登录（飞书连接测试）
   feishu,
   // S8 平台接入 + S9 系统与运行

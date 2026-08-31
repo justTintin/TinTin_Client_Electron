@@ -6,6 +6,8 @@
 //   → 智能体快捷条独立一行（输入框容器外部下方；首项「对话」= llm 直连；
 //     超出宽度折叠进「更多」浮层）+ 列表失败提示
 //   → 提示行：Enter 快捷键说明 + 转编排任务开关（agent 模式）
+// 技能入口：工具行「⚙技能」打开技能管理弹窗（open-skills → 容器），本地技能
+//   与智能体同构合并进快捷条/斜杠菜单（skillsLogic，原版 _on_agents_loaded 口径）。
 // 移除：模式分段切换与模型下拉（模型只读 llm.defaultModel 偏好，系统设置可改）。
 // 斜杠菜单：输入 / 唤起智能体候选（isAgentPrefix/filterSlashCandidates），
 // 选中插入唤醒词（applyAgentWakeInsert，原版 _SlashPopup L294-361 口径）。
@@ -33,6 +35,7 @@ import {
   fitQuickBar
 } from '@/composables/workbenchChatContext'
 import WbSlashPopup from './WbSlashPopup.vue'
+import { applySkillWakeInsert, type SkillCandidate } from '@/composables/skillsLogic'
 
 const props = defineProps<{
   modelValue: string
@@ -52,10 +55,8 @@ const props = defineProps<{
   entries?: QuickEntry[]
   /** 当前选中条目 key（llm 直连=CHAT_ENTRY_KEY，智能体=agent_id） */
   selectedKey?: string
-  /** 服务端智能体列表（斜杠候选数据源） */
-  agents?: WorkbenchAgent[]
-  /** 智能体列表加载失败提示（空=无；快捷条回退仅「对话」项） */
-  agentsError?: string
+  /** 服务端智能体 + 本地技能（斜杠候选数据源，技能 source='skill'） */
+  agents?: (WorkbenchAgent | SkillCandidate)[]
 }>()
 
 const emit = defineEmits<{
@@ -64,12 +65,16 @@ const emit = defineEmits<{
   (e: 'keydown', ev: KeyboardEvent): void
   (e: 'update:planMode', value: boolean): void
   (e: 'attachments-picked', paths: string[]): void
+  /** 剪贴板截图贴入附件池（截图只提供信息，不入素材池） */
+  (e: 'screenshots-picked', paths: string[]): void
   (e: 'remove-attachment', index: number): void
   (e: 'remove-product'): void
   (e: 'remove-script', index: number): void
   (e: 'pick-product'): void
   (e: 'pick-material'): void
   (e: 'pick-script'): void
+  /** 打开技能管理弹窗（⚙技能，原版 L1136-1141 工具行入口） */
+  (e: 'open-skills'): void
   (e: 'select-entry', key: string): void
 }>()
 
@@ -84,6 +89,40 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 /** 原 createSession 内 inputRef.value?.focus() 的等价实现 */
 function focus() {
   textareaRef.value?.focus()
+}
+
+/** 粘贴：纯文本正常插入（对齐原版 insertFromMimeData 文本分支）；
+ *  剪贴板图片（截图）→ env.pasteImage 保存为本地 PNG → 截图附件
+ *  （2026-08-30 用户裁决：截图直接贴入附件池，不入素材池，仅提供信息）。 */
+async function onPaste(e: ClipboardEvent) {
+  const dt = e.clipboardData
+  if (!dt) return
+  // 剪贴板含图片文件（截图）→ 调主进程存本地 PNG，作为截图附件
+  if (dt.files.length) {
+    e.preventDefault()
+    await pasteScreenshot()
+    return
+  }
+  const text = dt.getData('text/plain')
+  if (!text) return // 无纯文本形式（纯 HTML/图片）→ 不插入
+  e.preventDefault() // 拦截默认插入，手动以纯文本写入（富文本降级）
+  const ta = textareaRef.value
+  const cur = innerText.value
+  if (!ta) { innerText.value = cur + text; return }
+  const s = ta.selectionStart ?? cur.length
+  const en = ta.selectionEnd ?? s
+  innerText.value = cur.slice(0, s) + text + cur.slice(en)
+  void nextTick(() => { ta.selectionStart = ta.selectionEnd = s + text.length })
+}
+
+/** 剪贴板图片（截图）→ 主进程保存本地 PNG → 截图信息附件（不入素材池） */
+async function pasteScreenshot() {
+  const t = (window as any).tintin
+  if (!t?.env?.pasteImage) return // 预览环境：无 IPC，跳过
+  try {
+    const r = await t.env.pasteImage()
+    if (r?.ok && r.path) emit('screenshots-picked', [r.path])
+  } catch (_) { /* 截图保存失败静默：不阻塞粘贴 */ }
 }
 
 /** 引用回复后聚焦并移动光标到末尾（原版 _on_quote moveCursor(QTextCursor.End) + setFocus） */
@@ -104,6 +143,38 @@ function onFilesChange(e: Event) {
     .filter(Boolean)
   if (paths.length) emit('attachments-picked', paths)
   input.value = '' // 允许重复选择同一文件
+}
+
+/* ── 拖入文件加入会话附件（对齐原版输入框拖放：filesDropped → _add_attachment_files；
+      与上传按钮共用 attachments-picked 链路，路径去重/入池逻辑同源） ── */
+const dragActive = ref(false)
+let dragDepth = 0
+
+function onDragEnter() {
+  dragDepth += 1
+  dragActive.value = true
+}
+
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (!dragDepth) dragActive.value = false
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault() // 允许 drop 触发
+  dragActive.value = true
+}
+
+function onDrop(e: DragEvent) {
+  dragDepth = 0
+  dragActive.value = false
+  const files = e.dataTransfer?.files
+  if (!files || !files.length) return // 纯文本/其他拖放走默认行为（textarea 正常插入）
+  e.preventDefault() // 文件拖放整体拦截：不落为 file:// 路径文本（原版 L169 同口径）
+  const paths = Array.from(files)
+    .map((f) => (f as File & { path?: string }).path || '')
+    .filter(Boolean)
+  if (paths.length) emit('attachments-picked', paths)
 }
 
 function onPlanToggle(e: Event) {
@@ -136,11 +207,14 @@ function closeSlash() {
   slashIndex.value = 0
 }
 
-/** 斜杠选中：光标前 /关键字 段替换为唤醒词（原版 _SlashPopup._insert_agent） */
-async function insertWake(agent: WorkbenchAgent) {
+/** 斜杠选中：光标前 /关键字 段替换为唤醒词（原版 _SlashPopup._insert_agent）。
+ *  技能候选用技能前缀（请按技能【…】执行），智能体用智能体唤醒词。 */
+async function insertWake(agent: WorkbenchAgent | SkillCandidate) {
   const el = textareaRef.value
   const caret = el?.selectionStart ?? props.modelValue.length
-  const r = applyAgentWakeInsert(props.modelValue, caret, agent)
+  const r = (agent as SkillCandidate).source === 'skill'
+    ? applySkillWakeInsert(props.modelValue, caret, agent as SkillCandidate)
+    : applyAgentWakeInsert(props.modelValue, caret, agent)
   emit('update:modelValue', r.text)
   closeSlash()
   await nextTick()
@@ -273,8 +347,16 @@ defineExpose({ focus, focusEnd })
       </span>
     </div>
 
-    <!-- 豆包式一体输入容器：上部 textarea + 底部工具行（视觉一体） -->
-    <div class="input-wrap">
+    <!-- 豆包式一体输入容器：上部 textarea + 底部工具行（视觉一体）；
+         支持从资源管理器拖入文件加入会话附件（对齐原版输入框拖放口径 L141-176） -->
+    <div
+      class="input-wrap"
+      :class="{ 'drag-active': dragActive }"
+      @dragover="onDragOver"
+      @dragenter="onDragEnter"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+    >
       <WbSlashPopup
         :visible="slashOpen"
         :candidates="slashCandidates"
@@ -288,6 +370,7 @@ defineExpose({ focus, focusEnd })
         rows="4"
         placeholder="输入消息，/ 唤起智能体…"
         @keydown="onKeydown"
+        @paste="onPaste"
         @input="updateSlash"
         @click="updateSlash"
         @keyup="updateSlash"
@@ -325,6 +408,16 @@ defineExpose({ focus, focusEnd })
         脚本
       </button>
 
+      <!-- 技能入口（原版 L1136-1141：安装/管理本地技能；安装后与智能体一样
+           出现在快捷条和斜杠菜单，2026-08-31 技能入口移植） -->
+      <button class="tool-chip" title="安装/管理本地技能；安装后与智能体一样出现在快捷条和斜杠菜单" @click="emit('open-skills')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+        技能
+      </button>
+
       <!-- 发送键保留在最右侧（工具行行尾） -->
       <div class="input-actions">
         <button class="action-send" title="发送" :disabled="sending" @click="emit('send')">
@@ -337,8 +430,9 @@ defineExpose({ focus, focusEnd })
     </div>
     </div>
 
-    <!-- 智能体快捷条：独立一行（输入框容器外部下方；含「更多」折叠浮层，向上弹出） -->
-    <div class="quick-bar-row">
+    <!-- 底部信息行：智能体快捷条（含「对话」首项）在左，「转编排任务」在右——
+         2026-08-30 用户裁决：快捷条不单独占行，并入本行转编排任务之前 -->
+    <div class="input-foot">
       <div ref="quickbarRef" class="quick-bar">
         <button
           v-for="e in visibleEntries"
@@ -360,7 +454,6 @@ defineExpose({ focus, focusEnd })
         >
           更多
         </button>
-        <span v-if="agentsError" class="quick-error" :title="agentsError">{{ agentsError }}</span>
 
         <!-- 「更多」浮层：列出折叠的智能体（原版 _AgentBar 展开口径） -->
         <div v-if="moreOpen && hiddenEntries.length" class="quick-more-pop">
@@ -376,10 +469,8 @@ defineExpose({ focus, focusEnd })
           </button>
         </div>
       </div>
-    </div>
 
-    <div class="input-foot">
-      <span>Enter 发送，Shift + Enter 换行，输入 / 唤起智能体</span>
+      <span class="foot-hint">Enter 发送，Shift + Enter 换行，输入 / 唤起智能体</span>
       <label
         v-if="mode === 'agent'"
         class="plan-check"
@@ -415,6 +506,13 @@ defineExpose({ focus, focusEnd })
 }
 
 .input-wrap:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--ring);
+  background: var(--card);
+}
+
+/* 拖入文件悬停高亮（对齐 focus 视觉；drop 后经 dragDepth 计数复位） */
+.input-wrap.drag-active {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--ring);
   background: var(--card);
@@ -518,16 +616,8 @@ defineExpose({ focus, focusEnd })
   color: var(--primary);
 }
 
-/* ─── 智能体快捷条独立行（输入框容器外部下方，宽度与容器对齐） ─── */
-.quick-bar-row {
-  max-width: 64rem;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  padding-top: var(--space-2);
-}
-
-/* ─── 智能体快捷条（首项「对话」；超出宽度折叠进「更多」浮层） ─── */
+/* ─── 智能体快捷条（首项「对话」；超出宽度折叠进「更多」浮层。
+        2026-08-30 并入底部信息行左侧，不再独立占行） ─── */
 .quick-bar {
   flex: 1 1 auto;
   min-width: 0;
@@ -563,15 +653,6 @@ defineExpose({ focus, focusEnd })
   background: var(--primary);
   border-color: var(--primary);
   color: var(--primary-foreground);
-}
-
-.quick-error {
-  font-size: 11px;
-  color: var(--destructive, #e5484d);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 
 .quick-more-pop {
@@ -674,16 +755,21 @@ defineExpose({ focus, focusEnd })
   background: var(--surface-container-high);
 }
 
-/* ─── 提示行 ─── */
+/* ─── 底部信息行：快捷条（左） + 键位提示 / 转编排任务（右） ─── */
 .input-foot {
   max-width: 64rem;
   margin: var(--space-3) auto 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
   font-size: 11px;
   color: var(--muted-foreground);
+}
+
+.foot-hint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .plan-check {

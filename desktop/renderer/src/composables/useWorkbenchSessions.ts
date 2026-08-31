@@ -6,6 +6,7 @@ import {
   applySessionDelete,
   applySessionRename,
   pickSessionServerId,
+  latestSessionOfMode,
   type StoredSession,
   type HistoryMessage,
   type ChatMode
@@ -92,6 +93,11 @@ export function useWorkbenchSessions(hooks?: {
 
   function selectSession(id: string) {
     activeSessionId.value = id
+  }
+
+  /** 目标模式下最近的会话（无则 null）：模式切换复用已有会话，避免堆积空会话 */
+  function latestOfMode(mode: ChatMode): Session | null {
+    return latestSessionOfMode(sessions.value, mode)
   }
 
   /** 新建会话（容器传入当前模式；原版模式切换即新会话，模式随会话固化） */
@@ -200,6 +206,7 @@ export function useWorkbenchSessions(hooks?: {
     sidebarOpen,
     init,
     selectSession,
+    latestOfMode,
     createSession,
     deleteSession,
     renameSession,

@@ -37,6 +37,8 @@ import {
   type SplitSceneRow,
   type BeatClip,
 } from './videoMontageLogic'
+import { readCacheDir } from './useSettingsConfig'
+import { joinDefaultPath } from './settingsIntegrationLogic'
 
 const POLL_INTERVAL_MS = 3000   // 对照原版轮询周期（_query_single_rh_task L656 同口径）
 const POLL_TIMEOUT_MS = 600_000 // 10 分钟上限
@@ -407,11 +409,26 @@ export function useVideoMontage() {
       const clipUrls = checked
         .map((s) => (s.clipUrl ? toAbsolute(s.clipUrl) : ''))
         .filter(Boolean)
+      // 原客户端 BUGFIX #014：「与原片一致」需探测原片画幅传给服务端。
+      // ffmpeg-gate probe 已归一旋转元数据为显示宽高（#010）；探测失败回退 layoutSize 兜底 1080x1920
+      let sourceProbe: { width?: number; height?: number } | null = null
+      if (concatLayout.value === 'source') {
+        const src = srcVideos.value[0] || ''
+        if (src) {
+          try {
+            const info = await window.tintin.ffmpeg.probe(src)
+            if (Number(info?.width) > 0 && Number(info?.height) > 0) {
+              sourceProbe = { width: Number(info.width), height: Number(info.height) }
+            }
+          } catch (_) { /* 探测失败走兜底 */ }
+        }
+      }
       const payload = buildConcatPayload({
         clipUrls,
         files: clipUrls.length ? [] : srcVideos.value,
         transition: concatTransition.value,
         layout: concatLayout.value,
+        probe: sourceProbe,
         transitionDuration: concatTransitionDuration.value || undefined,
       })
       const res = unwrapIpc(await window.tintin.server.montageConcat({
@@ -552,7 +569,9 @@ export function useVideoMontage() {
 
   async function download(url: string, defaultName: string, key: string): Promise<void> {
     if (!url) return
-    const savePath = await window.tintin.dialog.saveFile({ title: '保存结果', defaultPath: defaultName })
+    // 默认保存到缓存目录（local.cacheDir；未配置则系统默认位置，对齐原 aigen L1044）
+    const cacheDir = await readCacheDir()
+    const savePath = await window.tintin.dialog.saveFile({ title: '保存结果', defaultPath: joinDefaultPath(cacheDir, defaultName) })
     if (!savePath) return // 用户取消
     downloadingKey.value = key
     try {

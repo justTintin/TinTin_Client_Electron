@@ -36,6 +36,28 @@ function getFfprobePath(studioRoot) {
 }
 
 /**
+ * 从 ffprobe 视频流提取显示旋转角度（度，0/90/180/270）。
+ * side_data_list(displaymatrix) 为现代容器格式（如 -90）；tags.rotate 为旧格式（如 "90"）。
+ */
+function getStreamRotationDeg(videoStream) {
+  const side = (videoStream?.side_data_list || []).find((d) => d && typeof d.rotation === 'number')
+  if (side) return Math.abs(Math.round(side.rotation)) % 360
+  const tag = parseInt(String(videoStream?.tags?.rotate ?? videoStream?.tags?.ROTATE ?? ''), 10)
+  if (Number.isFinite(tag)) return Math.abs(tag) % 360
+  return 0
+}
+
+/**
+ * 旋转元数据处理（对照原客户端 BUGFIX #010：镜头重组「与原片一致」画幅不正确）。
+ * ffprobe width/height 是编码尺寸；±90/270 显示时宽高需互换（手机竖拍横存视频等）。
+ */
+function applyRotationSize(width, height, rotationDeg) {
+  return (Math.abs(Math.round(rotationDeg || 0)) % 180 === 90)
+    ? { width: height, height: width }
+    : { width, height }
+}
+
+/**
  * 执行 ffprobe，返回结构化视频信息
  */
 function probe(ffprobePath, file) {
@@ -60,10 +82,16 @@ function probe(ffprobePath, file) {
         const info = JSON.parse(stdout)
         const videoStream = (info.streams || []).find(s => s.codec_type === 'video')
         const audioStream = (info.streams || []).find(s => s.codec_type === 'audio')
+        // 旋转元数据处理：width/height 归一为显示尺寸（BUGFIX #010）
+        const dims = applyRotationSize(
+          parseInt(videoStream?.width || 0, 10),
+          parseInt(videoStream?.height || 0, 10),
+          getStreamRotationDeg(videoStream)
+        )
         resolve({
           duration: parseFloat(info.format?.duration || 0),
-          width: parseInt(videoStream?.width || 0, 10),
-          height: parseInt(videoStream?.height || 0, 10),
+          width: dims.width,
+          height: dims.height,
           fps: parseFps(videoStream?.r_frame_rate || '0/1'),
           codec: videoStream?.codec_name || '',
           audio_bitrate: parseInt(audioStream?.bit_rate || 0, 10)
@@ -258,4 +286,4 @@ function createFfmpegGate(ipcMain, studioRoot) {
   })
 }
 
-module.exports = { createFfmpegGate }
+module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize }

@@ -189,7 +189,8 @@ async function onLogLevelChange(v: string) {
 
 /* ── 关于卡 props 组装（原散落于 Settings.vue 的常量） ─────── */
 const appVersion = computed(() => appStore.version)
-const buildDate = '2026-08-25'
+// 构建时间：vite.config.ts define 注入（'YYYY-MM-DD HH:mm'，含时分以区分同日多次出包）
+const buildDate = __BUILD_TIME__
 const channel = 'Stable'
 
 /* ═══════════════════════════════════════════════════════════

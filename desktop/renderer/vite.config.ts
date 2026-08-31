@@ -2,7 +2,24 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'node:path'
 
-export default defineConfig({
+/**
+ * 构建时间注入（Settings「关于」卡展示，含时分以便区分同日多次出包）：
+ *  - vite build（command==='build'）→ 本地时间 'YYYY-MM-DD HH:mm'；
+ *    可用 TINTIN_BUILD_TIME 环境变量覆盖（打包程序注入，保持与产物目录名一致）
+ *  - vite dev（command==='serve'）→ 提示文案（开发模式无构建语义）
+ */
+function resolveBuildTime(command: string): string {
+  if (command !== 'build') return '开发模式（未构建）'
+  if (process.env.TINTIN_BUILD_TIME) return process.env.TINTIN_BUILD_TIME
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+export default defineConfig(({ command }) => ({
+  define: {
+    __BUILD_TIME__: JSON.stringify(resolveBuildTime(command))
+  },
   plugins: [
     vue({
       // Electron <webview> 是非标准自定义元素，告知 Vue 编译器原样渲染
@@ -60,4 +77,4 @@ export default defineConfig({
       }
     }
   }
-})
+}))

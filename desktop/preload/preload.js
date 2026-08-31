@@ -17,11 +17,15 @@ const app = {
   }
 }
 
-// ── skills：工作台技能（安装/卸载/列表，对齐原客户端技能管理器）──
+// ── skills：工作台技能（安装/卸载/列表，对齐原客户端技能管理器；
+//    serverXxx = 安装技能上传为服务端共用，原版 skill_manager.py register/unregister/server_skills 口径）──
 const skills = {
   list:    ()      => ipcRenderer.invoke('skills:list'),
   install: (src)   => ipcRenderer.invoke('skills:install', src),
-  remove:  (id)    => ipcRenderer.invoke('skills:remove', id)
+  remove:  (id)    => ipcRenderer.invoke('skills:remove', id),
+  serverRegister:   (entry)   => ipcRenderer.invoke('skills:serverRegister', entry),
+  serverUnregister: (skillId) => ipcRenderer.invoke('skills:serverUnregister', { skillId }),
+  serverList:       ()        => ipcRenderer.invoke('skills:serverList')
 }
 
 // ── dialog ──
@@ -529,12 +533,37 @@ const clientTasks = {
   },
 }
 
+// ── scheduled：本地定时任务（schtasks；契约见 types/global.d.ts TintinBridgeScheduled）──
+// 修复（2026-08-31）：这批方法此前只挂在 server 对象下，contextBridge 未暴露
+// scheduled 域 → 渲染层 window.tintin.scheduled 恒为 undefined，定时任务抽屉
+// 被误判为「浏览器预览模式」。server 上的同名副本保留（兼容既有调用方）。
+const scheduled = {
+  list:      () => ipcRenderer.invoke('scheduled:list'),
+  create:    (payload) => ipcRenderer.invoke('scheduled:create', payload),
+  splitPlan: (goal) => ipcRenderer.invoke('agent:splitPlan', goal),
+  run:       (taskName) => ipcRenderer.invoke('scheduled:run', taskName),
+  delete:    (name) => ipcRenderer.invoke('scheduled:delete', name),
+  captureHotspots: () => ipcRenderer.invoke('scheduled:captureHotspots'),
+  onScheduledCaptureProgress: (cb) => {
+    const handler = (_e, p) => cb(p)
+    ipcRenderer.on('scheduled:capture-progress', handler)
+    return () => ipcRenderer.removeListener('scheduled:capture-progress', handler)
+  },
+  onScheduledHotspot: (cb) => {
+    const handler = (_e, payload) => cb(payload)
+    ipcRenderer.on('scheduled:hotspot-trigger', handler)
+    return () => ipcRenderer.removeListener('scheduled:hotspot-trigger', handler)
+  },
+}
+
 // ── 暴露到渲染进程（window.tintin）──
 contextBridge.exposeInMainWorld('tintin', {
   app,
   dialog,
   downloads,
   server,
+  // P2 本地定时任务（schtasks；漏暴露导致「浏览器预览模式」误判，2026-08-31 补）
+  scheduled,
   ffmpeg,
   shell,
   bridge,

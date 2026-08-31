@@ -65,4 +65,49 @@ function parseSkillMd(raw, fallbackName) {
   }
 }
 
-module.exports = { splitFrontmatter, slugify, parseSkillMd }
+/**
+ * 服务端技能登记 body（原版 register_skill L81-125 口径：POST /skills，
+ * executor 由服务端按客户端来源固定 client_tool，body 含
+ * skill_id/name/description/instruction/machine_id/version；失败仅告警不阻塞本地）。
+ * 返回 { ok, body?, error? }：缺 skill_id/name 时拒绝登记。
+ */
+function buildSkillRegisterBody(entry, machineId) {
+  const skillId = String(entry?.id || '').trim()
+  const name = String(entry?.name || entry?.id || '').trim()
+  if (!skillId || !name) return { ok: false, error: 'MISSING_ID_OR_NAME' }
+  const body = {
+    skill_id: skillId,
+    name,
+    description: String(entry?.description || '').trim(),
+    instruction: String(entry?.instruction || '').trim(),
+    machine_id: String(machineId || '').trim(),
+    version: String(entry?.version || '1.0.0'),
+  }
+  return { ok: true, body }
+}
+
+/**
+ * 服务端技能列表归一（原版 server_skills L153-186 口径：响应兼容裸数组与
+ * {skills:[…]} / {items:[…]} 三种形态；条目回退本地 name/description 同构）。
+ */
+function normalizeServerSkills(data) {
+  const raw = Array.isArray(data)
+    ? data
+    : (data && typeof data === 'object' && Array.isArray(data.skills))
+      ? data.skills
+      : (data && typeof data === 'object' && Array.isArray(data.items))
+        ? data.items
+        : []
+  return raw
+    .filter((s) => s && typeof s === 'object')
+    .map((s) => ({
+      id: String(s.skill_id || s.id || '').trim(),
+      name: String(s.name || s.skill_id || s.id || ''),
+      description: String(s.description || ''),
+      version: String(s.version || ''),
+      machineId: String(s.machine_id || ''),
+    }))
+    .filter((s) => s.id)
+}
+
+module.exports = { splitFrontmatter, slugify, parseSkillMd, buildSkillRegisterBody, normalizeServerSkills }

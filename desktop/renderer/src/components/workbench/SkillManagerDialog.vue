@@ -2,9 +2,11 @@
 // SkillManagerDialog.vue — 技能管理弹窗（2026-08-31 技能入口移植）
 // 对齐原客户端 gui/skill_manager_dialog.py 能力：
 //   · 安装单个 .md / 含 SKILL.md 的目录 / ZIP 包（对话框选择来源）
-//   · 内置技能（随包分发）只读展示、不可卸载；用户技能可卸载
+//   · 内置技能（随包分发）只读展示、不可卸载、不上传（用户口径）；用户技能可卸载
+//   · 用户技能可手动上传为服务端共享（2026-08-31 补齐：原版 register_skill；
+//     安装时已自动登记，此处为离线补传/重传入口）
 //   · 安装/卸载后由容器刷新列表（技能重新合并进快捷条/斜杠菜单）
-// 纯展示 + 来源选择转发：安装/卸载业务在容器 useSkills（onInstall/onRemove）。
+// 纯展示 + 来源选择转发：安装/卸载/上传业务在容器 useSkills（onInstall/onRemove/upload）。
 import { ref } from 'vue'
 import type { SkillEntry } from '@/composables/skillsLogic'
 
@@ -22,6 +24,7 @@ const emit = defineEmits<{
   (e: 'install-file'): void
   (e: 'install-dir'): void
   (e: 'remove', id: string): void
+  (e: 'upload', id: string): void
 }>()
 
 /** 卸载确认（防误删；原版 QMessageBox 问询口径） */
@@ -76,13 +79,20 @@ function subText(s: SkillEntry): string {
             </div>
           </div>
 
-          <div class="skill-section">已安装技能</div>
+          <div class="skill-section">已安装技能（可上传为服务端共享）</div>
           <div v-if="!user.length" class="skill-empty">尚未安装本地技能</div>
           <div v-for="s in user" :key="'u-' + s.id" class="skill-row">
             <div class="skill-main">
               <span class="skill-name">{{ s.name || s.id }}</span>
               <span v-if="subText(s)" class="skill-sub">{{ subText(s) }}</span>
             </div>
+            <button
+              class="skill-upload"
+              title="上传到服务端，供其他客户端共享使用（离线时安装已自动重试，可在此补传）"
+              @click="emit('upload', s.id)"
+            >
+              上传
+            </button>
             <button
               class="skill-remove"
               :class="{ confirming: confirmId === s.id }"
@@ -227,6 +237,16 @@ function subText(s: SkillEntry): string {
 }
 .skill-remove:hover { color: var(--foreground); background: var(--surface-container-high); }
 .skill-remove.confirming { color: #b91c1c; border-color: #b91c1c; }
+
+.skill-upload {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--primary, #2563eb);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.skill-upload:hover { background: var(--surface-container-high); }
 
 .skill-empty {
   padding: 4px var(--space-2) 10px;

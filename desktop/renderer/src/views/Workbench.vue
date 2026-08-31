@@ -109,7 +109,8 @@ const {
   actionMsg: skillsActionMsg,
   load: loadSkills,
   install: installSkillSrc,
-  remove: removeSkillId
+  remove: removeSkillId,
+  upload: uploadSkillId
 } = skills
 
 /** 全部技能（内置 + 已安装；快捷条合并与选中回查共用） */
@@ -573,7 +574,7 @@ async function onExportTasks() {
       />
     </Transition>
 
-    <!-- ─── 技能管理弹窗（安装 .md/.zip/目录；内置只读，用户技能可卸载） ─── -->
+    <!-- ─── 技能管理弹窗（安装 .md/.zip/目录；内置只读，用户技能可卸载/上传服务端） ─── -->
     <SkillManagerDialog
       :visible="showSkillManager"
       :builtin="skillBuiltin"
@@ -584,6 +585,7 @@ async function onExportTasks() {
       @install-file="onInstallSkillFile"
       @install-dir="onInstallSkillDir"
       @remove="removeSkillId"
+      @upload="uploadSkillId"
     />
 
     <!-- ─── 网络异常底部 toast 条（单行居中 + 右侧关闭；出现新文案自动重现） ─── -->

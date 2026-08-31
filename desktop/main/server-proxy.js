@@ -135,6 +135,7 @@ const API_ENDPOINTS = {
     itemResult:  (id) => `/tasks/${id}/result`,
   },
   scheduled: { tasks: '/scheduled/tasks', taskItem: (id) => `/scheduled/tasks/${id}` },
+  skills:    { list: '/skills', item: (id) => `/skills/${encodeURIComponent(id)}` },
   editor:    { renderPackage: (id) => `/editor/render/${id}/package` },
   system:    { license: '/system/license', guide: '/guide' },
 }
@@ -409,6 +410,7 @@ function setConfigStore(store) { _configStore = store }
 
 const { createMediaProxyIpc } = require('./media-proxy-ipc')
 const { createAgentChatIpc } = require('./agent-chat-ipc')
+const { createSkillsServerIpc } = require('./skills-server-ipc')
 const { createMaterialImportIpc } = require('./material-import')
 
 function createServerProxy(ipcMain, ctx) {
@@ -668,6 +670,9 @@ function createServerProxy(ipcMain, ctx) {
 
   // --- 智能体对话域（工作台 AI 对话真实链路 P1）外迁 agent-chat-ipc.js（同上铁律）──
   createAgentChatIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, isExpectedOfflineError, getMachineId })
+
+  // --- 技能服务端登记域（安装技能上传为服务端共用，原版 skill_manager.py 口径）──
+  createSkillsServerIpc(ipcMain, { httpRequest, API_ENDPOINTS, isExpectedOfflineError, getMachineId })
 
   // --- B8 素材入库域（material:import 等，外迁 material-import.js，同上铁律）──
   createMaterialImportIpc(ipcMain, { httpRequest, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError, app: (ctx && ctx.app) || null })

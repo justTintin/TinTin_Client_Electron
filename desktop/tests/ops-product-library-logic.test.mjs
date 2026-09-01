@@ -196,3 +196,39 @@ test('parseImportRows：category/brand 缺失行报错、空行跳过、字段�
   assert.equal(r.errors.length, 2)
   assert.match(r.errors[0], /品类和品牌不能为空/)
 })
+
+// ── firstSellingPoint：选择产品弹窗行内卖点摘要（2026-09-01 用户反馈：
+//    原 slice(60) 直接截断整段 markdown，带 ** 星号且多行混杂——取第一条卖点
+//    并剥离 markdown 标记） ──
+
+test('firstSellingPoint：多行 markdown 列表 → 取第一条并剥离 ** 加粗与列表符', () => {
+  const raw = '- **极致轻量化，仅60克**：采用薄壁外壳与镂空骨架，长时间游戏无负担。\n- **HERO 2 旗舰传感器**：精准追踪细微移动。'
+  assert.equal(M.firstSellingPoint(raw), '极致轻量化，仅60克：采用薄壁外壳与镂空骨架，长时间游戏无负担。')
+})
+
+test('firstSellingPoint：无标记纯列表行 → 原样取第一条；单行裸文本直接返回', () => {
+  assert.equal(M.firstSellingPoint('- 280W 大功率输出\n- 19.5V 稳定供电'), '280W 大功率输出')
+  assert.equal(M.firstSellingPoint('续航持久'), '续航持久')
+})
+
+test('firstSellingPoint：空数据返回空串', () => {
+  assert.equal(M.firstSellingPoint(''), '')
+  assert.equal(M.firstSellingPoint(undefined), '')
+  assert.equal(M.firstSellingPoint(null), '')
+})
+
+// ── firstMarkdownLine：产品弹窗两块布局（2026-09-01 用户裁决：左型号 /
+//    右参数+卖点）——性能参数 features 与卖点同格式，取首行剥标记的通用化 ──
+
+test('firstMarkdownLine：features 多行参数列表 → 取首行剥 ** 加粗与列表符', () => {
+  const raw = '- **材质**：高品质硅胶\n- **厚度**：约0.5mm\n- 适配型号：罗技G502 HERO'
+  assert.equal(M.firstMarkdownLine(raw), '材质：高品质硅胶')
+  assert.equal(M.firstMarkdownLine(raw, 4), '材质：高…')
+})
+
+test('firstMarkdownLine：与 firstSellingPoint 同口径（单行裸文本/空值）', () => {
+  assert.equal(M.firstMarkdownLine('280W 大功率输出'), '280W 大功率输出')
+  assert.equal(M.firstMarkdownLine(''), '')
+  assert.equal(M.firstMarkdownLine(undefined), '')
+  assert.equal(M.firstSellingPoint('- **卖点A**：描述一\n- **卖点B**：描述二'), M.firstMarkdownLine('- **卖点A**：描述一\n- **卖点B**：描述二'))
+})

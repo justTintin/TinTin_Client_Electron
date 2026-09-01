@@ -5,6 +5,7 @@
 // 行文案为纯展示拼接（原版 L866 同口径），业务在容器 chat.addCtxProduct。
 import WbPickerDialog from './WbPickerDialog.vue'
 import { fetchProducts, type PickerItem } from '@/composables/useWorkbenchPickers'
+import { firstMarkdownLine, firstSellingPoint } from '@/composables/opsProductLibraryLogic'
 
 defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
@@ -20,10 +21,16 @@ function mainText(it: PickerItem): string {
   return `[${cat}] ${brand} / ${model}`
 }
 
-/** 行副文案：卖点摘要（截断 60 字） */
+/** 行副文案：核心卖点摘要（取第一条卖点并剥离 markdown 标记；logic 层可单测） */
 function subText(it: PickerItem): string {
-  const sp = String(it.selling_points || '').trim()
-  return sp ? `卖点：${sp.slice(0, 60)}` : ''
+  const sp = firstSellingPoint(it.selling_points)
+  return sp ? `卖点：${sp}` : ''
+}
+
+/** 右块上行：性能参数首行（features，与卖点同格式多行 markdown 列表） */
+function specText(it: PickerItem): string {
+  const sp = firstMarkdownLine(it.features)
+  return sp ? `参数：${sp}` : ''
 }
 </script>
 
@@ -39,17 +46,21 @@ function subText(it: PickerItem): string {
     @pick="(it) => emit('pick', it)"
   >
     <template #item="{ item }">
-      <!-- 2026-09-01 用户裁决：核心卖点同行右侧（主文案左，卖点右对齐截断） -->
+      <!-- 2026-09-01 用户裁决（像素材检索分块）：左侧产品型号，右侧性能参数+核心卖点两行 -->
       <span class="prow">
         <span class="row-main">{{ mainText(item) }}</span>
-        <span v-if="subText(item)" class="row-sub" :title="subText(item)">{{ subText(item) }}</span>
+        <span class="row-side">
+          <span v-if="specText(item)" class="row-line" :title="specText(item)">{{ specText(item) }}</span>
+          <span v-if="subText(item)" class="row-line" :title="subText(item)">{{ subText(item) }}</span>
+        </span>
       </span>
     </template>
   </WbPickerDialog>
 </template>
 
 <style scoped>
-/* 行内左右布局：主文案左（可收缩截断），核心卖点右（右对齐，长文本省略） */
+/* 两块布局（像素材检索）：左侧产品型号（主文案，可收缩截断），
+   右侧性能参数 + 核心卖点两行（固定占比宽，ellipsis + title 悬停看全文） */
 .prow {
   display: flex;
   align-items: center;
@@ -68,13 +79,20 @@ function subText(it: PickerItem): string {
   color: var(--foreground);
 }
 
-.row-sub {
-  flex: 0 1 auto;
+.row-side {
+  flex: 0 1 45%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row-line {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted-foreground);
 }
 </style>

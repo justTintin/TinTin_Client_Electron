@@ -17,6 +17,7 @@
 import { computed, ref, watch } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import type { BrowserPlatformId } from './useBrowserNav'
+import { pickPageDownloadUrl } from './browserDownloadLogic'
 
 export interface UseBrowserDownloadsDeps {
   isElectronShell: Ref<boolean>
@@ -240,23 +241,37 @@ async function downloadFromPage(): Promise<void> {
   const cur = getActivePlatformId()
   const pageUrl = addressUrl.value
   if (!pageUrl) return
-  
+
   // 仅对支持的平台启用此功能
   const supportedPlatforms = ['bilibili', 'youtube', 'douyin', 'kuaishou', 'xiaohongshu']
   if (!supportedPlatforms.includes(cur || '')) {
     alert('当前平台不支持页面解析下载')
     return
   }
-  
+
+  // 2026-09-01 修复：视频详情页点「页面解析下载」却传了首页 URL（SPA 页内路由时
+  // 地址栏值滞后）→ 以 webview 实际 URL 优先（browser:getCurrentUrl，地址栏仅回退），
+  // 平台根路径前置拒绝（首页无视频可解析，不把必败请求交给 yt-dlp）
+  let realUrl: string | null = null
+  try {
+    const r = await t.browser?.getCurrentUrl?.(cur)
+    if (r?.success && r.url) realUrl = String(r.url)
+  } catch (_) { /* 取不到回退地址栏值 */ }
+  const picked = pickPageDownloadUrl(realUrl, pageUrl)
+  if (!picked.ok) {
+    alert(picked.reason)
+    return
+  }
+
   const taskId = 'pgdl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
   try {
     const platformName = activePlatformName.value || 'video'
     const safeName = `${platformName}_${Date.now()}`
     await t.mediaDownload.start({
       taskId,
-      url: pageUrl,  // 直接传页面 URL，让 yt-dlp 解析
+      url: picked.url,  // webview 实际 URL（而非地址栏值），让 yt-dlp 解析
       filename: safeName + '.mp4',
-      referer: pageUrl,
+      referer: picked.url,
       platformId: cur || undefined,
       subDir: cur || undefined,
       useYtdlp: true,  // 强制使用 yt-dlp 解析页面

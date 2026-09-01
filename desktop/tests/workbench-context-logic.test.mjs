@@ -249,6 +249,30 @@ test('pickListItems：兼容 items/data/results/裸数组/异常空', () => {
   assert.deepEqual(C.pickListItems([4]), [], '非对象条目剔除（防御脏数据）')
 })
 
+test('pickListTotal：total/total_count/count 容错 + 缺字段 -1 单页退化', () => {
+  assert.equal(C.pickListTotal({ items: [], total: 137 }), 137)
+  assert.equal(C.pickListTotal({ items: [], total_count: 88 }), 88)
+  assert.equal(C.pickListTotal({ items: [], count: 5 }), 5)
+  assert.equal(C.pickListTotal({ items: [] }), -1, '无分页字段 → -1（调用方退化为单页）')
+  assert.equal(C.pickListTotal(null), -1)
+  assert.equal(C.pickListTotal([{ x: 1 }]), -1, '裸数组无 total')
+  assert.equal(C.pickListTotal({ total: 'not-a-number' }), -1)
+})
+
+test('pickDistinctValues：/material/distinct {values} 容错解析（对象条目取 name/value）', () => {
+  assert.deepEqual(C.pickDistinctValues({ values: ['A', 'B'] }), ['A', 'B'])
+  assert.deepEqual(C.pickDistinctValues({ values: [{ name: 'BGM' }, { value: '音效' }] }), ['BGM', '音效'])
+  assert.deepEqual(C.pickDistinctValues({ values: [] }), [])
+  assert.deepEqual(C.pickDistinctValues(['X', 'Y']), ['X', 'Y'], '裸数组兼容')
+  assert.deepEqual(C.pickDistinctValues(null), [])
+  assert.deepEqual(C.pickDistinctValues({ values: 'not-array' }), [])
+  assert.deepEqual(
+    C.pickDistinctValues({ values: ['A', '', 'A', 123, null] }),
+    ['A', '123'],
+    '去空/去重/非字符串转字符串剔除 null'
+  )
+})
+
 test('mediaTypeLabel：原版 _MEDIA_TYPE_LABEL L64 映射', () => {
   assert.equal(C.mediaTypeLabel('video'), '视频')
   assert.equal(C.mediaTypeLabel('IMAGE'), '图片')

@@ -2,8 +2,9 @@
 // ═══════════════════════════════════════════════════════════════
 // WorkbenchPreviewPanel.vue — 工作台右侧预览面板（纯展示 + 事件转发）
 // 结构：顶部标题 + 折叠按钮；两类预览（tab 切换）：
-//   · 资产预览：资产列表（可切换）→ script <pre> 代码样式 + 复制/导出 Word；
-//                text 段落渲染 + 复制/导出 Word；table markdown 表格渲染
+//   · 资产预览：资产列表（可切换）→ script <pre> 代码样式 + 导出 Word；
+//                text 段落渲染 + 导出 Word；table markdown 表格渲染 + 导出 Excel
+//                （2026-09-01 用户裁决：复制跟消息走 → 消息体操作栏，导出跟产物走 → 本面板）
 //   · 文件预览：docx iframe / xlsx 表格（复用 OfficeDocumentView 渲染体）
 // 数据/业务在容器：assets 由容器 detectChatAssets 产出；文件预览复用 useOfficePreview
 // 状态；导出 Word 仅事件转发（业务在 useOfficeExport）。
@@ -30,11 +31,11 @@ const emit = defineEmits<{
   (e: 'open-system'): void
   (e: 'switch-sheet', index: number): void
   (e: 'export-asset', asset: ChatAsset): void
+  (e: 'export-asset-excel', asset: ChatAsset): void
 }>()
 
 const activeTab = ref<'assets' | 'file'>('assets')
 const activeIndex = ref(0)
-const copiedId = ref('')
 
 const hasFile = computed(() => !!(props.file && props.file.open && props.file.kind !== ''))
 const hasAssets = computed(() => props.assets.length > 0)
@@ -65,17 +66,6 @@ watch(
     if (v) activeTab.value = 'file'
   }
 )
-
-/** 复制资产内容（剪贴板不可用静默；成功短暂显示「已复制」） */
-async function copyAsset(asset: ChatAsset) {
-  try {
-    await navigator.clipboard.writeText(asset.content)
-    copiedId.value = asset.id
-    setTimeout(() => {
-      if (copiedId.value === asset.id) copiedId.value = ''
-    }, 1500)
-  } catch (_) { /* 剪贴板不可用不阻塞 */ }
-}
 </script>
 
 <template>
@@ -129,21 +119,21 @@ async function copyAsset(asset: ChatAsset) {
                 <button
                   v-if="current.type !== 'table'"
                   class="ad-btn"
-                  :title="copiedId === current.id ? '已复制' : '复制内容到剪贴板'"
-                  @click="copyAsset(current)"
-                >
-                  <svg v-if="copiedId === current.id" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-                  <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-                  {{ copiedId === current.id ? '已复制' : '复制' }}
-                </button>
-                <button
-                  v-if="current.type !== 'table'"
-                  class="ad-btn"
                   title="导出该资产为 Word 文档"
                   @click="emit('export-asset', current)"
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
                   导出 Word
+                </button>
+                <!-- table 资产：导出 Excel（2026-09-01 用户裁决） -->
+                <button
+                  v-if="current.type === 'table'"
+                  class="ad-btn"
+                  title="导出该表格资产为 Excel 文件"
+                  @click="emit('export-asset-excel', current)"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="4" x2="9" y2="20" /><line x1="15" y1="4" x2="15" y2="20" /></svg>
+                  导出 Excel
                 </button>
               </div>
             </div>

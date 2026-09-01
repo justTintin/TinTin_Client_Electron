@@ -40,6 +40,8 @@ export interface ChatMessage {
   video?: VideoAsset
   /** 计划任务模式（mode=plan）：该回复是服务端 pending_approval 计划草稿，可确认执行 */
   confirmable?: boolean
+  /** 已确认执行（卡片显示执行中状态；不改写 content——追加文本会破坏 plan JSON 结构） */
+  planApproved?: boolean
   /** 草稿对应的服务端任务 id 与确认端点（approve；确认时优先使用） */
   draftTaskId?: string
   draftConfirmPath?: string
@@ -360,12 +362,10 @@ export function useWorkbenchChat(options?: {
       return
     }
     lastAi.confirmable = false
-    lastAi.content = `${lastAi.content}\n\n✅ 已确认，任务 \`${taskId}\` 开始执行。\n可在左侧「定时任务」抽屉（执行结果）或左下角「任务队列」查看进度与产物。`
-    // 确认结果同步进 history 尾条（重载会话后草稿状态一致）
-    const lastHist = history.value[history.value.length - 1]
-    if (lastHist && lastHist.role === 'assistant') {
-      lastHist.content = `${lastHist.content}\n\n✅ 已确认，任务 \`${taskId}\` 开始执行。`
-    }
+    // 已确认状态走气泡字段（卡片「执行中」徽章），不改写 content：
+    // 往 JSON 后追加文本会使 parsePlanContent 解析失效 → 卡片退化为裸 JSON 纯文本
+    //（2026-09-01 用户反馈）；history 尾条同步保持纯 plan JSON（重载后卡片仍可渲染）
+    lastAi.planApproved = true
     persist()
   }
 

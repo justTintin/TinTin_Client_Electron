@@ -25,6 +25,24 @@ export function useSkills() {
   const error = ref('')
   /** 安装/卸载操作结果提示（管理弹窗展示） */
   const actionMsg = ref('')
+  /** 已上传服务端的技能 id 集合（2026-09-01 用户反馈：已上传仍显示「上传」无标识）：
+   *  打开列表时从服务端 GET /skills 回查（离线静默），上传/注销/安装链路同步维护 */
+  const uploadedIds = ref<Set<string>>(new Set())
+  function isUploaded(id: string): boolean {
+    return uploadedIds.value.has(String(id || ''))
+  }
+
+  /** 从服务端回查已登记技能 id（GET /skills，归一化条目 {id}；离线/失败静默保留旧状态） */
+  async function syncUploadedFromServer() {
+    const t = getTintin()
+    if (!t?.skills?.serverList) return
+    try {
+      const r = await t.skills.serverList()
+      if (r && typeof r === 'object' && r.ok && Array.isArray(r.items)) {
+        uploadedIds.value = new Set(r.items.map((s: { id?: unknown }) => String(s?.id || '')).filter(Boolean))
+      }
+    } catch (_) { /* 离线静默：保留本地维护的上传状态 */ }
+  }
 
   /** 拉取技能列表（内置 + 已安装；失败保留旧数据并置 error） */
   async function load() {
@@ -40,6 +58,7 @@ export function useSkills() {
         builtin.value = Array.isArray(r.builtin) ? r.builtin : []
         user.value = Array.isArray(r.user) ? r.user : []
         error.value = ''
+        void syncUploadedFromServer() // 回查已上传标识（离线静默）
       } else {
         error.value = String(r?.error || '技能列表加载失败')
       }
@@ -61,6 +80,7 @@ export function useSkills() {
         // 安装后自动登记服务端（原版 install_skill → register_skill 链路；
         // 失败仅提示，不阻塞本地安装）
         const reg = await registerToServer(r.entry)
+        if (reg.ok && r.entry?.id) uploadedIds.value.add(String(r.entry.id)) // 上传标识同步
         actionMsg.value = reg.ok
           ? `技能「${name}」安装成功，已同步服务端共享`
           : reg.offline
@@ -87,6 +107,7 @@ export function useSkills() {
       if (r && typeof r === 'object' && r.ok) {
         // 服务端注销（原版 unregister_skill）：失败仅附加提示，不回滚本地卸载
         const un = await unregisterFromServer(id).catch(() => ({ ok: false } as const))
+        uploadedIds.value.delete(String(id)) // 服务端已注销（或已卸载），上传标识移除
         actionMsg.value = un.ok ? '技能已卸载，服务端共享已同步移除' : '技能已卸载；服务端注销失败（可忽略）'
         await load()
         return { ok: true }
@@ -148,6 +169,7 @@ export function useSkills() {
     actionMsg.value = `正在上传「${entry.name || entry.id}」到服务端…`
     const r = await registerToServer(entry)
     if (r.ok) {
+      uploadedIds.value.add(String(entry.id || id)) // 上传标识同步（弹窗按钮回显）
       actionMsg.value = `「${entry.name || entry.id}」已上传服务端，其他客户端可共享使用`
       return { ok: true }
     }
@@ -157,5 +179,5 @@ export function useSkills() {
     return { ok: false, error: r.error }
   }
 
-  return { builtin, user, loading, error, actionMsg, load, install, remove, upload }
+  return { builtin, user, loading, error, actionMsg, uploadedIds, isUploaded, load, install, remove, upload }
 }

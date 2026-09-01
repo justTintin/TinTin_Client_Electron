@@ -388,6 +388,46 @@ export function pickListItems(data: unknown): Record<string, unknown>[] {
   return arr.filter((x) => x && typeof x === 'object' && !Array.isArray(x)) as Record<string, unknown>[]
 }
 
+/**
+ * 分页 total 容错解析：{total}|{total_count}|{count}；无分页字段 → -1
+ * （调用方退化为单页，不显示分页器）。
+ */
+export function pickListTotal(data: unknown): number {
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const d = data as Record<string, unknown>
+    for (const k of ['total', 'total_count', 'count'] as const) {
+      const n = Number(d[k])
+      if (Number.isFinite(n) && n >= 0) return n
+    }
+  }
+  return -1
+}
+
+/**
+ * /material/distinct 响应容错解析：{values:[...]}（字符串或 {name}/{value}
+ * 对象条目）兼容裸数组；去空/去重/剔除 null，保持服务端顺序。
+ */
+export function pickDistinctValues(data: unknown): string[] {
+  let arr: unknown = data
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    arr = (data as Record<string, unknown>).values ?? []
+  }
+  if (!Array.isArray(arr)) return []
+  const out: string[] = []
+  for (const x of arr) {
+    if (x === null || x === undefined) continue
+    const raw =
+      typeof x === 'string'
+        ? x
+        : x && typeof x === 'object'
+          ? (x as Record<string, unknown>).name ?? (x as Record<string, unknown>).value
+          : x // 数字等原始值直接转字符串
+    const v = String(raw ?? '').trim()
+    if (v && !out.includes(v)) out.push(v)
+  }
+  return out
+}
+
 /** 搜索异常分支文案：null=网络离线；Error('HTTP 5xx')=服务端错误 */
 export function searchErrorText(err: unknown): string {
   if (err === null || err === undefined) {

@@ -40,11 +40,12 @@ function createSkillsServerIpc(ipcMain, { httpRequest, API_ENDPOINTS, isExpected
     } catch (err) { return isExpectedOfflineError(err) ? { ok: false, offline: true } : { ok: false, error: err.message } }
   })
 
-  // --- 服务端共享技能列表（对照原版 server_skills；离线返回 offline 标记）──
+  // --- 服务端共享技能列表（对照原版 server_skills；离线返回 offline 标记；
+  //     响应归一化为 {id,name,...}[]，渲染层以此回查「已上传」标识，2026-09-01）──
   ipcMain.handle('skills:serverList', async () => {
     try {
       const res = await httpRequest('GET', API_ENDPOINTS.skills.list, { timeout: 10000 })
-      return { ok: true, items: res.data }
+      return { ok: true, items: normalizeServerSkills(res.data) }
     } catch (err) { return isExpectedOfflineError(err) ? { ok: false, offline: true } : { ok: false, error: err.message } }
   })
 }

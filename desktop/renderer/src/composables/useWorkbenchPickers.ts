@@ -15,12 +15,12 @@
 
 import { ref } from 'vue'
 import { getTintin } from './useSettingsConfig'
-import { pickListItems, searchErrorText } from './workbenchChatContext'
+import { pickListItems, pickListTotal, pickDistinctValues, searchErrorText } from './workbenchChatContext'
 
 export type PickerItem = Record<string, unknown>
 
-/** 单次搜索调用的统一封装：离线/5xx/{error} → Error(用户可读文案) */
-async function fetchJsonList(call: () => Promise<unknown>): Promise<PickerItem[]> {
+/** 单次搜索调用的统一封装：离线/5xx/{error} → Error(用户可读文案)，返回原始 payload */
+async function fetchJsonPayload(call: () => Promise<unknown>): Promise<unknown> {
   let data: unknown
   try {
     data = await call()
@@ -34,7 +34,12 @@ async function fetchJsonList(call: () => Promise<unknown>): Promise<PickerItem[]
     const msg = String((data as Record<string, unknown>).error || '')
     if (msg) throw new Error(searchErrorText(new Error(msg)))
   }
-  return pickListItems(data)
+  return data
+}
+
+/** payload → 列表（pickListItems 容错解析 {items}|{data}|{results}|裸数组） */
+async function fetchJsonList(call: () => Promise<unknown>): Promise<PickerItem[]> {
+  return pickListItems(await fetchJsonPayload(call))
 }
 
 /* ── 三个弹窗的搜索 fetcher（组件只消费，不感知 URL） ───────── */
@@ -46,22 +51,43 @@ export async function fetchProducts(kw: string): Promise<PickerItem[]> {
   return fetchJsonList(() => t.server.get('/api/product-library/search', { q: kw, limit: 200 }))
 }
 
-/** 图视网格检索：GET /material/list（品牌/型号/类型过滤，原版素材检索
- *  vector_search/page.py 口径；空媒体类型=全部） */
+/** 图视网格检索：GET /material/list（品牌/型号/分类/类型过滤 + 分页，原版素材检索
+ *  vector_search/page.py 口径；空媒体类型=全部）；返回 items + total
+ *  （total 缺失 → -1，调用方退化为单页不分页） */
 export async function fetchMaterialGrid(p: {
   search?: string
   brand?: string
   model?: string
+  category?: string
   mediaType?: string
-}): Promise<PickerItem[]> {
+  page?: number
+  size?: number
+}): Promise<{ items: PickerItem[]; total: number }> {
   const t = getTintin()
   if (!t?.server) throw new Error(searchErrorText(null))
-  const q: Record<string, unknown> = { page: 1, size: 60 }
+  const q: Record<string, unknown> = {
+    page: Math.max(1, Number(p.page) || 1),
+    size: Math.max(1, Number(p.size) || 60),
+  }
   if (String(p.search || '').trim()) q.search = String(p.search).trim()
   if (String(p.brand || '').trim()) q.brand = String(p.brand).trim()
   if (String(p.model || '').trim()) q.model = String(p.model).trim()
+  if (String(p.category || '').trim()) q.category = String(p.category).trim()
   if (String(p.mediaType || '').trim()) q.media_type = String(p.mediaType).trim()
-  return fetchJsonList(() => t.server.get('/material/list', q))
+  const data = await fetchJsonPayload(() => t.server.get('/material/list', q))
+  return { items: pickListItems(data), total: pickListTotal(data) }
+}
+
+/** 素材字段候选值：GET /material/distinct?field=brand|model|category（原版素材检索
+ *  过滤下拉候选口径；失败回退空数组——候选缺失不阻塞弹窗，仍可手输过滤） */
+export async function fetchMaterialDistinct(field: 'brand' | 'model' | 'category'): Promise<string[]> {
+  const t = getTintin()
+  if (!t?.server) return []
+  try {
+    return pickDistinctValues(await t.server.get('/material/distinct', { field }))
+  } catch (_) {
+    return []
+  }
 }
 
 /** 音频库检索：GET /audio/library（keyword + category 过滤，契约已核实） */

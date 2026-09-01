@@ -1,18 +1,23 @@
 <script setup lang="ts">
-// WbPickMaterialDialog.vue — 选择素材弹窗（双 tab：图视 / 音频）
-// 2026-08-31 用户需求（参考原版素材检索 vector_search/page.py 口径）：
-//   · 图视 tab：顶部 关键字/品牌/型号 过滤 + 类型分段（全部|视频|图片）；
-//     卡片网格（缩略图 /material/thumbnail）+ 右侧预览（/material/serve 流式，
-//     视频 video / 图片 img；不移植原版反推面板）；点卡片预览，确认按钮选中。
+// WbPickMaterialDialog.vue — 选择素材弹窗（三 tab：图片 / 视频 / 音频）
+// 2026-08-31 用户需求（参考原版素材检索 vector_search/page.py 口径）；
+// 2026-09-01 用户裁决：图片与视频拆独立 tab（tab 即 media_type 过滤，
+// 取消原「全部|视频|图片」类型分段）：
+//   · 图片/视频 tab：顶部 关键字/品牌/型号 过滤；
+//     卡片网格（缩略图 /material/thumbnail，卡片含品牌/型号/分类行）+
+//     右侧预览（/material/serve 流式，视频 video / 图片 img；不移植原版反推面板）；
+//     点卡片预览，卡片右上角勾选多选（跨页保留），底部 全选本页/取消全选 +
+//     分页器（/material/list page/size，2026-09-01 用户需求）。
 //   · 音频 tab：关键字 + 分类下拉（GET /audio/categories）过滤；列表行点击
 //     → 底部播放条（<audio> 原生控件，GET /audio/library/{audio_id}/file）。
-// 选中语义：图视 emit('pick')（容器 addCtxMaterial 入素材池，原口径）；
-// 音频 emit('pick-audio')（容器 addCtxAudio：infoOnly 信息胶囊不入池）。
-// 数据获取在 useWorkbenchPickers（组件零 URL 拼装，IRON-06）。
+// 选中语义：图视逐项 emit('pick')（容器 addCtxMaterial 入素材池，按
+// material_id 去重）；音频 emit('pick-audio')（容器 addCtxAudio：infoOnly
+// 信息胶囊不入池）。数据获取在 useWorkbenchPickers（组件零 URL 拼装，IRON-06）。
 import { computed, ref, watch } from 'vue'
 import TDialog from '@/components/common/TDialog.vue'
 import {
   fetchMaterialGrid,
+  fetchMaterialDistinct,
   fetchAudioLibrary,
   fetchAudioCategories,
   type PickerItem
@@ -33,7 +38,7 @@ const emit = defineEmits<{
   (e: 'pick-audio', item: PickerItem): void
 }>()
 
-const tab = ref<'av' | 'audio'>('av')
+const tab = ref<'image' | 'video' | 'audio'>('image')
 
 /* ── 服务端地址（预览/缩略图/播放条 URL 拼接；经 env:serverPing 取回） ── */
 const serverUrl = ref('')
@@ -47,37 +52,101 @@ async function ensureServerUrl(): Promise<void> {
   }
 }
 
-/* ── 图视域（关键字/品牌/型号/类型过滤 + 卡片网格 + 预览） ── */
+/* ── 图视域（关键字/品牌/型号/分类过滤 + 卡片网格 + 预览；tab 即 media_type） ── */
 const kw = ref('')
 const brand = ref('')
 const model = ref('')
-const mType = ref<'' | 'video' | 'image'>('')
-const TYPE_TABS: Array<{ v: '' | 'video' | 'image'; t: string }> = [
-  { v: '', t: '全部' },
-  { v: 'video', t: '视频' },
-  { v: 'image', t: '图片' }
-]
+const category = ref('')
+/** 品牌/型号/分类候选（GET /material/distinct，2026-09-01 用户指正：候选来自服务端） */
+const brandOpts = ref<string[]>([])
+const modelOpts = ref<string[]>([])
+const categoryOpts = ref<string[]>([])
+async function loadDistinctOpts(): Promise<void> {
+  const [b, m, c] = await Promise.all([
+    fetchMaterialDistinct('brand'),
+    fetchMaterialDistinct('model'),
+    fetchMaterialDistinct('category')
+  ])
+  brandOpts.value = b
+  modelOpts.value = m
+  categoryOpts.value = c
+}
+/** 图片/视频 tab 对应 media_type（audio tab 不走图视域） */
+const mType = computed<'image' | 'video'>(() => (tab.value === 'video' ? 'video' : 'image'))
 const items = ref<PickerItem[]>([])
 const loading = ref(false)
 const error = ref('')
 
-async function run() {
+/* ── 分页（/material/list page/size；total 缺失(-1) → 单页不分页） ── */
+const PAGE_SIZE = 60
+const page = ref(1)
+const total = ref(0)
+const totalPages = computed(() => (total.value < 0 ? 1 : Math.max(1, Math.ceil(total.value / PAGE_SIZE))))
+const hasPager = computed(() => total.value > PAGE_SIZE)
+function prevPage() {
+  if (page.value > 1 && !loading.value) void run(page.value - 1)
+}
+function nextPage() {
+  if (page.value < totalPages.value && !loading.value) void run(page.value + 1)
+}
+
+/* ── 多选（2026-09-01 用户需求：卡片右上角勾选 + 底部全选/取消全选；跨页保留） ── */
+const selectedMap = ref(new Map<string, PickerItem>())
+const selectedCount = computed(() => selectedMap.value.size)
+function toggleSelect(it: PickerItem) {
+  const k = midOf(it)
+  if (!k) return
+  if (selectedMap.value.has(k)) selectedMap.value.delete(k)
+  else selectedMap.value.set(k, it)
+}
+function isSelected(it: PickerItem): boolean {
+  return selectedMap.value.has(midOf(it))
+}
+function selectPageAll() {
+  for (const it of items.value) {
+    const k = midOf(it)
+    if (k) selectedMap.value.set(k, it)
+  }
+}
+function clearSelection() {
+  selectedMap.value.clear()
+}
+
+async function run(p = page.value) {
+  page.value = Math.max(1, p)
   loading.value = true
   error.value = ''
+  thumbFailed.value = {} // 换页/换条件后缩略图失败标记重建（按索引存）
   try {
-    items.value = await fetchMaterialGrid({
+    const r = await fetchMaterialGrid({
       search: kw.value,
       brand: brand.value,
       model: model.value,
-      mediaType: mType.value
+      category: category.value,
+      mediaType: mType.value,
+      page: page.value,
+      size: PAGE_SIZE,
     })
+    items.value = r.items
+    total.value = r.total
   } catch (e) {
     items.value = []
+    total.value = 0
     error.value = (e as Error)?.message || String(e)
   } finally {
     loading.value = false
   }
 }
+
+/** 过滤条件变化 → 回第一页（搜索按钮/回车共用） */
+function runFromFirst() {
+  void run(1)
+}
+
+/** 图片/视频 tab 切换 → 按新 media_type 重查第一页（选择集跨 tab 保留） */
+watch(tab, (t) => {
+  if (t !== 'audio') void run(1)
+})
 
 function midOf(it: PickerItem): string {
   return String(it?.material_id ?? it?.id ?? '').trim()
@@ -86,7 +155,14 @@ function mainText(it: PickerItem): string {
   return String(it?.filename || it?.name || midOf(it) || '未命名素材')
 }
 function subText(it: PickerItem): string {
-  const seg = [String(it?.brand || ''), String(it?.model || '')].filter(Boolean).join(' / ')
+  // 素材条目无 category 字段（实测），分类语义回退 share_name（如「鼠标键盘」）
+  const seg = [
+    String(it?.brand || ''),
+    String(it?.model || ''),
+    String(it?.category || it?.share_name || '')
+  ]
+    .filter(Boolean)
+    .join(' / ')
   return seg
 }
 function thumbUrl(it: PickerItem): string {
@@ -111,9 +187,29 @@ const previewUrl = computed(() =>
 function showPreview(it: PickerItem) {
   preview.value = it
 }
+
+/** 素材 ID / 文件 Hash（2026-09-01 用户需求：预览信息区展示；
+ *  /material/list 条目实测字段 id + file_hash） */
+function metaId(it: PickerItem): string {
+  return String(it?.id ?? it?.material_id ?? '').trim()
+}
+function metaHash(it: PickerItem): string {
+  return String(it?.file_hash ?? '').trim()
+}
+/** 点击复制（剪贴板不可用静默，如非安全上下文） */
+async function copyMetaText(t: string) {
+  try {
+    await navigator.clipboard.writeText(t)
+  } catch (_) { /* 忽略 */ }
+}
 function confirmPick() {
-  if (!preview.value) return
-  emit('pick', preview.value)
+  const picked = [...selectedMap.value.values()]
+  if (!picked.length) {
+    if (!preview.value) return // 无勾选且无预览 → 按钮本身已禁用，此处兑底
+    emit('pick', preview.value) // 兼容旧单选口径：未勾选时按当前预览选中
+  } else {
+    for (const it of picked) emit('pick', it) // 逐项入池，容器 addCtxMaterial 按 material_id 去重
+  }
   emit('close')
 }
 
@@ -174,8 +270,12 @@ watch(
     preview.value = null
     currentAudio.value = null
     thumbFailed.value = {}
+    selectedMap.value.clear() // 弹窗每次打开重建选择集与分页（原弹窗重新加载口径）
+    page.value = 1
+    total.value = 0
     void ensureServerUrl()
     void run()
+    void loadDistinctOpts() // 品牌/型号/分类候选（服务端 distinct，失败静默不阻塞）
     void runAudio()
     if (!cats.value.length) cats.value = await fetchAudioCategories()
   },
@@ -188,29 +288,22 @@ watch(
   <TDialog :visible="visible" title="选择素材" width="80vw" :show-footer="false" @close="emit('close')">
     <div class="mtd">
       <div class="mtd-tabs">
-        <button class="mtd-tab" :class="{ active: tab === 'av' }" type="button" @click="tab = 'av'">图片 / 视频</button>
+        <button class="mtd-tab" :class="{ active: tab === 'image' }" type="button" @click="tab = 'image'">图片</button>
+        <button class="mtd-tab" :class="{ active: tab === 'video' }" type="button" @click="tab = 'video'">视频</button>
         <button class="mtd-tab" :class="{ active: tab === 'audio' }" type="button" @click="tab = 'audio'">音频</button>
       </div>
 
-      <!-- ─── Tab1 图片/视频 ─── -->
-      <div v-show="tab === 'av'" class="mtd-av">
+      <!-- ─── Tab1/Tab2 图片/视频（同域不同 media_type） ─── -->
+      <div v-show="tab !== 'audio'" class="mtd-av">
         <div class="mtd-filter">
-          <input v-model="kw" class="mtd-input" placeholder="搜索文件名/关键字…" @keydown.enter="run()" />
-          <input v-model="brand" class="mtd-input mtd-input--sm" placeholder="品牌过滤…" @keydown.enter="run()" />
-          <input v-model="model" class="mtd-input mtd-input--sm" placeholder="型号过滤…" @keydown.enter="run()" />
-          <div class="mtd-seg">
-            <button
-              v-for="t in TYPE_TABS"
-              :key="t.v"
-              class="mtd-seg-btn"
-              :class="{ active: mType === t.v }"
-              type="button"
-              @click="mType = t.v"
-            >
-              {{ t.t }}
-            </button>
-          </div>
-          <button class="mtd-btn" :disabled="loading" @click="run()">搜索</button>
+          <input v-model="kw" class="mtd-input" placeholder="搜索文件名/关键字…" @keydown.enter="runFromFirst()" />
+          <input v-model="brand" class="mtd-input mtd-input--sm" list="mtd-brand-opts" placeholder="品牌过滤…" @keydown.enter="runFromFirst()" />
+          <input v-model="model" class="mtd-input mtd-input--sm" list="mtd-model-opts" placeholder="型号过滤…" @keydown.enter="runFromFirst()" />
+          <input v-model="category" class="mtd-input mtd-input--sm" list="mtd-category-opts" placeholder="分类过滤…" @keydown.enter="runFromFirst()" />
+          <datalist id="mtd-brand-opts"><option v-for="o in brandOpts" :key="o" :value="o" /></datalist>
+          <datalist id="mtd-model-opts"><option v-for="o in modelOpts" :key="o" :value="o" /></datalist>
+          <datalist id="mtd-category-opts"><option v-for="o in categoryOpts" :key="o" :value="o" /></datalist>
+          <button class="mtd-btn" :disabled="loading" @click="runFromFirst()">搜索</button>
         </div>
 
         <div class="mtd-av-body">
@@ -223,7 +316,7 @@ watch(
                 v-for="(it, i) in items"
                 :key="midOf(it) || i"
                 class="mtd-card"
-                :class="{ active: preview === it }"
+                :class="{ active: preview === it, checked: isSelected(it) }"
                 type="button"
                 :title="`${mediaTypeLabel(String(it?.media_type || ''))}·点击预览`"
                 @click="showPreview(it)"
@@ -237,8 +330,21 @@ watch(
                   @error="onThumbError(i)"
                 />
                 <span v-else class="mtd-thumb mtd-thumb--ph">{{ mediaTypeLabel(String(it?.media_type || '')) }}</span>
+                <!-- 右上角勾选（@click.stop 不触发预览；跨页保留选择） -->
+                <span
+                  class="mtd-check"
+                  :class="{ on: isSelected(it) }"
+                  role="checkbox"
+                  :aria-checked="isSelected(it)"
+                  title="选择"
+                  @click.stop="toggleSelect(it)"
+                >
+                  <svg v-if="isSelected(it)" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </span>
                 <span class="mtd-card-main">{{ mainText(it) }}</span>
-                <span v-if="subText(it)" class="mtd-card-sub">{{ subText(it) }}</span>
+                <span v-if="subText(it)" class="mtd-card-sub" :title="subText(it)">{{ subText(it) }}</span>
               </button>
             </div>
           </div>
@@ -252,13 +358,42 @@ watch(
             <div v-if="preview" class="mtd-preview-info">
               <span class="mtd-preview-name">{{ mainText(preview) }}</span>
               <span v-if="subText(preview)" class="mtd-preview-sub">{{ subText(preview) }}</span>
+              <!-- 素材 ID / 文件 Hash（点击复制，2026-09-01 用户需求） -->
+              <span
+                v-if="metaId(preview)"
+                class="mtd-preview-meta"
+                title="素材 ID（点击复制）"
+                @click="copyMetaText(metaId(preview))"
+              >ID：{{ metaId(preview) }}</span>
+              <span
+                v-if="metaHash(preview)"
+                class="mtd-preview-meta mtd-preview-meta--hash"
+                title="文件 Hash（点击复制）"
+                @click="copyMetaText(metaHash(preview))"
+              >Hash：{{ metaHash(preview) }}</span>
             </div>
-            <button class="mtd-btn mtd-btn--full" :disabled="!preview" @click="confirmPick()">选择该素材</button>
+            <button class="mtd-btn mtd-btn--full" :disabled="!selectedCount && !preview" @click="confirmPick()">
+              {{ selectedCount ? `添加所选素材（${selectedCount}）` : '选择该素材' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 底部：全选/取消全选 + 已选计数 + 分页器（2026-09-01 用户需求） -->
+        <div class="mtd-pager">
+          <div class="mtd-pager-side">
+            <button class="mtd-btn mtd-btn--ghost" :disabled="!items.length" @click="selectPageAll()">全选本页</button>
+            <button class="mtd-btn mtd-btn--ghost" :disabled="!selectedCount" @click="clearSelection()">取消全选</button>
+            <span class="mtd-pager-info">已选 {{ selectedCount }} 项（跨页保留）</span>
+          </div>
+          <div v-if="hasPager" class="mtd-pager-side">
+            <span class="mtd-pager-info">共 {{ total }} 条 · 第 {{ page }}/{{ totalPages }} 页</span>
+            <button class="mtd-btn mtd-btn--ghost" :disabled="page <= 1 || loading" @click="prevPage()">上一页</button>
+            <button class="mtd-btn mtd-btn--ghost" :disabled="page >= totalPages || loading" @click="nextPage()">下一页</button>
           </div>
         </div>
       </div>
 
-      <!-- ─── Tab2 音频 ─── -->
+      <!-- ─── Tab3 音频 ─── -->
       <div v-show="tab === 'audio'" class="mtd-au">
         <div class="mtd-filter">
           <input v-model="aKw" class="mtd-input" placeholder="搜索音频名称/关键字…" @keydown.enter="runAudio()" />
@@ -362,28 +497,28 @@ watch(
 .mtd-btn:hover { filter: brightness(1.1); }
 .mtd-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .mtd-btn--full { width: 100%; }
-
-.mtd-seg { display: flex; gap: 0; }
-.mtd-seg-btn {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-right: none;
+.mtd-btn--ghost {
   background: var(--surface-container);
-  color: var(--muted-foreground);
-  transition: all var(--duration-fast);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  font-size: 12px;
 }
-.mtd-seg-btn:first-child { border-radius: var(--radius-md) 0 0 var(--radius-md); }
-.mtd-seg-btn:last-child { border-right: 1px solid var(--border); border-radius: 0 var(--radius-md) var(--radius-md) 0; }
-.mtd-seg-btn.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-foreground);
-}
+.mtd-btn--ghost:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); filter: none; }
 
 .mtd-av { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .mtd-av-body { flex: 1 1 auto; min-height: 0; display: flex; gap: var(--space-3); }
+
+/* 底部分页条：全选/取消全选 + 已选计数 + 上一页/下一页（2026-09-01） */
+.mtd-pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.mtd-pager-side { display: flex; align-items: center; gap: var(--space-2); }
+.mtd-pager-info { font-size: 12px; color: var(--muted-foreground); }
 .mtd-grid-wrap { flex: 1 1 auto; min-width: 0; overflow-y: auto; }
 .mtd-grid {
   display: grid;
@@ -391,6 +526,7 @@ watch(
   gap: var(--space-2);
 }
 .mtd-card {
+  position: relative; /* 右上角勾选锚点 */
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -403,6 +539,31 @@ watch(
 }
 .mtd-card:hover { border-color: var(--primary); }
 .mtd-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
+.mtd-card.checked { border-color: var(--primary); background: var(--surface-container-high); }
+
+/* 卡片右上角勾选框（多选；2026-09-01） */
+.mtd-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.92);
+  color: transparent;
+  transition: all var(--duration-fast);
+}
+.mtd-check:hover { border-color: var(--primary); }
+.mtd-check.on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
 .mtd-thumb {
   width: 100%;
   aspect-ratio: 16 / 10;
@@ -459,6 +620,25 @@ watch(
   white-space: nowrap;
 }
 .mtd-preview-sub { font-size: 11px; color: var(--muted-foreground); }
+
+/* 预览元信息（ID/Hash）：可点击复制（2026-09-01） */
+.mtd-preview-meta {
+  align-self: flex-start;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  background: var(--surface-container);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+.mtd-preview-meta:hover { color: var(--primary); border-color: var(--primary); }
+.mtd-preview-meta--hash {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .mtd-au { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: var(--space-3); }
 .mtd-au-list {

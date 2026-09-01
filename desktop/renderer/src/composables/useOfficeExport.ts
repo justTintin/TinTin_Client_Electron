@@ -86,7 +86,7 @@ function _blockParagraph(block: DocxBlock): Paragraph {
   }
 }
 
-/** 编组结构 → docx Buffer（Packer.toBuffer；PRD §3.1 样式规格） */
+/** 编组结构 → docx ArrayBuffer（Packer.toBlob；PRD §3.1 样式规格） */
 export async function buildDocxBuffer(structure: DocxStructure): Promise<Uint8Array> {
   const children: Paragraph[] = []
   for (const block of structure.blocks) {
@@ -141,7 +141,10 @@ export async function buildDocxBuffer(structure: DocxStructure): Promise<Uint8Ar
       },
     },
   })
-  return Packer.toBuffer(doc)
+  // 沙箱渲染进程无 Buffer 全局，Packer.toBuffer（nodebuffer 路径）会抛
+  // "nodebuffer is not supported by this platform"；用浏览器口径 toBlob 再转 ArrayBuffer
+  const blob = await Packer.toBlob(doc)
+  return new Uint8Array(await blob.arrayBuffer())
 }
 
 /** Sheet 结构 → xlsx ArrayBuffer（exceljs writeBuffer；表头加粗灰底 + 冻结首行 + 宽列换行） */

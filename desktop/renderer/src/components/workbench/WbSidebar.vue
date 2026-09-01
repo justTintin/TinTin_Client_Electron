@@ -24,6 +24,7 @@ const emit = defineEmits<{
   (e: 'delete', id: string): void
   (e: 'rename-commit', id: string, title: string): void
   (e: 'open-scheduled'): void
+  (e: 'open-skills'): void
   (e: 'toggle-taskqueue'): void
   (e: 'toggle-notifications'): void
   (e: 'open-settings'): void
@@ -71,6 +72,17 @@ function cancelRename(): void {
           <path d="M12 6v6l4 2" />
         </svg>
         定时任务
+      </button>
+      <!-- 技能管理入口（2026-09-01 用户裁决：技能从输入框快捷条迁到此处，
+           管理面板在右侧侧边栏展示，不再用弹窗） -->
+      <button class="btn btn-secondary w-full h-btn text-sm skills-btn" @click="emit('open-skills')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+          <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+          <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+          <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+        </svg>
+        技能管理
       </button>
     </div>
 

@@ -236,3 +236,21 @@ test('importStatusText：null/undefined → 空串', () => {
   assert.equal(S.importStatusText(null), '')
   assert.equal(S.importStatusText(undefined), '')
 })
+
+// ── tableToSheet：右侧预览面板 table 资产导出 Excel（2026-09-01 用户裁决：
+//    导出动作跟产物走——消息体去整会话导出，预览面板表格资产支持导出 Excel） ──
+
+test('tableToSheet：markdown 表格 → SheetSpec（首行表头，余行数据）', () => {
+  const md = '| 商品 | 价格 |\n| --- | --- |\n| A | 10 |\n| B | 20 |'
+  const s = S.tableToSheet('竞品对比', md)
+  assert.equal(s.name, '竞品对比')
+  assert.deepEqual(s.columns.map((c) => c.header), ['商品', '价格'])
+  assert.deepEqual(s.rows, [['A', '10'], ['B', '20']])
+  assert.equal(s.truncated, false)
+})
+
+test('tableToSheet：无表格内容 → 空 columns/rows（不抛错）', () => {
+  const s = S.tableToSheet('文案资产', '这是普通文本，没有表格')
+  assert.deepEqual(s.columns, [])
+  assert.deepEqual(s.rows, [])
+})

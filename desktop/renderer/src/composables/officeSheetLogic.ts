@@ -248,3 +248,25 @@ export function tasksToSheet(rows: TaskSheetRow[] | null | undefined): SheetSpec
     { header: '结果', width: 40 },
   ], data)
 }
+
+// ── ⑥ 预览面板 table 资产 → Excel（2026-09-01 用户裁决：导出动作跟产物走，
+//    右侧预览面板的 markdown 表格资产支持导出 Excel）──
+
+/** markdown 表格文本 → SheetSpec（首行表头、余行数据；无有效表格 → 空 columns/rows） */
+export function tableToSheet(title: string, content: string): SheetSpec {
+  const lines = String(content || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('|') && l.endsWith('|') && l.length > 1)
+  const parseRow = (l: string): string[] => l.slice(1, -1).split('|').map((c) => c.trim())
+  const rowsRaw = lines
+    .map(parseRow)
+    .filter((cells) => !cells.every((c) => /^:?-{2,}:?$/.test(c))) // 剔除分隔行
+  if (!rowsRaw.length) return { name: _sheetName(title), columns: [], rows: [] }
+  const [header = [], ...data] = rowsRaw
+  return _sheet(
+    String(title || '').trim(),
+    header.map((h, i) => ({ header: h || `列${i + 1}`, width: 18 })),
+    data,
+  )
+}

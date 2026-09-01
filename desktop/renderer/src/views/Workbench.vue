@@ -20,19 +20,19 @@ import WbPickScriptDialog from '@/components/workbench/WbPickScriptDialog.vue'
 import WbNotificationDrawer from '@/components/workbench/WbNotificationDrawer.vue'
 import WbTaskDrawer from '@/components/workbench/WbTaskDrawer.vue'
 import WbScheduledDrawer from '@/components/workbench/WbScheduledDrawer.vue'
-import SkillManagerDialog from '@/components/workbench/SkillManagerDialog.vue'
+import WbSkillPanel from '@/components/workbench/WbSkillPanel.vue'
 import { useWorkbenchSessions, SESSION_GROUPS } from '@/composables/useWorkbenchSessions'
 import { useWorkbenchChat } from '@/composables/useWorkbenchChat'
 import { useWorkbenchAgents } from '@/composables/useWorkbenchAgents'
 import { useSkills } from '@/composables/useSkills'
-import { mergeSkillCandidates, buildSkillWakeText, applyWakePrefix } from '@/composables/skillsLogic'
+import { mergeSkillCandidates, applyWakePrefix } from '@/composables/skillsLogic'
 import { buildAgentWakeText } from '@/composables/workbenchChatContext'
 import { useWorkbenchNotifications } from '@/composables/useWorkbenchNotifications'
 import { useWorkbenchTasks } from '@/composables/useWorkbenchTasks'
 import { useOfficeExport } from '@/composables/useOfficeExport'
 import { useOfficePreview } from '@/composables/useOfficePreview'
-import { buildChatDocxStructure, formatDate, formatDateTime } from '@/composables/officeDocLogic'
-import { chatToSheet, tasksToSheet } from '@/composables/officeSheetLogic'
+import { formatDate } from '@/composables/officeDocLogic'
+import { tableToSheet, tasksToSheet } from '@/composables/officeSheetLogic'
 import { detectChatAssets } from '@/composables/workbenchChatLogic'
 import type { ChatAsset } from '@/composables/workbenchChatLogic'
 import WorkbenchPreviewPanel from '@/components/workbench/WorkbenchPreviewPanel.vue'
@@ -96,26 +96,26 @@ const {
 const {
   entries: agentEntries,
   errorMessage: agentsError,
-  loadAgents,
-  setSkills
+  loadAgents
 } = useWorkbenchAgents()
 
-/* ── 技能域（原版 _load_agents：技能与智能体一起更新进快捷条/斜杠菜单） ── */
+/* ── 技能域（2026-09-01 用户裁决：快捷条仅服务端智能体，技能不再合并；
+   技能管理由左侧栏入口打开右侧面板；技能调用保留斜杠菜单口径） ── */
 const skills = useSkills()
 const {
   builtin: skillBuiltin,
   user: skillUser,
   loading: skillsLoading,
   actionMsg: skillsActionMsg,
+  uploadedIds: skillUploadedIds,
   load: loadSkills,
   install: installSkillSrc,
   remove: removeSkillId,
   upload: uploadSkillId
 } = skills
 
-/** 全部技能（内置 + 已安装；快捷条合并与选中回查共用） */
+/** 全部技能（内置 + 已安装；斜杠候选数据源） */
 const skillsAll = computed<SkillEntry[]>(() => [...skillBuiltin.value, ...skillUser.value])
-watch(skillsAll, (list) => setSkills(list), { immediate: true }) // 列表变更 → 快捷条重建
 
 /** 斜杠候选数据源：服务端智能体（仅 agent 条目）+ 本地技能（原版 L1519 顺序） */
 const agentList = computed(() =>
@@ -127,10 +127,11 @@ const agentList = computed(() =>
   )
 )
 
-/* ── 技能管理弹窗（工具行「⚙技能」入口；安装/卸载后列表自动刷新） ── */
+/* ── 技能管理右侧面板（左侧栏「技能管理」入口；安装/卸载后列表自动刷新） ── */
 const showSkillManager = ref(false)
 function onOpenSkills() {
   void loadSkills()
+  panelOpen.value = false // 与预览面板互斥（同占右侧栏）
   showSkillManager.value = true
 }
 async function onInstallSkillFile() {
@@ -187,11 +188,7 @@ function onPickScript(item: PickerItem) {
 function onSelectEntry(key: string) {
   const entry = agentEntries.value.find((e) => e.key === key)
   if (!entry) return
-  const wake =
-    entry.kind === 'skill'
-      ? buildSkillWakeText(skillsAll.value.find((x) => `skill:${x.id}` === key))
-      : buildAgentWakeText(entry)
-  inputText.value = applyWakePrefix(inputText.value, wake)
+  inputText.value = applyWakePrefix(inputText.value, buildAgentWakeText(entry))
   nextTick(() => composerComp.value?.focusEnd())
 }
 
@@ -305,6 +302,7 @@ watch(exportState, (s) => {
     // exportDone → 右侧面板自动展开并加载文件预览（不再弹 OfficePreview 弹窗）
     if (exportLastPath.value) {
       panelOpen.value = true
+      showSkillManager.value = false // 与技能面板互斥（同占右侧栏）
       void preview.openPreview(exportLastPath.value)
     }
     if (exportToastTimer) clearTimeout(exportToastTimer)
@@ -325,6 +323,7 @@ function showAssets(messageId: string) {
   if (!assets.length) return // 无资产 → 不展开（预览图标也不会出现）
   panelAssets.value = assets
   panelOpen.value = true
+  showSkillManager.value = false // 与技能面板互斥（同占右侧栏）
 }
 
 /** 气泡 hover「预览」图标 → 显式打开资产预览 */
@@ -346,6 +345,7 @@ function onClosePanel() {
 function onPreviewExport() {
   if (!exportLastPath.value) return
   panelOpen.value = true
+  showSkillManager.value = false // 与技能面板互斥（同占右侧栏）
   void preview.openPreview(exportLastPath.value)
 }
 
@@ -366,53 +366,19 @@ function onExportAsset(asset: ChatAsset) {
   )
 }
 
-/** E1：空会话（无用户消息）→ 导出按钮禁用；E6：导出中禁用 */
-const canExportChat = computed(() =>
-  messages.value.some((m) => m.role === 'user') && exportState.value !== 'exporting',
-)
-
-/** 导出元信息（PRD §3.1：标题 + 智能体/模式·会话 ID·导出时间） */
-function exportChatMeta(): { title: string; metaLines: string[] } {
-  const agentName = agentEntries.value.find((e) => e.key === agentSelectedKey.value)?.name || '智能体'
-  const activeTitle = sessions.getActive()?.title
-  const title = activeTitle && activeTitle !== '新会话'
-    ? activeTitle
-    : `会话 ${agentName} ${formatDate(new Date())}`
-  return {
-    title,
-    metaLines: [
-      `智能体：${agentName} · 模式：${mode.value === 'agent' ? '智能体编排' : '通用对话'}`,
-      `会话 ID：${chat.sessionId || '（本地会话）'}`,
-      `导出时间：${formatDateTime(new Date())}`,
-    ],
-  }
-}
-
-/** 导出消息：过滤 pending 占位与空内容（欢迎语等 AI 消息保留；逐条时间数据源无 → 省略） */
-function exportChatMessages() {
-  return messages.value
-    .filter((m) => m.status !== 'pending' && m.content && m.content.trim())
-    .map((m) => ({ role: m.role, content: m.content, time: undefined }))
-}
-
 function _safeName(title: string): string {
   return title.replace(/[\\/:*?"<>|]/g, '_')
 }
 
-async function onExportWord() {
-  if (exportState.value === 'exporting') return // E6
-  if (!canExportChat.value) { window.alert?.('暂无内容可导出'); return } // E1
-  const meta = exportChatMeta()
-  await officeExport.exportDocx(buildChatDocxStructure(exportChatMessages(), meta), `${_safeName(meta.title)}.docx`)
-}
+/* ── 2026-09-01 用户裁决：导出动作跟产物走 —— 消息体不再提供整会话导出，
+   导出入口收敛到右侧预览面板按资产进行（Word/Excel）；复制跟消息走 → WbMessages 操作栏 ── */
 
-async function onExportExcel() {
-  if (exportState.value === 'exporting') return
-  if (!canExportChat.value) { window.alert?.('暂无内容可导出'); return }
-  const meta = exportChatMeta()
-  await officeExport.exportXlsx(
-    chatToSheet(exportChatMessages(), { title: meta.title }),
-    `${_safeName(meta.title)}.xlsx`,
+/** 资产「导出 Excel」：table 资产 markdown 表格 → Excel（业务在 useOfficeExport） */
+function onExportAssetExcel(asset: ChatAsset) {
+  if (exportState.value === 'exporting') return // E6
+  void officeExport.exportXlsx(
+    tableToSheet(asset.title, asset.content),
+    `${_safeName(asset.title)}.xlsx`,
   )
 }
 
@@ -437,6 +403,7 @@ async function onExportTasks() {
       @delete="onDeleteSession"
       @rename-commit="onRenameSession"
       @open-scheduled="openScheduled"
+      @open-skills="onOpenSkills"
       @toggle-taskqueue="toggleTaskQueue"
       @toggle-notifications="toggleNotifications"
       @open-settings="openSettings"
@@ -447,14 +414,11 @@ async function onExportTasks() {
       <WbMessages
         ref="msgsComp"
         :messages="messages"
-        :export-disabled="!canExportChat"
         @toggle-sidebar="toggleSidebarPanel"
         @quote-message="onQuoteMessage"
         @regenerate-message="onRegenerateMessage"
         @confirm-plan="confirmPlanExec"
         @download-video="downloadVideoAsset"
-        @export-word="onExportWord"
-        @export-excel="onExportExcel"
         @assets-ready="onAssetsReady"
         @preview-assets="onPreviewAssets"
       />
@@ -482,7 +446,6 @@ async function onExportTasks() {
         @remove-script="removeCtxScript"
         @pick-product="showProduct = true"
         @pick-material="showMaterial = true"
-        @open-skills="onOpenSkills"
         @pick-script="showScript = true"
         @select-entry="onSelectEntry"
       />
@@ -499,6 +462,24 @@ async function onExportTasks() {
         @open-system="preview.openWithSystem()"
         @switch-sheet="preview.switchSheet"
         @export-asset="onExportAsset"
+        @export-asset-excel="onExportAssetExcel"
+      />
+    </div>
+
+    <!-- ─── 右侧技能管理面板（左侧栏入口；与预览面板互斥，同款收起动画） ─── -->
+    <div class="skill-panel-wrap" :class="{ 'is-open': showSkillManager }">
+      <WbSkillPanel
+        :open="showSkillManager"
+        :builtin="skillBuiltin"
+        :user="skillUser"
+        :loading="skillsLoading"
+        :action-msg="skillsActionMsg"
+        :uploaded-ids="[...skillUploadedIds]"
+        @close="showSkillManager = false"
+        @install-file="onInstallSkillFile"
+        @install-dir="onInstallSkillDir"
+        @remove="removeSkillId"
+        @upload="uploadSkillId"
       />
     </div>
 
@@ -558,20 +539,6 @@ async function onExportTasks() {
       />
     </Transition>
 
-    <!-- ─── 技能管理弹窗（安装 .md/.zip/目录；内置只读，用户技能可卸载/上传服务端） ─── -->
-    <SkillManagerDialog
-      :visible="showSkillManager"
-      :builtin="skillBuiltin"
-      :user="skillUser"
-      :loading="skillsLoading"
-      :action-msg="skillsActionMsg"
-      @close="showSkillManager = false"
-      @install-file="onInstallSkillFile"
-      @install-dir="onInstallSkillDir"
-      @remove="removeSkillId"
-      @upload="uploadSkillId"
-    />
-
     <!-- ─── 网络异常底部 toast 条（单行居中 + 右侧关闭；出现新文案自动重现） ─── -->
     <Transition name="net-toast">
       <div v-if="netErrorVisible" class="net-error-toast" role="alert">
@@ -622,6 +589,17 @@ async function onExportTasks() {
   transition: width var(--duration-normal) var(--easing-out);
 }
 .preview-panel-wrap.is-open {
+  width: 340px;
+}
+
+/* ─── 右侧技能管理面板容器：与预览面板同款收起动画（两者互斥，同占右侧栏） ─── */
+.skill-panel-wrap {
+  flex: 0 0 auto;
+  width: 0;
+  overflow: hidden;
+  transition: width var(--duration-normal) var(--easing-out);
+}
+.skill-panel-wrap.is-open {
   width: 340px;
 }
 

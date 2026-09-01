@@ -92,6 +92,78 @@ export function planSummaryText(plan: unknown, taskId: string): string {
   return `服务端已生成计划草稿：\`${taskId}\`，请确认执行。`
 }
 
+/* ── plan JSON 消息步骤卡片（2026-09-01 用户裁决方案B：服务端返回结构化 plan，
+   客户端负责渲染——WbMessages 检测到 plan 结构渲染步骤卡片，识别不到走原文本） ── */
+
+/** 计划步骤视图模型（params 序列化为可读摘要） */
+export interface PlanStepView {
+  id: string
+  capability: string
+  /** params 摘要（key: value 多行；value 截断 80 字符） */
+  summary: string
+  dependsOn: string[]
+  needsUserInput: boolean
+}
+
+/** 计划消息视图模型（goal + 步骤列表） */
+export interface PlanView {
+  goal: string
+  steps: PlanStepView[]
+}
+
+/** params 值 → 摘要字符串（对象/数组 JSON 化；长值截断 80 字符加省略号） */
+function planParamText(v: unknown): string {
+  const s = typeof v === 'string' ? v : (() => { try { return JSON.stringify(v) } catch { return String(v) } })()
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
+  return t.length > 80 ? t.slice(0, 80) + '…' : t
+}
+
+function planStepView(raw: unknown): PlanStepView | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const capability = String(o.capability || '').trim()
+  if (!capability) return null
+  const params = o.params && typeof o.params === 'object' ? (o.params as Record<string, unknown>) : {}
+  const summary = Object.entries(params)
+    .map(([k, v]) => `${k}: ${planParamText(v)}`)
+    .join('\n')
+  const dependsOn = Array.isArray(o.depends_on)
+    ? o.depends_on.map((d) => String(d)).filter(Boolean)
+    : []
+  return {
+    id: String(o.id || capability),
+    capability,
+    summary,
+    dependsOn,
+    needsUserInput: o.needs_user_input === true
+  }
+}
+
+/**
+ * 消息内容 → plan 视图模型（WbMessages 步骤卡片渲染判定）。
+ * 兼容裸 JSON 与 ```json 围栏；必须同时有 goal 与非空 steps（每步含 capability），
+ * 否则返回 null（调用方按普通文本渲染）。
+ */
+export function parsePlanContent(content: string): PlanView | null {
+  const s = String(content || '').trim()
+  if (!s.startsWith('{')) {
+    const m = s.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/)
+    if (!m) return null
+    const inner = String(m[1] || '').trim()
+    if (!inner.startsWith('{')) return null
+    return parsePlanContent(inner)
+  }
+  let d: unknown
+  try { d = JSON.parse(s) } catch { return null }
+  if (!d || typeof d !== 'object') return null
+  const o = d as Record<string, unknown>
+  const goal = String(o.goal || '').trim()
+  if (!goal || !Array.isArray(o.steps) || !o.steps.length) return null
+  const steps = o.steps.map(planStepView)
+  if (steps.some((x) => x === null)) return null
+  return { goal, steps: steps as PlanStepView[] }
+}
+
 /**
  * 底部任务选择器（2026-08-31 用户裁决：替换原「转编排任务」勾选）：
  * · off=普通对话（mode=chat，即时回复）；agent=智能体（mode=agent，拆解后自动执行）；

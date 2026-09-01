@@ -356,3 +356,53 @@ test('latestSessionOfMode：单会话直接命中（不突变输入）', () => {
   assert.equal(r?.id, 's1')
   assert.equal(list.length, 1)
 })
+
+// ── parsePlanContent：plan JSON 消息识别与视图模型（2026-09-01 用户裁决方案B：
+//    服务端返回结构化 plan，客户端渲染步骤卡片；识别不到 → null 走普通文本） ──
+
+const PLAN_OK = JSON.stringify({
+  goal: '为传应CR2025石墨烯纽扣电池生成营销脚本',
+  steps: [
+    { id: 's1', capability: 'llm_chat', params: { prompt: '写一条15-30秒的抖音口播文案' }, depends_on: [] },
+    { id: 's2', capability: 'storyboard_script_generate', params: { topic: '持久续航', shots: '8-10个镜头' }, depends_on: ['s1'], needs_user_input: true }
+  ]
+})
+
+test('parsePlanContent：goal+steps 正向解析为步骤视图模型', () => {
+  const r = L.parsePlanContent(PLAN_OK)
+  assert.ok(r)
+  assert.equal(r.goal, '为传应CR2025石墨烯纽扣电池生成营销脚本')
+  assert.equal(r.steps.length, 2)
+  assert.equal(r.steps[0].id, 's1')
+  assert.equal(r.steps[0].capability, 'llm_chat')
+  assert.ok(r.steps[0].summary.includes('prompt:'))
+  assert.deepEqual(r.steps[1].dependsOn, ['s1'])
+  assert.equal(r.steps[1].needsUserInput, true)
+})
+
+test('parsePlanContent：markdown json 围栏剥离后仍可识别', () => {
+  const r = L.parsePlanContent('```json\n' + PLAN_OK + '\n```')
+  assert.ok(r)
+  assert.equal(r.steps.length, 2)
+})
+
+test('parsePlanContent：params 空对象 → summary 空串；长值截断', () => {
+  const r = L.parsePlanContent(JSON.stringify({
+    goal: 'g',
+    steps: [
+      { id: 's1', capability: 'llm_chat', params: {}, depends_on: [] },
+      { id: 's2', capability: 'llm_chat', params: { prompt: 'x'.repeat(200) }, depends_on: [] }
+    ]
+  }))
+  assert.ok(r)
+  assert.equal(r.steps[0].summary, '')
+  assert.ok(r.steps[1].summary.length <= 100)
+})
+
+test('parsePlanContent：非 JSON 文本 / 缺 steps / steps 空 / 缺 capability / 缺 goal → null', () => {
+  assert.equal(L.parsePlanContent('普通回复文本'), null)
+  assert.equal(L.parsePlanContent('{"goal":"g"}'), null)
+  assert.equal(L.parsePlanContent(JSON.stringify({ goal: 'g', steps: [] })), null)
+  assert.equal(L.parsePlanContent(JSON.stringify({ goal: 'g', steps: [{ id: 's1' }] })), null)
+  assert.equal(L.parsePlanContent(JSON.stringify({ steps: [{ id: 's1', capability: 'llm_chat' }] })), null)
+})

@@ -4,20 +4,18 @@
 //   · W8：AI 回复含成片视频资产（m.video）→ 气泡内视频卡片（播放/下载）；
 //         播放=主窗口内 HTML5 <video> 弹窗（复用 VideoPreview，src 直连服务端 URL）；
 //         下载=事件转发容器 → chat.downloadVideoAsset（业务在 composable）。
-//   · W9：AI 气泡 hover 显示图标操作栏（引用 / 重新生成[仅最后一条 AI 回复]），
-//         仅绘制 + 事件转发。
+//   · W9：AI 气泡 hover 显示图标操作栏（预览 / 引用 / 复制 / 重新生成[仅最后一条]），
+//         仅绘制 + 事件转发；复制为纯前端动作（剪贴板）组件内自持。
 // messageListRef 在本组件内部自持：「发送后 nextTick 滚动」经容器桥接到 expose 的
 // scrollToBottom，「初始滚动」由本组件 onMounted 完成——与原容器 onMounted 时机等价。
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import type { ChatMessage } from '@/composables/useWorkbenchChat'
-import type { VideoAsset } from '@/composables/workbenchChatLogic'
-import { detectChatAssets } from '@/composables/workbenchChatLogic'
+import type { VideoAsset, PlanView } from '@/composables/workbenchChatLogic'
+import { detectChatAssets, parsePlanContent } from '@/composables/workbenchChatLogic'
 import VideoPreview from '@/components/common/VideoPreview.vue'
 
 const props = defineProps<{
   messages: ChatMessage[]
-  /** 会话无可导出内容（无用户消息）→ 导出按钮禁用（PRD E1） */
-  exportDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -26,8 +24,6 @@ const emit = defineEmits<{
   (e: 'regenerate-message', id: string): void
   (e: 'confirm-plan'): void
   (e: 'download-video', asset: VideoAsset): void
-  (e: 'export-word'): void
-  (e: 'export-excel'): void
   (e: 'assets-ready', id: string): void
   (e: 'preview-assets', id: string): void
 }>()
@@ -42,6 +38,20 @@ const lastAiId = computed(() => {
   }
   return ''
 })
+
+/* ── 消息复制（2026-09-01 用户裁决：复制动作跟消息走，放「引用」后；
+   导出整会话跟产物走 → 移除，导出在右侧预览面板按资产进行） ── */
+const copiedId = ref('')
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+/** 复制本条 AI 回复内容（2 秒反馈「已复制」；剪贴板不可用静默） */
+function copyMessage(m: ChatMessage) {
+  try {
+    void navigator.clipboard.writeText(m.content)
+    copiedId.value = m.id
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copiedId.value = '' }, 2000)
+  } catch (_) { /* 忽略 */ }
+}
 
 /* ── W10：对话资产识别 → 气泡「预览」图标 + 资产出现自动展开 ── */
 
@@ -88,8 +98,25 @@ onMounted(() => {
 
 defineExpose({ scrollToBottom })
 
-/* ── 长回复折叠（2026-08-31）：超长 AI 气泡默认折叠（max-height + 底部渐隐），
-   展开/收起按消息 id 记忆；纯展示层处理，阈值只判断是否显示切换按钮 */
+/* ── plan 步骤卡片（2026-09-01 用户裁决方案B）：AI 回复内容为结构化 plan JSON
+（goal+steps）时渲染执行计划卡片，识别不到走原文本（纯展示层判定在 logic 层） */
+const planViews = computed(() => {
+  const map = new Map<string, PlanView>()
+  for (const m of props.messages) {
+    if (m.role !== 'ai' || m.status) continue
+    const v = parsePlanContent(m.content)
+    if (v) map.set(m.id, v)
+  }
+  return map
+})
+function planOf(id: string): PlanView | undefined {
+  return planViews.value.get(id)
+}
+
+/* ── 长内容折叠（2026-08-31；2026-09-01 用户反馈扩展到用户消息：发送的长文本
+   气泡同样默认折叠，此前仅 AI 回复有限高）：超长气泡默认折叠（max-height + 底部渐隐），
+   展开/收起按消息 id 记忆；纯展示层处理，阈值只判断是否显示切换按钮；
+   plan 卡片消息不参与文本折叠（已是结构化卡片） */
 const FOLD_LINE_THRESHOLD = 18
 const FOLD_CHAR_THRESHOLD = 800
 
@@ -127,14 +154,29 @@ function toggleFold(id: string) {
           :class="m.role"
         >
           <div class="message" :class="[m.role, m.status]">
+            <!-- plan JSON 消息 → 执行计划步骤卡片（方案B：plan 专门渲染） -->
+            <div v-if="planOf(m.id)" class="plan-card">
+              <div class="plan-goal" :title="planOf(m.id)?.goal">{{ planOf(m.id)?.goal }}</div>
+              <div class="plan-steps-title">执行计划（{{ planOf(m.id)?.steps.length }} 步）</div>
+              <div v-for="(st, si) in planOf(m.id)?.steps" :key="st.id" class="plan-step-row">
+                <div class="plan-step-head">
+                  <span class="plan-num">{{ si + 1 }}.</span>
+                  <span class="plan-cap">{{ st.capability }}</span>
+                  <span v-if="st.needsUserInput" class="plan-flag">需确认</span>
+                </div>
+                <pre v-if="st.summary" class="plan-params">{{ st.summary }}</pre>
+                <div v-if="st.dependsOn.length" class="plan-deps">依赖：{{ st.dependsOn.join('、') }}</div>
+              </div>
+            </div>
             <div
+              v-else
               class="bubble-body"
-              :class="{ folded: m.role === 'ai' && isFoldable(m.content) && !expandedIds.has(m.id) }"
+              :class="{ folded: isFoldable(m.content) && !expandedIds.has(m.id) }"
             >
               <p>{{ m.content }}</p>
             </div>
             <button
-              v-if="m.role === 'ai' && isFoldable(m.content)"
+              v-if="!planOf(m.id) && isFoldable(m.content)"
               class="fold-btn"
               @click="toggleFold(m.id)"
             >
@@ -164,7 +206,8 @@ function toggleFold(id: string) {
                 下载
               </button>
             </div>
-            <!-- 计划任务模式（plan-confirm）：本回复是计划草稿 → 确认后以 mode=plan 重发执行 -->
+            <!-- 计划任务模式（plan-confirm）：本回复是计划草稿 → 确认后 POST approve 服务端启动执行；
+                 已确认后显示执行中状态条（不改写消息内容，plan 卡片保持渲染） -->
             <div v-if="m.confirmable" class="confirm-card">
               <span class="confirm-hint">这是服务端计划草稿，确认后才开始执行</span>
               <button class="confirm-btn" title="确认计划并以编排任务提交执行" @click="emit('confirm-plan')">
@@ -172,8 +215,12 @@ function toggleFold(id: string) {
                 确认执行
               </button>
             </div>
-            <!-- W9 消息操作栏（AI 气泡 hover 显示）：引用 / 重新生成（仅最后一条 AI 回复）+
-                 办公能力：导出当前会话全部消息为 Word/Excel（PRD §3.1，空会话禁用 E1） -->
+            <div v-else-if="m.planApproved" class="confirm-card confirm-card--done">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+              <span class="confirm-hint">已确认，服务端执行中；进度与产物见左侧「定时任务」抽屉或左下角「任务队列」</span>
+            </div>
+            <!-- W9 消息操作栏（AI 气泡 hover 显示）：预览 / 引用 / 复制 / 重新生成（仅最后一条 AI 回复）；
+                 导出动作跟产物走 → 右侧预览面板按资产导出 Word/Excel（2026-09-01 用户裁决） -->
             <div v-if="m.role === 'ai' && !m.status" class="msg-actions">
               <!-- W10 对话资产预览（detectChatAssets 有资产时显示；点击 → 容器检测资产并展开右侧面板） -->
               <button
@@ -194,6 +241,14 @@ function toggleFold(id: string) {
                 引用
               </button>
               <button
+                class="act-btn"
+                :title="copiedId === m.id ? '已复制' : '复制本条回复内容到剪贴板'"
+                @click="copyMessage(m)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                {{ copiedId === m.id ? '已复制' : '复制' }}
+              </button>
+              <button
                 v-if="m.id === lastAiId"
                 class="act-btn"
                 title="用上一条问题重新生成回答（新回复替换本条）"
@@ -201,24 +256,6 @@ function toggleFold(id: string) {
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
                 重新生成
-              </button>
-              <button
-                class="act-btn"
-                title="导出当前会话全部消息为 Word 文档"
-                :disabled="exportDisabled"
-                @click="emit('export-word')"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><text x="9" y="19" font-size="9" font-weight="bold" fill="currentColor">W</text></svg>
-                导出 Word
-              </button>
-              <button
-                class="act-btn"
-                title="导出当前会话全部消息为 Excel 摘要表"
-                :disabled="exportDisabled"
-                @click="emit('export-excel')"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="4" x2="9" y2="20" /><line x1="15" y1="4" x2="15" y2="20" /><text x="5.5" y="18" font-size="6" fill="currentColor">XLS</text></svg>
-                导出 Excel
               </button>
             </div>
           </div>
@@ -303,7 +340,7 @@ function toggleFold(id: string) {
   overflow-wrap: anywhere;
 }
 
-/* 长回复折叠：折叠态限高 + 底部渐隐（仅 AI 气泡，渐变色对齐气泡底色） */
+/* 长内容折叠：折叠态限高 + 底部渐隐（AI/用户气泡；渐变色对齐各自气泡底色） */
 .bubble-body.folded {
   position: relative;
   max-height: 360px;
@@ -320,6 +357,11 @@ function toggleFold(id: string) {
   background: linear-gradient(transparent, var(--card));
 }
 
+/* 用户气泡底色为 primary，渐隐色跟随（否则渐隐与气泡底色不接） */
+.message-row.user .bubble-body.folded::after {
+  background: linear-gradient(transparent, var(--primary));
+}
+
 .fold-btn {
   margin-top: var(--space-1);
   align-self: flex-start;
@@ -332,6 +374,68 @@ function toggleFold(id: string) {
 
 .fold-btn:hover {
   background: var(--surface-container-high);
+}
+
+/* ─── plan 步骤卡片（AI 回复为结构化 plan JSON；样式对齐 WbScheduledDrawer 口径） ─── */
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.plan-goal {
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--foreground);
+}
+.plan-steps-title {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.plan-step-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+}
+.plan-step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.plan-num {
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.plan-cap {
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  color: var(--primary);
+  word-break: break-all;
+}
+.plan-flag {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: var(--radius-full);
+  background: rgba(180, 83, 9, 0.14);
+  color: #b45309;
+}
+.plan-params {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.plan-deps {
+  font-size: 11px;
+  color: var(--muted-foreground);
 }
 
 /* 「思考中…」占位 / 失败提示气泡（ChatMessage.status） */
@@ -400,6 +504,12 @@ function toggleFold(id: string) {
   border: 1px solid var(--primary);
   border-radius: var(--radius-lg);
   background: var(--surface-container);
+}
+
+/* 已确认执行状态条（无按钮；主色描边弱化，对齐「执行中」语义） */
+.confirm-card--done {
+  border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+  color: var(--primary);
 }
 
 .confirm-hint {

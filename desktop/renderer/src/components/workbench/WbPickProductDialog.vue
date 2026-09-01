@@ -39,23 +39,42 @@ function subText(it: PickerItem): string {
     @pick="(it) => emit('pick', it)"
   >
     <template #item="{ item }">
-      <span class="row-main">{{ mainText(item) }}</span>
-      <span v-if="subText(item)" class="row-sub">{{ subText(item) }}</span>
+      <!-- 2026-09-01 用户裁决：核心卖点同行右侧（主文案左，卖点右对齐截断） -->
+      <span class="prow">
+        <span class="row-main">{{ mainText(item) }}</span>
+        <span v-if="subText(item)" class="row-sub" :title="subText(item)">{{ subText(item) }}</span>
+      </span>
     </template>
   </WbPickerDialog>
 </template>
 
 <style scoped>
+/* 行内左右布局：主文案左（可收缩截断），核心卖点右（右对齐，长文本省略） */
+.prow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+}
+
 .row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--foreground);
 }
 
 .row-sub {
-  font-size: 12px;
-  color: var(--muted-foreground);
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted-foreground);
 }
 </style>

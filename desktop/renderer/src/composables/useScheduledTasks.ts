@@ -19,6 +19,7 @@ import {
   normalizePendingDecision,
   validateDecisionSelection,
   mapDecisionError,
+  isWaitingUserInput,
   type PendingDecision
 } from './decisionLogic'
 
@@ -239,9 +240,9 @@ export function useScheduledTasks() {
   }
 
   /* ── 人审决策点域（2026-09-01，PRD-human-in-loop-choices：详情弹窗内决策卡）── */
-  /** 详情任务待决策点（waiting_user_input + pending_decision 归一；非法/无 → null 回退纯确认） */
+  /** 详情任务待决策点（等待态含 derived_status 兼容 + pending_decision 归一；非法/无 → null 回退纯确认） */
   const pendingDecision = computed<PendingDecision | null>(() =>
-    detailTask.value && detailTask.value.status === 'waiting_user_input'
+    detailTask.value && isWaitingUserInput(detailTask.value)
       ? normalizePendingDecision(detailTask.value.pending_decision)
       : null
   )
@@ -252,7 +253,7 @@ export function useScheduledTasks() {
 
   watch(detailTask, (t) => {
     decisionError.value = ''
-    decisionSel.value = (t && t.status === 'waiting_user_input'
+    decisionSel.value = (t && isWaitingUserInput(t)
       ? normalizePendingDecision(t.pending_decision)?.default
       : null) || []
   })

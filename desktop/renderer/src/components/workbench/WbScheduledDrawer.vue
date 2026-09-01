@@ -16,6 +16,7 @@ import {
   useScheduledTasks, TYPE_LABEL, agentStatusText, WEEKDAY_LABELS
 } from '@/composables/useScheduledTasks'
 import { schedResultSummary } from '@/composables/scheduledExecLogic'
+import { isWaitingUserInput } from '@/composables/decisionLogic'
 
 const emit = defineEmits<{
   /** 关闭按钮（容器接 closeScheduled） */
@@ -303,7 +304,7 @@ function normalizeTime(e: Event) {
               <button class="btn-ghost" :disabled="decisionSubmitting" title="拒绝该决策，由服务端按策略（默认值/中止）处理" @click="rejectDecision()">拒绝</button>
             </div>
           </div>
-          <div v-else-if="detailTask.status === 'waiting_user_input'" class="task-ops">
+          <div v-else-if="isWaitingUserInput(detailTask)" class="task-ops">
             <button class="btn-primary sm" @click="confirmAgent(detailTask.id)">人工确认，继续执行</button>
           </div>
           <div v-if="detailTask.result_preview" class="detail-preview">{{ detailTask.result_preview }}</div>

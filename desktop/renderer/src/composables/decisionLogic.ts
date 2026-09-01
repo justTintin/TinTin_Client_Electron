@@ -87,3 +87,13 @@ export function mapDecisionError(res: { error?: string; status?: number; detail?
   }
   return String(res.error || '决策提交失败，请稍后重试')
 }
+
+/**
+ * 等待态判断（2026-09-01 gap3 修复）：根任务等待时 status 恒为 running，
+ * 等待态在 derived_status（API-GUIDE「等待状态看 derived_status」）——
+ * 两者任一为 waiting_user_input 即视为等待，兼容新旧服务端版本。
+ */
+export function isWaitingUserInput(node: { status?: unknown; derived_status?: unknown } | null | undefined): boolean {
+  if (!node) return false
+  return node.status === 'waiting_user_input' || node.derived_status === 'waiting_user_input'
+}

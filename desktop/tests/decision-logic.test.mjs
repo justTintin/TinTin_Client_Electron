@@ -15,7 +15,8 @@ import assert from 'node:assert/strict'
 import {
   normalizePendingDecision,
   validateDecisionSelection,
-  mapDecisionError
+  mapDecisionError,
+  isWaitingUserInput
 } from '../renderer/src/composables/decisionLogic.ts'
 
 // ── normalizePendingDecision：契约结构 → 归一；fail-closed ──
@@ -87,4 +88,15 @@ test('mapDecisionError：无 status/detail → 原始 error 兜底；空 → 通
   assert.equal(mapDecisionError({ error: '网络错误' }), '网络错误')
   assert.ok(mapDecisionError(null).length > 0)
   assert.ok(mapDecisionError({ error: '' }).length > 0)
+})
+
+// ── isWaitingUserInput：等待态判断（2026-09-01 gap3：根任务等待时 status 恒为
+//    running，等待态在 derived_status——API-GUIDE「等待状态看 derived_status」；兼容两者）──
+
+test('isWaitingUserInput：status 或 derived_status 任一为 waiting_user_input 即等待', () => {
+  assert.equal(isWaitingUserInput({ status: 'waiting_user_input' }), true)
+  assert.equal(isWaitingUserInput({ status: 'running', derived_status: 'waiting_user_input' }), true)
+  assert.equal(isWaitingUserInput({ status: 'running' }), false)
+  assert.equal(isWaitingUserInput({}), false)
+  assert.equal(isWaitingUserInput(null), false)
 })

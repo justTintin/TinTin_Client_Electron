@@ -610,6 +610,8 @@ export namespace AgentAPI {
     error_message?:    string
     requires_approval?: boolean
     waiting_reason?:   string     // 仅 status=waiting_user_input 时有值
+    /** 派生状态（2026-09-01：根任务等待时 status 恒为 running，等待态在此字段——API-GUIDE） */
+    derived_status?:   string
     /** 人审决策点（PRD-human-in-loop-choices：waiting_user_input 时服务端透出；
      *  结构防御解析在 decisionLogic.normalizePendingDecision，非法回退纯确认） */
     pending_decision?: unknown

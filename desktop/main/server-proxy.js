@@ -593,7 +593,7 @@ function createServerProxy(ipcMain, ctx) {
       return res.data
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
-  ipcMain.handle('agent:taskAction', async (_e, { id, action, reason }) => {
+  ipcMain.handle('agent:taskAction', async (_e, { id, action, reason, decision }) => {
     try {
       if (!id || !action) throw new Error('agent:taskAction requires id+action')
       const actions = ['confirm', 'pause', 'resume', 'retry', 'cancel']
@@ -606,9 +606,17 @@ function createServerProxy(ipcMain, ctx) {
         cancel:  API_ENDPOINTS.agent.taskCancel,
       }
       const path = endpointMap[action](id)
-      const res = await httpRequest('POST', path, { body: { reason: reason || '' } })
+      const body = { reason: reason || '' }
+      // 人审决策点（PRD-human-in-loop-choices）：confirm body 透传决策字段——
+      // 提交选择 {decision_id, choice:[...]} / 拒绝 {decision_id, action:'reject', reason}
+      if (decision && typeof decision === 'object') Object.assign(body, decision)
+      const res = await httpRequest('POST', path, { body })
       return res.data
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+    } catch (err) {
+      if (isExpectedOfflineError(err)) return null
+      // status/detail 供渲染层区分 422（非法 choice 透传合法值提示）/409（重复提交）
+      return { error: err.message, status: err.status, detail: err.response && err.response.detail }
+    }
   })
   ipcMain.handle('agent:registerArtifact', async (_e, payload) => {
     try {

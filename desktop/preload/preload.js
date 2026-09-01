@@ -110,7 +110,7 @@ const server = {
   agentRegistry:         ()       => ipcRenderer.invoke('agent:registry'),
   agentTaskList:         (params) => ipcRenderer.invoke('agent:taskList', params),
   agentSubmitTask:       (payload) => ipcRenderer.invoke('agent:submitTask', payload),
-  agentTaskAction:       (params)  => ipcRenderer.invoke('agent:taskAction', params),
+  agentTaskAction:       (params)  => ipcRenderer.invoke('agent:taskAction', params), // params.decision：人审决策点字段（decision_id/choice/action:'reject'）透传 confirm body
   agentRegisterArtifact: (payload) => ipcRenderer.invoke('agent:registerArtifact', payload),
 
   // ---------- agent chat（工作台 AI 对话真实链路 P1）----------

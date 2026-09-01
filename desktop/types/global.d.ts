@@ -121,6 +121,9 @@ declare interface TintinBridgeServer {
     id: string
     action: 'confirm' | 'pause' | 'resume' | 'retry' | 'cancel'
     reason?: string
+    /** 人审决策点字段（PRD-human-in-loop-choices）：confirm body 透传——
+     *  提交 {decision_id, choice:[...]} / 拒绝 {decision_id, action:'reject', reason} */
+    decision?: Record<string, unknown>
   }): Promise<IpcError<any>>
   agentRegisterArtifact(
     payload: AgentAPI.RegisterArtifactRequest

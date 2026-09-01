@@ -28,6 +28,8 @@ const {
   currentPlan, splitting, splitPlan,
   capturing, captureProgress, captureNow,
   detailTask, detailLoading, openDetail, closeDetail,
+  pendingDecision, decisionSel, decisionError, decisionSubmitting,
+  toggleChoice, submitDecision, rejectDecision,
   agentTasks, agentLoading, loadAgent, confirmAgent,
   schedExecRows, schedExecLoading, loadSchedExec,
   schedItem, schedItemLoading, openSchedItem, closeSchedItem
@@ -271,6 +273,39 @@ function normalizeTime(e: Event) {
           </div>
           <div v-if="detailTask.stage" class="task-meta"><span>阶段：{{ detailTask.stage }}</span></div>
           <div v-if="detailTask.waiting_reason" class="task-meta"><span>等待原因：{{ detailTask.waiting_reason }}</span></div>
+          <!-- 人审决策卡（PRD-human-in-loop-choices）：pending_decision 渲染选项 + 提交/拒绝；
+               决策数据异常 fail-closed → 回退纯确认按钮 -->
+          <div v-if="pendingDecision" class="decision-card">
+            <div class="decision-ask">
+              {{ pendingDecision.ask }}
+              <span class="decision-kind">{{ pendingDecision.kind === 'multi_choice' ? '（可多选）' : '（单选）' }}</span>
+            </div>
+            <label
+              v-for="c in pendingDecision.choices"
+              :key="c.value"
+              class="decision-choice"
+            >
+              <input
+                :type="pendingDecision.kind === 'multi_choice' ? 'checkbox' : 'radio'"
+                :name="'decision-' + pendingDecision.decisionId"
+                :checked="decisionSel.includes(c.value)"
+                @change="toggleChoice(pendingDecision.kind, c.value)"
+              >
+              <span class="choice-label">{{ c.label }}</span>
+              <span v-if="c.desc" class="choice-desc" :title="c.desc">{{ c.desc }}</span>
+            </label>
+            <div v-if="pendingDecision.placeholder" class="fhint">{{ pendingDecision.placeholder }}</div>
+            <div v-if="decisionError" class="ferr">{{ decisionError }}</div>
+            <div class="task-ops">
+              <button class="btn-primary sm" :disabled="decisionSubmitting" @click="submitDecision()">
+                {{ decisionSubmitting ? '提交中…' : '提交选择' }}
+              </button>
+              <button class="btn-ghost" :disabled="decisionSubmitting" title="拒绝该决策，由服务端按策略（默认值/中止）处理" @click="rejectDecision()">拒绝</button>
+            </div>
+          </div>
+          <div v-else-if="detailTask.status === 'waiting_user_input'" class="task-ops">
+            <button class="btn-primary sm" @click="confirmAgent(detailTask.id)">人工确认，继续执行</button>
+          </div>
           <div v-if="detailTask.result_preview" class="detail-preview">{{ detailTask.result_preview }}</div>
           <div v-if="detailTask.children?.length" class="detail-steps">
             <div class="plan-title">子步骤（{{ detailTask.children.length }}）</div>
@@ -596,6 +631,42 @@ function normalizeTime(e: Event) {
   color: var(--muted-foreground, #8a8f98);
   word-break: break-all;
   white-space: normal;
+}
+
+/* 人审决策卡（PRD-human-in-loop-choices）：待决策问题 + 候选选项 + 提交/拒绝 */
+.decision-card {
+  border: 1px solid color-mix(in srgb, var(--primary, #3b82f6) 45%, transparent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.decision-ask {
+  font-size: 13px;
+  font-weight: 600;
+}
+.decision-kind {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted-foreground, #8a8f98);
+}
+.decision-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.choice-label {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.choice-desc {
+  color: var(--muted-foreground, #8a8f98);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 详情弹窗 */

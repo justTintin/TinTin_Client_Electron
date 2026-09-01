@@ -610,6 +610,9 @@ export namespace AgentAPI {
     error_message?:    string
     requires_approval?: boolean
     waiting_reason?:   string     // 仅 status=waiting_user_input 时有值
+    /** 人审决策点（PRD-human-in-loop-choices：waiting_user_input 时服务端透出；
+     *  结构防御解析在 decisionLogic.normalizePendingDecision，非法回退纯确认） */
+    pending_decision?: unknown
     created_at:        string
     updated_at:        string
     children?:         TaskNode[]

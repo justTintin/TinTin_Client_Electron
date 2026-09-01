@@ -11,10 +11,16 @@
 // window.tintin.server 业务方法（契约：types/server-api.ts）。
 // ═══════════════════════════════════════════════════════════════
 
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { TintinBridgeScheduledTask, TintinBridgeAgentPlan } from '../../../types/global'
 import type { AgentAPI, ScheduledAPI } from '../../../types/server-api'
 import { toSchedExecRows, type SchedExecRow } from './scheduledExecLogic'
+import {
+  normalizePendingDecision,
+  validateDecisionSelection,
+  mapDecisionError,
+  type PendingDecision
+} from './decisionLogic'
 
 /** 任务类型标签（对齐原版 _TYPE_LABEL） */
 export const TYPE_LABEL: Record<string, string> = {
@@ -232,6 +238,93 @@ export function useScheduledTasks() {
     detailTask.value = null
   }
 
+  /* ── 人审决策点域（2026-09-01，PRD-human-in-loop-choices：详情弹窗内决策卡）── */
+  /** 详情任务待决策点（waiting_user_input + pending_decision 归一；非法/无 → null 回退纯确认） */
+  const pendingDecision = computed<PendingDecision | null>(() =>
+    detailTask.value && detailTask.value.status === 'waiting_user_input'
+      ? normalizePendingDecision(detailTask.value.pending_decision)
+      : null
+  )
+  /** 已选项（统一数组口径：single 恰 1 项 / multi 多项；打开详情预选 default） */
+  const decisionSel = ref<string[]>([])
+  const decisionError = ref('')
+  const decisionSubmitting = ref(false)
+
+  watch(detailTask, (t) => {
+    decisionError.value = ''
+    decisionSel.value = (t && t.status === 'waiting_user_input'
+      ? normalizePendingDecision(t.pending_decision)?.default
+      : null) || []
+  })
+
+  /** 勾选切换（multi=toggle；single=置唯一项；radio/checkbox 统一走此函数） */
+  function toggleChoice(kind: string, value: string): void {
+    decisionError.value = ''
+    if (kind === 'multi_choice') {
+      decisionSel.value = decisionSel.value.includes(value)
+        ? decisionSel.value.filter((v) => v !== value)
+        : [...decisionSel.value, value]
+    } else {
+      decisionSel.value = [value]
+    }
+  }
+
+  /** 提交选择（POST confirm {decision_id, choice:[...]}；422/409 文案映射） */
+  async function submitDecision(): Promise<void> {
+    const d = pendingDecision.value
+    if (!d || decisionSubmitting.value) return
+    const err = validateDecisionSelection(d.kind, decisionSel.value)
+    if (err) { decisionError.value = err; return }
+    decisionSubmitting.value = true
+    decisionError.value = ''
+    try {
+      const res = await window.tintin.server.agentTaskAction({
+        id: detailTask.value!.id,
+        action: 'confirm',
+        decision: { decision_id: d.decisionId, choice: decisionSel.value }
+      })
+      if (res && !('error' in res)) {
+        notice.value = `决策已提交，任务继续执行。`
+        await openDetail(detailTask.value!.id) // 重拉详情：状态离开 waiting 后决策卡自动消失
+        await loadAgent()
+      } else {
+        decisionError.value = mapDecisionError(res)
+      }
+    } catch (e) {
+      decisionError.value = `决策提交失败：${(e as Error).message}`
+    } finally {
+      decisionSubmitting.value = false
+    }
+  }
+
+  /** 拒绝决策（POST confirm {decision_id, action:'reject', reason}；服务端按 on_reject 处理） */
+  async function rejectDecision(): Promise<void> {
+    const d = pendingDecision.value
+    if (!d || decisionSubmitting.value) return
+    const reason = window.prompt(`拒绝原因（可空）：\n${d.ask}`)
+    if (reason === null) return // 取消
+    decisionSubmitting.value = true
+    decisionError.value = ''
+    try {
+      const res = await window.tintin.server.agentTaskAction({
+        id: detailTask.value!.id,
+        action: 'confirm',
+        decision: { decision_id: d.decisionId, action: 'reject', reason }
+      })
+      if (res && !('error' in res)) {
+        notice.value = `已拒绝该决策，按服务端策略继续。`
+        await openDetail(detailTask.value!.id)
+        await loadAgent()
+      } else {
+        decisionError.value = mapDecisionError(res)
+      }
+    } catch (e) {
+      decisionError.value = `拒绝失败：${(e as Error).message}`
+    } finally {
+      decisionSubmitting.value = false
+    }
+  }
+
   /* ── 执行结果域①：编排任务执行实例（云端智能体定时任务到点执行产生；
      GET /agent/tasks 根任务；对齐原版 mgmt_page L262「最近编排任务」） ── */
   interface AgentTaskRow {
@@ -330,6 +423,9 @@ export function useScheduledTasks() {
     capturing, captureProgress, captureNow,
     // 执行结果域：编排任务详情弹窗（/tasks/unified/{id} 子步骤树）
     detailTask, detailLoading, openDetail, closeDetail,
+    // 人审决策点（详情弹窗内决策卡；PRD-human-in-loop-choices）
+    pendingDecision, decisionSel, decisionError, decisionSubmitting,
+    toggleChoice, submitDecision, rejectDecision,
     // 执行结果域①：编排任务执行实例（/agent/tasks）
     agentTasks, agentLoading, loadAgent, confirmAgent,
     // 执行结果域②：服务端定时任务执行记录（/scheduled/tasks）

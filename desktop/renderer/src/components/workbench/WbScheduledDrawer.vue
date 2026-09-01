@@ -275,7 +275,7 @@ function normalizeTime(e: Event) {
           <div v-if="detailTask.children?.length" class="detail-steps">
             <div class="plan-title">子步骤（{{ detailTask.children.length }}）</div>
             <div v-for="ch in detailTask.children" :key="ch.id" class="plan-step">
-              <span class="plan-cap">{{ ch.title || ch.capability_key || ch.id }}</span>
+              <span class="plan-cap">{{ ch.goal || ch.title || ch.capability || ch.capability_key || ch.id }}</span>
               <span class="task-status">{{ agentStatusText(ch.status) }}{{ ch.progress !== undefined ? ' ' + ch.progress + '%' : '' }}</span>
               <div v-if="ch.result_preview" class="plan-params">{{ ch.result_preview }}</div>
               <div v-if="ch.error_message" class="ferr">{{ ch.error_message }}</div>

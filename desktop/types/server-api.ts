@@ -599,6 +599,8 @@ export namespace AgentAPI {
     id:                string     // a_* 或 c_* 前缀
     parent_task_id?:   string     // 根 = undefined
     title:             string
+    goal?:             string     // 编排子步骤目标（服务端 children 字段）
+    capability?:       string     // 编排子步骤能力 id（服务端字段）
     capability_key?:   string
     status:            TaskStatus
     progress?:         number     // 0-100

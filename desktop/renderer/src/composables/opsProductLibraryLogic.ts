@@ -222,6 +222,15 @@ export function parseImportRows(rows: Array<Record<string, unknown>>): ImportPar
   return { valid, errors }
 }
 
+/** 单行 markdown 剥离（去列表符/加粗/残余标记；firstMarkdownLine 与 markdownListLines 共用） */
+function stripMarkdownLine(line: string): string {
+  return line
+    .replace(/^[-*•]+\s*/, '')          // 去列表符（- / * / •）
+    .replace(/\*\*([^*]*)\*\*/g, '$1') // 去加粗 **xx** → xx
+    .replace(/[*`]/g, '')               // 去残余标记字符
+    .trim()
+}
+
 /** 通用：多行 markdown 列表文本 → 首行摘要（2026-09-01 产品弹窗两块布局：
  *  服务端 features（性能参数）/ selling_points（核心卖点）均为多行 markdown 列表
  *  （- **标题**：描述），剥列表符/** 加粗/残余标记，超长截断加省略号） */
@@ -231,13 +240,19 @@ export function firstMarkdownLine(raw: unknown, maxLen = 48): string {
     .map((l) => l.trim())
     .find(Boolean)
   if (!line) return ''
-  const text = line
-    .replace(/^[-*•]+\s*/, '')          // 去列表符（- / * / •）
-    .replace(/\*\*([^*]*)\*\*/g, '$1') // 去加粗 **xx** → xx
-    .replace(/[*`]/g, '')               // 去残余标记字符
-    .trim()
+  const text = stripMarkdownLine(line)
   if (!text) return ''
   return text.length > maxLen ? `${text.slice(0, maxLen)}…` : text
+}
+
+/** 多行 markdown 列表 → 干净文本数组（2026-09-01 产品弹窗预览区：左列表点击
+ *  仅切换右侧预览，右侧展示选中产品性能参数/核心卖点全文；同 firstMarkdownLine
+ *  剥离口径但不截断；空数据/纯空行 → 空数组） */
+export function markdownListLines(raw: unknown): string[] {
+  return String(raw ?? '')
+    .split('\n')
+    .map((l) => stripMarkdownLine(l.trim()))
+    .filter(Boolean)
 }
 
 /** 核心卖点摘要（firstMarkdownLine 的卖点语义别名；原直接截断显示已废弃） */

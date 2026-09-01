@@ -108,8 +108,11 @@ const {
   loading: skillsLoading,
   actionMsg: skillsActionMsg,
   uploadedIds: skillUploadedIds,
+  serverSkills: skillServerList,
   load: loadSkills,
+  loadServerSkills: loadServerSkillsList,
   install: installSkillSrc,
+  installFromServer: installSkillFromServer,
   remove: removeSkillId,
   upload: uploadSkillId
 } = skills
@@ -131,6 +134,7 @@ const agentList = computed(() =>
 const showSkillManager = ref(false)
 function onOpenSkills() {
   void loadSkills()
+  void loadServerSkillsList() // 2026-09-01 技能下载：打开面板自动同步服务端技能（离线静默）
   panelOpen.value = false // 与预览面板互斥（同占右侧栏）
   showSkillManager.value = true
 }
@@ -481,9 +485,12 @@ async function onExportTasks() {
         :loading="skillsLoading"
         :action-msg="skillsActionMsg"
         :uploaded-ids="[...skillUploadedIds]"
+        :server-skills="skillServerList"
+        :installed-ids="skillsAll.map((s) => s.id)"
         @close="showSkillManager = false"
         @install-file="onInstallSkillFile"
         @install-dir="onInstallSkillDir"
+        @install-server="installSkillFromServer"
         @remove="removeSkillId"
         @upload="uploadSkillId"
       />

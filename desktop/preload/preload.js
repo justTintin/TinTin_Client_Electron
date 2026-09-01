@@ -25,7 +25,9 @@ const skills = {
   remove:  (id)    => ipcRenderer.invoke('skills:remove', id),
   serverRegister:   (entry)   => ipcRenderer.invoke('skills:serverRegister', entry),
   serverUnregister: (skillId) => ipcRenderer.invoke('skills:serverUnregister', { skillId }),
-  serverList:       ()        => ipcRenderer.invoke('skills:serverList')
+  serverList:       ()        => ipcRenderer.invoke('skills:serverList'),
+  // 从服务端下载技能并安装到本地（2026-09-01：技能面板服务端技能区「下载」）
+  serverInstall:    (skillId) => ipcRenderer.invoke('skills:serverInstall', { skillId })
 }
 
 // ── dialog ──

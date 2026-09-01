@@ -691,8 +691,9 @@ function createServerProxy(ipcMain, ctx) {
   // --- 智能体对话域（工作台 AI 对话真实链路 P1）外迁 agent-chat-ipc.js（同上铁律）──
   createAgentChatIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, isExpectedOfflineError, getMachineId })
 
-  // --- 技能服务端登记域（安装技能上传为服务端共用，原版 skill_manager.py 口径）──
-  createSkillsServerIpc(ipcMain, { httpRequest, API_ENDPOINTS, isExpectedOfflineError, getMachineId })
+  // --- 技能服务端登记域（安装技能上传为服务端共用，原版 skill_manager.py 口径）；
+  //     app 供 skills:serverInstall 惰性创建本地技能 store（下载安装落位，2026-09-01）──
+  createSkillsServerIpc(ipcMain, { httpRequest, API_ENDPOINTS, isExpectedOfflineError, getMachineId, app: (ctx && ctx.app) || null })
 
   // --- B8 素材入库域（material:import 等，外迁 material-import.js，同上铁律）──
   createMaterialImportIpc(ipcMain, { httpRequest, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError, app: (ctx && ctx.app) || null })

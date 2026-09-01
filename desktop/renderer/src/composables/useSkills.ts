@@ -32,6 +32,51 @@ export function useSkills() {
     return uploadedIds.value.has(String(id || ''))
   }
 
+  /** 服务端共享技能全量条目（2026-09-01 技能下载：面板「服务端技能」区块数据源；
+   *  含 instruction/tags，供下载安装落盘） */
+  const serverSkills = ref<SkillEntry[]>([])
+  /** 服务端技能列表拉取失败提示（离线静默不提示，与 syncUploadedFromServer 口径一致） */
+  const serverError = ref('')
+
+  /** 拉取服务端技能全量条目（GET /skills；离线/失败静默保留旧数据） */
+  async function loadServerSkills() {
+    const t = getTintin()
+    if (!t?.skills?.serverList) return
+    try {
+      const r = await t.skills.serverList()
+      if (r && typeof r === 'object' && r.ok && Array.isArray(r.items)) {
+        serverSkills.value = r.items as SkillEntry[]
+        uploadedIds.value = new Set((r.items as Array<{ id?: unknown }>).map((s) => String(s?.id || '')).filter(Boolean))
+        serverError.value = ''
+      }
+    } catch (_) { /* 离线静默：保留旧数据 */ }
+  }
+
+  /** 从服务端下载技能并安装到本地（面板「下载」；成功后刷新本地列表） */
+  async function installFromServer(id: string): Promise<{ ok: boolean; error?: string }> {
+    const t = getTintin()
+    if (!t?.skills?.serverInstall) return { ok: false, error: '技能下载通道不可用（客户端需更新）' }
+    const name = serverSkills.value.find((s) => s.id === id)?.name || id
+    actionMsg.value = `正在从服务端下载「${name}」…`
+    try {
+      const r = await t.skills.serverInstall(id)
+      if (r && typeof r === 'object' && r.ok) {
+        actionMsg.value = `「${name}」已从服务端下载安装`
+        await load() // 刷新本地列表（新技能进入「已安装」区，可斜杠唤起）
+        return { ok: true }
+      }
+      const msg = r?.offline
+        ? '服务端暂不可达，下载失败；请检查服务连接后重试'
+        : String(r?.error || '下载安装失败')
+      actionMsg.value = `下载失败：${msg}`
+      return { ok: false, error: msg }
+    } catch (e) {
+      const msg = String((e as Error)?.message || e)
+      actionMsg.value = `下载失败：${msg}`
+      return { ok: false, error: msg }
+    }
+  }
+
   /** 从服务端回查已登记技能 id（GET /skills，归一化条目 {id}；离线/失败静默保留旧状态） */
   async function syncUploadedFromServer() {
     const t = getTintin()
@@ -179,5 +224,5 @@ export function useSkills() {
     return { ok: false, error: r.error }
   }
 
-  return { builtin, user, loading, error, actionMsg, uploadedIds, isUploaded, load, install, remove, upload }
+  return { builtin, user, loading, error, actionMsg, uploadedIds, isUploaded, serverSkills, serverError, load, loadServerSkills, install, installFromServer, remove, upload }
 }

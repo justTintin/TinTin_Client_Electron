@@ -218,8 +218,42 @@ async function _downloadStream(taskId, url, destPath, referer, partition, broadc
   })
 }
 
-async function _getYtdlpArgs() {
-  const { execSync } = require('node:child_process')
+/**
+ * 内置 yt-dlp / ffmpeg 候选路径（2026-09-01 用户裁决：yt-dlp 随包内置，
+ * 抹平抖音等动态平台分片流下载的外部依赖；照 _getFfmpegPath 同款模式）：
+ *   · 打包态 resourcesPath/bin（package.json build.extraResources bin 域）
+ *   · 开发态项目根 resources/bin
+ * 不可单测（本文件 require('electron')，测试环境无法导入），与既有先例一致。
+ */
+function _bundledToolPaths(app, exeName) {
+  const candidates = []
+  if (app && app.isPackaged) {
+    candidates.push(path.join(process.resourcesPath, 'bin', exeName))
+  }
+  candidates.push(path.join(__dirname, '..', '..', 'resources', 'bin', exeName))
+  return candidates.filter((p) => { try { return fs.existsSync(p) } catch (_) { return false } })
+}
+
+/**
+ * yt-dlp 调用参数解析（优先级：内置 exe > PATH yt-dlp > python -m yt_dlp）。
+ * 内置分支附带 --ffmpeg-location 指向内置 ffmpeg 所在目录——bv+ba 合并依赖
+ * ffmpeg，打包环境 PATH 无 ffmpeg，不传则合并阶段失败。
+ * 返回 { cmd, args } 或 null（全部不可用）。
+ */
+async function _getYtdlpArgs(app) {
+  const { execSync, spawnSync } = require('node:child_process')
+  // 1) 内置 exe（spawnSync 数组参数，避免路径含空格的引号问题）
+  for (const bundled of _bundledToolPaths(app, 'yt-dlp.exe')) {
+    try {
+      const v = spawnSync(bundled, ['--version'], { stdio: 'pipe', timeout: 8000 })
+      if (v.status === 0) {
+        const ffmpegDir = _bundledToolPaths(app, 'ffmpeg.exe')[0]
+        const args = ffmpegDir ? ['--ffmpeg-location', path.dirname(ffmpegDir)] : []
+        return { cmd: bundled, args }
+      }
+    } catch (_) { /* 内置 exe 损坏 → 降级后续候选 */ }
+  }
+  // 2) PATH 上的 yt-dlp
   try {
     execSync('yt-dlp --version', { stdio: 'pipe', timeout: 5000 })
     return { cmd: 'yt-dlp', args: [] }
@@ -387,9 +421,9 @@ function createMediaDownloader(ipcMain, ctx) {
         } catch (_) {}
       }
 
-      let ytdlpInfo = await _getYtdlpArgs()
+      let ytdlpInfo = await _getYtdlpArgs(app)
       if (!ytdlpInfo) {
-        _updateTaskStatus(broadcast, taskId, 'failed', 0, 0, 'yt-dlp 未安装，请先安装 yt-dlp: pip install yt-dlp')
+        _updateTaskStatus(broadcast, taskId, 'failed', 0, 0, 'yt-dlp 不可用（内置组件缺失且系统未安装），请重新安装客户端或执行 pip install yt-dlp')
         activeDownloads.delete(taskId)
         return { success: false, error: 'yt-dlp not found' }
       }

@@ -20,6 +20,12 @@ const props = defineProps<{
   /** 已上传服务端的技能 id 列表（useSkills.uploadedIds；已上传回显「已上传」，
    *  仍可点击重传幂等覆盖） */
   uploadedIds?: string[]
+  /** 服务端共享技能全量条目（2026-09-01 技能下载：面板打开时自动同步） */
+  serverSkills?: SkillEntry[]
+  /** 服务端技能列表拉取中（与本地列表 loading 分离，避免互闪） */
+  serverLoading?: boolean
+  /** 本地已安装技能 id（内置+用户；服务端区块「已安装」回显判定） */
+  installedIds?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +34,8 @@ const emit = defineEmits<{
   (e: 'install-dir'): void
   (e: 'remove', id: string): void
   (e: 'upload', id: string): void
+  /** 从服务端下载技能并安装到本地（服务端技能区「下载」按钮） */
+  (e: 'install-server', id: string): void
 }>()
 
 /** 卸载确认（防误删；原版 QMessageBox 问询口径） */
@@ -45,6 +53,14 @@ function onRemoveClick(id: string, name: string) {
 
 /** 已上传 id 集合（数组 → Set，模板判断用） */
 const uploadedSet = computed(() => new Set(props.uploadedIds || []))
+
+/** 本地已安装 id 集合（内置+用户；服务端技能区「已安装」判定） */
+const installedSet = computed(() => new Set(props.installedIds || []))
+
+/** 服务端技能（过滤本地已安装：只展示可下载的；用户口径：面板重点是「能从服务端下载」） */
+const serverAvail = computed(() =>
+  (props.serverSkills || []).filter((s) => !installedSet.value.has(String(s.id || '')))
+)
 
 function subText(s: SkillEntry): string {
   const d = String(s.description || '').trim()
@@ -82,6 +98,23 @@ function subText(s: SkillEntry): string {
           <span class="skill-name">{{ s.name || s.id }}</span>
           <span v-if="subText(s)" class="skill-sub">{{ subText(s) }}</span>
         </div>
+      </div>
+
+      <div class="skill-section">服务端技能（可下载安装到本地）</div>
+      <div v-if="serverLoading" class="skill-empty">服务端技能加载中…</div>
+      <div v-else-if="!serverAvail.length" class="skill-empty">服务端暂无可下载的新技能</div>
+      <div v-for="s in serverAvail" :key="'sv-' + s.id" class="skill-row">
+        <div class="skill-main">
+          <span class="skill-name">{{ s.name || s.id }}</span>
+          <span v-if="subText(s)" class="skill-sub">{{ subText(s) }}</span>
+        </div>
+        <button
+          class="skill-download"
+          title="从服务端下载该技能并安装到本地（本地已装同 id 技能会被覆盖）"
+          @click="emit('install-server', s.id)"
+        >
+          下载
+        </button>
       </div>
 
       <div class="skill-section">已安装技能（可上传为服务端共享）</div>
@@ -248,6 +281,17 @@ function subText(s: SkillEntry): string {
   background: transparent;
 }
 .skill-upload.uploaded:hover { background: var(--surface-container-high); }
+
+/* 服务端技能「下载」按钮（主色描边，与「上传」回显同族） */
+.skill-download {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-md);
+}
+.skill-download:hover { background: var(--surface-container-high); }
 
 .skill-empty {
   padding: 4px var(--space-2) 10px;

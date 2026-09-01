@@ -232,3 +232,29 @@ test('firstMarkdownLine：与 firstSellingPoint 同口径（单行裸文本/空�
   assert.equal(M.firstMarkdownLine(undefined), '')
   assert.equal(M.firstSellingPoint('- **卖点A**：描述一\n- **卖点B**：描述二'), M.firstMarkdownLine('- **卖点A**：描述一\n- **卖点B**：描述二'))
 })
+
+// ── markdownListLines：产品弹窗预览区全文展示（2026-09-01 用户裁决：左列表点击
+//    仅切换右侧预览，右侧显示选中产品的性能参数+核心卖点全文；同 firstMarkdownLine
+//    剥离口径，但不截断、输出多行数组）──
+
+test('markdownListLines：多行 markdown 列表 → 逐条剥离 ** 加粗与列表符的干净文本数组', () => {
+  const raw = '- **极致轻量化，仅60克**：采用薄壁外壳与镂空骨架。\n- **HERO 2 旗舰传感器**：精准追踪。\n\n- 第三条卖点'
+  assert.deepEqual(M.markdownListLines(raw), [
+    '极致轻量化，仅60克：采用薄壁外壳与镂空骨架。',
+    'HERO 2 旗舰传感器：精准追踪。',
+    '第三条卖点'
+  ])
+})
+
+test('markdownListLines：单行裸文本 → 单元素数组；空数据 → 空数组', () => {
+  assert.deepEqual(M.markdownListLines('续航持久'), ['续航持久'])
+  assert.deepEqual(M.markdownListLines(''), [])
+  assert.deepEqual(M.markdownListLines(null), [])
+  assert.deepEqual(M.markdownListLines(undefined), [])
+  assert.deepEqual(M.markdownListLines('- \n- \n'), []) // 纯空列表行
+})
+
+test('markdownListLines：与 firstMarkdownLine 首条一致（同剥离口径）', () => {
+  const raw = '- **材质**：高品质硅胶\n- **厚度**：约0.5mm'
+  assert.equal(M.markdownListLines(raw)[0], M.firstMarkdownLine(raw))
+})

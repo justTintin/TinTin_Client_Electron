@@ -106,8 +106,41 @@ function normalizeServerSkills(data) {
       description: String(s.description || ''),
       version: String(s.version || ''),
       machineId: String(s.machine_id || ''),
+      // 2026-09-01 技能下载：客户端「从服务端下载技能」需完整 SKILL.md 内容与标签
+      instruction: String(s.instruction || ''),
+      tags: Array.isArray(s.tags) ? s.tags.map((t) => String(t)) : [],
     }))
     .filter((s) => s.id)
 }
 
-module.exports = { splitFrontmatter, slugify, parseSkillMd, buildSkillRegisterBody, normalizeServerSkills }
+/**
+ * 服务端技能条目 → SKILL.md 原文（2026-09-01 技能下载安装落盘格式，
+ * 下载链路 skills:serverInstall → 临时落盘 → skill-store.installSkill）。
+ * frontmatter 值单行化（splitFrontmatter 按 key: value 行解析，多行值会破坏
+ * 结构）；正文（instruction）原样保留。返回 { ok, raw?, error? }：
+ * 缺 id / 缺 instruction 拒绝（无正文技能不可执行，fail-closed）。
+ */
+function buildSkillMdFromServer(entry) {
+  const id = String(entry?.id || '').trim()
+  const instruction = String(entry?.instruction || '').trim()
+  if (!id) return { ok: false, error: 'MISSING_ID' }
+  if (!instruction) return { ok: false, error: 'MISSING_INSTRUCTION' }
+  const oneLine = (v) => String(v || '').replace(/\r?\n+/g, ' ').trim()
+  const lines = [
+    '---',
+    `id: ${id}`,
+    `name: ${oneLine(entry?.name || id)}`,
+  ]
+  const desc = oneLine(entry?.description)
+  if (desc) lines.push(`description: ${desc}`)
+  const version = oneLine(entry?.version)
+  if (version) lines.push(`version: ${version}`)
+  if (Array.isArray(entry?.tags) && entry.tags.length) {
+    const tags = entry.tags.map((t) => oneLine(t)).filter(Boolean)
+    if (tags.length) lines.push(`tags: [${tags.join(', ')}]`)
+  }
+  lines.push('---', '', instruction)
+  return { ok: true, raw: lines.join('\n') }
+}
+
+module.exports = { splitFrontmatter, slugify, parseSkillMd, buildSkillRegisterBody, normalizeServerSkills, buildSkillMdFromServer }

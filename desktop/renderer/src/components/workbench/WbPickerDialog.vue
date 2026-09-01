@@ -4,7 +4,10 @@
 // （composables/useWorkbenchPickers），本组件只绘制三态（加载中/失败/
 // 空结果）与结果列表，选中即上报（原版弹窗「确定」语义 → 点行即选并关闭）。
 // 每次打开重置并按空关键字预载列表（原版弹窗每次 exec 重新加载口径）。
-import { watch } from 'vue'
+// 2026-09-01 预览模式（previewable，产品弹窗用）：点行仅切换右侧预览区
+// （slot #preview，插槽 props: item/confirm），由预览区内「选择」按钮触发
+// pick——选中语义与预览语义分离（用户裁决，对齐音频 Tab 的选择按钮）。
+import { ref, watch } from 'vue'
 import TDialog from '@/components/common/TDialog.vue'
 import { usePickerSearch, type PickerItem } from '@/composables/useWorkbenchPickers'
 
@@ -18,14 +21,20 @@ const props = defineProps<{
   fetcher: (kw: string) => Promise<PickerItem[]>
   /** 空结果提示 */
   emptyText: string
+  /** 预览模式：点行不 pick，只切换右侧预览区（默认 false 保持点行即选） */
+  previewable?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'pick', item: PickerItem): void
+  (e: 'preview', item: PickerItem): void
 }>()
 
 const { kw, items, loading, error, searched, run, reset } = usePickerSearch(props.fetcher)
+
+/** 预览模式当前选中条目（点行切换；搜索/重开后失效清空） */
+const sel = ref<PickerItem | null>(null)
 
 // 打开即预载（immediate 兼容父层 v-if 挂载即 visible=true 的用法）
 watch(
@@ -33,16 +42,30 @@ watch(
   (v) => {
     if (v) {
       reset()
+      sel.value = null
       void run()
     }
   },
   { immediate: true }
 )
 
+// 搜索后列表变化，预览条目可能已不在结果内（避免预览残留）
+watch(items, () => { sel.value = null })
+
 /** 选中条目：上报后关闭（单选语义，原版 dlg.exec()==Accepted） */
 function onPick(item: PickerItem) {
   emit('pick', item)
   emit('close')
+}
+
+/** 行点击：预览模式仅切换预览；普通模式即选即关 */
+function onRowClick(item: PickerItem) {
+  if (props.previewable) {
+    sel.value = item
+    emit('preview', item)
+  } else {
+    onPick(item)
+  }
 }
 </script>
 
@@ -60,22 +83,30 @@ function onPick(item: PickerItem) {
         <button class="picker-btn" :disabled="loading" @click="run()">搜索</button>
       </div>
 
-      <div class="picker-list">
-        <div v-if="loading" class="picker-state">加载中…</div>
-        <div v-else-if="error" class="picker-state picker-state--error">{{ error }}</div>
-        <div v-else-if="!items.length" class="picker-state">
-          {{ searched ? emptyText : '输入关键词后回车或点「搜索」' }}
+      <div class="picker-main">
+        <div class="picker-list">
+          <div v-if="loading" class="picker-state">加载中…</div>
+          <div v-else-if="error" class="picker-state picker-state--error">{{ error }}</div>
+          <div v-else-if="!items.length" class="picker-state">
+            {{ searched ? emptyText : '输入关键词后回车或点「搜索」' }}
+          </div>
+          <button
+            v-for="(it, i) in items"
+            v-else
+            :key="String(it.id ?? it.material_id ?? i)"
+            class="picker-row"
+            :class="{ active: sel === it }"
+            :title="previewable ? '查看该条目详情' : '选择该条目'"
+            @click="onRowClick(it)"
+          >
+            <slot name="item" :item="it" />
+          </button>
         </div>
-        <button
-          v-for="(it, i) in items"
-          v-else
-          :key="String(it.id ?? it.material_id ?? i)"
-          class="picker-row"
-          title="选择该条目"
-          @click="onPick(it)"
-        >
-          <slot name="item" :item="it" />
-        </button>
+
+        <!-- 预览模式：右侧详情区（产品弹窗：性能参数+核心卖点全文+选择按钮） -->
+        <div v-if="previewable" class="picker-preview custom-scroll">
+          <slot name="preview" :item="sel" :confirm="onPick" />
+        </div>
       </div>
 
       <p class="picker-tip">{{ tip }}</p>
@@ -134,14 +165,42 @@ function onPick(item: PickerItem) {
   cursor: not-allowed;
 }
 
+.picker-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: var(--space-3);
+}
+
 .picker-list {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 160px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
+
+/* 预览模式：右侧详情区固定占比（像素材弹窗预览区），独立滚动 */
+.picker-preview {
+  flex: 0 0 46%;
+  min-width: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-container);
+  padding: var(--space-3);
+}
+
+/* 预览模式当前条目高亮（点行仅预览，需看见选中的是哪条） */
+.picker-row.active {
+  border-color: var(--primary);
+  background: var(--surface-container-high);
+}
+
+.custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scroll::-webkit-scrollbar-thumb { background: var(--surface-container-high); border-radius: 3px; }
 
 .picker-state {
   padding: var(--space-5) var(--space-3);

@@ -70,7 +70,8 @@
         "to": "bin",
         "filter": [
           "ffmpeg.exe",
-          "ffprobe.exe"
+          "ffprobe.exe",
+          "yt-dlp.exe"
         ]
       },
       {

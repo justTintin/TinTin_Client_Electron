@@ -406,3 +406,58 @@ test('parsePlanContent：非 JSON 文本 / 缺 steps / steps 空 / 缺 capabilit
   assert.equal(L.parsePlanContent(JSON.stringify({ goal: 'g', steps: [{ id: 's1' }] })), null)
   assert.equal(L.parsePlanContent(JSON.stringify({ steps: [{ id: 's1', capability: 'llm_chat' }] })), null)
 })
+
+// ── 会话置顶（2026-09-01 用户需求：侧栏可置顶会话，置顶组排在普通会话上） ──
+
+const mkPinSessions = (defs) => defs.map(([id, updatedAt, pinned]) => ({
+  id, title: 'T' + id, subtitle: '', updatedAt, serverSessionId: '', mode: 'agent',
+  messages: [], ...(pinned ? { pinned: true } : {})
+}))
+
+test('applySessionPin：toggle 置顶/取消；显式指定 pinned 生效；不突变输入', () => {
+  const list = mkPinSessions([['a', 100], ['b', 200]])
+  const r1 = L.applySessionPin(list, 'a')
+  assert.equal(r1.find((s) => s.id === 'a').pinned, true)
+  assert.equal(list.find((s) => s.id === 'a').pinned, undefined) // 原数组不变
+  const r2 = L.applySessionPin(r1, 'a')
+  assert.equal(r2.find((s) => s.id === 'a').pinned, false) // toggle 回取消
+  const r3 = L.applySessionPin(list, 'b', true)
+  assert.equal(r3.find((s) => s.id === 'b').pinned, true)
+})
+
+test('applySessionPin：目标不存在 → 原样返回新数组', () => {
+  const list = mkPinSessions([['a', 100]])
+  const r = L.applySessionPin(list, 'ghost')
+  assert.equal(r.length, 1)
+  assert.notEqual(r, list)
+  assert.equal(r[0].pinned, undefined)
+})
+
+test('sanitizeSessions：pinned 与消息 time 字段保留（向后兼容：缺省不产出）', () => {
+  const raw = [{ id: 'p1', title: 'T', updatedAt: 100, serverSessionId: '', mode: 'agent',
+    pinned: true,
+    messages: [{ role: 'user', content: 'u', time: 12345 }, { role: 'assistant', content: 'a' }] }]
+  const r = L.sanitizeSessions(raw)
+  assert.equal(r[0].pinned, true)
+  assert.equal(r[0].messages[0].time, 12345)
+  assert.equal(r[0].messages[1].time, undefined)
+})
+
+// ── 消息时间（2026-09-01 用户需求：每个消息框带时间） ──
+
+test('chatTimeText：无时间 → 空串（欢迎语/错误提示不显示时间）', () => {
+  assert.equal(L.chatTimeText(undefined), '')
+  assert.equal(L.chatTimeText(0), '')
+})
+
+test('chatTimeText：同天 → HH:mm；昨天 → 「昨天 HH:mm」', () => {
+  const now = new Date(2026, 8, 1, 15, 30, 0).getTime() // 2026-09-01 15:30
+  assert.equal(L.chatTimeText(new Date(2026, 8, 1, 9, 5).getTime(), now), '09:05')
+  assert.equal(L.chatTimeText(new Date(2026, 7, 31, 23, 59).getTime(), now), '昨天 23:59')
+})
+
+test('chatTimeText：更早同年 → MM-DD HH:mm；跨年 → YYYY-MM-DD HH:mm', () => {
+  const now = new Date(2026, 8, 1, 15, 30, 0).getTime()
+  assert.equal(L.chatTimeText(new Date(2026, 6, 15, 8, 30).getTime(), now), '07-15 08:30')
+  assert.equal(L.chatTimeText(new Date(2025, 11, 31, 8, 30).getTime(), now), '2025-12-31 08:30')
+})

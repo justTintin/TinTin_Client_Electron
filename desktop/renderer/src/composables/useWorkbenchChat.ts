@@ -42,6 +42,8 @@ export interface ChatMessage {
   confirmable?: boolean
   /** 已确认执行（卡片显示执行中状态；不改写 content——追加文本会破坏 plan JSON 结构） */
   planApproved?: boolean
+  /** 消息时间戳（2026-09-01 用户需求：消息框带时间；欢迎语/错误提示缺省不显示） */
+  time?: number
   /** 草稿对应的服务端任务 id 与确认端点（approve；确认时优先使用） */
   draftTaskId?: string
   draftConfirmPath?: string
@@ -297,7 +299,8 @@ export function useWorkbenchChat(options?: {
   }
 
   /** 切换会话：恢复气泡流 + 续接服务端会话（素材池仍在服务端）；
-   *  附带该会话的模式（会话创建时固化，原版模式切换即新会话） */
+   *  附带该会话的模式（会话创建时固化，原版模式切换即新会话）；
+   *  历史消息带时间（2026-09-01 消息框带时间），容器桥接恢复气泡流 */
   function loadSession(payload: {
     serverSessionId: string
     messages: HistoryMessage[]
@@ -306,14 +309,19 @@ export function useWorkbenchChat(options?: {
     abortPending()
     sessionId.value = payload.serverSessionId || ''
     if (payload.mode) mode.value = payload.mode
-    history.value = payload.messages.map((m) => ({ role: m.role, content: m.content }))
+    history.value = payload.messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      ...(m.time ? { time: m.time } : {})
+    }))
     attachments.value = [] // 胶囊不持久化（原版 _restore_chat 只恢复消息）
     ctxProduct.value = null // 产品/脚本上下文同为会话内临时状态，不跨会话携带
     ctxScripts.value = []
     messages.value = history.value.map((m, i) => ({
       id: `r${i}-${Date.now()}`,
       role: m.role === 'user' ? 'user' : 'ai',
-      content: m.content
+      content: m.content,
+      ...(m.time ? { time: m.time } : {})
     }))
   }
 
@@ -392,8 +400,9 @@ export function useWorkbenchChat(options?: {
       target.draftTaskId = undefined
       target.draftConfirmPath = undefined
     } else {
-      messages.value.push({ id: `u${Date.now()}`, role: 'user', content: text })
-      history.value = trimHistory([...history.value, { role: 'user', content: text }])
+      const now = Date.now()
+      messages.value.push({ id: `u${now}`, role: 'user', content: text, time: now })
+      history.value = trimHistory([...history.value, { role: 'user', content: text, time: now }])
       // 「思考中…」占位气泡（原版 L1258-1262）
       pendingId = `a${Date.now()}`
       messages.value.push({ id: pendingId, role: 'ai', content: '思考中…', status: 'pending' })
@@ -503,8 +512,11 @@ export function useWorkbenchChat(options?: {
         replyText = reply
       }
 
-      // 回复落气泡 + history（原版 _on_reply_ok L1378-1382）
+      // 回复落气泡 + history（原版 _on_reply_ok L1378-1382）；时间随落盘记录（2026-09-01）
+      const repliedAt = Date.now()
       setBubble(pendingId, replyText)
+      const replyBubble = messages.value.find((m) => m.id === pendingId)
+      if (replyBubble) replyBubble.time = repliedAt
       // 计划任务档（mode=plan）：本回复是服务端 pending_approval 草稿 → 挂任务 id
       // 与确认端点，用户点「确认执行」后 POST approve（服务端才启动执行）
       if (draftInfo) {
@@ -515,7 +527,7 @@ export function useWorkbenchChat(options?: {
           bubble.draftConfirmPath = draftInfo.confirmPath
         }
       }
-      history.value = trimHistory([...history.value, { role: 'assistant', content: replyText }])
+      history.value = trimHistory([...history.value, { role: 'assistant', content: replyText, time: repliedAt }])
       persist(replyText)
       // W8：回复含成片视频资产 → 气泡挂播放/下载（原版 _on_reply_ok L1387-1390）
       void attachVideoAsset(pendingId, replyText)

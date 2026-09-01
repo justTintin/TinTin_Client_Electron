@@ -2,14 +2,16 @@
 // WbSidebar.vue — 工作台左侧会话侧栏（纯展示 + 行内编辑态）
 // 结构：新建会话按钮 / 分组会话列表 / 底部（任务队列 / 通知中心带未读徽标 / 系统设置）
 // 分组数据由容器经 useWorkbenchSessions 的 sessionsByGroup + groupLabels 组装传入
-// W7：每项 hover 显示「重命名 / 删除」图标按钮（用户偏好图标入口）；
+// W7：每项 hover 显示「置顶 / 重命名 / 删除」图标按钮（用户偏好图标入口）；
 //     重命名为行内编辑（input + Enter 确认 / Esc 取消 / 失焦提交），
-//     业务持久化经 emit('rename-commit') 转发到容器 → useWorkbenchSessions.renameSession。
+//     业务持久化经 emit('rename-commit') 转发到容器 → useWorkbenchSessions.renameSession；
+//     置顶为 toggle（2026-09-01 用户需求：置顶会话固定在普通会话上面），
+//     经 emit('pin') 转发到容器 → useWorkbenchSessions.togglePinSession。
 import { nextTick, ref } from 'vue'
 import type { Session, SessionGroup } from '@/composables/useWorkbenchSessions'
 
 defineProps<{
-  /** 分组后的会话数据（今天/昨天/更早） */
+  /** 分组后的会话数据（置顶/今天/昨天/更早） */
   groups: SessionGroup[]
   activeSessionId: string
   /** 小屏侧栏抽屉展开态 */
@@ -22,6 +24,7 @@ const emit = defineEmits<{
   (e: 'select', id: string): void
   (e: 'create'): void
   (e: 'delete', id: string): void
+  (e: 'pin', id: string): void
   (e: 'rename-commit', id: string, title: string): void
   (e: 'open-scheduled'): void
   (e: 'open-skills'): void
@@ -115,8 +118,19 @@ function cancelRename(): void {
               <div class="session-title">{{ s.title }}</div>
               <div class="session-sub">{{ s.subtitle }}</div>
             </div>
-            <!-- W7 hover 操作：重命名（铅笔）/ 删除（垃圾桶），点击不触发切换 -->
+            <!-- W7 hover 操作：置顶（图钉，toggle）/ 重命名（铅笔）/ 删除（垃圾桶），点击不触发切换 -->
             <div v-if="editingId !== s.id" class="session-actions" @click.stop>
+              <button
+                class="session-action session-action--pin"
+                :class="{ pinned: s.pinned }"
+                :title="s.pinned ? '取消置顶' : '置顶'"
+                @click="emit('pin', s.id)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 17v5" />
+                  <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
+                </svg>
+              </button>
               <button class="session-action" title="重命名" @click="startRename(s, $event)">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
@@ -281,6 +295,10 @@ function cancelRename(): void {
 }
 .session-item.active .session-action:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+.session-action--pin.pinned {
+  color: var(--primary);
+  opacity: 1;
 }
 .session-action--danger:hover {
   color: var(--error);

@@ -263,6 +263,11 @@ function onRenameSession(id: string, title: string) {
   sessions.renameSession(id, title)
 }
 
+/** 置顶/取消置顶会话（toggle，持久化；置顶组固定在普通会话上面） */
+function onPinSession(id: string) {
+  sessions.togglePinSession(id)
+}
+
 /* ── 通知域 ── */
 const {
   notifications,
@@ -401,6 +406,7 @@ async function onExportTasks() {
       @select="onSelectSession"
       @create="onCreateSession"
       @delete="onDeleteSession"
+      @pin="onPinSession"
       @rename-commit="onRenameSession"
       @open-scheduled="openScheduled"
       @open-skills="onOpenSkills"

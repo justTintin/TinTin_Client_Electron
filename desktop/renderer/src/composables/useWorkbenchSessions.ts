@@ -5,21 +5,23 @@ import {
   sessionGroupOf,
   applySessionDelete,
   applySessionRename,
+  applySessionPin,
   pickSessionServerId,
   latestSessionOfMode,
   type StoredSession,
   type HistoryMessage,
-  type ChatMode
+  type ChatMode,
+  type SessionGroupKey
 } from './workbenchChatLogic'
 
 /* ── 会话列表数据 ──────────────────────────────────────────── */
-/** 展示层会话条目 = 持久化条目 + 分组键（由 updatedAt 计算，今天/昨天/更早） */
+/** 展示层会话条目 = 持久化条目 + 分组键（置顶/由 updatedAt 计算的今天/昨天/更早） */
 export interface Session extends StoredSession {
-  group: 'today' | 'yesterday' | 'earlier'
+  group: SessionGroupKey
 }
 
-/** 分组渲染顺序（今天 / 昨天 / 更早） */
-export const SESSION_GROUPS = ['today', 'yesterday', 'earlier'] as const
+/** 分组渲染顺序（置顶 / 今天 / 昨天 / 更早；2026-09-01 用户需求：置顶组在最上） */
+export const SESSION_GROUPS = ['pinned', 'today', 'yesterday', 'earlier'] as const
 
 /** 侧栏分组数据结构（容器按 SESSION_GROUPS 组装后传给展示组件） */
 export interface SessionGroup {
@@ -71,7 +73,12 @@ export function useWorkbenchSessions(hooks?: {
     const list = sanitizeSessions(typeof raw === 'string' ? safeParse(raw) : raw)
     sessions.value = list
       .map(toSession)
-      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .sort((a, b) => {
+        // 置顶会话固定在最上（2026-09-01 用户需求），同组内按更新时间倒序
+        const pa = a.pinned ? 1 : 0
+        const pb = b.pinned ? 1 : 0
+        return pb - pa || b.updatedAt - a.updatedAt
+      })
     if (sessions.value.length) {
       activeSessionId.value = sessions.value[0].id
     }
@@ -84,7 +91,7 @@ export function useWorkbenchSessions(hooks?: {
   }
 
   function toSession(s: StoredSession): Session {
-    return { ...s, group: sessionGroupOf(s.updatedAt) }
+    return { ...s, group: s.pinned ? 'pinned' : sessionGroupOf(s.updatedAt) }
   }
 
   async function persist() {
@@ -152,6 +159,14 @@ export function useWorkbenchSessions(hooks?: {
     return true
   }
 
+  /** 置顶/取消置顶会话（2026-09-01 用户需求；toggle 语义，持久化生效） */
+  function togglePinSession(id: string): boolean {
+    if (!sessions.value.some((s) => s.id === id)) return false
+    sessions.value = applySessionPin(sessions.value, id).map(toSession)
+    void persist()
+    return true
+  }
+
   /**
    * 消息域回写当前会话（标题用首条用户消息、副标题用最后一条，updatedAt 刷新，
    * 原子持久化——electron-store 单一真相源）。
@@ -165,7 +180,11 @@ export function useWorkbenchSessions(hooks?: {
     if (!active) return
     if (patch.serverSessionId !== undefined) active.serverSessionId = patch.serverSessionId
     if (patch.history) {
-      active.messages = patch.history.map((m) => ({ role: m.role, content: m.content }))
+      active.messages = patch.history.map((m) => ({
+        role: m.role,
+        content: m.content,
+        ...(m.time ? { time: m.time } : {})
+      }))
       const firstUser = active.messages.find((m) => m.role === 'user')
       if (firstUser) active.title = truncate(firstUser.content, TITLE_MAX)
       const last = active.messages[active.messages.length - 1]
@@ -176,7 +195,7 @@ export function useWorkbenchSessions(hooks?: {
       active.subtitle = truncate(patch.subtitle, SUBTITLE_MAX)
     }
     active.updatedAt = Date.now()
-    active.group = sessionGroupOf(active.updatedAt)
+    active.group = active.pinned ? 'pinned' : sessionGroupOf(active.updatedAt)
     void persist()
   }
 
@@ -195,6 +214,7 @@ export function useWorkbenchSessions(hooks?: {
   }
 
   const groupLabels: Record<Session['group'], string> = {
+    pinned: '置顶',
     today: '今天',
     yesterday: '昨天',
     earlier: '更早'
@@ -210,6 +230,7 @@ export function useWorkbenchSessions(hooks?: {
     createSession,
     deleteSession,
     renameSession,
+    togglePinSession,
     getActive,
     updateActive,
     toggleSidebarPanel,

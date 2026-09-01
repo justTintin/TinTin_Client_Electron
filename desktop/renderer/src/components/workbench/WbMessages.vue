@@ -11,7 +11,7 @@
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import type { ChatMessage } from '@/composables/useWorkbenchChat'
 import type { VideoAsset, PlanView } from '@/composables/workbenchChatLogic'
-import { detectChatAssets, parsePlanContent } from '@/composables/workbenchChatLogic'
+import { chatTimeText, detectChatAssets, parsePlanContent } from '@/composables/workbenchChatLogic'
 import VideoPreview from '@/components/common/VideoPreview.vue'
 
 const props = defineProps<{
@@ -258,6 +258,9 @@ function toggleFold(id: string) {
                 重新生成
               </button>
             </div>
+            <!-- 消息时间（2026-09-01 用户需求：每个消息框带时间；
+                 欢迎语/错误提示无 time 不显示，chatTimeText 口径同天 HH:mm/昨天/更早日期） -->
+            <div v-if="m.time" class="msg-time">{{ chatTimeText(m.time) }}</div>
           </div>
         </div>
       </div>
@@ -360,6 +363,16 @@ function toggleFold(id: string) {
 /* 用户气泡底色为 primary，渐隐色跟随（否则渐隐与气泡底色不接） */
 .message-row.user .bubble-body.folded::after {
   background: linear-gradient(transparent, var(--primary));
+}
+
+/* 消息时间（2026-09-01 用户需求）：气泡底部小字，随气泡对齐 */
+.msg-time {
+  margin-top: var(--space-1);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted-foreground);
+  text-align: right;
+  user-select: none;
 }
 
 .fold-btn {

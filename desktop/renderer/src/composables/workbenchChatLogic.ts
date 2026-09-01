@@ -15,6 +15,8 @@
 export interface HistoryMessage {
   role: 'user' | 'assistant'
   content: string
+  /** 消息时间戳（2026-09-01 用户需求：消息框带时间；旧持久化数据缺省不显示） */
+  time?: number
 }
 
 /** 原版口径：保留最近 12 条 */
@@ -253,7 +255,7 @@ export function basenameOf(p: string): string {
 /* ── 会话持久化数据结构（可切换设计：每会话绑定独立服务端 session_id） ── */
 
 export type ChatMode = 'agent' | 'llm'
-export type SessionGroupKey = 'today' | 'yesterday' | 'earlier'
+export type SessionGroupKey = 'pinned' | 'today' | 'yesterday' | 'earlier'
 
 /** 本地持久化的会话条目（electron-store 'workbench.sessions'） */
 export interface StoredSession {
@@ -265,6 +267,8 @@ export interface StoredSession {
   serverSessionId: string
   mode: ChatMode
   messages: HistoryMessage[]
+  /** 置顶会话（2026-09-01 用户需求：置顶组排在普通会话上面；旧数据缺省不置顶） */
+  pinned?: boolean
 }
 
 const VALID_ROLES = ['user', 'assistant']
@@ -288,6 +292,11 @@ export function sanitizeSessions(raw: unknown): StoredSession[] {
               VALID_ROLES.includes(m.role) &&
               typeof m.content === 'string' && m.content.trim()
           )
+          .map((m: any) => ({
+            role: m.role,
+            content: m.content,
+            ...(typeof m.time === 'number' ? { time: m.time } : {})
+          }))
           .slice(-CHAT_SAVE_ROUNDS) as HistoryMessage[])
       : []
     out.push({
@@ -297,7 +306,8 @@ export function sanitizeSessions(raw: unknown): StoredSession[] {
       updatedAt: typeof d.updatedAt === 'number' ? d.updatedAt : 0,
       serverSessionId: typeof d.serverSessionId === 'string' ? d.serverSessionId : '',
       mode: d.mode === 'llm' ? 'llm' : 'agent',
-      messages
+      messages,
+      ...(d.pinned === true ? { pinned: true } : {})
     })
   }
   return out
@@ -354,6 +364,39 @@ export function applySessionRename(
   if (idx < 0) return [...sessions]
   const name = normalizeSessionTitle(title)
   return sessions.map((s, i) => (i === idx ? { ...s, title: name, updatedAt: now } : s))
+}
+
+/**
+ * 置顶/取消置顶会话（2026-09-01 用户需求）：不传 pinned 则 toggle；
+ * 目标不存在 → 原样返回新数组（与 applySessionRename 同风格，不突变输入）。
+ */
+export function applySessionPin(
+  sessions: StoredSession[],
+  id: string,
+  pinned?: boolean
+): StoredSession[] {
+  const target = sessions.find((s) => s.id === id)
+  if (!target) return [...sessions]
+  const next = pinned !== undefined ? pinned : !target.pinned
+  return sessions.map((s) => (s.id === id ? { ...s, pinned: next } : s))
+}
+
+/* ── 消息时间（2026-09-01 用户需求：每个消息框带时间；纯展示层格式化） ── */
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** 消息时间文案：无时间 → ''（欢迎语/错误提示不显示）；同天 HH:mm；
+ *  昨天「昨天 HH:mm」；更早同年 MM-DD HH:mm；跨年 YYYY-MM-DD HH:mm */
+export function chatTimeText(time: number | undefined, now: number = Date.now()): string {
+  if (!time) return ''
+  const d = new Date(time)
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  const startOfToday = new Date(now).setHours(0, 0, 0, 0)
+  if (time >= startOfToday) return hm
+  if (time >= startOfToday - 86400000) return `昨天 ${hm}`
+  const y = d.getFullYear()
+  const md = `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+  return y === new Date(now).getFullYear() ? `${md} ${hm}` : `${y}-${md} ${hm}`
 }
 
 /**

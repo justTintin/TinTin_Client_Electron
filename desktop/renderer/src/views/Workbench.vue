@@ -293,7 +293,11 @@ const {
 } = useWorkbenchNotifications()
 
 /* ── 任务队列域 ── */
-const { taskQueueOpen, taskRows, toggleTaskQueue, closeTaskQueue, openTaskResult } = useWorkbenchTasks()
+const {
+  taskQueueOpen, taskRows, taskFilter, filteredRows, dateGroups,
+  setFilter, toggleGroupCollapse, isGroupCollapsed, removeTask, clearCompleted,
+  toggleTaskQueue, closeTaskQueue, openTaskResult
+} = useWorkbenchTasks()
 
 /* ── 定时任务抽屉（P1 占位开关；P2 实装数据域 useScheduledTasks） ── */
 const scheduledOpen = ref(false)
@@ -554,11 +558,18 @@ async function onExportTasks() {
     <Transition name="drawer-slide">
       <WbTaskDrawer
         v-if="taskQueueOpen"
-        :rows="taskRows"
-        :export-disabled="taskRows.length === 0 || exportState === 'exporting'"
+        :rows="filteredRows"
+        :date-groups="dateGroups"
+        :task-filter="taskFilter"
+        :collapsed-groups="isGroupCollapsed"
+        :export-disabled="filteredRows.length === 0 || exportState === 'exporting'"
         @close="closeTaskQueue"
         @open-result="openTaskResult"
         @export-excel="onExportTasks"
+        @set-filter="setFilter"
+        @toggle-group="toggleGroupCollapse"
+        @remove-task="removeTask"
+        @clear-completed="clearCompleted"
       />
     </Transition>
 

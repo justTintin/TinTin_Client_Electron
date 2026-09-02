@@ -1,25 +1,34 @@
 <script setup lang="ts">
-// WbTaskDrawer.vue — 任务队列抽屉本体（纯展示）
-// 抽屉开关（v-if + notify-mask 遮罩 + 过渡动画）由容器持有；
-// statusText 为 useWorkbenchTasks 模块级唯一定义的纯函数，此处直接 import。
-// 有可打开结果（url/路径）的行显示结果图标按钮（对齐原详情区「结果」）。
-import type { TaskRow } from '@/composables/useWorkbenchTasks'
+// WbTaskDrawer.vue — 任务队列抽屉本体（纯展示 + 事件转发）
+// 2026-09-02 改造：筛选标签 + 日期分组折叠 + 单条删除 + 清除已完成
+// statusText 为 taskQueueLogic 模块级纯函数；日期分组/筛选由容器 computed 提供。
+import type { TaskRow, TaskFilter, DateGroup } from '@/composables/useWorkbenchTasks'
 import { statusText } from '@/composables/useWorkbenchTasks'
+import { FILTER_LABEL } from '@/composables/taskQueueLogic'
 
 defineProps<{
   rows: TaskRow[]
+  dateGroups: DateGroup[]
+  taskFilter: TaskFilter
+  collapsedGroups: (key: string) => boolean
   /** 导出中/空清单 → 导出按钮禁用（PRD E1/E6） */
   exportDisabled?: boolean
 }>()
 
 const emit = defineEmits<{
-  /** 关闭按钮与遮罩共用（容器接原 closeTaskQueue） */
   (e: 'close'): void
-  /** 打开任务结果（url→外部浏览器 / 本地路径→资源管理器，容器接 openTaskResult） */
   (e: 'open-result', row: TaskRow): void
-  /** 顶部「导出 Excel」（PRD §3.2⑤ 任务报告，容器接 useOfficeExport） */
   (e: 'export-excel'): void
+  (e: 'set-filter', filter: TaskFilter): void
+  (e: 'toggle-group', key: string): void
+  (e: 'remove-task', id: string): void
+  (e: 'clear-completed'): void
 }>()
+
+/** 判断任务是否终态（可删除） */
+function isTerminal(row: TaskRow): boolean {
+  return row.status === 'done' || row.eta.startsWith('失败') || row.eta === '已取消' || row.eta === '错误'
+}
 </script>
 
 <template>
@@ -34,7 +43,6 @@ const emit = defineEmits<{
         @click="emit('export-excel')"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="4" x2="9" y2="20" /><line x1="15" y1="4" x2="15" y2="20" /></svg>
-        导出 Excel
       </button>
       <button class="notify-actions" @click="emit('close')" title="关闭">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -43,45 +51,88 @@ const emit = defineEmits<{
         </svg>
       </button>
     </header>
+
+    <!-- 筛选标签栏 -->
+    <div class="filter-bar">
+      <button
+        v-for="f in (['all', 'running', 'done', 'failed'] as TaskFilter[])"
+        :key="f"
+        class="filter-chip"
+        :class="{ active: taskFilter === f }"
+        @click="emit('set-filter', f)"
+      >{{ FILTER_LABEL[f] }}</button>
+      <button
+        class="filter-clear"
+        title="清除所有已完成任务"
+        :disabled="!rows.some(r => r.status === 'done')"
+        @click="emit('clear-completed')"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+      </button>
+    </div>
+
     <div class="notify-body">
-      <div v-for="t in rows" :key="t.id" class="taskq-row">
-        <div class="taskq-head">
-          <span class="q-dot" :class="t.status"></span>
-          <span class="taskq-title">{{ t.title }}</span>
-          <button
-            v-if="t.resultTarget"
-            class="taskq-open-btn"
-            :title="t.resultTarget.kind === 'url' ? '在浏览器打开结果' : '打开结果所在位置'"
-            @click="emit('open-result', t)"
-          >
-            <svg v-if="t.resultTarget.kind === 'url'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-          </button>
-          <span class="taskq-eta" :class="t.status">{{ t.eta }}</span>
-        </div>
-        <div class="taskq-type">{{ t.type }}</div>
-        <div class="taskq-bar">
-          <div class="taskq-fill" :class="t.status" :style="{ width: t.progress + '%' }"></div>
-        </div>
-        <div class="taskq-foot">
-          <span>{{ t.status === 'done' ? '100%' : t.progress + '%' }}</span>
-          <span>{{ statusText(t.status) }}</span>
-        </div>
+      <!-- 日期分组 -->
+      <template v-for="g in dateGroups" :key="g.key">
+        <button class="group-head" @click="emit('toggle-group', g.key)">
+          <svg
+            class="group-chevron"
+            :class="{ collapsed: collapsedGroups(g.key) }"
+            width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          ><polyline points="6 9 12 15 18 9" /></svg>
+          <span>{{ g.label }}</span>
+          <span class="group-count">{{ g.rows.length }}</span>
+        </button>
+        <template v-if="!collapsedGroups(g.key)">
+          <div v-for="t in g.rows" :key="t.id" class="taskq-row">
+            <div class="taskq-head">
+              <span class="q-dot" :class="t.status"></span>
+              <span class="taskq-title">{{ t.title }}</span>
+              <button
+                v-if="t.resultTarget"
+                class="taskq-open-btn"
+                :title="t.resultTarget.kind === 'url' ? '在浏览器打开结果' : '打开结果所在位置'"
+                @click="emit('open-result', t)"
+              >
+                <svg v-if="t.resultTarget.kind === 'url'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+              </button>
+              <button
+                v-if="isTerminal(t)"
+                class="taskq-del-btn"
+                title="移除此任务"
+                @click="emit('remove-task', t.id)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+              </button>
+              <span class="taskq-eta" :class="t.status">{{ t.eta }}</span>
+            </div>
+            <div class="taskq-type">{{ t.type }}</div>
+            <div class="taskq-bar">
+              <div class="taskq-fill" :class="t.status" :style="{ width: t.progress + '%' }"></div>
+            </div>
+            <div class="taskq-foot">
+              <span>{{ t.status === 'done' ? '100%' : t.progress + '%' }}</span>
+              <span>{{ statusText(t.status) }}</span>
+            </div>
+          </div>
+        </template>
+      </template>
+      <div v-if="rows.length === 0" class="notify-empty">
+        <template v-if="taskFilter !== 'all'">无匹配任务，切换「全部」查看</template>
+        <template v-else>暂无任务 · 提交后显示在这里</template>
       </div>
-      <div v-if="rows.length === 0" class="notify-empty">暂无任务 · 提交后显示在这里</div>
     </div>
   </aside>
 </template>
 
 <style scoped>
-/* 抽屉骨架/头部与任务行样式自持副本（与原 Workbench scoped 定义逐字一致；
-   .notify-mask 与过渡动画样式保留在容器） */
 .notify-drawer {
   position: absolute;
   top: 0;
@@ -132,16 +183,7 @@ const emit = defineEmits<{
   color: var(--foreground);
 }
 
-/* 列表体：填满剩余高度并滚动（2026-08-31 用户反馈：充满后无法滚动看更多；
-   自持副本原先漏掉了本规则，致内容溢出不滚动） */
-.notify-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-2) var(--space-3) var(--space-4);
-}
-
-/* 顶部「导出 Excel」（PRD §3.2⑤ 任务报告） */
+/* 顶部「导出 Excel」 */
 .taskq-export-btn {
   display: inline-flex;
   align-items: center;
@@ -160,7 +202,87 @@ const emit = defineEmits<{
 .taskq-export-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .taskq-export-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ─── 任务队列抽屉内容 ─── */
+/* ── 筛选标签栏 ── */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.filter-chip {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--duration-fast);
+}
+.filter-chip:hover { border-color: var(--primary); color: var(--primary); }
+.filter-chip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.filter-clear {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+}
+.filter-clear:hover:not(:disabled) { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+.filter-clear:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── 列表体 ── */
+.notify-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-4);
+}
+
+/* ── 日期分组头 ── */
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) 0;
+  border: none;
+  background: transparent;
+  color: var(--foreground-muted);
+  font-size: 12px;
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  font-family: inherit;
+  transition: color var(--duration-fast);
+}
+.group-head:hover { color: var(--foreground); }
+.group-chevron {
+  transition: transform var(--duration-fast);
+}
+.group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+.group-count {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-weight: normal;
+}
+
+/* ── 任务行 ── */
 .taskq-row {
   padding: var(--space-3);
   border-radius: var(--radius-lg);
@@ -177,7 +299,7 @@ const emit = defineEmits<{
   gap: var(--space-2);
 }
 
-/* 结果打开图标按钮（对齐用户偏好：列表内用图标不用文字按钮） */
+/* 结果打开图标按钮 */
 .taskq-open-btn {
   flex: 0 0 auto;
   width: 22px;
@@ -192,7 +314,27 @@ const emit = defineEmits<{
   cursor: pointer;
   transition: background var(--duration-fast);
 }
-.taskq-open-btn:hover { background: var(--surface-container); }
+.taskq-open-btn:hover { background: var(--surface-container-high); }
+
+/* 删除按钮 */
+.taskq-del-btn {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--duration-fast), color var(--duration-fast), background var(--duration-fast);
+}
+.taskq-row:hover .taskq-del-btn { opacity: 1; }
+.taskq-del-btn:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+
 .q-dot {
   flex: 0 0 auto;
   width: 8px;

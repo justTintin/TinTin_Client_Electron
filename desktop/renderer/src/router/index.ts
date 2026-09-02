@@ -36,18 +36,6 @@ const routes: RouteRecordRaw[] = [
     name: 'settings',
     component: () => import('@/views/Settings.vue'),
     meta: { tab: 'settings', title: '系统设置' }
-  },
-  {
-    path: '/montage',
-    name: 'montage',
-    component: () => import('@/components/media-tools/VideoMontage.vue'),
-    meta: { tab: 'montage', title: '智能混剪' }
-  },
-  {
-    path: '/live-clip',
-    name: 'live-clip',
-    component: () => import('@/components/media-tools/LiveClip.vue'),
-    meta: { tab: 'live-clip', title: '直播切片' }
   }
 ]
 

@@ -20,8 +20,12 @@ export interface TaskRow {
   progress: number
   status: 'running' | 'done' | 'pending'
   eta: string
-  /** 任务创建时间（服务端 created_at；PRD §3.2⑤ 任务报告「创建时间」列） */
-  createdAt?: string
+  /**
+   * 任务提交时间（服务端 created_at 优先，回退 updated_at）
+   * 这是任务提交给服务端的时间，不是客户端拉取到的时间。
+   * PRD §3.2⑤ 任务报告「创建时间」列。
+   */
+  submittedAt?: string
   /** 结果打开目标（原详情区「结果」：url 或本地路径），null=无可打开结果 */
   resultTarget?: { kind: 'url' | 'path'; value: string } | null
 }
@@ -127,6 +131,9 @@ export function extractResultTarget(
 /** 服务端任务节点 → 展示行 */
 export function mapServerTaskRow(t: ServerTaskLike): TaskRow {
   const s = String(t.status || '')
+  // 提交时间：优先 created_at（任务提交给服务端的时间），回退 updated_at
+  // 注意：这是服务端记录的时间，不是客户端拉取时间
+  const submittedAt = t.created_at || t.updated_at || undefined
   return {
     id: String(t.id ?? ''),
     title: String(t.title || t.name || t.goal || '任务'),
@@ -134,7 +141,93 @@ export function mapServerTaskRow(t: ServerTaskLike): TaskRow {
     progress: rowProgress(t),
     status: rowStatus(s),
     eta: rowEta(t),
-    createdAt: t.created_at ? String(t.created_at) : undefined,
+    submittedAt: submittedAt ? String(submittedAt) : undefined,
     resultTarget: extractResultTarget(t),
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 日期分组 + 筛选（2026-09-02 新增：任务队列整理）
+// ═══════════════════════════════════════════════════════════════
+
+/** 筛选标签 */
+export type TaskFilter = 'all' | 'running' | 'done' | 'failed'
+
+/** 日期分组键 */
+export type DateGroupKey = 'today' | 'week' | 'earlier'
+
+/** 日期分组标签文案 */
+export const DATE_GROUP_LABEL: Record<DateGroupKey, string> = {
+  today: '今天',
+  week: '最近一周',
+  earlier: '更早',
+}
+
+/** 筛选标签文案 */
+export const FILTER_LABEL: Record<TaskFilter, string> = {
+  all: '全部',
+  running: '进行中',
+  done: '已完成',
+  failed: '失败',
+}
+
+/** 判断任务是否匹配筛选 */
+export function matchesFilter(row: TaskRow, filter: TaskFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'running') return row.status === 'running'
+  if (filter === 'done') return row.status === 'done'
+  if (filter === 'failed') return row.eta.startsWith('失败') || row.eta === '错误'
+  return true
+}
+
+/** 解析提交时间字符串为 Date（兼容 ISO / 时间戳 / 空） */
+function parseSubmittedAt(s: string | undefined): Date | null {
+  if (!s) return null
+  // ISO 格式（服务端通常返回这种）
+  const d = new Date(s)
+  if (!isNaN(d.getTime())) return d
+  // 时间戳（秒或毫秒）
+  const n = Number(s)
+  if (!isNaN(n) && n > 0) {
+    return new Date(n < 1e12 ? n * 1000 : n)
+  }
+  return null
+}
+
+/** 判断日期归属（today / week / earlier） */
+function classifyDate(d: Date | null): DateGroupKey {
+  if (!d) return 'earlier'
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const weekStart = new Date(todayStart.getTime() - 7 * 86400000) // 7 天前
+  if (d >= todayStart) return 'today'
+  if (d >= weekStart) return 'week'
+  return 'earlier'
+}
+
+/** 日期分组结果 */
+export interface DateGroup {
+  key: DateGroupKey
+  label: string
+  rows: TaskRow[]
+}
+
+/**
+ * 将任务列表按提交日期分组（今天/昨天/更早），组内保持原序。
+ * 日期取服务端 created_at（任务提交给服务端的时间），非客户端拉取时间。
+ * 无时间戳的任务归入「更早」。
+ */
+export function groupByDate(rows: TaskRow[]): DateGroup[] {
+  const groups: Record<DateGroupKey, TaskRow[]> = { today: [], week: [], earlier: [] }
+  for (const r of rows) {
+    const key = classifyDate(parseSubmittedAt(r.submittedAt))
+    groups[key].push(r)
+  }
+  const result: DateGroup[] = []
+  for (const key of ['today', 'week', 'earlier'] as DateGroupKey[]) {
+    if (groups[key].length) {
+      result.push({ key, label: DATE_GROUP_LABEL[key], rows: groups[key] })
+    }
+  }
+  return result
 }

@@ -19,13 +19,17 @@ import { ref, computed, onBeforeUnmount } from 'vue'
 import {
   statusText,
   mapServerTaskRow,
+  matchesFilter,
+  groupByDate,
   type ServerTaskLike,
+  type TaskFilter,
+  type DateGroup,
 } from './taskQueueLogic'
 import type { TaskRow } from './taskQueueLogic'
 
 // 重导出（WbTaskDrawer 等组件按原路径 import，唯一定义点在 taskQueueLogic）
 export { statusText }
-export type { TaskRow, ServerTaskLike }
+export type { TaskRow, ServerTaskLike, TaskFilter, DateGroup }
 
 /** 任务轮询间隔（列表含进度字段，整表重拉即可） */
 const POLL_MS = 5000
@@ -58,6 +62,40 @@ export function useWorkbenchTasks() {
       }),
     ),
   )
+
+  /* ── 筛选 + 日期分组（2026-09-02 新增） ── */
+  const taskFilter = ref<TaskFilter>('all')
+  /** 折叠的日期分组键集合 */
+  const collapsedGroups = ref<Set<string>>(new Set())
+
+  /** 筛选后列表 */
+  const filteredRows = computed<TaskRow[]>(() =>
+    taskRows.value.filter((r) => matchesFilter(r, taskFilter.value)),
+  )
+
+  /** 筛选后按日期分组 */
+  const dateGroups = computed<DateGroup[]>(() => groupByDate(filteredRows.value))
+
+  function setFilter(f: TaskFilter) { taskFilter.value = f }
+
+  function toggleGroupCollapse(key: string) {
+    const s = collapsedGroups.value
+    if (s.has(key)) s.delete(key); else s.add(key)
+  }
+
+  function isGroupCollapsed(key: string): boolean {
+    return collapsedGroups.value.has(key)
+  }
+
+  /** 删除单个任务（仅终态可删；从本地列表移除，下次轮询会重新拉取） */
+  function removeTask(id: string) {
+    rawTasks.value = rawTasks.value.filter((t) => String(t.id ?? '') !== id)
+  }
+
+  /** 清除所有已完成任务 */
+  function clearCompleted() {
+    rawTasks.value = rawTasks.value.filter((t) => String(t.status || '') !== 'completed')
+  }
 
   /* ── 轮询（抽屉打开期间）：整表重拉双源 ── */
   let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -145,6 +183,14 @@ export function useWorkbenchTasks() {
   return {
     taskQueueOpen,
     taskRows,
+    taskFilter,
+    filteredRows,
+    dateGroups,
+    setFilter,
+    toggleGroupCollapse,
+    isGroupCollapsed,
+    removeTask,
+    clearCompleted,
     toggleTaskQueue,
     closeTaskQueue,
     loadTasks,

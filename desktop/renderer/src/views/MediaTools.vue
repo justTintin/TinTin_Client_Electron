@@ -34,8 +34,8 @@ const GROUPS = ['创作', '图形', '视频', '提示词'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
   创作: [
-    { id: 'video-montage', title: '智能混剪', desc: '4步流水线：镜头切割/重组/口播配音/特效', group: '创作', emoji: '✂️', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'route', to: '/montage' },
-    { id: 'live-slice',    title: '直播切片', desc: '视频分析热点发现→切片与封面生成', group: '创作', emoji: '📡', accent: 'linear-gradient(135deg,#EF4444 0%,#DC2626 100%)', kind: 'route', to: '/live-clip' },
+    { id: 'video-montage', title: '智能混剪', desc: '4步流水线：镜头切割/重组/口播配音/特效', group: '创作', emoji: '✂️', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoMontage.vue')) },
+    { id: 'live-slice',    title: '直播切片', desc: '视频分析热点发现→切片与封面生成', group: '创作', emoji: '📡', accent: 'linear-gradient(135deg,#EF4444 0%,#DC2626 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/LiveClip.vue')) },
     // 2026-08-30 用户裁决：产品文案创作/分镜脚本创作 自原「方案脚本」组划归媒体工具
     { id: 'copywriting', title: '产品文案创作', desc: '选产品 → 风格化 → 一键生成文案', group: '创作', emoji: '✍️', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtProductCopywriting.vue')) },
     { id: 'storyboard',  title: '分镜脚本创作', desc: '文案 → 分镜 → 引用素材 → 保存脚本库', group: '创作', emoji: '🎬', accent: 'linear-gradient(135deg,#F97316 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtStoryboard.vue')) },

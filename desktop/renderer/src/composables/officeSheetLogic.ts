@@ -60,7 +60,8 @@ export interface TaskSheetRow {
   type?: string
   status?: string
   progress?: number
-  createdAt?: string
+  /** 任务提交时间（服务端 created_at，非客户端拉取时间） */
+  submittedAt?: string
   resultTarget?: { kind?: string; value?: string } | null
 }
 
@@ -235,7 +236,7 @@ export function tasksToSheet(rows: TaskSheetRow[] | null | undefined): SheetSpec
     String(t.type ?? ''),
     taskStatusText(t.status),
     Math.max(0, Math.min(100, Number(t.progress) || 0)),
-    sheetFormatDateTime(t.createdAt),
+    sheetFormatDateTime(t.submittedAt),
     String(t.resultTarget?.value ?? ''),
   ])
   return _sheet('任务报告', [

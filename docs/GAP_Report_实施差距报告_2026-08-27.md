@@ -1,6 +1,7 @@
 # 实施差距报告（Implementation Gap Report）
 
-> 生成日期：2026-08-27 ｜ 基准文档：[PRD_Electron_v3_SchemeA.md](./PRD_Electron_v3_SchemeA.md) / [DESIGN_Electron_v3.md](./DESIGN_Electron_v3.md)（已同步至实现状态）
+> 生成日期：2026-08-27 ｜ **最终更新：2026-09-02 — 全部差距已闭环 ✅**
+> 基准文档：[PRD_Electron_v3_SchemeA.md](./PRD_Electron_v3_SchemeA.md) / [DESIGN_Electron_v3.md](./DESIGN_Electron_v3.md)（已同步至实现状态）
 > 原客户端基准：`D:\Project\TinTin_AI_Agent_Main\studio\gui`（铁律：逻辑实现以原客户端代码为准）
 
 ## 〇、移植基本要求（2026-08-27 业务方定稿）
@@ -19,9 +20,9 @@
 | 部分 | 范围 | 状态 | 说明 |
 |---|---|---|---|
 | ① 工作台 | 会话智能体（原工作台形态） | ✅ 已实现 | WbComposer / WbMessages / WbTaskDrawer / WbNotificationDrawer；以现状为准 |
-| ① 工作台 | **定时任务管理（新增页）** | ❌ 待移植 | 对照 scheduled_tasks_mgmt_page.py 原生重写，进侧边栏 |
+| ① 工作台 | **定时任务管理（新增页）** | ✅ 已实现 | 对照 scheduled_tasks_mgmt_page.py 原生重写，进侧边栏；含热点采集/agent 任务拆解/编排任务详情 |
 | ② 浏览器 | 原素材浏览器 | ✅ 已完成 | 含扩展下载/嗅探/合并下载/下载浮窗；以现状为准 |
-| ② 浏览器 | **功能扩展分组 + 自动上架迁移** | ❌ 待移植 | 左栏新增「功能扩展」组（自动上架按钮在收藏记录上方，不与平台混排）；自动上架从系统设置迁入，载体改内置分区会话（见 §3.4） |
+| ② 浏览器 | **功能扩展分组 + 自动上架迁移** | ✅ 已实现 | 左栏「功能扩展」组已就位；自动上架迁入浏览器域；Settings 扩展插件卡已移除；detectCdp/ext.* 废弃键已清理 |
 | ③ 媒体工具 | 原媒体工具 + 新增卡片 | ✅ 已完成 | ImageMatting / VideoTranscribe / VoiceClone / ReversePromptImage（新卡）/ CoverMaker（新卡）等；以现状为准 |
 | ④ 系统配置 | 环境配置/推理设置 | ✅ 已完成 | useInferenceSettings 三模式推理路由；**「扩展插件」卡移除**（浏览器已集成，见 §3.4） |
 | — | PRD 4 高频页（脚本/分镜/检索/成片任务） | ⏸ 降级待定 | 会话智能体优先承载，按需评估（见 §3.2） |
@@ -68,7 +69,7 @@
 - 其覆盖页面均已归入「不移植」清单，由会话智能体承载
 - DESIGN §4.1「过渡期桥接页」分组同步标注作废；相关 IPC/预埋（如有）在 P1 骨架改造时一并确认无残留
 
-### 3.4 浏览器功能扩展迁移 —— ❌ 待移植（2026-08-27 业务方裁决）
+| 3.4 浏览器功能扩展迁移 —— ✅ 已实现（2026-08-27 业务方裁决 → 2026-09-02 闭环）
 
 **背景**：原客户端与浏览器分离，「扩展插件」（下载插件 + 自动上架）必须配置在系统设置里对接外挂 Chrome；现浏览器已内置集成，该配置失去存在意义。
 
@@ -92,13 +93,41 @@
 
 | 优先级 | 事项 | 内容 / 理由 |
 |---|---|---|
-| **P1** | **工作台骨架改造** | 侧边栏导航骨架 + `/workbench/*` 子路由 + 顶栏任务/通知条；挂载「智能助手」（Wb* 平移）+「定时任务管理」（占位）；不移植页面不出现菜单项 |
-| **P2** | **定时任务管理页（Vue 原生重写）** | 唯一确定的新增移植页：对照 scheduled_tasks_mgmt_page.py 逐项重写（定时任务创建/启停/调度管理），进侧边栏 |
-| **P3** | **浏览器功能扩展分组 + 自动上架迁移** | 左栏「功能扩展」分组（自动上架按钮在收藏记录上方）+ Settings 移除「扩展插件」卡 + detectCdp/ext.* 废弃键清理（清单见 §3.4）；可与 P1/P2 并行 |
+| **P1** | **工作台骨架改造** | ✅ 已完成：侧边栏导航 + `/workbench/*` 子路由 + 顶栏任务/通知条 + 智能助手 + 定时任务管理 + 通知中心持久化 |
+| **P2** | **定时任务管理页（Vue 原生重写）** | ✅ 已完成：对照 scheduled_tasks_mgmt_page.py 重写 + 热点采集 + agent 任务拆解 + 编排任务详情 |
+| **P3** | **浏览器功能扩展分组 + 自动上架迁移** | ✅ 已完成：左栏功能扩展分组 + Settings 扩展插件卡移除 + detectCdp/ext.* 废弃键清理 |
 | **P4** | **定时任务缺口补齐** ✅ 已完成（2026-08-28） | 审计发现的 4 缺口全部闭环，见 §4.1 |
 | 待定 | PRD 4 高频页（脚本/分镜/检索/成片任务） | 会话智能体优先承载；是否原生补齐按需评估（缺口清单见 §3.2） |
 | 🚫 取消 | ~~P2 桥接基建 + 7 页 webview~~ | bridge.exe 依赖 Python，作废 |
 | 🚫 取消 | ~~原侧边栏其余页面移植~~ | 会话智能体承载，不移植 |
+
+### 4.2 全量闭环确认（2026-09-02）
+
+经逐文件逐链路验证，P1 + P2 + P3 全部已闭环：
+
+| 条目 | 载体 | 状态 |
+|------|------|------|
+| W1+W2+W3 工作台AI对话 | useWorkbenchChat + agent-chat-ipc | ✅ 发送/回复/会话续接/计划任务/智能体选择 |
+| M4 字幕/水印去除 quad 框选 | vsrQuadLogic + SubtitleRemoval.vue + useVsrRemoval | ✅ 视频选择/帧提取/quad 交互/sub_areas 编组/提交/轮询 |
+| M7 视频修复 | useVideoRepair + VideoRepair.vue | ✅ 工作流选择/提交/3s 轮询/结果回填/下载 |
+| M2 视频转文字 | useTranscribeQueue + VideoTranscribe.vue | ✅ 批量队列/SRT 编辑/AI 洗稿/四格式导出/Word 导出 |
+| M3 声音克隆 | useVoiceCloneStudio + voiceCloneLogic | ✅ ASR 转写/LLM 分句+校验/短句合并/逐行生成/整体克隆 |
+| M6 视频反推 | useReversePromptVideo + reversePromptVideoLogic | ✅ 时间轴选段/提交/轮询/分段结果 |
+| B11 登录状态徽章 | useBrowserLogin + browserLoginLogic | ✅ cookieList 检测/工具栏徽章/左栏状态点 |
+| M8 混剪服务端化 | useVideoMontage + videoMontageLogic | ✅ 四步全走服务端（split→beat→concat→bgm） |
+| S6/S7 飞书+即梦 | CardAccountLogin + useSettingsAccounts | ✅ 七字段凭证/测试连接/即梦登录态检测 |
+| W10 任务队列 | useWorkbenchTasks + taskQueueLogic | ✅ 双源合并/5s 轮询/实时订阅/无 mock |
+| S5 环境检测 | useEnvCheck + envCheckLogic + CardEnvMaint | ✅ 服务端连通+能力健康+本地资源 |
+| B8 素材入库 | material-import IPC + officeSheetLogic | ✅ 入库状态/提交/Excel 导出 |
+| B9 每日素材 | dailyAssets + useBrowserDailyAssets | ✅ 扫描/筛选/预览/Excel 导出 |
+| B10 达人库 | creators + useBrowserCreators | ✅ 列表/主页采集/采集清单/入库 |
+| M9 直播切片 | LiveClip.vue + liveClipLogic | ✅ 热点发现/切片/封面生成 |
+| W9 快捷条/斜杠菜单 | WbComposer + useWorkbenchAgents | ✅ 智能体快捷条 + / 唤起候选 |
+| W11 上下文选择器 | useWorkbenchChat ctxProduct/ctxScripts | ✅ 产品/脚本胶囊 + 发送拼接 |
+| W12 视频资产识别 | workbenchChatLogic detectVideoAsset | ✅ 回复检测成片 + 播放/下载 |
+| W13 重新生成/引用回复 | useWorkbenchChat + workbenchChatLogic | ✅ regen + quote + history 回退 |
+| S8 账号页 | CardAccountLogin.vue | ✅ 飞书+即梦双 Tab |
+| S9 自启动 | CardEnvMaint.vue | ✅ 开机自启动开关 |
 
 ### 4.1 P4 定时任务缺口补齐 —— ✅ 已完成（2026-08-28）
 

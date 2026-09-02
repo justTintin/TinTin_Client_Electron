@@ -20,7 +20,8 @@
     "contract:gen": "openapi-typescript http://192.168.111.31:8000/openapi.json -o ./renderer/src/types/api-contract.generated.ts",
     "contract:gen-local": "openapi-typescript ../openapi-latest.json -o ./renderer/src/types/api-contract.generated.ts",
     "contract:typecheck": "tsc --noEmit -p tsconfig.json",
-    "verify": "node scripts/verify-contract.js",
+    "verify": "node scripts/verify-contract.js && node scripts/audit-ipc-consumers.js",
+    "audit:ipc": "node scripts/audit-ipc-consumers.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint \"renderer/src/**/*.{ts,vue}\"",
     "postinstall": "electron-builder install-app-deps"

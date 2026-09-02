@@ -3,7 +3,9 @@
 #
 # 触发：push 到 main/master/dev 分支、任意 PR 到 main/master
 # 任务：在 desktop/ 子目录执行三级门禁
-#   1. npm run verify              — F-3 双写一致性自检（IRON-10）
+#   1. npm run verify              — F-3 双写一致性自检 + IPC 消费者映射自检（IRON-10）
+#                                     · verify-contract.js：API_PATHS / Contract 锚点 / 漂移点表格
+#                                     · audit-ipc-consumers.js：拦「有 IPC 无 UI」新增悬空通道
 #   2. npm run contract:typecheck  — TypeScript 编译期类型检查（IRON-03/05）
 #   3. npm run build:renderer      — Vite 生产构建无破坏验证（IRON-04）
 # 任一步失败即阻断 CI，PR 不允许合并。
@@ -42,7 +44,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: IRON-10 双写一致性自检
+      - name: IRON-10 双写一致性 + IPC 消费者映射自检
         run: npm run verify
 
       - name: IRON-03/05 类型检查

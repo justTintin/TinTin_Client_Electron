@@ -47,3 +47,16 @@ export function pickPageDownloadUrl(realUrl: string | null, fallback: string): P
   }
   return { ok: true, url }
 }
+
+/**
+ * 嗅探媒体下载通道判定（2026-09-02）：
+ *   · 真分片流（m3u8/flv）与需解参的 YouTube videoplayback → yt-dlp
+ *   · 其余（含抖音 douyinvod/video/tos CDN 直链、/aweme/v1/play 等带签名完整媒体文件）
+ *     → 直接 HTTP 下载。此前 video/tos 被强制交 yt-dlp，而 yt-dlp 对 CDN 直链
+ *     没有 extractor，必报 Unsupported URL exit 1（下载历史已验证）。
+ */
+export function needsYtdlpForSniffedUrl(url: unknown): boolean {
+  const lower = String(url || '').toLowerCase()
+  if (!lower) return false
+  return lower.includes('.m3u8') || lower.includes('.flv') || lower.includes('videoplayback')
+}

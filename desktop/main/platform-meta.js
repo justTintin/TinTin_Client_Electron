@@ -24,8 +24,11 @@ const PLATFORM_IDS = Object.keys(PLATFORM_DEFS)
 // 各平台详情页 URL 模式（只在详情页嗅探，主页/列表页不嗅探）
 // 注：使用白名单方式 - 只有匹配这些模式的 URL 才嗅探
 // 所有不匹配详情页模式的 URL（包括首页、列表页、搜索页等）都不嗅探
+// 抖音注意：裸 feed 路径（/jingxuan /discover /follow）不是详情页——预加载相邻视频
+// 会产生多条媒体请求，白名单曾误收导致列表刷屏（2026-09-02 用户反馈）；
+// feed 内弹层播放的详情页 URL 会追加 ?modal_id=，仅它入白名单。
 const PLATFORM_DETAIL_PATTERNS = {
-  douyin:      [/\/video\/\d+/, /\/note\/\d+/, /\/user\/[^/]+\/video\/\d+/],
+  douyin:      [/\/video\/\d+/, /\/note\/\d+/, /\/user\/[^/]+\/video\/\d+/, /[?&]modal_id=\d+/],
   bilibili:    [/\/video\/BV[\w]+/i, /\/video\/av\d+/i, /\/medialist\/\d+/],
   kuaishou:    [/\/short-video\/\d+/, /\/f\.ks\.com\/\w+/, /\/video\/\d+/],
   xiaohongshu: [/\/explore\/[a-zA-Z0-9]+/, /\/discovery\/item\/[a-zA-Z0-9]+/, /\/item\/[a-zA-Z0-9]+/],

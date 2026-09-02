@@ -44,3 +44,34 @@ test('pickPageDownloadUrl：B站/快手/小红书视频页同样放行，根路�
   assert.equal(M.pickPageDownloadUrl(null, 'https://www.xiaohongshu.com/explore/65abcdef0000000000000000').ok, true)
   assert.equal(M.pickPageDownloadUrl(null, 'https://www.youtube.com/watch?v=abc123').ok, true)
 })
+
+// ── needsYtdlpForSniffedUrl：嗅探媒体 URL 下载通道判定 ──
+// （2026-09-02 用户反馈：嗅探到的 douyinvod CDN 直链被强制交给 yt-dlp →
+//   Unsupported URL exit 1 全部下载失败。CDN 直链是带签名的完整媒体文件，
+//   直接 HTTP 下载即可；只有真分片流（m3u8/flv）与需解参的 videoplayback 才需要 yt-dlp）
+
+test('needsYtdlpForSniffedUrl：真分片流 m3u8/flv 走 yt-dlp', () => {
+  assert.equal(M.needsYtdlpForSniffedUrl('https://v.example.com/live/index.m3u8'), true)
+  assert.equal(M.needsYtdlpForSniffedUrl('https://v.example.com/media.flv'), true)
+})
+
+test('needsYtdlpForSniffedUrl：YouTube videoplayback 需解参走 yt-dlp', () => {
+  assert.equal(M.needsYtdlpForSniffedUrl('https://rr3.googlevideo.com/videoplayback?id=abc&dur=123'), true)
+})
+
+test('needsYtdlpForSniffedUrl：抖音 CDN 直链（video/tos）直接下载不再交 yt-dlp', () => {
+  assert.equal(
+    M.needsYtdlpForSniffedUrl('https://v26-web.douyinvod.com/xxx/video/tos/cn/tos-cn-ve-15/oAAA/?a=6383&br=1886'),
+    false,
+  )
+  assert.equal(
+    M.needsYtdlpForSniffedUrl('https://www.douyin.com/aweme/v1/play/?video_id=v0d00fg'),
+    false,
+  )
+})
+
+test('needsYtdlpForSniffedUrl：普通 mp4 直链与空值', () => {
+  assert.equal(M.needsYtdlpForSniffedUrl('https://cdn.example.com/movie.mp4'), false)
+  assert.equal(M.needsYtdlpForSniffedUrl(''), false)
+  assert.equal(M.needsYtdlpForSniffedUrl(null), false)
+})

@@ -110,6 +110,7 @@ browser.onBiliExtDownloads = (cb) => {
 let _mediaDlProgressHandler = null
 const mediaDownload = {
   start: (params) => ipcRenderer.invoke('browser:downloadMediaStart', params),
+  douyinParse: (shareText) => ipcRenderer.invoke('browser:douyinParse', shareText),
   cancel: (taskId) => ipcRenderer.invoke('browser:downloadMediaCancel', taskId),
   pause: (taskId) => ipcRenderer.invoke('browser:downloadMediaPause', taskId),
   onProgress: (cb) => {

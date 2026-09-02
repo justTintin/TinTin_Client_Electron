@@ -17,7 +17,7 @@
 import { computed, ref, watch } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import type { BrowserPlatformId } from './useBrowserNav'
-import { pickPageDownloadUrl } from './browserDownloadLogic'
+import { pickPageDownloadUrl, needsYtdlpForSniffedUrl } from './browserDownloadLogic'
 
 export interface UseBrowserDownloadsDeps {
   isElectronShell: Ref<boolean>
@@ -109,6 +109,7 @@ export interface UseBrowserDownloadsReturn {
   togglePauseTask: (task: MediaDownloadTask) => Promise<void>
   cancelDownloadTask: (task: MediaDownloadTask) => Promise<void>
   removeDownloadTask: (task: MediaDownloadTask) => void
+  douyinParseDownload: (shareText: string) => Promise<{ ok: boolean; message: string }>
   _formatSpeed: (bps: number) => string
 }
 
@@ -174,7 +175,10 @@ async function downloadSniffedMedia(media: SniffedMedia): Promise<void> {
   // 检测是否为动态加载平台（Bilibili, YouTube, 抖音等）
   // 这些平台的视频流通常被加密或分片，直接下载链接会失效
   const isDynamicPlatform = ['bilibili', 'youtube', 'douyin', 'kuaishou', 'xiaohongshu', 'weixin'].includes(cur || '')
-  const needsYtdlp = isDynamicPlatform && (media.url.includes('.m3u8') || media.url.includes('.flv') || media.url.includes('video/tos') || media.url.includes('videoplayback'))
+  // 2026-09-02 修复：只有真分片流（m3u8/flv）与 videoplayback 才交 yt-dlp；
+  // 抖音 douyinvod/video/tos CDN 直链是带签名完整媒体文件，yt-dlp 无 extractor 必报
+  // Unsupported URL exit 1（下载历史验证），改走直接 HTTP 下载（附带 Referer/Cookie）
+  const needsYtdlp = isDynamicPlatform && needsYtdlpForSniffedUrl(media.url)
   
   try {
     await t.mediaDownload.start({
@@ -197,6 +201,53 @@ async function downloadSniffedMedia(media: SniffedMedia): Promise<void> {
     })
   } catch (e) {
     console.warn('[Browser] downloadSniffedMedia failed:', e)
+  }
+}
+
+// 抖音分享链接解析下载（主链路 yt-dlp 直连：短链→302→视频页 URL→yt-dlp +
+// session cookie；第三方 API 降为兜底，其后端常被抖音风控）
+async function douyinParseDownload(shareText: string): Promise<{ ok: boolean; message: string }> {
+  const t = (window as any).tintinBrowser
+  if (!t?.mediaDownload?.douyinParse || !t?.mediaDownload?.start) {
+    return { ok: false, message: '解析通道不可用（客户端需更新）' }
+  }
+  let r: any
+  try { r = await t.mediaDownload.douyinParse(shareText) } catch (e: any) {
+    return { ok: false, message: '解析失败：' + (e?.message || e) }
+  }
+  if (!r?.ok) return { ok: false, message: r?.reason || '解析失败' }
+  const taskId = 'mdl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
+  const baseName = String(r.desc || r.author || 'douyin_video_' + Date.now()).slice(0, 40).replace(/[\\/:*?"<>|\s]+/g, '_') || ('douyin_video_' + Date.now())
+  try {
+    if (r.videoPageUrl) {
+      // 主链路：yt-dlp 直连视频页（session cookie 经 --cookies 注入，extractor 自带
+      // 签名对策；下载的是无水印带声音完整视频）
+      await t.mediaDownload.start({
+        taskId,
+        url: r.videoPageUrl,
+        filename: baseName + '.mp4',
+        referer: 'https://www.douyin.com/',
+        platformId: 'douyin',
+        subDir: 'douyin',
+        useYtdlp: true,
+      })
+      _ensureMediaTask(taskId, { title: r.desc || r.author || '抖音解析视频', totalSize: 0, url: r.videoPageUrl })
+      return { ok: true, message: '解析成功，已开始下载（无水印完整视频）' }
+    }
+    // 兜底：API 直链（带签名完整 mp4，直接 HTTP 下载）
+    await t.mediaDownload.start({
+      taskId,
+      url: r.videoUrl,
+      filename: baseName + '.mp4',
+      referer: 'https://www.douyin.com/',
+      platformId: 'douyin',
+      subDir: 'douyin',
+      useYtdlp: false,
+    })
+    _ensureMediaTask(taskId, { title: r.desc || r.author || '抖音解析视频', totalSize: 0, url: r.videoUrl })
+    return { ok: true, message: '解析成功，已开始下载' }
+  } catch (e: any) {
+    return { ok: false, message: '下载发起失败：' + (e?.message || e) }
   }
 }
 
@@ -482,7 +533,7 @@ return {
   biliPluginInstalled, loadBiliPluginState, biliPluginDownloadMode,
   biliExtDownloads, biliExtTitle,
   installedExtensions, loadInstalledExtensions, extIconSrc,
-  _formatBytesPhase2, downloadSniffedMedia, downloadBiliExtLink, downloadFromPage,
+  _formatBytesPhase2, downloadSniffedMedia, downloadBiliExtLink, downloadFromPage, douyinParseDownload,
   mediaDownloadTasks, activeDownloadCount, _ensureMediaTask,
   historyEntries, addHistory, clearHistory, navigateToHistory, openHistoryPanel, formatHistoryTime,
   openDownloadsPanel,

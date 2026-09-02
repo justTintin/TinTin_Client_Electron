@@ -81,6 +81,8 @@ function createThickShellIpc(ipcMain, ctx) {
 
   // 初始化扩展管理器（userData/extensions），并在启动时把已装扩展加载到各平台隔离 session
   _extManager.init()
+  // 预装内置抖音下载助手（chrom-douyin，2026-09-02 用户裁决）到抖音隔离 session
+  _extManager.preloadBuiltinDouyin()
   Promise.resolve().then(async () => {
     for (const e of _extManager.manifest) {
       try { await _extManager._loadExtToAllSessions(e.path) } catch (_) {}

@@ -7,6 +7,7 @@ const os = require('node:os')
 const { URL } = require('node:url')
 const { spawn } = require('node:child_process')
 const { detectPlatformFromUrl, PLATFORM_COOKIE_DOMAINS } = require('./platform-meta')
+const { DOUYIN_PARSE_API, extractDouyinShareUrl, validateDouyinParseResponse, extractDouyinVideoIdFromUrl, buildDouyinVideoPageUrl } = require('./douyin-parse-logic')
 
 const activeDownloads = new Map()
 
@@ -337,6 +338,55 @@ function createMediaDownloader(ipcMain, ctx) {
       }
     } catch (_) {}
   }
+
+  // ── IPC: browser:douyinParse — 抖音分享链接解析 ──
+  // 主链路（2026-09-02 实测裁决）：第三方解析 API 后端被抖音风控卡死（官方文档
+  // 自己的示例短链都返回 500），故改为 yt-dlp 直连——短链 302 取 video_id →
+  // 视频页 URL 交 yt-dlp（Douyin extractor 带签名对策，session cookie 经
+  // --cookies 注入，实测 yt-dlp 仅缺新鲜 cookie 即可解析）。API 降为兜底。
+  ipcMain.handle('browser:douyinParse', async (_e, shareText) => {
+    const text = String(shareText || '')
+    // 1) 分享文本里直接粘了视频页 / note 页 URL 的情况
+    let videoId = extractDouyinVideoIdFromUrl(text)
+    // 2) 短链 → 302 Location 取 video_id（实测无需 cookie）
+    if (!videoId) {
+      const shareUrl = extractDouyinShareUrl(text)
+      if (shareUrl) {
+        try {
+          const res = await fetch(shareUrl, {
+            method: 'GET',
+            redirect: 'manual',
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
+            signal: AbortSignal.timeout(15000),
+          })
+          const loc = res.headers.get('location') || ''
+          videoId = extractDouyinVideoIdFromUrl(loc)
+          if (!videoId) {
+            // 跳到 /user/ 等 → 视频已删除或短链失效
+            return { ok: false, reason: '分享链接无法定位到视频（可能已删除或失效），请重新从抖音 App 分享复制链接' }
+          }
+        } catch (_) { /* 302 探测失败 → 走 API 兜底 */ }
+      }
+    }
+    if (videoId) {
+      const videoPageUrl = buildDouyinVideoPageUrl(videoId)
+      if (videoPageUrl) return { ok: true, videoPageUrl, videoId }
+    }
+    // 3) 兜底：第三方解析 API（dy.xs25.cn，其后端常被风控，成功则返回直链）
+    const shareUrl2 = extractDouyinShareUrl(text)
+    if (!shareUrl2) {
+      return { ok: false, reason: '未找到有效的抖音分享链接（需 v.douyin.com 短链或视频页链接，可在抖音 App 分享→复制链接获得）' }
+    }
+    try {
+      const res = await fetch(DOUYIN_PARSE_API + encodeURIComponent(shareUrl2), { signal: AbortSignal.timeout(20000) })
+      const data = await res.json().catch(() => null)
+      const v = validateDouyinParseResponse(data)
+      if (!v.ok) return v
+      return { ok: true, videoUrl: v.videoUrl, author: v.author, desc: v.desc, shareUrl: shareUrl2 }
+    } catch (err) {
+      return { ok: false, reason: '解析请求失败：' + ((err && err.message) || err) }
+    }
+  })
 
   // ── IPC: browser:downloadMediaStart ──
   ipcMain.handle('browser:downloadMediaStart', async (_e, params) => {

@@ -28,6 +28,8 @@ defineProps<{
   activePlatformId: string | null
   /** 地址栏 URL（页面解析按钮禁用判断） */
   pageUrl: string
+  /** 抖音分享链接解析结果提示（Browser.vue 经 browser:douyinParse 后回传） */
+  douyinParseMsg?: { ok: boolean; message: string } | null
   /** 增强下载任务（卡片内嵌进度绑定） */
   mediaTasks: MediaDownloadTask[]
 }>()
@@ -36,6 +38,7 @@ const emit = defineEmits<{
   (e: 'download-media', m: SniffedMedia): void
   (e: 'download-bili', dl: BiliExtDownload): void
   (e: 'page-download'): void
+  (e: 'douyin-parse', text: string): void
 }>()
 </script>
 
@@ -49,11 +52,13 @@ const emit = defineEmits<{
         :is-electron-shell="isElectronShell"
         :active-platform-id="activePlatformId"
         :page-url="pageUrl"
+        :douyin-parse-msg="douyinParseMsg"
         :sniffed-media="sniffedMedia"
         :media-tasks="mediaTasks"
         @download-media="emit('download-media', $event)"
         @download-bili="emit('download-bili', $event)"
         @page-download="emit('page-download')"
+        @douyin-parse="emit('douyin-parse', $event)"
       />
     </div>
   </aside>

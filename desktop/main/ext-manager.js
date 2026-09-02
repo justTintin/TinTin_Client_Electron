@@ -111,10 +111,12 @@ const _extManager = {
       return { success: true, message: `已卸载：${entry.name}` }
     } catch (e) { return { success: false, message: '卸载失败：' + (e.message || e) } }
   },
-  // 列表：内置 B站下载助手 + 已装用户扩展
+  // 列表：内置 B站/抖音下载助手 + 已装用户扩展
   list() {
     const builtin = _builtinExtension()
-    return { installed: true, extensions: [builtin, ...this.manifest] }
+    const douyinBuiltin = _builtinDouyinExtension()
+    const preinstalled = douyinBuiltin ? [douyinBuiltin] : []
+    return { installed: true, extensions: [builtin, ...preinstalled, ...this.manifest] }
   },
   // 通知渲染层扩展列表已变化
   _bump() {
@@ -191,4 +193,53 @@ function _builtinExtension() {
   }
 }
 
-module.exports = { _extManager, _builtinExtension }
+// ── 内置抖音下载助手（chrom-douyin 预装，2026-09-02 用户裁决）──
+// 随包分发（dev=assets/chrom-douyin，打包=resources/assets/chrom-douyin，
+// package.json build.extraResources 已配）。启动时 loadExtension 到抖音隔离
+// session；Chrome popup 型扩展在 Electron 无工具栏，其解析能力经
+// browser:douyinParse（douyin-parse-logic.js）通道暴露，UI 在浏览器右栏。
+
+function _findDouyinHelperDir() {
+  const candidates = []
+  const res = process.resourcesPath
+  if (res) {
+    candidates.push(path.join(res, 'assets', 'chrom-douyin'))
+    candidates.push(path.join(res, 'chrom-douyin'))
+  }
+  candidates.push(path.join(__dirname, '..', '..', 'assets', 'chrom-douyin'))
+  candidates.push(path.join(process.cwd(), 'assets', 'chrom-douyin'))
+  for (const p of candidates) {
+    try { if (fs.existsSync(path.join(p, 'manifest.json'))) return p } catch (_) {}
+  }
+  return null
+}
+
+/** 启动预装：加载到抖音 session（幂等：loadExtension 同目录去重）；不可单测（本文件 require('electron')） */
+_extManager.preloadBuiltinDouyin = function () {
+  const dir = _findDouyinHelperDir()
+  if (!dir) return
+  try {
+    this._douyinBuiltinDir = dir
+    const sess = session.fromPartition('persist:tintin-douyin', { cache: true })
+    sess.loadExtension(dir).catch(() => {})
+  } catch (_) {}
+}
+
+function _builtinDouyinExtension() {
+  const dir = _extManager._douyinBuiltinDir || _findDouyinHelperDir()
+  if (!dir) return null
+  let mf = null
+  try { mf = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')) } catch (_) {}
+  const ic = (mf && mf.icons) || {}
+  return {
+    id: 'chrom-douyin-builtin',
+    name: (mf && mf.name) || '抖音视频下载助手',
+    version: (mf && mf.version) || '—',
+    path: dir,
+    icon: ic['128'] || ic['48'] || ic['32'] || ic['16'] || null,
+    builtin: true,
+    description: (mf && mf.description) || '抖音分享链接解析下载（预装，右栏粘贴分享链接即可下载）',
+  }
+}
+
+module.exports = { _extManager, _builtinExtension, _findDouyinHelperDir, _builtinDouyinExtension }

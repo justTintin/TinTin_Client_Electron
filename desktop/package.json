@@ -85,6 +85,10 @@
       {
         "from": "../resources/skills",
         "to": "skills"
+      },
+      {
+        "from": "../assets/chrom-douyin",
+        "to": "assets/chrom-douyin"
       }
     ],
     "files": [

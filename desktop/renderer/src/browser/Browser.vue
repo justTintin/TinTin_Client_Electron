@@ -29,7 +29,7 @@
 //   · C6 切 Tab / onBeforeUnmount：detachAll 防止原生层级泄漏
 // ═══════════════════════════════════════════════════════════════
 
-import { computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useBrowserNav } from './composables/useBrowserNav'
 import type { BrowserNavWiring, BrowserPlatformId } from './composables/useBrowserNav'
@@ -136,6 +136,7 @@ const {
   downloadSniffedMedia,
   downloadBiliExtLink,
   downloadFromPage,
+  douyinParseDownload,
   mediaDownloadTasks,
   activeDownloadCount,
   _ensureMediaTask,
@@ -147,6 +148,15 @@ const {
   saveAllToStorage,
   loadFromStorage,
 } = downloadsApi
+
+/** 抖音分享链接解析结果提示（预装 chrom-douyin 扩展能力，2026-09-02） */
+const douyinParseMsg = ref<{ ok: boolean; message: string } | null>(null)
+/** 解析下载：调主进程 browser:douyinParse（dy.xs25.cn 解析）→ 直链下载 */
+async function onDouyinParse(text: string) {
+  if (!text.trim()) return
+  douyinParseMsg.value = { ok: true, message: '解析中…' }
+  douyinParseMsg.value = await douyinParseDownload(text.trim())
+}
 const {
   hostRef,
   forceRecalcBounds,
@@ -575,9 +585,11 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
         :is-electron-shell="isElectronShell"
         :active-platform-id="activePlatformId"
         :page-url="addressUrl"
+        :douyin-parse-msg="douyinParseMsg"
         @download-media="downloadSniffedMedia"
         @download-bili="downloadBiliExtLink"
         @page-download="downloadFromPage"
+        @douyin-parse="onDouyinParse"
       />
 
       <!-- 浮层遮罩：抽屉/滑出面板打开时（<1200px） -->

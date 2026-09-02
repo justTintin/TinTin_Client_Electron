@@ -3,6 +3,7 @@
 // 来源：views/Browser.vue 原 template（B站插件模式 / 页面解析下载 /
 // 媒体嗅探卡片三区段）+ 对应 style，因 BrowserRightPanel 超 800 行红线
 // 按「容器 + 展示组件」原样搬移至此——DOM 结构与类名不变，逻辑零改动。
+import { ref } from 'vue'
 import type {
   SniffedMedia,
   BiliExtDownload,
@@ -22,6 +23,8 @@ const props = defineProps<{
   activePlatformId: string | null
   /** 地址栏 URL（页面解析按钮禁用判断） */
   pageUrl: string
+  /** 抖音分享链接解析结果提示（父组件执行 browser:douyinParse 后回传） */
+  douyinParseMsg?: { ok: boolean; message: string } | null
   /** 嗅探到的媒体列表 */
   sniffedMedia: SniffedMedia[]
   /** 增强下载任务（卡片内嵌进度条按 taskId 绑定） */
@@ -32,7 +35,11 @@ defineEmits<{
   (e: 'download-media', m: SniffedMedia): void
   (e: 'download-bili', dl: BiliExtDownload): void
   (e: 'page-download'): void
+  (e: 'douyin-parse', text: string): void
 }>()
+
+/** 抖音分享链接输入（UI 本地态；解析由父组件经 browser:douyinParse 执行） */
+const shareText = ref('')
 
 /** 按 taskId 取关联任务（展示辅助，无副作用） */
 function taskOf(id?: string): MediaDownloadTask | undefined {
@@ -114,6 +121,28 @@ function taskOf(id?: string): MediaDownloadTask | undefined {
         解析当前页面下载
       </button>
       <div class="page-dl-hint">当嗅探不到视频流时，使用此功能通过 yt-dlp 解析下载</div>
+    </div>
+
+    <!-- 抖音预装扩展（chrom-douyin）能力：分享链接解析下载（2026-09-02） -->
+    <div v-if="activePlatformId === 'douyin'" class="page-dl-section dy-parse-section">
+      <div class="section-title">抖音视频下载助手（预装扩展）</div>
+      <input
+        v-model="shareText"
+        class="dy-parse-input"
+        type="text"
+        placeholder="粘贴分享文本或 v.douyin.com 链接"
+        @keydown.enter="$emit('douyin-parse', shareText)"
+      />
+      <button
+        class="page-dl-btn"
+        :disabled="!isElectronShell || !shareText.trim()"
+        @click="$emit('douyin-parse', shareText)"
+        title="解析分享链接并下载无水印视频"
+      >
+        解析下载
+      </button>
+      <div v-if="douyinParseMsg" class="page-dl-hint" :class="{ 'dy-parse-err': !douyinParseMsg.ok }">{{ douyinParseMsg.message }}</div>
+      <div v-else class="page-dl-hint">在抖音 App 分享→复制链接，粘贴到这里即可下载无水印完整视频（含声音）</div>
     </div>
 
     <div v-if="sniffedMedia.length > 0" class="sniff-list">
@@ -378,6 +407,29 @@ function taskOf(id?: string): MediaDownloadTask | undefined {
   color: var(--muted-foreground);
   margin-top: 6px;
   line-height: 1.4;
+}
+
+/* ─── 抖音分享链接解析下载（chrom-douyin 预装扩展能力） ─── */
+.dy-parse-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--duration-fast);
+}
+.dy-parse-input:focus {
+  border-color: var(--primary);
+}
+.dy-parse-input + .page-dl-btn {
+  margin-top: 6px;
+}
+.dy-parse-err {
+  color: var(--destructive, #ef4444);
 }
 
 /* ─── 卡片内嵌下载进度 ─── */

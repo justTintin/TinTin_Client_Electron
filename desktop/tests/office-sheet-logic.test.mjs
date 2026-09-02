@@ -154,7 +154,7 @@ test('tasksToSheet：七列 + 状态文案 + 进度收敛 + 结果取值', () =>
       type: 'video_montage',
       status: 'completed',
       progress: 100,
-      createdAt: '2026-08-29T08:00:00',
+      submittedAt: '2026-08-29T08:00:00',
       resultTarget: { kind: 'path', value: 'D:\\out\\final.mp4' },
     },
     { id: 'c_2', title: '等待', type: 'x', status: 'pending', progress: 150, resultTarget: null },

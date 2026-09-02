@@ -114,7 +114,8 @@
 | M3 声音克隆 | useVoiceCloneStudio + voiceCloneLogic | ✅ ASR 转写/LLM 分句+校验/短句合并/逐行生成/整体克隆 |
 | M6 视频反推 | useReversePromptVideo + reversePromptVideoLogic | ✅ 时间轴选段/提交/轮询/分段结果 |
 | B11 登录状态徽章 | useBrowserLogin + browserLoginLogic | ✅ cookieList 检测/工具栏徽章/左栏状态点 |
-| M8 混剪服务端化 | useVideoMontage + videoMontageLogic | ✅ 四步全走服务端（split→beat→concat→bgm） |
+| M8 混剪服务端化 | useVideoMontage + videoMontageLogic | ⚠️ **部分实现**：Step1素材解析✅ / Step2 BGM节拍✅ / Step3 AI编排✅ / Step4合成✅；**缺失Step3口播配音工作流（原客户端核心功能）** |
+| M8.1 智能混剪-口播配音 | **待补充** | ❌ **完全缺失**：参考音频管理/批量视频扫描/逐行文案编辑/音色选择/TTS批量生成/进度追踪/播放预览/导出
 | S6/S7 飞书+即梦 | CardAccountLogin + useSettingsAccounts | ✅ 七字段凭证/测试连接/即梦登录态检测 |
 | W10 任务队列 | useWorkbenchTasks + taskQueueLogic | ✅ 双源合并/5s 轮询/实时订阅/无 mock |
 | S5 环境检测 | useEnvCheck + envCheckLogic + CardEnvMaint | ✅ 服务端连通+能力健康+本地资源 |
@@ -211,3 +212,181 @@
 
 ---
 *报告基于 2026-08-27 代码库实际状态核实生成；浏览器章节证据：commit 9d2bd9c / daff559 / 840cf7f / edf2a93。*
+
+---
+
+## 附录A：智能混剪口播配音对齐方案（2026-09-02 新增）
+
+### A.1 问题描述
+
+原客户端智能混剪有完整 **4 步工作流**，Electron 实现仅完成其中 3 步，缺失核心的「口播配音」环节：
+
+| 步骤 | 原客户端 | Electron 现状 | 状态 |
+|------|---------|--------------|------|
+| Step1: 镜头智能分割 | ✅ 场景检测/挑精华/评分/景别分类 | ✅ 已实现（`/montage/split`） | ✅ |
+| Step2: 镜头重组 | ✅ 拖拽排序/预编排计划 | ⚠️ 简化为 AI 编排参数 | ⚠️ |
+| **Step3: 口播配音** | ✅ **参考音频/批量扫描/文案编辑/TTS 生成/进度追踪** | ❌ **完全缺失** | ❌ |
+| Step4: 特效包装 | ✅ BGM 混音/人声闪避/最终合成 | ✅ 已实现（`/montage/bgm`） | ✅ |
+
+### A.2 原客户端功能清单（video_montage_page.py §6·配音）
+
+#### 核心 UI 组件
+
+1. **参考音频管理**
+   - `_populate_ref_audio_samples()`: 下拉选择预置音色列表
+   - `btn_play_ref`: 播放参考音频预览
+   - `_on_ref_audio_combo_changed`: 切换音色自动填充文案模板
+
+2. **批量视频扫描**
+   - `_select_voice_video_dir()`: 选择包含多个视频的文件夹
+   - `_scan_voice_video_dir()`: 递归扫描目录下所有 `.mp4/.mov/.avi` 等视频文件
+   - `_do_scan_voice_video_dir()`: 逐文件提取元数据（时长/分辨率）并加入配音队列
+
+3. **逐行文案编辑**
+   - `DoubleClickLineEdit`: 双击弹窗编辑大段文案（支持多行文本）
+   - 占位符提示："留空则不克隆此视频的声音"
+   - 文案与视频一一对应，可单独修改
+
+4. **TTS 批量生成**
+   - `VoiceCloneWorker`: 后台 Worker 逐个调用 `/voxcpm/tts`
+   - 每行独立进度条 + 状态标签（pending/running/done/failed）
+   - 结果缓存：`generated_voice_paths[filepath] = wav_path`
+
+5. **播放与导出**
+   - `btn_play`: 播放克隆后的音频（wav）
+   - `btn_export`: 导出单个视频+配音的合并结果
+   - `btn_compare`: 对比原始视频与配音后效果
+
+#### 服务端接口依赖
+
+```python
+# POST /voxcpm/tts（已有 M3 声音克隆复用）
+{
+  "text": "旁白文案",
+  "speaker": "音色ID",           # 从参考音频下拉选择
+  "prompt_audio": "参考音频路径"  # 可选，用于音色克隆
+}
+# → { task_id, status, audio_url }
+```
+
+### A.3 Electron 对齐方案
+
+#### 阶段1：纯函数层（videoMontageLogic.ts 扩展）
+
+```typescript
+// 新增类型定义
+export interface VoiceRow {
+  videoPath: string        // 视频文件路径
+  text: string             // 配音文案
+  speaker?: string         // 音色 ID
+  status: 'pending' | 'generating' | 'done' | 'failed'
+  progress: number         // 0-100
+  resultPath?: string      // 生成的 wav 路径
+  error?: string
+}
+
+// 新增纯函数
+export function scanVoiceVideos(dir: string): Promise<string[]>  // 递归扫描视频
+export function buildTtsPayload(row: VoiceRow): object            // 构建 TTS 请求
+export function mapTtsResponse(res: any): { ok: boolean; url?: string; error?: string }
+```
+
+#### 阶段2：编排层（useVideoMontage.ts 扩展）
+
+```typescript
+// 新增状态
+const voiceRows = ref<VoiceRow[]>([])
+const selectedSpeaker = ref('')
+const referenceAudio = ref('')
+const generatingIndex = ref(-1)  // 当前正在生成的行索引
+
+// 新增方法
+async function selectVoiceDir(): Promise<void>              // 选择视频目录
+async function scanAndLoadVideos(dir: string): Promise<void> // 扫描并加载
+function updateVoiceText(index: number, text: string): void  // 更新文案
+async function generateAllVoices(): Promise<void>            // 批量生成
+async function generateSingleVoice(index: number): Promise<void> // 单行生成
+function playVoice(index: number): void                      // 播放音频
+function exportVoice(index: number): void                    // 导出合并结果
+```
+
+#### 阶段3：UI 层（VideoMontage.vue 新增 Step3 页面）
+
+```vue
+<!-- Step 3: 口播配音 -->
+<template v-if="step === 2">
+  <section class="card">
+    <!-- 参考音频选择 -->
+    <div class="row">
+      <label>参考音色:</label>
+      <TSelect v-model="selectedSpeaker" :options="speakerOptions" />
+      <TButton label="播放试听" @click="playReference" />
+    </div>
+    
+    <!-- 视频目录选择 -->
+    <div class="row">
+      <TButton label="选择视频目录" @click="selectVoiceDir" />
+      <span class="muted">已选 {{ voiceRows.length }} 个视频</span>
+    </div>
+    
+    <!-- 配音队列表格 -->
+    <table class="voice-table">
+      <thead>
+        <tr>
+          <th>视频</th>
+          <th>文案（双击编辑）</th>
+          <th>状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="(row, i) in voiceRows" :key="i">
+          <td>{{ basename(row.videoPath) }}</td>
+          <td>
+            <textarea v-model="row.text" @dblclick="openTextEdit(i)" />
+          </td>
+          <td>
+            <span :class="statusClass(row.status)">{{ statusText(row.status) }}</span>
+            <progress v-if="row.status === 'generating'" :value="row.progress" max="100" />
+          </td>
+          <td>
+            <TButton size="small" @click="generateSingleVoice(i)" :disabled="row.status === 'generating'">生成</TButton>
+            <TButton size="small" plain @click="playVoice(i)" :disabled="!row.resultPath">▶</TButton>
+            <TButton size="small" plain @click="exportVoice(i)" :disabled="!row.resultPath"></TButton>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    
+    <!-- 底部操作栏 -->
+    <div class="row right">
+      <TButton label="批量生成全部" icon="play" :loading="batchGenerating" @click="generateAllVoices" />
+      <TButton label="下一步：特效包装" icon="right" :disabled="!allDone" @click="go(3)" />
+    </div>
+  </section>
+</template>
+```
+
+### A.4 排期与优先级
+
+| 优先级 | 任务 | 预计工时 | 依赖 |
+|--------|------|---------|------|
+| P0 | 纯函数层：`scanVoiceVideos` / `buildTtsPayload` | 2h | 无 |
+| P0 | 编排层：`useVideoMontage` 新增配音状态机 | 4h | 纯函数层 |
+| P0 | UI 层：Step3 页面完整实现 | 6h | 编排层 |
+| P1 | 文案双击编辑对话框 | 2h | UI 层 |
+| P1 | 音频播放控件集成 | 1h | UI 层 |
+| P2 | 导出合并结果（ffmpeg 主进程） | 3h | 主进程 IPC |
+
+**总计**: ~18 小时（约 2.5 个工作日）
+
+### A.5 验收标准
+
+1. ✅ 可选择包含多个视频的文件夹，自动扫描并列出所有视频
+2. ✅ 每个视频对应一行文案，可双击编辑
+3. ✅ 可选择参考音色（下拉列表），支持试听
+4. ✅ 点击「生成」后显示进度条，完成后显示「完成」状态
+5. ✅ 可播放生成的音频（wav）
+6. ✅ 可导出单个视频+配音的合并结果（mp4）
+7. ✅ 批量生成时，逐行显示进度，失败行可重试
+8. ✅ 与原客户端行为一致：文案为空时跳过该视频

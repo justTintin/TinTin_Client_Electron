@@ -3,7 +3,7 @@
 // OpsTools.vue — 运营工具（卡片 Launcher，模式对齐 MediaTools.vue）
 // 落地文档 2026-08-30 §三：两大组 4 大模块（骨架占位，分批实施）
 //   方案脚本：产品资料 / 企业知识库
-//   视频运营：视频数据预估 / 视频营销选题
+//   视频运营：视频评价预测 / 视频营销检测
 // 2026-08-30 用户裁决：飞书脚本创作不移植；产品文案创作、分镜脚本创作
 //   划归媒体工具 Tab（组件同目录 components/ops-tools/，由 MediaTools 引用）。
 // ═══════════════════════════════════════════════════════════════
@@ -36,8 +36,8 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     { id: 'knowledge-base',  title: '我的知识库', desc: '风格化画像 + 参考素材蒸馏', group: '方案脚本', emoji: '📚', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtKnowledgeBase.vue')), status: 'planned' },
   ],
   视频运营: [
-    { id: 'video-score',    title: '视频评价预测', desc: '关键帧 → 视觉模型预测视频表现', group: '视频运营', emoji: '📈', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoScore.vue')), status: 'planned' },
-    { id: 'video-marketing', title: '视频营销检测', desc: '研判是否营销视频 + 品类 + 改进建议', group: '视频运营', emoji: '🎯', accent: 'linear-gradient(135deg,#10B981 0%,#14B8A6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoMarketing.vue')), status: 'planned' },
+    { id: 'video-score',    title: '视频评价预测', desc: '关键帧 → 视觉模型预测视频表现', group: '视频运营', emoji: '📈', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoScore.vue')), status: 'ready' },
+    { id: 'video-marketing', title: '视频营销检测', desc: '研判是否营销视频 + 品类 + 改进建议', group: '视频运营', emoji: '🎯', accent: 'linear-gradient(135deg,#10B981 0%,#14B8A6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoMarketing.vue')), status: 'ready' },
   ],
 }
 

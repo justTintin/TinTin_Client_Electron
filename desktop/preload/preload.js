@@ -216,10 +216,19 @@ const server = {
 const ffmpeg = {
   probe: (file) => ipcRenderer.invoke('ffmpeg:probe', file),
   extractThumb: (video, atSec, w) => ipcRenderer.invoke('ffmpeg:extractThumb', video, atSec, w),
+  // 批量抽帧 + base64（视觉模型研判类工具共用：视频评价预测/视频营销检测）
+  extractFrames: (payload) => ipcRenderer.invoke('ffmpeg:extractFrames', payload),
   embedCover: (video, cover, outPath, durationSec) => ipcRenderer.invoke('ffmpeg:embedCover', video, cover, outPath, durationSec),
   concatSegments: (paths, outPath) => ipcRenderer.invoke('ffmpeg:concatSegments', paths, outPath),
   extractAudio: (video, outPath, format) => ipcRenderer.invoke('ffmpeg:extractAudio', video, outPath, format),
   cut: (video, outPath, startSec, endSec) => ipcRenderer.invoke('ffmpeg:cut', video, outPath, startSec, endSec)
+}
+
+// ── 视频评价预测记录库（prediction:*，对照 video_prediction_manager.py）──
+const prediction = {
+  list: () => ipcRenderer.invoke('prediction:list'),
+  add: (payload) => ipcRenderer.invoke('prediction:add', payload),
+  setFeedback: (payload) => ipcRenderer.invoke('prediction:setFeedback', payload)
 }
 
 // ── shell ──
@@ -580,6 +589,8 @@ contextBridge.exposeInMainWorld('tintin', {
   browserWindow,
   // 办公能力集成（office:*）
   office,
+  // 视频评价预测记录库（prediction:*）
+  prediction,
   // Phase 1: 媒体下载器
   mediaDownload,
   // Phase 3: 媒体持久化

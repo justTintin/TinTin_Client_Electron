@@ -310,6 +310,23 @@ declare interface TintinBridgeFfprobeResult {
 declare interface TintinBridgeFfmpeg {
   probe(file: string): Promise<TintinBridgeFfprobeResult>
   extractThumb(video: string, atSec: number, w?: number): Promise<string>
+  /**
+   * 批量抽帧 + base64（视觉模型研判类工具共用：视频评价预测/视频营销检测）。
+   * 对照原客户端 hook_score_page.py / marketing_detect_page.py 抽帧段：
+   * 输出目录由主进程按 tag 在 tmpdir 下清空重建，逐帧 scale=width:-2 / -q:v quality。
+   * 抽帧时间点由渲染层纯函数计算，主进程不做策略决策。
+   */
+  extractFrames(payload: {
+    videoPath: string
+    times: number[]
+    tag?: string
+    width?: number
+    quality?: number
+  }): Promise<{
+    frames?: Array<{ path: string; timeSec: number; base64: string }>
+    outDir?: string
+    error?: string
+  }>
   embedCover(
     video: string,
     cover: string,
@@ -561,6 +578,41 @@ declare interface TintinBridgeOffice {
   }>
 }
 
+// --------------------------------------------------------------------
+// 视频评价预测记录库（prediction:* 主进程 handler）
+// 对照原客户端 studio/utils/video_prediction_manager.py：
+//   保存每次预测结果 + 发布后回填的真实播放量/平台评价，
+//   「预测 vs 实际」对照反哺下次预测（校准文本由渲染层纯函数拼接）。
+// 存储：userData/video_predictions.json（JSON Manager 模式，同 creators-store）。
+// --------------------------------------------------------------------
+declare interface TintinVideoPredictionRecord {
+  id: string
+  video_path: string
+  video_name: string
+  platform: string
+  /** 模型输出的评分 JSON（total/play_level/golden3s/dims/comment/suggestions） */
+  predicted: Record<string, any>
+  /** 回填后为 { play_count, platform_eval, at }；未回填为 null */
+  actual: { play_count: string; platform_eval: string; at: number } | null
+  created_at: number
+}
+declare interface TintinBridgePrediction {
+  /** 全量记录（倒序，最新在前） */
+  list(): Promise<{ items?: TintinVideoPredictionRecord[]; error?: string }>
+  /** 新增一条预测记录，返回其 id（对照 add_prediction） */
+  add(payload: {
+    videoPath: string
+    platform: string
+    predicted: Record<string, any>
+  }): Promise<{ id?: string; error?: string }>
+  /** 回填真实数据（对照 set_feedback） */
+  setFeedback(payload: {
+    id: string
+    playCount: string
+    platformEval: string
+  }): Promise<{ ok?: boolean; error?: string }>
+}
+
 declare interface TintinBridge {
   app: TintinBridgeApp
   dialog: TintinBridgeDialog
@@ -576,6 +628,8 @@ declare interface TintinBridge {
   browserWindow: TintinBridgeBrowserWindow
   // 办公能力集成（office:*）
   office: TintinBridgeOffice
+  // 视频评价预测记录库（prediction:*）
+  prediction: TintinBridgePrediction
   // A2 双模式
   config: TintinBridgeConfig
   model: TintinBridgeModel

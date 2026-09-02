@@ -138,6 +138,70 @@ function extractThumb(ffmpegPath, video, atSec, w) {
 }
 
 /**
+ * 批量抽取关键帧并读回 base64（视觉模型研判类工具共用）。
+ *
+ * 对照原客户端：
+ *   · studio/gui/hook_score_page.py   HookScoreWorker.do_work 抽帧段
+ *   · studio/gui/marketing_detect_page.py MarketingDetectWorker.do_work 抽帧段
+ * 两处口径一致：frames_dir 先清空重建 → 逐帧 extract_frame(video, t, out,
+ * scale="512:-2", quality=4) → 存在则收集 → 读文件 base64 拼 image_url。
+ * 抽帧时间点由渲染层纯函数计算（sampleTimes / marketingSampleTimes），
+ * 主进程只负责 I/O，不做策略决策（IRON-06/07 分层）。
+ *
+ * @param {string} ffmpegPath
+ * @param {string} video    视频绝对路径
+ * @param {number[]} times  抽帧时间点（秒）
+ * @param {string} tag      输出目录标识（评价预测/营销检测各自独立目录）
+ * @param {number} width    缩放宽度（对照 scale="512:-2"）
+ * @param {number} quality  jpeg 质量（对照 quality=4）
+ * @returns {Promise<{frames: Array<{path: string, timeSec: number, base64: string}>, outDir: string}>}
+ */
+function extractFramesBatch(ffmpegPath, video, times, tag, width = 512, quality = 4) {
+  if (!video || !fs.existsSync(video)) return Promise.reject(new Error('视频文件不存在'))
+  const list = Array.isArray(times) ? times.filter((t) => Number.isFinite(t) && t >= 0) : []
+  if (!list.length) return Promise.reject(new Error('抽帧时间点为空'))
+
+  // 目录标识白名单化，避免路径穿越（tag 来自渲染层）
+  const safeTag = String(tag || 'frames').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'frames'
+  const outDir = path.join(require('node:os').tmpdir(), `tintin_frames_${safeTag}`)
+  fs.rmSync(outDir, { recursive: true, force: true })
+  fs.mkdirSync(outDir, { recursive: true })
+
+  const grab = (atSec, outPath) => new Promise((resolve) => {
+    const args = [
+      '-y',
+      '-ss', String(atSec),
+      '-i', video,
+      '-frames:v', '1',
+      '-vf', `scale=${width}:-2`,
+      '-q:v', String(quality),
+      outPath
+    ]
+    const proc = spawn(ffmpegPath, args, { windowsHide: true })
+    let stderr = ''
+    proc.stderr.on('data', (d) => stderr += d)
+    proc.on('error', () => resolve(false))
+    proc.on('close', (code) => resolve(code === 0 && fs.existsSync(outPath)))
+  })
+
+  return (async () => {
+    const frames = []
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i]
+      const outPath = path.join(outDir, `f${String(i).padStart(2, '0')}_${t}s.jpg`)
+      const ok = await grab(t, outPath)
+      // 单帧失败不中断（对照原版 if os.path.isfile(out) 才收集）
+      if (!ok) continue
+      try {
+        frames.push({ path: outPath, timeSec: t, base64: fs.readFileSync(outPath).toString('base64') })
+      } catch (_) { /* 读盘失败跳过该帧 */ }
+    }
+    if (!frames.length) throw new Error('视频关键帧提取失败，请检查视频文件是否损坏。')
+    return { frames, outDir }
+  })()
+}
+
+/**
  * 嵌入封面到视频
  */
 function embedCover(ffmpegPath, video, cover, outPath, durationSec = 2) {
@@ -269,6 +333,15 @@ function createFfmpegGate(ipcMain, studioRoot) {
     return await extractThumb(ffmpegPath, video, atSec, w)
   })
 
+  ipcMain.handle('ffmpeg:extractFrames', async (event, payload) => {
+    const p = payload || {}
+    try {
+      return await extractFramesBatch(
+        ffmpegPath, p.videoPath, p.times, p.tag, p.width || 512, p.quality || 4
+      )
+    } catch (err) { return { error: (err && err.message) || String(err) } }
+  })
+
   ipcMain.handle('ffmpeg:embedCover', async (event, video, cover, outPath, durationSec) => {
     return await embedCover(ffmpegPath, video, cover, outPath, durationSec)
   })
@@ -286,4 +359,4 @@ function createFfmpegGate(ipcMain, studioRoot) {
   })
 }
 
-module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize }
+module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize, extractFramesBatch }

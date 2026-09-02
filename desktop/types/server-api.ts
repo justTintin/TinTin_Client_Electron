@@ -296,10 +296,32 @@ export namespace LLMAPI {
     role: 'system' | 'user' | 'assistant' | 'tool'
     content: string
   }
+  /**
+   * OpenAI 风格多模态 content 分段（视觉模型带图输入）。
+   * 对照原客户端 studio/gui/hook_score_page.py L211-216 与
+   * marketing_detect_page.py L124-128：
+   *   content = [{"type":"text","text":...}, {"type":"image_url",
+   *              "image_url":{"url":"data:image/jpeg;base64,..."}}]
+   * 主进程 llm:chat 原样透传 messages（server-proxy.js），服务端选视觉模型。
+   */
+  export interface ChatContentPart {
+    type: 'text' | 'image_url'
+    text?: string
+    image_url?: { url: string }
+  }
+  /**
+   * 请求侧 message：content 允许 string（纯文本）或分段数组（多模态）。
+   * ChatMessage 结构上可赋值给它，故既有纯文本调用点无需改动；
+   * 响应侧仍用 ChatMessage（content: string），避免破坏既有消费方。
+   */
+  export interface ChatRequestMessage {
+    role: 'system' | 'user' | 'assistant' | 'tool'
+    content: string | ChatContentPart[]
+  }
   export interface ChatCompletionsRequest {
     /** API-GUIDE 契约默认 ""（服务端使用其默认模型），客户端允许不传 */
     model?: string
-    messages: ChatMessage[]
+    messages: ChatRequestMessage[]
     temperature?: number
     stream?: boolean
   }

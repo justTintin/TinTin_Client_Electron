@@ -100,14 +100,24 @@
     }
 
     document.getElementById('installBtn').onclick = async () => {
-      const filePath = await ipcRenderer.invoke('dialog:openFile', {
-        title: '选择扩展文件',
-        filters: [{ name: '扩展', extensions: ['crx', 'zip'] }]
-      })
-      if (!filePath) return
-      const res = await ipcRenderer.invoke('browser:extensionInstall', filePath)
-      showTip(res && res.message || (res && res.success ? '安装成功' : '安装失败'), !(res && res.success))
-      load()
+      // 选文件/安装全程标记面板忙态：否则原生文件对话框一弹，面板 blur 150ms
+      // 后被自动销毁，选完文件安装 IPC 无渲染上下文可回，安装永不执行且无提示（2026-09-02）
+      ipcRenderer.send('browser:panelBusy', true)
+      try {
+        const filePath = await ipcRenderer.invoke('dialog:openFile', {
+          title: '选择扩展文件',
+          filters: [{ name: '扩展', extensions: ['crx', 'zip'] }]
+        })
+        if (!filePath) return
+        const res = await ipcRenderer.invoke('browser:extensionInstall', filePath)
+        showTip(res && res.message || (res && res.success ? '安装成功' : '安装失败'), !(res && res.success))
+        load()
+      } catch (e) {
+        // 任何环节异常都给提示（修复「不提醒」：此前异常静默，用户无从知晓原因）
+        showTip('安装失败：' + ((e && e.message) || e), true)
+      } finally {
+        ipcRenderer.send('browser:panelBusy', false)
+      }
     }
     document.getElementById('closeBtn').onclick = () => ipcRenderer.send('browser:closeExtensionsPanel')
     addEventListener('DOMContentLoaded', load)

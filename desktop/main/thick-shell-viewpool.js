@@ -403,7 +403,16 @@ function createViewPoolCtl({ getWindow, EventBus, resolveThemePref }) {
     if (!mw || mw.isDestroyed()) return
     try {
       const views = mw.getBrowserViews?.() || []
-      views.forEach(v => mw.removeBrowserView(v))
+      views.forEach(v => {
+        // 分离前暂停页面内 video/audio（2026-09-02 用户反馈：B站详情切到其他平台仍有
+        // B站声音——removeBrowserView 只是隐藏不销毁，webContents 里的媒体会继续播放）
+        try {
+          v.webContents
+            .executeJavaScript('try{document.querySelectorAll("video,audio").forEach(function(m){try{m.pause()}catch(e){}})}catch(e){}', true)
+            .catch(() => {})
+        } catch (_) {}
+        try { mw.removeBrowserView(v) } catch (_) {}
+      })
     } catch (_) {}
   }
 

@@ -8,6 +8,7 @@ const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfig
 const { createDownloadManager } = require('./download-manager')
 const { createFfmpegGate } = require('./ffmpeg-gate')
 const browserWindow = require('./browser-window')
+const { createPanelAutoClose } = require('./floating-panel-logic')
 
 // 统一 userData 路径（dev 用 name、打包用 productName，必须显式 setName 保持一致，
 // 否则 BrowserView 的 persist:* 分区（登录态）会丢失）
@@ -138,8 +139,9 @@ function closeHistoryPanel() {
 /* ─────────── 浮动面板：扩展/设置（独立原生 BrowserWindow，天然在 BrowserView 之上；
    与历史面板同款方案：主进程创建子窗口加载独立 HTML，渲染层仅传锚点坐标）─────────── */
 let floatingPanelWindow = null
-let _fpReady = false
-let _fpBlurTimer = null
+/** 面板自动关闭状态机（floating-panel-logic.js；busy=文件对话框/安装流程中暂停自动关闭，
+ *  修复「点安装扩展选完文件面板已被销毁，安装永不执行且无提示」2026-09-02） */
+let _fpAutoClose = null
 
 // D4 锚点修正：同 openHistoryPanel（浏览器窗口已传绝对坐标不偏移；主窗口加偏移），面板挂调用方窗口
 function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, anchorY, data, parentWin) {
@@ -193,16 +195,17 @@ function _openFloatingPanel(name, htmlFile, panelWidth, panelHeight, anchorX, an
     }
   })
   let _r = false
-  floatingPanelWindow.on('show', () => { _r = true })
+  _fpAutoClose = createPanelAutoClose({ closeDelayMs: 150, onFire: () => _closeFloatingPanel() })
+  floatingPanelWindow.on('show', () => { _r = true; _fpAutoClose.markShow() })
   floatingPanelWindow.on('blur', () => {
     if (!_r) return
-    if (_fpBlurTimer) clearTimeout(_fpBlurTimer)
-    _fpBlurTimer = setTimeout(() => { _closeFloatingPanel() }, 150)
+    _fpAutoClose.blur()
   })
+  floatingPanelWindow.on('closed', () => { try { _fpAutoClose.dispose() } catch (_) {} })
 }
 
 function _closeFloatingPanel() {
-  if (_fpBlurTimer) { clearTimeout(_fpBlurTimer); _fpBlurTimer = null }
+  try { _fpAutoClose && _fpAutoClose.dispose() } catch (_) {}
   if (floatingPanelWindow && !floatingPanelWindow.isDestroyed()) {
     floatingPanelWindow.close()
     floatingPanelWindow = null
@@ -730,10 +733,18 @@ ipcMain.on('browser:openSettingsPanel', (e, x, y, data) => _openFloatingPanel('s
 ipcMain.on('browser:closeSettingsPanel', () => _closeFloatingPanel())
 ipcMain.on('browser:openDownloadsPanel', (e, x, y) => _openFloatingPanel('downloads', 'downloads-panel.html', 400, 480, x, y, null, BrowserWindow.fromWebContents(e.sender) || mainWindow))
 ipcMain.on('browser:closeDownloadsPanel', () => _closeFloatingPanel())
+// 面板忙态：扩展安装选文件等模态流程中暂停 blur 自动关闭（否则面板被销毁、安装永不执行且无提示，2026-09-02）
+ipcMain.on('browser:panelBusy', (e, busy) => {
+  if (!floatingPanelWindow || floatingPanelWindow.isDestroyed()) return
+  if (e.sender !== floatingPanelWindow.webContents) return
+  try { _fpAutoClose && _fpAutoClose.setBusy(!!busy) } catch (_) {}
+})
 
 // IPC: dialog
 ipcMain.handle('dialog:openFile', async (event, params) => {
-  const result = await dialog.showOpenDialog(mainWindow, {
+  // 父窗口取发起方（浮动面板选文件时对话框挂面板/其父窗口，避免被浏览器独立窗口遮挡）
+  const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow
+  const result = await dialog.showOpenDialog(parent, {
     title: params?.title || '选择文件',
     properties: ['openFile'],
     filters: params?.filters || []

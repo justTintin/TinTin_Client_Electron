@@ -3,7 +3,7 @@
 // 基准：原客户端 studio/gui/client_task_thread.py L14-61 + studio/utils/
 //       client_task_worker.py（领取→执行→上报三段，逐行为对照移植）。
 //
-// 服务端契约（openapi-latest.json 权威，禁止臆造）：
+// 服务端契约（API-GUIDE 权威，禁止臆造）：
 //   · GET  /tasks/assigned/{machine_id}   客户端领取入口（领取即置 running）
 //        描述返回 [{task_id, capability, params, executor}]；空数组 = 无任务
 //        （兼容 {tasks:[...]} 与裸数组两种响应形态，同原版 pickup_tasks）
@@ -41,7 +41,7 @@ const DOWNLOAD_POLL_MS = 2000          // 下载目录轮询间隔（原版 2s�
 const SLEEP_CHUNK_MS = 500             // 轮询间隔分段睡（可被 stop 打断，原版 L55-58）
 const _DOWNLOAD_CAP_HINTS = ['download', 'browser', '素材下载', '下载']
 
-// ── 服务端路径（openapi-latest.json /tasks/* 契约；与 API_ENDPOINTS 不重复定义）──
+// ── 服务端路径（API-GUIDE /tasks/* 契约；与 API_ENDPOINTS 不重复定义）──
 const TASK_ASSIGNED = (machineId) => `/tasks/assigned/${encodeURIComponent(machineId)}`
 const TASK_REPORT = (taskId) => `/tasks/${encodeURIComponent(taskId)}/report`
 
@@ -72,7 +72,7 @@ function parsePickupResponse(data) {
 }
 
 /**
- * report 字段编组（对照 openapi Body_report_task_tasks__task_id__report_post：
+ * report 字段编组（对照 API-GUIDE Body_report_task_tasks__task_id__report_post：
  * machine_id 必填；status=ok|failed；error 有值才带；result 非空才带；
  * file_path 存在且为字符串时以 {path} 对象占位（multipartUpload 识别为文件 part，
  * 服务端保存到 output/upload/ 续接处理）。

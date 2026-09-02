@@ -18,6 +18,7 @@ import type { LutEntry } from '../../composables/useSettingsIntegration'
 
 defineProps<{
   cacheDir: string
+  cacheDirIsDefault: boolean
   lutList: LutEntry[]
   hint: string
   cacheClearing: boolean
@@ -47,11 +48,11 @@ const emit = defineEmits<{
         <div>
           <div class="setting-label">缓存目录</div>
           <div class="setting-desc">
-            智能混剪、分割等生成的中间文件统一存放目录{{ cacheDir ? '' : '（未配置，使用默认 outputs 目录）' }}
+            智能混剪、分割等生成的中间文件统一存放目录{{ cacheDirIsDefault ? '（当前为默认 outputs 目录）' : '' }}
           </div>
         </div>
         <div class="setting-row-right">
-          <span v-if="cacheDir" class="cache-path" :title="cacheDir">{{ cacheDir }}</span>
+          <span v-if="cacheDir" class="cache-path" :class="{ 'is-default': cacheDirIsDefault }" :title="cacheDir">{{ cacheDir }}</span>
           <button class="btn-secondary-sm" @click="emit('pick-cache-dir')">
             {{ cacheDir ? '更改' : '浏览…' }}
           </button>
@@ -107,6 +108,11 @@ const emit = defineEmits<{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.cache-path.is-default {
+  color: var(--foreground-muted);
+  border-style: dashed;
+  opacity: 0.75;
 }
 
 /* LUT 列表（对齐原 _load_lut_config 列表语义：name → path 行） */

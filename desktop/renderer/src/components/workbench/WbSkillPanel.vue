@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// WbSkillPanel.vue — 右侧技能管理面板（2026-09-01 用户裁决：技能管理从弹窗迁到
+// WbSkillPanel.vue — 右侧技能广场面板（2026-09-01 用户裁决：技能从弹窗迁到
 // 右侧侧边栏，入口在工作台左侧「定时任务」下方；内容=原 SkillManagerDialog）：
 //   · 安装单个 .md / 含 SKILL.md 的目录 / ZIP 包（对话框选择来源）
 //   · 内置技能（随包分发）只读展示、不可卸载、不上传（用户口径）；用户技能可卸载
@@ -70,10 +70,10 @@ function subText(s: SkillEntry): string {
 </script>
 
 <template>
-  <!-- ─── 右侧技能管理面板（340px，由容器 wrap 控制开合动画） ─── -->
-  <aside class="skill-panel" aria-label="技能管理">
+  <!-- ─── 右侧技能广场面板（340px，由容器 wrap 控制开合动画） ─── -->
+  <aside class="skill-panel" aria-label="技能广场">
     <div class="skill-panel-head">
-      <span class="skill-panel-title">技能管理</span>
+      <span class="skill-panel-title">技能广场</span>
       <button class="skill-panel-x" title="关闭" @click="emit('close')">×</button>
     </div>
     <p class="skill-panel-tip">

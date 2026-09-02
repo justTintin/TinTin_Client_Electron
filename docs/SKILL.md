@@ -1,6 +1,6 @@
 ---
 name: "software-engineering-iron-rules"
-description: "强制执行软件工程铁律（修复禁git回退、拆文件验完整性、py_compile/单测必跑、不混层、只改指出的点、任务走服务端队列）。任何修改代码/提交/拆分文件/修复/重构的任务，第一步必须立刻调用本 Skill。"
+description: "强制执行软件工程铁律（修复禁git回退、拆文件验完整性、py_compile/单测必跑、不混层、只改指出的点、任务走服务端队列、API契约唯一参考API-GUIDE.md）。任何修改代码/提交/拆分文件/修复/重构的任务，第一步必须立刻调用本 Skill。"
 ---
 
 # 软件工程铁律 Software Engineering Iron Rules
@@ -94,6 +94,23 @@ python_embeded\python.exe -m mypy <改动的文件>   # 渐进覆盖
 3. **Runner 层**：有副作用，调用 client / subprocess 真正执行
 
 **必须先写测试（红）→ 实现（绿）→ 重构**，最后才组装到 UI。UI 改动要能在"修改最小、可回退"的前提下独立完成，不允许 UI 内嵌三段逻辑的任一段。
+
+### IRON-12 API 契约唯一参考 = API-GUIDE.md（禁止使用旧契约 / openapi-latest.json 仅为静态快照）
+
+> **背景**：项目根目录的 `openapi-latest.json` 是某次导出的**静态快照**，不会自动跟随服务端迭代更新，部分端点/字段可能已过时（TTS 参数映射错误即为前车之鉴）。
+
+**铁律**：
+- 所有客户端 → 服务端的 API 调用，**唯一契约参考** = `API-GUIDE.md`（`/guide` 在线页，已同步双引擎 + `sample_id`）
+- ❌ **禁止**以 `openapi-latest.json` 作为新增/修改接口字段的依据
+- ❌ **禁止**凭记忆或旧代码臆造接口字段名、路径、请求体结构
+- ✅ 新增或修改 API 调用时，**必须**先查阅 `API-GUIDE.md` 确认端点、字段名、请求/响应结构
+- ✅ 代码注释中标注契约来源时统一写 `API-GUIDE`（不再写 `openapi-latest.json 已核实`）
+
+**执行要求**：
+1. 新增接口调用 → 先读 `API-GUIDE.md` 核对端点存在性 + 字段名 + 请求体结构
+2. 修改已有接口参数 → 以 `API-GUIDE.md` 为准，发现与代码不一致时**立即对齐修正**
+3. `API-GUIDE.md` 与 `openapi-latest.json` 冲突时 → **以 `API-GUIDE.md` 为准**
+4. 双引擎（服务端/本地）接口差异 → 以 `API-GUIDE.md` 中对应章节为准，注意 `sample_id` 等新增字段
 
 ---
 
@@ -193,6 +210,7 @@ fix(storyboard_page): _open_mg 跳转索引 switch_page(35) → 31 + switch_drea
 | — | 顺手把底部查看日志按钮移到操作列时，顺便重写了列表的列宽分配逻辑 | 原"总分列"宽度被挤成 0，显示全空，用户反馈"总分拿不到" | IRON-08 |
 | — | 提交信息"修复跳转问题" | 第二周再次翻提交历史完全无法定位哪次修了 MG 跳转 vs 脚本成片同步 | IRON-09 |
 | — | 客户端本地 `ThreadPoolExecutor(3)` 同时跑 3 段素材下载 | 服务端限速触发 429 + 本地文件锁冲突，文件一半写入损坏 | IRON-11 |
+| — | 按 `openapi-latest.json` 旧快照实现 TTS 接口，字段名与服务端实际不一致 | `voice_id` vs `speaker`、`clone_ref_file` vs `prompt_audio`，TTS 调用全部 400 | IRON-12 |
 
 ---
 

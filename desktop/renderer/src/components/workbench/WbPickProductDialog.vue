@@ -3,7 +3,7 @@
 // 原版 _ProductPickerDialog（L810-875）+ _pick_product L1778-1784：
 // 单选，重复选择直接覆盖当前产品胶囊。
 // 2026-09-01 用户裁决（预览模式）：左侧列表仅型号行，点击仅切换右侧预览
-// （选中产品的性能参数+核心卖点全文，像素材预览），预览区内「选择该产品」
+// （选中产品的性能参数+核心卖点全文，像素材预览），预览区下方「选择该产品」
 // 按钮才真正选中——预览与选中语义分离（对齐音频 Tab 的选择按钮口径）。
 // 行文案/预览内容为纯展示拼接，业务在容器 chat.addCtxProduct。
 import WbPickerDialog from './WbPickerDialog.vue'
@@ -53,7 +53,7 @@ function pointLines(it: PickerItem): string[] {
       <span class="prow">{{ mainText(item) }}</span>
     </template>
 
-    <template #preview="{ item, confirm }">
+    <template #preview="{ item }">
       <!-- 空态：未选择任何产品 -->
       <div v-if="!item" class="pv-empty">
         点击左侧产品查看性能参数与核心卖点
@@ -61,24 +61,40 @@ function pointLines(it: PickerItem): string[] {
       <div v-else class="pv">
         <div class="pv-title">{{ previewTitle(item) }}</div>
 
-        <div class="pv-section">性能参数</div>
-        <div v-if="specLines(item).length" class="pv-lines">
-          <div v-for="(l, i) in specLines(item)" :key="'sp' + i" class="pv-line">{{ l }}</div>
+        <!-- 性能参数卡片 -->
+        <div class="pv-card">
+          <div class="pv-card-head">
+            <svg class="pv-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <span>性能参数</span>
+          </div>
+          <div v-if="specLines(item).length" class="pv-tags">
+            <span v-for="(l, i) in specLines(item)" :key="'sp' + i" class="pv-tag">{{ l }}</span>
+          </div>
+          <div v-else class="pv-none">暂无性能参数</div>
         </div>
-        <div v-else class="pv-none">暂无性能参数</div>
 
-        <div class="pv-section">核心卖点</div>
-        <div v-if="pointLines(item).length" class="pv-lines">
-          <div v-for="(l, i) in pointLines(item)" :key="'pt' + i" class="pv-line">{{ l }}</div>
-        </div>
-        <div v-else class="pv-none">暂无核心卖点</div>
-
-        <div class="pv-ops">
-          <button class="pv-confirm" title="选中该产品，加入对话上下文（原「确定」语义）" @click="confirm(item)">
-            选择该产品
-          </button>
+        <!-- 核心卖点卡片 -->
+        <div class="pv-card">
+          <div class="pv-card-head">
+            <svg class="pv-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+            <span>核心卖点</span>
+          </div>
+          <div v-if="pointLines(item).length" class="pv-tags">
+            <span v-for="(l, i) in pointLines(item)" :key="'pt' + i" class="pv-tag pv-tag--accent">{{ l }}</span>
+          </div>
+          <div v-else class="pv-none">暂无核心卖点</div>
         </div>
       </div>
+    </template>
+
+    <template #preview-footer="{ item, confirm }">
+      <button class="pv-confirm" title="选中该产品，加入对话上下文（原「确定」语义）" @click="confirm(item)">
+        选择该产品
+      </button>
     </template>
   </WbPickerDialog>
 </template>
@@ -100,7 +116,7 @@ function pointLines(it: PickerItem): string[] {
 .pv {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .pv-empty {
@@ -122,37 +138,56 @@ function pointLines(it: PickerItem): string[] {
   border-bottom: 1px solid var(--border);
 }
 
-.pv-section {
-  margin-top: var(--space-2);
+/* 分组卡片 */
+.pv-card {
+  background: var(--surface-container);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.pv-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   font-weight: var(--font-weight-semibold);
   color: var(--muted-foreground);
+  margin-bottom: var(--space-2);
 }
 
-.pv-lines {
+.pv-icon {
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+/* 标签式列表 */
+.pv-tags {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
-.pv-line {
-  font-size: 13px;
-  line-height: 1.6;
+.pv-tag {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--foreground);
+  background: var(--surface-container-high);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   word-break: break-word;
+}
+
+.pv-tag--accent {
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
 }
 
 .pv-none {
   font-size: 12px;
   color: var(--muted-foreground);
-}
-
-.pv-ops {
-  margin-top: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
-  display: flex;
-  justify-content: flex-end;
 }
 
 .pv-confirm {

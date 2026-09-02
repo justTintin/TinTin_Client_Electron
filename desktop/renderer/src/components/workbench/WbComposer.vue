@@ -6,8 +6,8 @@
 //   → 智能体快捷条独立一行（输入框容器外部下方；2026-08-31 用户裁决：
 //     纯列表不持有选中态，点击条目=插唤醒词；超出宽度折叠进「更多」浮层）+ 列表失败提示
 //   → 提示行：Enter 快捷键说明 + 任务选择器（agent 模式：对话/智能体/计划任务三档）
-// 技能入口迁移（2026-09-01 用户裁决）：工具行「⚙技能」按钮移除，技能管理改由
-//   左侧栏「技能管理」入口打开右侧面板；快捷条仅服务端智能体（本地技能不再合并），
+// 技能入口迁移（2026-09-01 用户裁决）：工具行「⚙技能」按钮移除，技能广场改由
+//   左侧栏「技能广场」入口打开右侧面板；快捷条仅服务端智能体（本地技能不再合并），
 //   技能调用保留斜杠菜单口径（/ 唤起技能候选）。
 // 移除：模式分段切换与模型下拉（模型只读 llm.defaultModel 偏好，系统设置可改）。
 // 斜杠菜单：输入 / 唤起智能体候选（isAgentPrefix/filterSlashCandidates），
@@ -74,6 +74,8 @@ const emit = defineEmits<{
   (e: 'pick-material'): void
   (e: 'pick-script'): void
   (e: 'select-entry', key: string): void
+  /** 智能体选中（斜杠菜单；传 agent_id 供 agentChat 请求） */
+  (e: 'select-agent', agentId: string): void
 }>()
 
 const innerText = computed({
@@ -211,14 +213,20 @@ function closeSlash() {
 }
 
 /** 斜杠选中：光标前 /关键字 段替换为唤醒词（原版 _SlashPopup._insert_agent）。
- *  技能候选用技能前缀（请按技能【…】执行），智能体用智能体唤醒词。 */
+ *  技能候选用技能前缀（请按技能【…】执行），智能体用智能体唤醒词。
+ *  2026-09-02 修复：智能体选中时 emit select-agent 传 agent_id。 */
 async function insertWake(agent: WorkbenchAgent | SkillCandidate) {
   const el = textareaRef.value
   const caret = el?.selectionStart ?? props.modelValue.length
-  const r = (agent as SkillCandidate).source === 'skill'
+  const isSkill = (agent as SkillCandidate).source === 'skill'
+  const r = isSkill
     ? applySkillWakeInsert(props.modelValue, caret, agent as SkillCandidate)
     : applyAgentWakeInsert(props.modelValue, caret, agent)
   emit('update:modelValue', r.text)
+  // 智能体选中：通知父组件设置 agent_id（服务端严格校验）
+  if (!isSkill) {
+    emit('select-agent', String((agent as WorkbenchAgent).id || ''))
+  }
   closeSlash()
   await nextTick()
   if (el) {

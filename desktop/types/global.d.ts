@@ -196,13 +196,10 @@ declare interface TintinBridgeServer {
     onProgress?: (percent: number) => void
   ): Promise<IpcError<ASRAPI.TranscribeResponse>>
   ttsGenerate(
-    payload: TTSAPI.GenerateRequest,
-    onProgress?: (percent: number) => void
+    payload: TTSAPI.GenerateRequest
   ): Promise<IpcError<TTSAPI.GenerateResponse>>
-  ttsCloneVoice(
-    payload: TTSAPI.CloneVoiceRequest,
-    onProgress?: (percent: number) => void
-  ): Promise<IpcError<TTSAPI.CloneVoiceResponse>>
+  /** 将 base64 音频数据写入本地文件（TTS 响应 audio_base64 → 本地落盘） */
+  ttsSaveAudio(payload: { base64: string; savePath: string }): Promise<string | { error: string }>
   ttsVoicesList(params?: {
     language?: string
     page?: number
@@ -214,6 +211,10 @@ declare interface TintinBridgeServer {
     page?: number
     page_size?: number
   }): Promise<IpcError<TTSAPI.VoicesSamplesResponse>>
+  ttsUploadSample(
+    payload: TTSAPI.UploadSampleRequest,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<TTSAPI.UploadSampleResponse>>
 
   // ---------- workflow（CoverMaker 一键成片编排）----------
   workflowRun(

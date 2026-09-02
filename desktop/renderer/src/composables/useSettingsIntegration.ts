@@ -31,6 +31,7 @@ export function useSettingsIntegration() {
   const autoStart = ref(false)
   const autoStartLoading = ref(false)
   const cacheDir = ref('')
+  const cacheDirIsDefault = ref(false)  // true = 显示的是默认 outputs 目录（未用户配置）
   const lutList = ref<LutEntry[]>([])
   const sysInfoRows = ref<Array<{ label: string; value: string }>>([])
   const sysInfoLoading = ref(false)
@@ -64,7 +65,8 @@ export function useSettingsIntegration() {
     const t = getTintin()
     if (!t?.dialog?.openDir) return
     const r = await t.dialog.openDir({ title: '选择本地缓存目录' })
-    const d = Array.isArray(r?.filePaths) ? r.filePaths[0] : (r?.filePaths ?? r?.path)
+    // 主进程 dialog:openDir 返回 string（路径）或 null（取消）
+    const d = typeof r === 'string' ? r : (Array.isArray(r?.filePaths) ? r.filePaths[0] : (r?.filePaths ?? r?.path))
     if (!d) return
     const ok = await writeCfg(CACHE_DIR_KEY, String(d))
     if (ok) cacheDir.value = String(d)
@@ -136,7 +138,19 @@ export function useSettingsIntegration() {
   /** 容器 onMounted 编排：全部加载 */
   async function loadIntegrationCfg(): Promise<void> {
     await loadAutoStart()
-    cacheDir.value = String((await readCfg(CACHE_DIR_KEY, '')) || '')
+    const saved = await readCfg(CACHE_DIR_KEY, '')
+    if (saved) {
+      cacheDir.value = String(saved)
+      cacheDirIsDefault.value = false
+    } else {
+      // 未配置时显示默认 outputs 目录
+      const t = getTintin()
+      try {
+        const ws = t?.app?.getPath ? await t.app.getPath('workspace') : ''
+        cacheDir.value = ws ? String(ws) : ''
+        cacheDirIsDefault.value = !!ws
+      } catch (_) { cacheDir.value = ''; cacheDirIsDefault.value = false }
+    }
     await loadLuts()
     void loadSysInfo()
   }
@@ -147,6 +161,7 @@ export function useSettingsIntegration() {
     autoStartLoading,
     toggleAutoStart,
     cacheDir,
+    cacheDirIsDefault,
     pickCacheDir,
     lutList,
     addLut,

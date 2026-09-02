@@ -88,7 +88,9 @@ const {
   addCtxAudio,
   downloadVideoAsset,
   quoteMessage,
-  handleRegenerate
+  handleRegenerate,
+  selectedAgentId,
+  setSelectedAgent,
 } = chat
 
 /* ── 智能体快捷条域（2026-08-31 用户裁决：移除「对话」llm 直连入口；
@@ -100,7 +102,7 @@ const {
 } = useWorkbenchAgents()
 
 /* ── 技能域（2026-09-01 用户裁决：快捷条仅服务端智能体，技能不再合并；
-   技能管理由左侧栏入口打开右侧面板；技能调用保留斜杠菜单口径） ── */
+   技能广场由左侧栏入口打开右侧面板；技能调用保留斜杠菜单口径） ── */
 const skills = useSkills()
 const {
   builtin: skillBuiltin,
@@ -130,7 +132,7 @@ const agentList = computed(() =>
   )
 )
 
-/* ── 技能管理右侧面板（左侧栏「技能管理」入口；安装/卸载后列表自动刷新） ── */
+/* ── 技能广场右侧面板（左侧栏「技能广场」入口；安装/卸载后列表自动刷新） ── */
 const showSkillManager = ref(false)
 function onOpenSkills() {
   void loadSkills()
@@ -188,10 +190,17 @@ function onPickScript(item: PickerItem) {
 
 /** 快捷条点击（2026-08-31 用户裁决：智能体条只是列表，不应有选择态；
  *  调用统一走输入框——点击条目 = 注入唤醒前缀，与 / 菜单同口径
- *  （原版 _on_agent_selected L1537-1549 applyWakePrefix：换选时剥离旧前缀）。 */
+ *  （原版 _on_agent_selected L1537-1549 applyWakePrefix：换选时剥离旧前缀）。
+ *  2026-09-02 修复：同时设置 selectedAgentId，供 agentChat 请求传递 agent_id。 */
 function onSelectEntry(key: string) {
   const entry = agentEntries.value.find((e) => e.key === key)
   if (!entry) return
+  // 设置选中智能体的 agent_id（服务端严格校验，2026-08-16 起）
+  if (entry.kind === 'agent' && entry.agentId) {
+    setSelectedAgent(entry.agentId)
+  } else {
+    setSelectedAgent('') // 技能/其他：不指定 agent_id
+  }
   inputText.value = applyWakePrefix(inputText.value, buildAgentWakeText(entry))
   nextTick(() => composerComp.value?.focusEnd())
 }
@@ -458,6 +467,7 @@ async function onExportTasks() {
         @pick-material="showMaterial = true"
         @pick-script="showScript = true"
         @select-entry="onSelectEntry"
+        @select-agent="setSelectedAgent"
       />
     </main>
 
@@ -476,7 +486,7 @@ async function onExportTasks() {
       />
     </div>
 
-    <!-- ─── 右侧技能管理面板（左侧栏入口；与预览面板互斥，同款收起动画） ─── -->
+    <!-- ─── 右侧技能广场面板（左侧栏入口；与预览面板互斥，同款收起动画） ─── -->
     <div class="skill-panel-wrap" :class="{ 'is-open': showSkillManager }">
       <WbSkillPanel
         :open="showSkillManager"
@@ -605,7 +615,7 @@ async function onExportTasks() {
   width: 340px;
 }
 
-/* ─── 右侧技能管理面板容器：与预览面板同款收起动画（两者互斥，同占右侧栏） ─── */
+/* ─── 右侧技能广场面板容器：与预览面板同款收起动画（两者互斥，同占右侧栏） ─── */
 .skill-panel-wrap {
   flex: 0 0 auto;
   width: 0;

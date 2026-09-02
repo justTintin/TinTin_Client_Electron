@@ -104,6 +104,13 @@ export function useWorkbenchChat(options?: {
   const planMode = ref<PlanExecMode>('agent')
   /** 服务端模型偏好（llm.defaultModel；空 = 服务端默认模型） */
   const selectedModel = ref<string>('')
+  /** 当前选中的智能体 agent_id（服务端严格校验，2026-08-16 起；空=不指定） */
+  const selectedAgentId = ref<string>('')
+
+  /** 设置选中智能体（快捷条/斜杠菜单点击时调用；传空=取消选中） */
+  function setSelectedAgent(agentId: string) {
+    selectedAgentId.value = String(agentId || '')
+  }
 
   /** 初始化模型偏好：读设置页同源偏好（electron-store 单一真相源，不拉模型列表） */
   async function initModel() {
@@ -465,6 +472,7 @@ export function useWorkbenchChat(options?: {
         const r: AgentAPI.ChatResponse | null | { error: string } = await t.server.agentChat({
           message: appendContextText(text, agentCtx),
           history: plainHistory.length ? plainHistory : undefined,
+          agent_id: selectedAgentId.value || undefined,
           model: selectedModel.value || undefined,
           mode: reqMode,
           sessionId: sessionId.value || undefined
@@ -640,6 +648,7 @@ export function useWorkbenchChat(options?: {
     planMode,
     confirmPlanExec,
     selectedModel,
+    selectedAgentId,
     sessionId,
     attachments,
     ctxProduct,
@@ -651,6 +660,7 @@ export function useWorkbenchChat(options?: {
     openSettings,
     initModel,
     setMode,
+    setSelectedAgent,
     addAttachments,
     addScreenshots,
     removeAttachment,

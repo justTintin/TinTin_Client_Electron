@@ -5,7 +5,7 @@
 //   · 只有一个统一服务端地址（electron-store 'server.url' 单一键，经 IPC 持久化），
 //     保存后主进程 getServerUrl 即时生效；LLM 凭证由服务端持有，客户端不配置
 //   · 模型列表：服务端地址保存生效后 / 设置页进入时从服务端 GET /llm/models 拉取
-//   · 取消独立「LLM 测试连接」，改为按功能（openapi-latest.json 实际端点）分别测试
+//   · 取消独立「LLM 测试连接」，改为按功能（API-GUIDE 实际端点）分别测试
 // 容器只调用一次本 composable 并以 props/emits 向卡片子组件接线，
 // 不与其他 composable 互相 import 内部状态（配置读写走 useSettingsConfig）。
 // ═══════════════════════════════════════════════════════════════
@@ -181,7 +181,7 @@ export function useSettingsGeneral() {
   }
 
   /* ── 按功能测试连接（用户裁决 2026-08-28：取消独立 LLM 测试）──
-     端点全部核对自项目根 openapi-latest.json（api-contract.generated.ts 同源），禁止臆造：
+     端点全部核对自 API-GUIDE（api-contract.generated.ts 同源），禁止臆造：
      · LLM  GET  /llm/models      模型列表服务（业务级 llm:models）
      · OCR  POST /material/ocr    无健康端点：发最小空请求，以服务端校验响应(4xx)判定端点可达
      · 向量 GET  /clip/health     CLIP 图文向量服务

@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // agent-chat-ipc.js — 服务端代理·智能体对话域 IPC（工作台 P1 真实链路）
-// 对照 openapi-latest.json 实际契约（禁止臆造）与原客户端 utils/agent_client.py：
+// 对照 API-GUIDE 实际契约（禁止臆造）与原客户端 utils/agent_client.py：
 //   · agent:agents                 GET  /agent/agents（智能体列表，工作台快捷条/斜杠菜单数据源）
 //   · agent:chat                   POST /agent/chat（JSON，max_rounds=3，stream:false）
 //   · agent:sessions               GET  /agent/sessions?machine_id=&limit=

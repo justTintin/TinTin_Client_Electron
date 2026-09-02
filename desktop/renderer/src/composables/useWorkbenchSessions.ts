@@ -47,7 +47,7 @@ function truncate(text: string, max: number): string {
  *（服务端会话续接 + 素材池归属），启动恢复、新建、切换、内容回写。
  *
  * 口径对照（对齐清单 W2/W7）：
- * - 服务端会话端点已核对存在（GET/DELETE /agent/sessions*，openapi-latest.json），
+ * - 服务端会话端点已核对存在（GET/DELETE /agent/sessions*，API-GUIDE），
  *   故按「服务端会话续接」接线；服务端无会话消息历史读取端点，消息正文按
  *   原版 _save_chat 口径本地持久化（electron-store），数据结构可切换。
  * - 删除服务端会话经 server.agentSessionDelete（素材池一并清理，对照原版

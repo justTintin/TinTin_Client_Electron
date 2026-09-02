@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 export namespace MontageAPI {
-  // M6/M8 条目⑥⑦：montage 域类型全面对齐 openapi-latest.json（禁止臆造）。
+  // M6/M8 条目⑥⑦：montage 域类型全面对齐 API-GUIDE（禁止臆造）。
   // 文件字段渲染层只传本地路径字符串，主进程 multipartUpload 包 {path} 读盘上传。
 
   /** POST /montage/split（Body_split_video_montage_split_post：file/material_id/clip_url 三选一） */

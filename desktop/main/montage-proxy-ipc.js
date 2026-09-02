@@ -11,7 +11,7 @@
 //     对照 BeatDetectWorker L376-484
 //   · prompt:video    POST /prompt/video    multipart（file + start_sec/end_sec）
 //     对照 gui/prompt_reverse_page.py _VideoPromptWorker L461-502
-// 契约（openapi-latest.json，禁止臆造）：
+// 契约（API-GUIDE，禁止臆造）：
 //   Body_montage_concat_montage_concat_post / Body_beat_compose_montage_beat_post /
 //   Body_montage_add_bgm_montage_bgm_post / Body_beatmap_audio_beatmap_post /
 //   Body_video_prompt_prompt_video_post

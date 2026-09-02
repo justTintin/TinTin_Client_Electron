@@ -12,7 +12,23 @@ export type TabKey = 'workbench' | 'browser' | 'ops-tools' | 'media-tools' | 'se
 /** 外观主题模式 */
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+/** 字体粗细档位 */
+export type FontWeightLevel = 'regular' | 'medium' | 'semibold'
+
+/**
+ * 字体粗细数值映射（显式定义每档所有变量值）
+ * 间距 ≥ 200，确保中文字体（微软雅黑/苹方）上可感知差异
+ */
+const FONT_WEIGHT_MAP: Record<FontWeightLevel, {
+  body: number; medium: number; semibold: number
+}> = {
+  regular:  { body: 400, medium: 500, semibold: 600 },
+  medium:   { body: 500, medium: 600, semibold: 700 },
+  semibold: { body: 600, medium: 700, semibold: 700 },
+}
+
 const THEME_STORAGE_KEY = 'tintin.themeMode'
+const FONT_WEIGHT_STORAGE_KEY = 'tintin.fontWeight'
 const DARK_CLASS = 'dark'
 
 /**
@@ -56,6 +72,56 @@ function systemPrefersDark(): boolean {
   } catch (_) {
     return false
   }
+}
+
+/**
+ * 字体粗细持久化：与主题模式同口径（IPC → localStorage）
+ */
+function readFontWeightStorage(): FontWeightLevel | null {
+  const w = window as any
+  if (w?.tintin?.config?.get) {
+    try {
+      const v = w.tintin.config.get('fontWeight')
+      if (v === 'regular' || v === 'medium' || v === 'semibold') return v
+    } catch (_) { /* ignore */ }
+  }
+  if (typeof localStorage !== 'undefined') {
+    const v = localStorage.getItem(FONT_WEIGHT_STORAGE_KEY)
+    if (v === 'regular' || v === 'medium' || v === 'semibold') return v
+  }
+  return null
+}
+
+function writeFontWeightStorage(level: FontWeightLevel) {
+  const w = window as any
+  let ipcOk = false
+  if (w?.tintin?.config?.set) {
+    try {
+      w.tintin.config.set('fontWeight', level)
+      ipcOk = true
+    } catch (_) { /* ignore */ }
+  }
+  if (!ipcOk && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(FONT_WEIGHT_STORAGE_KEY, level)
+    } catch (_) { /* ignore */ }
+  }
+}
+
+/** 将字体粗细档位应用到 DOM（覆盖 CSS 自定义属性） */
+function applyFontWeightToDom(level: FontWeightLevel) {
+  if (typeof document === 'undefined') return
+  const w = FONT_WEIGHT_MAP[level]
+  const root = document.documentElement.style
+  // body / lead / caption / regular / mono：基础字重
+  root.setProperty('--font-weight-body',    String(w.body))
+  root.setProperty('--font-weight-lead',    String(w.body))
+  root.setProperty('--font-weight-caption', String(w.body))
+  root.setProperty('--font-weight-regular', String(w.body))
+  root.setProperty('--font-weight-mono',    String(w.body))
+  // medium / semibold：显式映射
+  root.setProperty('--font-weight-medium',  String(w.medium))
+  root.setProperty('--font-weight-semibold', String(w.semibold))
 }
 
 function setHtmlDarkClass(enable: boolean) {
@@ -103,6 +169,9 @@ export const useAppStore = defineStore('app', () => {
   // 外观主题：light / dark / system，默认 system（亮色优先跟随系统）
   const themeMode = ref<ThemeMode>('system')
 
+  // 字体粗细：regular(400) / medium(500, 默认) / semibold(600)
+  const fontWeight = ref<FontWeightLevel>('medium')
+
   /** 解析后的实际主题（考虑 system → 系统偏好） */
   const resolvedTheme = computed<'light' | 'dark'>(() => {
     if (themeMode.value === 'system') return systemPrefersDark() ? 'dark' : 'light'
@@ -117,6 +186,16 @@ export const useAppStore = defineStore('app', () => {
       system: `跟随系统（当前系统：${systemPrefersDark() ? '暗色' : '亮色'}）`,
     }
     return labels[themeMode.value]
+  })
+
+  /** 字体粗细可读描述 */
+  const fontWeightLabel = computed(() => {
+    const labels: Record<FontWeightLevel, string> = {
+      regular:  '常规（400，系统默认）',
+      medium:   '中等（500，推荐）',
+      semibold: '半粗（600，更清晰）',
+    }
+    return labels[fontWeight.value]
   })
 
   /** matchMedia listener：system 模式下系统切主题时实时同步 */
@@ -160,6 +239,21 @@ export const useAppStore = defineStore('app', () => {
     applyDomTheme()
   }
 
+  /** 切换字体粗细（对外 API） */
+  function setFontWeight(level: FontWeightLevel) {
+    if (fontWeight.value === level) return
+    fontWeight.value = level
+    writeFontWeightStorage(level)
+    applyFontWeightToDom(level)
+  }
+
+  /** 启动初始化：读持久化 + 首次应用 */
+  function initFontWeight() {
+    const stored = readFontWeightStorage()
+    if (stored) fontWeight.value = stored
+    applyFontWeightToDom(fontWeight.value)
+  }
+
   /** 切换当前 Tab */
   function setActiveTab(tab: TabKey): void {
     activeTab.value = tab
@@ -187,10 +281,14 @@ export const useAppStore = defineStore('app', () => {
     themeMode,
     resolvedTheme,
     themeModeLabel,
+    fontWeight,
+    fontWeightLabel,
     setActiveTab,
     setVersion,
     toggleSidebar,
     setThemeMode,
+    setFontWeight,
     initTheme,
+    initFontWeight,
   }
 })

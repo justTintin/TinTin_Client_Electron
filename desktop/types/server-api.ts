@@ -158,9 +158,8 @@ export const API_PATHS = {
   },
   tts: {
     generate: '/voxcpm/tts',
-    cloneVoice: '/voxcpm/clone-voice',
-    voicesList: '/voices/list',
-    voicesSamples: '/voices/samples',
+    voicesList: '/voice/samples',
+    voicesSamples: '/voice/samples',
   },
   workflow: {
     run: '/workflow/run',
@@ -299,7 +298,7 @@ export namespace LLMAPI {
     content: string
   }
   export interface ChatCompletionsRequest {
-    /** openapi 契约默认 ""（服务端使用其默认模型），客户端允许不传 */
+    /** API-GUIDE 契约默认 ""（服务端使用其默认模型），客户端允许不传 */
     model?: string
     messages: ChatMessage[]
     temperature?: number
@@ -361,46 +360,46 @@ export namespace ASRAPI {
 }
 
 export namespace TTSAPI {
+  // API-GUIDE 契约（/voxcpm/tts）：text(必填) + sample_id(推荐) + engine + speaker
+  // 服务端返回 WAV 二进制（Content-Type: audio/wav），客户端接 base64 或 audio_url
   export interface GenerateRequest {
-    text:       string
-    voice_id?:  string           // 缺省用默认音色
-    speed?:     number           // 0.5 ~ 2.0
-    emotion?:   string
-    format?:    'mp3' | 'wav' | 'opus'
-    clone_ref_file?: Blob       // 声音克隆参考音频（多 part）
+    text:        string
+    sample_id?:  number            // 推荐：/voice/samples 样本库 id
+    prompt_audio?: string          // 旧方式：base64 内联音频（保留兼容）
+    speaker?:    string            // 音色标识
+    engine?:     'voxcpm2' | 'indextts'  // 双引擎（2026-09-02 起）
   }
   export interface GenerateResponse {
-    task_id?:  string
-    audio_url: string            // 相对路径 / 绝对 URL
-    duration_s: number
-    voice_id: string
+    // WAV 二进制响应（主进程转 base64 透传）
+    audio_base64?: string
+    content_type?: string
+    // JSON 响应（兼容未来服务端切换）
+    task_id?:    string
+    audio_url?:  string
   }
-  export interface CloneVoiceRequest {
-    name: string
-    reference_audio: Blob
-    description?: string
+  // API-GUIDE 契约（POST /voice/samples）：multipart 上传音频样本
+  export interface UploadSampleRequest {
+    file:  Blob                  // 音频文件（wav/mp3）
+    name:  string                // 样本名称
+    text?: string                // 对应文字（可选）
   }
-  export interface CloneVoiceResponse {
-    voice_id: string
-    sample_url: string
-  }
-  export interface VoiceItem {
-    id:       string
-    name:     string
-    gender?:  'male' | 'female' | 'neutral'
-    language?: string
-    preview_url?: string
-    is_cloned?: boolean
+  export interface UploadSampleResponse {
+    id:         number
+    name:       string
+    filename:   string
+    size:       number
+    audio_url:  string
+    created_at: string
   }
   export interface VoiceSample {
-    id:         string
+    id:         number
     name:       string
     duration_s: number
     audio_url:  string
     speaker?:   string
     created_at?: string
   }
-  export type VoicesListResponse = VoiceItem[]
+  export type VoicesListResponse = VoiceSample[]
   export type VoicesSamplesResponse = VoiceSample[]
 }
 
@@ -497,7 +496,7 @@ export namespace VSRAPI {
     task_id:               string
     estimated_wait_sec:    number
   }
-  // M4 对齐 openapi Contract.Body_remove_subtitle_vsr_remove_post（POST /vsr/remove，
+  // M4 对齐 API-GUIDE Contract.Body_remove_subtitle_vsr_remove_post（POST /vsr/remove，
   // multipart）：video 为本地路径（主进程按字段名 file 读文件上传）；sub_areas 为
   // JSON 字符串——''=智能识别，[[ymin,ymax,xmin,xmax],...]=矩形（相对坐标），
   // [[[x,y]×4],...]=多边形（相对坐标）；mode 缺省由服务端按 sub_areas 推断。
@@ -630,7 +629,7 @@ export namespace AgentAPI {
   }
   export type RegisterArtifactResponse = ArtifactItem
 
-  // ── 工作台 AI 对话真实链路（P1，契约核对自 openapi-latest.json /agent/*）──
+  // ── 工作台 AI 对话真实链路（P1，契约核对自 API-GUIDE /agent/*）──
 
   /** POST /agent/chat 请求（JSON 分支；stream=false，max_rounds 服务端循环轮数） */
   export interface ChatRequest {

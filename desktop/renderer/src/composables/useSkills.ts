@@ -4,12 +4,12 @@
 //   · 列表 = 内置技能（随包 resources/skills，只读不可卸载）+ 已安装技能
 //     （userData/skills，env 层 skills:list，扫描自愈）
 //   · 安装来源 = .md 文件 / 含 SKILL.md 的目录 / ZIP 包（skills:install）
-//   · 卸载 = 仅用户技能（内置拒绝；skills:remove）
+//   · 卸载 = 仅删除客户端本地（内置拒绝；skills:remove），不影响服务端共享
 //   · 服务端共享（2026-08-31 用户反馈：原客户端可把安装的 skill 上传为服务端
 //     共用，Electron 端未随移植带入）：安装成功后自动登记（原版 install +
-//     register_skill 链路，失败仅提示不阻塞本地）；卸载时同步注销；管理弹窗
-//     支持手动重传。内置技能按用户要求不上传（与原版 ensure_builtin_skills
-//     略有差异，以用户口径为准）。
+//     register_skill 链路，失败仅提示不阻塞本地）；管理弹窗支持手动重传。
+//     卸载只删客户端本地，不注销服务端（供其他客户端继续使用）。
+//     内置技能按用户要求不上传（与原版 ensure_builtin_skills 略有差异，以用户口径为准）。
 // 纯 IO 编排无业务规则；合并/前缀注入等口径在 skillsLogic.ts（可单测）。
 // ═══════════════════════════════════════════════════════════════
 
@@ -129,7 +129,7 @@ export function useSkills() {
         actionMsg.value = reg.ok
           ? `技能「${name}」安装成功，已同步服务端共享`
           : reg.offline
-            ? `技能「${name}」安装成功（本地）；服务端暂不可达，可稍后在技能管理中重试上传`
+            ? `技能「${name}」安装成功（本地）；服务端暂不可达，可稍后在技能广场中重试上传`
             : `技能「${name}」安装成功（本地）；服务端登记失败：${reg.error || '未知错误'}`
         await load()
         return { ok: true, name }
@@ -143,17 +143,14 @@ export function useSkills() {
     }
   }
 
-  /** 卸载用户技能（内置技能由主进程拒绝）；成功后刷新列表 + 同步注销服务端 */
+  /** 卸载用户技能（内置技能由主进程拒绝）；仅删除客户端本地，不影响服务端共享 */
   async function remove(id: string): Promise<{ ok: boolean; error?: string }> {
     const t = getTintin()
     if (!t?.skills?.remove) return { ok: false, error: '技能通道不可用' }
     try {
       const r = await t.skills.remove(id)
       if (r && typeof r === 'object' && r.ok) {
-        // 服务端注销（原版 unregister_skill）：失败仅附加提示，不回滚本地卸载
-        const un = await unregisterFromServer(id).catch(() => ({ ok: false } as const))
-        uploadedIds.value.delete(String(id)) // 服务端已注销（或已卸载），上传标识移除
-        actionMsg.value = un.ok ? '技能已卸载，服务端共享已同步移除' : '技能已卸载；服务端注销失败（可忽略）'
+        actionMsg.value = '技能已从客户端卸载'
         await load()
         return { ok: true }
       }

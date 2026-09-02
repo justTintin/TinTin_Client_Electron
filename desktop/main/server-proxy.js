@@ -94,7 +94,7 @@ const API_ENDPOINTS = {
   stats:  { workbench: '/stats/workbench' },
   llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list', models: '/llm/models' },
   asr:    { transcribe: '/whisper/transcribe' },
-  tts:    { generate: '/voxcpm/tts', cloneVoice: '/voxcpm/clone-voice', voicesList: '/voices/list', voicesSamples: '/voices/samples' },
+  tts:    { generate: '/voxcpm/tts', voicesList: '/voice/samples', voicesSamples: '/voice/samples' },
   workflow:{ run: '/workflow/run' },
   material: {
     list: '/material/list', search: '/material/search', serve: '/material/serve',
@@ -712,7 +712,7 @@ function createServerProxy(ipcMain, ctx) {
   ipcMain.handle('llm:chat', async (_e, payload) => {
     try {
       const p = payload || {}
-      // openapi 契约 ChatRequest.model 默认 ""（服务端使用其默认模型），只强制 messages[]
+      // API-GUIDE 契约 ChatRequest.model 默认 ""（服务端使用其默认模型），只强制 messages[]
       if (!Array.isArray(p.messages)) throw new Error('llm:chat requires messages[]')
       const body = { model: p.model || '', messages: p.messages, temperature: p.temperature, stream: false }
       const res = await httpRequest('POST', API_ENDPOINTS.llm.chatCompletions, { body, timeout: 180000 })

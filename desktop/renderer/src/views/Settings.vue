@@ -168,6 +168,7 @@ const {
   autoStartLoading,
   toggleAutoStart,
   cacheDir,
+  cacheDirIsDefault,
   pickCacheDir,
   lutList,
   addLut,
@@ -303,6 +304,7 @@ onBeforeUnmount(() => {
         <CardLocalConfig
           data-section="local"
           :cache-dir="cacheDir"
+          :cache-dir-is-default="cacheDirIsDefault"
           :lut-list="lutList"
           :hint="integrationHint"
           :cache-clearing="cacheClearing"

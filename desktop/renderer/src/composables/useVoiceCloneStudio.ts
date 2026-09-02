@@ -25,6 +25,63 @@ import {
 } from './voiceCloneLogic'
 import { parseTranscriptionResponse, segmentsToPlainText } from './srtUtils'
 import { useServerTask } from './useServerTask'
+import { readCacheDir } from './useSettingsConfig'
+
+/**
+ * 声音克隆文件命名规范（对齐原客户端 voice_clone_page.py _get_named_filename）
+ * 格式：{样本前缀}_{文案前10字}_{YYYYMMDD}[后缀].wav
+ *  - 样本前缀：样本名按 -/_/空格 拆分取第一段
+ *  - 文案前缀：文案前 10 字，去除 Windows 非法字符
+ *  - 后缀：整体=无，合并=_merged，分句=_row{idx}
+ */
+const VOICE_CLONE_SUBDIR = 'voice_clone'
+
+/** 取样本名前缀（按 -/_/空格 拆分取第一段） */
+function getSamplePrefix(sampleName: string): string {
+  if (!sampleName) return ''
+  for (const sep of ['-', '_', ' ']) {
+    if (sampleName.includes(sep)) {
+      return sampleName.split(sep)[0].trim()
+    }
+  }
+  return sampleName.trim()
+}
+
+/** 取文案前 n 字（去除 Windows 非法字符） */
+function getTextPrefix(text: string, n = 10): string {
+  if (!text) return ''
+  let compact = text.replace(/\s+/g, '')
+  for (const c of ['\\', '/', ':', '*', '?', '"', '<', '>', '|']) {
+    compact = compact.replace(new RegExp(`\\${c}`, 'g'), '')
+  }
+  compact = compact.replace(/^[ .]+|[ .]+$/g, '')
+  return compact.slice(0, n) || '未命名'
+}
+
+/** 生成声音克隆文件名（对齐原客户端 _get_named_filename） */
+function buildVoiceCloneFileName(
+  text: string,
+  sampleName: string,
+  kind: 'whole' | 'merged' | 'row' = 'whole',
+  rowIdx?: number,
+): string {
+  const today = new Date()
+  const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
+  const sample = getSamplePrefix(sampleName)
+  const text10 = getTextPrefix(text)
+  const parts = [sample, text10, dateStr].filter(Boolean)
+  const base = parts.join('_')
+  if (kind === 'merged') return `${base}_merged.wav`
+  if (kind === 'row' && rowIdx !== undefined) return `${base}_row${rowIdx}.wav`
+  return `${base}.wav`
+}
+
+/** 获取声音克隆保存目录（cacheDir/voice_clone/） */
+async function getVoiceCloneSaveDir(): Promise<string> {
+  const cacheDir = await readCacheDir()
+  const base = cacheDir || ''
+  return base ? `${base.replace(/[/\\]+$/, '')}/${VOICE_CLONE_SUBDIR}` : VOICE_CLONE_SUBDIR
+}
 
 /** 逐行配音文案行状态（对照行级状态标签） */
 export type RowStatus = 'idle' | 'running' | 'done' | 'failed'
@@ -33,6 +90,7 @@ export interface VoiceRow {
   text: string
   status: RowStatus
   audioUrl: string
+  audioPath?: string  // 本地文件路径（命名规范落盘后）
   error: string
 }
 
@@ -42,6 +100,7 @@ export interface CatalogItem {
   name: string
   path?: string
   url?: string
+  text?: string       // 样本对应文字（API-GUIDE: /voice/samples 返回 text 字段）
 }
 
 function notify(title: string, body: string): void {
@@ -59,6 +118,12 @@ export function useVoiceCloneStudio() {
   const voiceOptions = ref<CatalogItem[]>([])
   const samples = ref<CatalogItem[]>([])
   const voice = ref('')
+  const uploadingSample = ref(false)
+  const ttsEngine = ref<'voxcpm2' | 'indextts'>('voxcpm2')
+  // IndexTTS 专属参数（API-GUIDE：/indextts/tts）
+  const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0
+  const ttsEmoText = ref('')           // 情感文字（如：开心、悲伤、激动）
+  const ttsEmoAlpha = ref(0.5)         // 情感强度 0~1，默认 0.5
 
   // ── 文案与行表 ──
   const wholeText = ref('')
@@ -80,24 +145,39 @@ export function useVoiceCloneStudio() {
   const canSplit = computed(() => !!wholeText.value.trim() && !splitting.value)
   const hasRefText = computed(() => !!refText.value.trim())
 
+  /** 从服务端响应中提取数组（兼容裸数组 / {items} / {data} / {samples} / {voices} 等包裹格式） */
+  function extractArray(res: unknown): unknown[] {
+    if (Array.isArray(res)) return res
+    if (res && typeof res === 'object') {
+      const obj = res as Record<string, unknown>
+      for (const key of ['items', 'data', 'samples', 'voices', 'list', 'results']) {
+        if (Array.isArray(obj[key])) return obj[key] as unknown[]
+      }
+    }
+    return []
+  }
+
   /** 拉取音色与样本目录（对照 _populate_ref_audio_samples L613-683 数据源） */
   async function loadCatalog(): Promise<void> {
     try {
-      const list = await window.tintin.server.ttsVoicesList()
-      if (!list || !Array.isArray(list)) throw new Error((list as any)?.error || '音色列表为空')
-      voiceOptions.value = list.map((v) => ({ id: v.id, name: v.name }))
+      const raw = await window.tintin.server.ttsVoicesList()
+      const list = extractArray(raw)
+      if (!list.length) throw new Error((raw as any)?.error || '音色列表为空')
+      voiceOptions.value = list.map((v: any) => ({ id: v.id, name: v.name }))
       if (voiceOptions.value.length && !voice.value) voice.value = voiceOptions.value[0].id
     } catch (err) {
       console.warn('[voice-clone] 拉取音色列表失败:', err)
     }
     try {
-      const list = await window.tintin.server.ttsVoicesSamples()
-      if (!list || !Array.isArray(list)) throw new Error((list as any)?.error || '参考样本列表为空')
-      samples.value = list.map((s) => ({
-        id: s.id,
+      const raw = await window.tintin.server.ttsVoicesSamples()
+      const list = extractArray(raw)
+      if (!list.length) throw new Error((raw as any)?.error || '参考样本列表为空')
+      samples.value = list.map((s: any) => ({
+        id: String(s.id),
         name: s.name,
-        path: (s as any).path,
-        url: s.audio_url || (s as any).url,
+        path: s.path,
+        url: s.audio_url || s.url,
+        text: s.text || '',
       }))
     } catch (err) {
       console.warn('[voice-clone] 拉取参考样本失败:', err)
@@ -128,7 +208,60 @@ export function useVoiceCloneStudio() {
   function selectSample(id: string): void {
     selectedSampleId.value = id
     refAudioPath.value = ''
+    // 自动填充样本的参考文字
+    const s = samples.value.find((x) => x.id === id)
+    if (s?.text) refText.value = s.text
     void estimateFromSample()
+  }
+
+  /** 上传音频为样本（API-GUIDE：POST /voice/samples，multipart: file + name + text） */
+  async function uploadSample(name: string, text?: string): Promise<{ ok: boolean; error?: string }> {
+    const path = refAudioPath.value
+    if (!path) return { ok: false, error: '没有可上传的音频文件' }
+    if (!name.trim()) return { ok: false, error: '样本名称不能为空' }
+    uploadingSample.value = true
+    try {
+      const res = await window.tintin.server.ttsUploadSample({
+        file: { path } as unknown as Blob,
+        name: name.trim(),
+        text: text?.trim() || '',
+      } as any)
+      if (!res || (res as any).error) {
+        return { ok: false, error: (res as any)?.error || '上传失败' }
+      }
+      await loadCatalog()
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      uploadingSample.value = false
+    }
+  }
+
+  /** 底部独立上传新样本（指定文件路径 + 名称 + 文字，上传后自动刷新列表） */
+  async function uploadNewSample(filePath: string, name: string, text?: string): Promise<{ ok: boolean; error?: string; sampleId?: string }> {
+    if (!filePath) return { ok: false, error: '没有可上传的音频文件' }
+    if (!name.trim()) return { ok: false, error: '样本名称不能为空' }
+    uploadingSample.value = true
+    try {
+      const res = await window.tintin.server.ttsUploadSample({
+        file: { path: filePath } as unknown as Blob,
+        name: name.trim(),
+        text: text?.trim() || '',
+      } as any)
+      if (!res || (res as any).error) {
+        return { ok: false, error: (res as any)?.error || '上传失败' }
+      }
+      await loadCatalog()
+      // 自动选中新上传的样本
+      const newId = String((res as any)?.id || '')
+      if (newId) selectSample(newId)
+      return { ok: true, sampleId: newId }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      uploadingSample.value = false
+    }
   }
 
   /** 按样本语速推算单行字数上限（对照 _estimate_max_chars：语速 = 字数/时长） */
@@ -200,7 +333,7 @@ export function useVoiceCloneStudio() {
     rows.value.splice(i, 1)
   }
   function addRow(): void {
-    rows.value.push({ text: '', status: 'idle', audioUrl: '', error: '' })
+    rows.value.push({ text: '', status: 'idle', audioUrl: '', audioPath: '', error: '' })
   }
   function clearRows(): void {
     rows.value = []
@@ -242,7 +375,7 @@ export function useVoiceCloneStudio() {
       lines = mergeShortFragments(lines, maxChars.value)
       clearRows()
       for (const s of lines) {
-        rows.value.push({ text: s, status: 'idle', audioUrl: '', error: '' })
+        rows.value.push({ text: s, status: 'idle', audioUrl: '', audioPath: '', error: '' })
       }
       if (!usedFallbackLocal && stageText.value.startsWith('正在')) {
         stageText.value = '完成： AI 智能拆分完成'
@@ -255,14 +388,28 @@ export function useVoiceCloneStudio() {
     }
   }
 
-  /** 单行克隆合成（对照逐行 VoiceCloneWorker：ref_audio + ref_text + 行文案） */
+  /** base64 → Blob URL（TTS 返回 WAV 二进制经主进程 base64 透传） */
+  function base64ToAudioUrl(base64: string, contentType = 'audio/wav'): string {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const blob = new Blob([bytes], { type: contentType })
+    return URL.createObjectURL(blob)
+  }
+
+  /** 从 TTS 响应中提取音频 URL（兼容 audio_base64 / audio_url） */
+  function extractAudioUrl(res: any): string {
+    if (res?.audio_base64) return base64ToAudioUrl(res.audio_base64, res.content_type)
+    return res?.audio_url || res?.url || ''
+  }
+
+  /** 单行克隆合成（API-GUIDE：sample_id 引用样本库 + engine 双引擎） */
   async function generateRow(i: number): Promise<void> {
     const row = rows.value[i]
     if (!row) return
-    const localPath = getRefAudioPath()
     const sampleUrl = getRefAudioUrl()
-    if (!localPath && !sampleUrl) {
-      notify('未选择声音样本', '请先上传/选择参考声音样本 (wav/mp3)！')
+    if (!sampleUrl && !selectedSampleId.value) {
+      notify('未选择声音样本', '请先从样本库选择参考声音样本！')
       return
     }
     if (!row.text.trim()) {
@@ -275,17 +422,43 @@ export function useVoiceCloneStudio() {
     try {
       const payload: Record<string, unknown> = {
         text: row.text.trim(),
-        voice_id: voice.value || undefined,
-        // 有参考音频时服务端走参考克隆；样本 URL 无法作为 multipart 文件，
-        // 此时退回选中音色合成（样本试听/转写不受影响）
-        ...(localPath ? { clone_ref_file: { path: localPath } as unknown as Blob } : {}),
+        // API-GUIDE 推荐：sample_id 引用 /voice/samples 样本库
+        ...(selectedSampleId.value ? { sample_id: Number(selectedSampleId.value) } : {}),
+        // 双引擎：voxcpm2（默认）/ indextts（快速/情感/语速）
+        ...(ttsEngine.value !== 'voxcpm2' ? { engine: ttsEngine.value } : {}),
+        // IndexTTS 专属参数
+        ...(ttsEngine.value === 'indextts' ? {
+          duration_factor: ttsDurationFactor.value,
+          ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
+          emo_alpha: ttsEmoAlpha.value,
+        } : {}),
+        resp: 'json',  // API-GUIDE：返回 {audio_url, sample_rate, engine} JSON
       }
       const res = await window.tintin.server.ttsGenerate(payload as any)
       if (!res) throw new Error('服务端离线或未返回结果')
       if ((res as any).error) throw new Error((res as any).error)
-      const url = (res as any).audio_url || (res as any).url || ''
-      if (!url) throw new Error('未返回音频地址')
+      const url = extractAudioUrl(res)
+      if (!url) throw new Error('未返回音频数据')
       row.audioUrl = url
+      // 按命名规范保存到 voice_clone 子目录
+      try {
+        const saveDir = await getVoiceCloneSaveDir()
+        const sampleName = samples.value.find((s) => s.id === selectedSampleId.value)?.name || ''
+        const fileName = buildVoiceCloneFileName(row.text.trim(), sampleName, 'row', i + 1)
+        const savePath = `${saveDir}/${fileName}`
+        let localPath = ''
+        if ((res as any).audio_base64) {
+          const saved = await window.tintin.server.ttsSaveAudio({
+            base64: (res as any).audio_base64,
+            savePath,
+          })
+          localPath = typeof saved === 'string' ? saved : ''
+        } else if (url.startsWith('http')) {
+          const saved = await window.tintin.server.downloadResult(url, savePath)
+          localPath = String(saved || '')
+        }
+        if (localPath) row.audioPath = localPath
+      } catch (_) { /* 行级保存失败不影响播放 */ }
       row.status = 'done'
     } catch (err) {
       row.status = 'failed'
@@ -294,12 +467,11 @@ export function useVoiceCloneStudio() {
     }
   }
 
-  /** 批量分行克隆（对照 _run_synthesize merge=False：无文案拦截 + 逐行顺序执行） */
+  /** 批量分行克隆 */
   async function generateAll(): Promise<void> {
     if (generating.value) return
-    const localPath = getRefAudioPath()
-    if (!localPath && !getRefAudioUrl()) {
-      notify('未上传声音样本', '请先上传/选择参考声音样本 (wav/mp3)！')
+    if (!getRefAudioUrl() && !selectedSampleId.value) {
+      notify('未选择声音样本', '请先从样本库选择参考声音样本！')
       return
     }
     const targets = rows.value
@@ -317,16 +489,15 @@ export function useVoiceCloneStudio() {
     generating.value = false
   }
 
-  /** 整体克隆（对照 _clone_whole：文本+参考音频 → voxcpm；同步 audio_url / 异步 task_id 双路径） */
+  /** 整体克隆（API-GUIDE：sample_id + engine 双引擎；WAV base64 / audio_url 双响应） */
   async function generateWhole(): Promise<void> {
     const text = wholeText.value.trim()
     if (!text) {
       notify('提示', '请先输入待克隆整体文案！')
       return
     }
-    const localPath = getRefAudioPath()
-    if (!localPath && !getRefAudioUrl()) {
-      notify('未上传声音样本', '请先上传/选择参考声音样本 (wav/mp3)！')
+    if (!getRefAudioUrl() && !selectedSampleId.value) {
+      notify('未选择声音样本', '请先从样本库选择参考声音样本！')
       return
     }
     stageText.value = '正在进行整体克隆...'
@@ -334,18 +505,53 @@ export function useVoiceCloneStudio() {
     try {
       const payload: Record<string, unknown> = {
         text,
-        voice_id: voice.value || undefined,
-        ...(localPath ? { clone_ref_file: { path: localPath } as unknown as Blob } : {}),
+        ...(selectedSampleId.value ? { sample_id: Number(selectedSampleId.value) } : {}),
+        ...(ttsEngine.value !== 'voxcpm2' ? { engine: ttsEngine.value } : {}),
+        // IndexTTS 专属参数
+        ...(ttsEngine.value === 'indextts' ? {
+          duration_factor: ttsDurationFactor.value,
+          ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
+          emo_alpha: ttsEmoAlpha.value,
+        } : {}),
+        resp: 'json',
       }
-      const res = await window.tintin.server.ttsGenerate(payload as any, wholeTask.setUpload)
+      const res = await window.tintin.server.ttsGenerate(payload as any)
       if (!res) throw new Error('服务端离线或未返回结果')
-      // ttsGenerate 返回 audio_url；若带 task_id（异步模式）则进入轮询；否则同步显示结果
-      if ((res as any).task_id && !(res as any).audio_url) {
+      if ((res as any).error) throw new Error((res as any).error)
+      const url = extractAudioUrl(res)
+      if (url) {
+        // 按命名规范生成文件名 + 保存到 voice_clone 子目录
+        const saveDir = await getVoiceCloneSaveDir()
+        const sampleName = samples.value.find((s) => s.id === selectedSampleId.value)?.name || ''
+        const fileName = buildVoiceCloneFileName(text, sampleName, 'whole')
+        const savePath = `${saveDir}/${fileName}`
+        let localPath = ''
+        try {
+          if ((res as any).audio_base64) {
+            // base64 响应：直接写入本地文件
+            const saved = await window.tintin.server.ttsSaveAudio({
+              base64: (res as any).audio_base64,
+              savePath,
+            })
+            localPath = typeof saved === 'string' ? saved : ''
+          } else if (url.startsWith('http')) {
+            // audio_url 响应：从服务端下载
+            const saved = await window.tintin.server.downloadResult(url, savePath)
+            localPath = String(saved || '')
+          }
+        } catch (_) {
+          localPath = ''
+        }
+        wholeTask.completeSync(url)
+        if (localPath) {
+          (wholeTask as any).resultPath = localPath
+        }
+        stageText.value = `完成： 整体克隆人声生成成功！文件：${fileName}`
+        notify('生成成功', `文件：${fileName}${localPath ? '，已保存到缓存目录' : ''}`)
+      } else if ((res as any).task_id) {
         wholeTask.startPolling((res as any).task_id)
       } else {
-        wholeTask.completeSync((res as any).audio_url || '')
-        stageText.value = '完成： 整体克隆人声生成成功！'
-        notify('生成成功', '整体克隆人声音频生成完毕。')
+        throw new Error('未返回音频数据')
       }
     } catch (err) {
       wholeTask.failWith(err)
@@ -368,12 +574,12 @@ export function useVoiceCloneStudio() {
   return {
     // state
     refAudioPath, selectedSampleId, refText, transcribing,
-    voiceOptions, samples, voice,
+    voiceOptions, samples, voice, ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
     wholeText, rows, splitting, generating, stageText, maxChars,
     wholeTask, wholeProgress,
-    refReady, canSplit, hasRefText,
+    refReady, canSplit, hasRefText, uploadingSample,
     // methods
-    loadCatalog, setRefAudio, selectSample, transcribeRefAudio,
+    loadCatalog, setRefAudio, selectSample, uploadSample, uploadNewSample, transcribeRefAudio,
     splitIntoRows, updateRowText, removeRow, addRow, clearRows,
     generateRow, generateAll, generateWhole, downloadRow,
   }

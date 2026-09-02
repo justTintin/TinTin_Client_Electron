@@ -171,15 +171,11 @@ const server = {
 
   // ---------- asr / tts ----------
   asrTranscribe:  (p, onProgress) => _withUploadProgress(onProgress, 'asr:transcribe', p),
-  ttsGenerate:   (p, onProgress) => {
-    // tts:generate 内部会按是否含 clone_ref_file 选择 multipart / JSON，这里统一走同一 handler
-    return (p && p.clone_ref_file)
-      ? _withUploadProgress(onProgress, 'tts:generate', p)
-      : ipcRenderer.invoke('tts:generate', p)
-  },
-  ttsCloneVoice: (p, onProgress) => _withUploadProgress(onProgress, 'tts:cloneVoice', p),
+  ttsGenerate:   (p) => ipcRenderer.invoke('tts:generate', p),
+  ttsSaveAudio:  (p) => ipcRenderer.invoke('tts:saveAudio', p),
   ttsVoicesList:    (params)       => ipcRenderer.invoke('tts:voicesList', params),
   ttsVoicesSamples: (params)       => ipcRenderer.invoke('tts:voicesSamples', params),
+  ttsUploadSample:  (p, onProgress) => _withUploadProgress(onProgress, 'tts:uploadSample', p),
 
   // ---------- workflow ----------
   workflowRun: (payload) => ipcRenderer.invoke('workflow:run', payload),

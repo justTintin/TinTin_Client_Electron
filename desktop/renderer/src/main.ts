@@ -19,9 +19,10 @@ const pinia = createPinia()
 app.use(pinia)
 app.use(router)
 
-// 应用级初始化：在 mount 之前应用主题 → 避免首帧闪烁
+// 应用级初始化：在 mount 之前应用主题 + 字体粗细 → 避免首帧闪烁
 import { useAppStore } from './stores/app'
 const appStore = useAppStore(pinia)
 appStore.initTheme()
+appStore.initFontWeight()
 
 app.mount('#app')

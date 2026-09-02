@@ -29,7 +29,7 @@ import type { paths, components } from '../types/api-contract.generated'
 //
 // 契约生成命令：
 //   npm run contract:gen        ← 从服务端 /openapi.json 实时拉取
-//   npm run contract:gen-local  ← 从项目根 openapi-latest.json 离线生成
+//   npm run contract:gen-local  ← 从 API-GUIDE 在线页离线生成
 //   npm run contract:typecheck  ← tsc 校验生成类型无破坏
 // ──────────────────────────────────────────────────────────────────
 export type { paths, components }

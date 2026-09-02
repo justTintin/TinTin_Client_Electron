@@ -8,7 +8,7 @@
 //   · 全量挖掘：POST /mine {item_ids:[]} → 轮询（BulkMineWorker L185-218）
 //   · 增删改：POST /items、PUT /items/{id}、DELETE /items/{id}（必填校验前置）
 //   · 详情：缓存命中直读 / 未命中 GET /items/{id}（L664-674）
-// 服务端契约（openapi-latest.json 已核实）：/api/product-library/clients/{machine_id}/*
+// 服务端契约（API-GUIDE 已核实）：/api/product-library/clients/{machine_id}/*
 //   全套端点存在；X-Machine-ID 头由主进程 server-proxy 自动注入，machine_id 路径
 //   参数经 env:getMachineId 获取（与头同值，同一 config-store 口径）。
 // 分层（IRON-06）：本层只做 HTTP 编排与轮询；树/校验/摘要等纯逻辑在

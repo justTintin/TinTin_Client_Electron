@@ -1,14 +1,10 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// VoiceClone.vue — 声音克隆（条目④ 组件层：绘制 + 事件转发）
-// 业务对齐原客户端 gui/voice_clone_page.py：
-//   参考音频二选一（上传/样本库）→ 识别参考音频文本（ASR+LLM 标点，
-//   _transcribe_ref_audio L690-743）→ 整体克隆（_clone_whole）→
-//   一键拆分填充（LLM 分句+漏字校验+短句合并，_split_and_populate_text_only
-//   L1566-1613）→ 逐行文案表（增删改/逐行生成/试听/导出，L494-609/1043-1053）
-// 业务逻辑在 useVoiceCloneStudio.ts（编排）+ voiceCloneLogic.ts（纯函数）
+// VoiceClone.vue — 声音克隆（重新设计：样本下拉 + 底部上传）
+// 布局：TTS引擎 → 样本选择(下拉) → 参考文本 → 待克隆文案 → 克隆/拆分
+//       底部：上传新样本（音频+名称+文字 → 服务端 → 自动刷新下拉）
 // ═══════════════════════════════════════════════════════════════
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
@@ -17,38 +13,115 @@ import type { RowStatus } from '@/composables/useVoiceCloneStudio'
 
 const s = useVoiceCloneStudio()
 const {
-  refText, transcribing, voiceOptions, samples, voice,
+  refText, transcribing, voiceOptions, samples, voice, ttsEngine, selectedSampleId,
+  ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
   wholeText, rows, splitting, generating, stageText, maxChars,
-  wholeTask, wholeProgress,
+  wholeTask, wholeProgress, uploadingSample,
   refReady, canSplit,
-  loadCatalog, setRefAudio, selectSample, transcribeRefAudio,
+  loadCatalog, selectSample, uploadNewSample, transcribeRefAudio,
   splitIntoRows, updateRowText, removeRow, addRow, clearRows,
   generateRow, generateAll, generateWhole, downloadRow,
 } = s
 
-type RefMode = 'upload' | 'sample'
-const refMode = ref<RefMode>('upload')
+/** 情感预设选项（IndexTTS emo_text 常用值） */
+const EMO_OPTIONS = [
+  { label: '开心', value: '开心' },
+  { label: '悲伤', value: '悲伤' },
+  { label: '激动', value: '激动' },
+  { label: '温柔', value: '温柔' },
+  { label: '愤怒', value: '愤怒' },
+  { label: '恐惧', value: '恐惧' },
+  { label: '惊讶', value: '惊讶' },
+  { label: '厌恶', value: '厌恶' },
+  { label: '平静', value: '平静' },
+]
+
 const isDragging = ref(false)
 
-// 参考音频选择 + 拖拽（共享 composable；选中后转发给业务层）
+// ─ 底部上传新样本 ──
+const newSampleFilePath = ref('')
+const newSampleFileName = ref('')
+const newSampleName = ref('')
+const newSampleText = ref('')
+const newSampleError = ref('')
+const newSampleSuccess = ref('')
+
 const {
-  filePath: refFilePath,
-  fileName: refFileName,
-  pickFile: pickRefFile,
+  filePath: uploadFilePath,
+  fileName: uploadFileName,
+  pickFile: pickUploadFile,
   onDrop,
   onDragOver,
   onDragLeave,
   resolveSrc,
 } = useFilePicker({
-  dialogTitle: '选择参考音频',
+  dialogTitle: '选择音频文件上传为样本',
   filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }],
-  onPicked: (p) => setRefAudio(p),
+  onPicked: (p) => {
+    newSampleFilePath.value = p
+    newSampleFileName.value = p.split('\\').pop()?.split('/').pop() || ''
+    // 自动用文件名作为样本名称（去掉扩展名）
+    const base = newSampleFileName.value.replace(/\.[^.]+$/, '')
+    if (base && !newSampleName.value) newSampleName.value = base
+  },
 })
 
 function onDropForward(e: DragEvent): void {
   onDrop(e)
   isDragging.value = false
-  if (refFilePath.value) setRefAudio(refFilePath.value)
+}
+
+async function onUploadNewSample(): Promise<void> {
+  newSampleError.value = ''
+  newSampleSuccess.value = ''
+  if (!newSampleFilePath.value) { newSampleError.value = '请先选择音频文件'; return }
+  if (!newSampleName.value.trim()) { newSampleError.value = '请输入样本名称'; return }
+  const result = await uploadNewSample(newSampleFilePath.value, newSampleName.value, newSampleText.value)
+  if (result.ok) {
+    newSampleSuccess.value = `样本「${newSampleName.value}」上传成功，已自动选中`
+    newSampleFilePath.value = ''
+    newSampleFileName.value = ''
+    newSampleName.value = ''
+    newSampleText.value = ''
+  } else {
+    newSampleError.value = result.error || '上传失败'
+  }
+}
+
+/** 上传样本时 ASR 识别音频文字 */
+async function transcribeForNewSample(): Promise<void> {
+  if (!newSampleFilePath.value) return
+  transcribing.value = true
+  newSampleError.value = ''
+  try {
+    const res = await window.tintin.server.asrTranscribe({
+      audio: { path: newSampleFilePath.value } as unknown as Blob,
+      language: 'zh',
+      format: 'txt',
+    } as any)
+    if (!res || (res as any).error) throw new Error((res as any)?.error || '识别失败')
+    const text = typeof res === 'string' ? res : (res as any).text || (res as any).content || JSON.stringify(res)
+    newSampleText.value = String(text).trim()
+  } catch (err) {
+    newSampleError.value = `文字识别失败：${err instanceof Error ? err.message : String(err)}`
+  } finally {
+    transcribing.value = false
+  }
+}
+
+/** 打开输出目录（使用保存后的本地文件路径） */
+function openOutputFolder(): void {
+  try {
+    const filePath = wholeTask.resultPath
+    if (!filePath) {
+      notify('提示', '文件尚未保存到本地，请使用"下载本行音频"保存')
+      return
+    }
+    const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') > 0 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'))
+    window.tintin?.shell?.openPath?.(dirPath)
+  } catch (_) {
+    notify('提示', '无法打开目录')
+  }
 }
 
 const ROW_STATUS_TEXT: Record<RowStatus, string> = {
@@ -61,83 +134,107 @@ function rowStatusClass(st: RowStatus): string {
   return { idle: '', running: 'is-running', done: 'is-done', failed: 'is-failed' }[st] || ''
 }
 
+/** 克隆成功后显示的文件名 */
+const wholeFileName = computed(() => {
+  const p = wholeTask.resultPath
+  if (!p) return ''
+  return p.includes('\\') ? p.split('\\').pop()! : p.split('/').pop()!
+})
+
+/** 播放克隆音频（本地文件用系统默认播放器，blob URL 用页面 audio 元素） */
+function playWholeAudio(): void {
+  const localPath = wholeTask.resultPath
+  if (localPath) {
+    // 本地文件：用系统默认音频播放器打开
+    window.tintin?.shell?.openPath?.(localPath)
+  } else {
+    // blob URL：滚动到 audio 元素并自动播放
+    const audioEl = document.querySelector('.tool-form > .form-field > audio.audio-player') as HTMLAudioElement
+    if (audioEl) {
+      audioEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      audioEl.play().catch(() => {})
+    }
+  }
+}
+
 onMounted(loadCatalog)
 </script>
 
 <template>
   <div class="tool-form">
-    <!-- 参考音频来源（对照音色视频目录 / 参考音频样本库二选一） -->
+
+    <!-- ① TTS 引擎 -->
     <div class="form-field">
-      <label class="form-label">参考音频</label>
+      <label class="form-label">TTS 引擎</label>
       <div class="segmented">
-        <button
-          class="segmented__btn"
-          :class="{ 'is-active': refMode === 'upload' }"
-          :disabled="transcribing"
-          @click="refMode = 'upload'"
-        >
-          上传音频
-        </button>
-        <button
-          class="segmented__btn"
-          :class="{ 'is-active': refMode === 'sample' }"
-          :disabled="transcribing"
-          @click="refMode = 'sample'"
-        >
-          从样本选择
-        </button>
+        <button class="segmented__btn" :class="{ 'is-active': ttsEngine === 'voxcpm2' }" @click="ttsEngine = 'voxcpm2'">VoxCPM2（48kHz）</button>
+        <button class="segmented__btn" :class="{ 'is-active': ttsEngine === 'indextts' }" @click="ttsEngine = 'indextts'">IndexTTS（快速/情感）</button>
       </div>
     </div>
 
-    <!-- 上传模式 -->
-    <div
-      v-if="refMode === 'upload'"
-      class="dropzone"
-      :class="{ 'is-active': isDragging, 'has-file': !!refFilePath }"
-      @click="pickRefFile"
-      @drop.prevent="onDropForward"
-      @dragover.prevent="onDragOver(); isDragging = true"
-      @dragleave.prevent="onDragLeave(); isDragging = false"
-    >
-      <svg v-if="!refFilePath" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-      </svg>
-      <div class="dropzone__text">
-        <template v-if="!refFilePath">
-          <span class="dropzone__main">点击选择参考音频或拖拽到此处</span>
-          <span class="dropzone__hint">支持 MP3 / WAV / M4A / FLAC</span>
-        </template>
-        <template v-else>
-          <span class="dropzone__main">{{ refFileName }}</span>
-          <span class="dropzone__hint">点击重新选择</span>
-        </template>
+    <!-- ①+ IndexTTS 专属参数 -->
+    <div v-if="ttsEngine === 'indextts'" class="engine-params">
+      <div class="form-field">
+        <div class="field-head">
+          <label class="form-label">语速（duration_factor）</label>
+          <span class="param-value">{{ ttsDurationFactor.toFixed(1) }}x</span>
+        </div>
+        <input
+          type="range"
+          class="slider"
+          min="0.5"
+          max="2.0"
+          step="0.1"
+          v-model.number="ttsDurationFactor"
+        />
+        <div class="slider-labels">
+          <span>0.5x 慢</span>
+          <span>1.0x 正常</span>
+          <span>2.0x 快</span>
+        </div>
+      </div>
+      <div class="form-field">
+        <label class="form-label">情感选择（emo_text，可选）</label>
+        <TSelect
+          :model-value="ttsEmoText"
+          :options="EMO_OPTIONS"
+          placeholder="不选择则使用样本默认情感"
+          @update:model-value="(v: string) => ttsEmoText = v"
+        />
+      </div>
+      <div class="form-field">
+        <div class="field-head">
+          <label class="form-label">情感强度（emo_alpha）</label>
+          <span class="param-value">{{ ttsEmoAlpha.toFixed(1) }}</span>
+        </div>
+        <input
+          type="range"
+          class="slider"
+          min="0"
+          max="1"
+          step="0.1"
+          v-model.number="ttsEmoAlpha"
+        />
       </div>
     </div>
 
-    <!-- 样本选择模式 -->
-    <div v-else class="sample-grid">
-      <button
-        v-for="item in samples"
-        :key="item.id"
-        class="sample-card"
-        :class="{ 'is-selected': s.selectedSampleId === item.id }"
-        @click="selectSample(item.id)"
-      >
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
-          <path d="M21 19a2 2 0 0 1-2 2h-1v-6h3zM3 19a2 2 0 0 0 2 2h1v-6H3z" />
-        </svg>
-        <span class="sample-card__name">{{ item.name }}</span>
-      </button>
-      <div v-if="!samples.length" class="sample-empty">暂无参考样本，请使用上传方式</div>
+    <!-- ② 声音样本（下拉选择） -->
+    <div class="form-field">
+      <label class="form-label">声音样本</label>
+      <TSelect
+        :model-value="selectedSampleId"
+        :options="samples.map((s) => ({ label: s.name, value: s.id }))"
+        placeholder="选择声音样本"
+        @update:model-value="(v: string) => selectSample(v)"
+      />
     </div>
 
-    <!-- 参考文本：ASR 转写取词 + LLM 标点（对照 _transcribe_ref_audio） -->
+    <!-- ③ 样本参考文本（选择样本后自动填充） -->
     <div class="form-field">
       <div class="field-head">
-        <label class="form-label">参考文本（可先「识别参考音频文本」自动取词）</label>
+        <label class="form-label">样本参考文本</label>
         <TButton
-          :label="transcribing ? '正在识别文本...' : '识别参考音频文本'"
+          :label="transcribing ? '正在识别...' : '识别参考音频文本'"
           icon="search"
           size="small"
           :disabled="transcribing || !refReady"
@@ -149,24 +246,14 @@ onMounted(loadCatalog)
         v-model="refText"
         class="text-area"
         rows="3"
-        placeholder="上传/选择参考音频后，点击右上角按钮自动识别；也可直接手输参考文案"
+        placeholder="选择样本后自动填充；也可手动编辑"
       />
       <span class="form-hint">
         拆分合并用的单行字数上限：约 {{ maxChars }} 字（15 秒安全时长；由样本语速推算）
       </span>
     </div>
 
-    <!-- 音色 -->
-    <div class="form-field">
-      <label class="form-label">合成音色（无参考音频时使用）</label>
-      <TSelect
-        v-model="voice"
-        :options="voiceOptions.map((v) => ({ label: v.name, value: v.id }))"
-        placeholder="选择音色"
-      />
-    </div>
-
-    <!-- 待克隆整体文案 + 整体克隆 / 一键拆分填充 -->
+    <!-- ④ 待克隆整体文案 -->
     <div class="form-field">
       <label class="form-label">待克隆整体文案</label>
       <textarea
@@ -204,12 +291,28 @@ onMounted(loadCatalog)
         :src="resolveSrc(wholeTask.resultUrl) || resolveSrc(wholeTask.resultPath)"
         controls
       />
+      <!-- 成功提示 + 播放 + 打开目录 -->
+      <div v-if="wholeTask.status === 'done'" class="success-info">
+        <span class="success-icon">✓</span>
+        <span class="success-text">克隆成功</span>
+        <span v-if="wholeFileName" class="success-file">{{ wholeFileName }}</span>
+        <div class="success-actions">
+          <button class="action-btn" @click="playWholeAudio" title="播放音频">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M5 3l14 9-14 9V3z"/></svg>
+            播放
+          </button>
+          <button class="action-btn" @click="openOutputFolder" title="打开文件所在目录">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            打开目录
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 阶段提示 -->
     <div v-if="stageText" class="stage-line">{{ stageText }}</div>
 
-    <!-- 逐行配音文案表（对照 voice_table：文案可编辑 + 逐行生成/试听/删除） -->
+    <!--  逐行配音文案表 -->
     <div v-if="rows.length" class="rows">
       <div class="rows__head">
         <span class="rows__title">逐行配音文案（{{ rows.length }} 行）</span>
@@ -277,6 +380,73 @@ onMounted(loadCatalog)
         </div>
       </div>
     </div>
+
+    <!-- ⑥ 底部：上传新样本 -->
+    <div class="upload-section">
+      <div class="upload-section__title">没有想要的样本？上传音频创建新样本</div>
+      <div
+        class="dropzone"
+        :class="{ 'is-active': isDragging, 'has-file': !!newSampleFilePath }"
+        @click="pickUploadFile"
+        @drop.prevent="onDropForward"
+        @dragover.prevent="onDragOver(); isDragging = true"
+        @dragleave.prevent="onDragLeave(); isDragging = false"
+      >
+        <svg v-if="!newSampleFilePath" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+        </svg>
+        <div class="dropzone__text">
+          <template v-if="!newSampleFilePath">
+            <span class="dropzone__main">点击选择音频或拖拽到此处</span>
+            <span class="dropzone__hint">支持 MP3 / WAV / M4A / FLAC</span>
+          </template>
+          <template v-else>
+            <span class="dropzone__main">{{ newSampleFileName }}</span>
+            <span class="dropzone__hint">点击重新选择</span>
+          </template>
+        </div>
+      </div>
+      <div v-if="newSampleFilePath" class="upload-fields">
+        <div class="form-field">
+          <label class="form-label">样本名称 *</label>
+          <input
+            v-model="newSampleName"
+            class="text-input"
+            placeholder="例：小美-温柔女声"
+          />
+        </div>
+        <div class="form-field">
+          <div class="field-head">
+            <label class="form-label">对应文字（可选）</label>
+            <TButton
+              label="识别参考文字"
+              size="small"
+              :loading="transcribing"
+              :disabled="!newSampleFilePath"
+              @click="transcribeForNewSample"
+            />
+          </div>
+          <textarea
+            v-model="newSampleText"
+            class="text-area text-area--sm"
+            rows="2"
+            placeholder="与参考音频一致的文字；也可点击右侧按钮自动识别"
+          />
+        </div>
+        <div class="upload-actions">
+          <TButton
+            label="上传为样本"
+            icon="upload"
+            :loading="uploadingSample"
+            :disabled="!newSampleFilePath || !newSampleName.trim()"
+            @click="onUploadNewSample"
+          />
+        </div>
+        <div v-if="newSampleError" class="form-error">{{ newSampleError }}</div>
+        <div v-if="newSampleSuccess" class="form-success">{{ newSampleSuccess }}</div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -287,6 +457,7 @@ onMounted(loadCatalog)
 .form-label { font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); color: var(--foreground-muted); }
 .form-hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 .form-error { font-size: var(--font-size-caption); color: var(--error); }
+.form-success { font-size: var(--font-size-caption); color: var(--success); }
 .field-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 
 /* 分段切换 */
@@ -305,7 +476,7 @@ onMounted(loadCatalog)
 
 /* 拖拽上传区 */
 .dropzone {
-  display: flex; align-items: center; gap: var(--space-3); padding: var(--space-6);
+  display: flex; align-items: center; gap: var(--space-3); padding: var(--space-5);
   background: var(--surface-container); border: 1.5px dashed var(--border);
   border-radius: var(--radius-lg); color: var(--muted-foreground); cursor: pointer;
   transition: border-color var(--duration-fast), background var(--duration-fast);
@@ -316,22 +487,22 @@ onMounted(loadCatalog)
 .dropzone__main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); color: var(--foreground); }
 .dropzone__hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 
-/* 样本选择网格 */
-.sample-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-3); }
-.sample-card {
-  display: flex; flex-direction: column; align-items: center; gap: var(--space-2);
-  padding: var(--space-4); background: var(--surface-container);
-  border: 1px solid var(--border); border-radius: var(--radius-md);
-  color: var(--foreground-muted);
-  transition: border-color var(--duration-fast), background var(--duration-fast), color var(--duration-fast);
+/* 上传区域 */
+.upload-section {
+  margin-top: var(--space-2);
+  padding: var(--space-5);
+  background: var(--surface-container);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
 }
-.sample-card:hover { border-color: var(--primary); color: var(--foreground); }
-.sample-card.is-selected { border-color: var(--primary); background: rgba(109, 93, 252, 0.12); color: var(--primary); }
-.sample-card__name { font-size: var(--font-size-caption); text-align: center; word-break: break-all; }
-.sample-empty {
-  grid-column: 1 / -1; padding: var(--space-4); text-align: center;
-  font-size: var(--font-size-caption); color: var(--muted-foreground);
+.upload-section__title {
+  font-size: var(--font-size-lead);
+  font-weight: var(--font-weight-semibold);
+  color: var(--foreground);
+  margin-bottom: var(--space-4);
 }
+.upload-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-4); }
+.upload-actions { display: flex; justify-content: flex-end; }
 
 /* 文本域 */
 .text-area {
@@ -344,6 +515,15 @@ onMounted(loadCatalog)
 }
 .text-area::placeholder { color: var(--muted-foreground); }
 .text-area:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
+.text-area--sm { min-height: 56px; }
+
+.text-input {
+  width: 100%; padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-body); color: var(--foreground);
+  background: var(--surface-container); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); outline: none;
+}
+.text-input:focus { border-color: var(--primary); }
 
 .action-row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .hint-link {
@@ -353,6 +533,67 @@ onMounted(loadCatalog)
 .upload-progress { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 .audio-player { width: 100%; }
 .stage-line { font-size: var(--font-size-caption); color: var(--foreground-muted); }
+
+/* 引擎参数区 */
+.engine-params {
+  padding: var(--space-4);
+  background: var(--surface-container);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.param-value {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--primary);
+  min-width: 40px;
+  text-align: right;
+}
+.slider {
+  width: 100%; height: 6px;
+  -webkit-appearance: none; appearance: none;
+  background: var(--border); border-radius: 3px; outline: none;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--primary); cursor: pointer;
+}
+.slider-labels {
+  display: flex; justify-content: space-between;
+  font-size: var(--font-size-caption); color: var(--muted-foreground);
+}
+
+/* 成功提示 */
+.success-info {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3); margin-top: var(--space-3);
+  background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius-md);
+}
+.success-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--success); color: white; font-size: 12px; font-weight: bold;
+}
+.success-text { font-size: var(--font-size-caption); color: var(--success); font-weight: var(--font-weight-medium); }
+.success-file {
+  font-size: var(--font-size-caption); color: var(--foreground-muted);
+  font-family: var(--font-mono); max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.success-actions {
+  display: flex; align-items: center; gap: var(--space-1); margin-left: auto;
+}
+.action-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 10px;
+  font-size: var(--font-size-caption); color: var(--foreground-muted);
+  background: var(--surface-container); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); cursor: pointer;
+  transition: all var(--duration-fast);
+}
+.action-btn:hover { color: var(--foreground); border-color: var(--primary); background: var(--surface-container-high); }
 
 /* 逐行文案表 */
 .rows { display: flex; flex-direction: column; gap: var(--space-2); }

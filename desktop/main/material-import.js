@@ -5,7 +5,7 @@
 //   → 组包 /material/web_download（异步下载任务）→ 记录导入任务 →
 //   可选 /material/enqueue_analysis（AI 分析队列）→ 状态回写标注。
 //
-// 契约（openapi-latest.json，禁止臆造字段）：
+// 契约（API-GUIDE，禁止臆造字段）：
 //   · POST /material/web_download
 //       body DownloadRequest：{ url: string(5..1000, 必填, 单条),
 //         format?, cookies_file?, proxy?, max_filesize?(int>=0, 0=默认500MB),

@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════
 // skills-server-ipc.js — 服务端代理·技能登记域 IPC（2026-08-31 用户反馈：
 // 原客户端有把安装的 skill 上传为服务端共用，Electron 端未随移植带入）
-// 对照 openapi-latest.json 实际契约（POST /skills 请求体 additionalProperties
+// 对照 API-GUIDE 实际契约（POST /skills 请求体 additionalProperties
 // 自由；GET /skills；DELETE /skills/{skill_id}）与原客户端 utils/skill_manager.py：
 //   · skills:serverRegister    POST   /skills（原 register_skill L81-125：
 //                              body={skill_id,name,description,instruction,
@@ -53,7 +53,7 @@ function createSkillsServerIpc(ipcMain, { httpRequest, API_ENDPOINTS, isExpected
     } catch (err) { return isExpectedOfflineError(err) ? { ok: false, offline: true } : { ok: false, error: err.message } }
   })
 
-  // --- 从服务端下载技能并安装到本地（2026-09-01 用户反馈：技能管理应能从
+  // --- 从服务端下载技能并安装到本地（2026-09-01 用户反馈：技能广场应能从
   //     服务端下载技能）。链路：GET /skills → 找条目 → buildSkillMdFromServer
   //     组 SKILL.md → 临时落盘 → skill-store.installSkill（复用现有安装落位）
   //     → 删临时文件。已安装同 id 技能时覆盖（installSkill 默认 overwrite=true）。

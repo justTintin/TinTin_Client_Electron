@@ -6,7 +6,7 @@
 //     编排任务概览口径：goal/status/progress/created_at）
 //   · /tasks 执行层计算任务（tasksList）——浏览器/媒体工具提交的服务端任务
 //     （原 main_window_pages.py 任务队列页 L1360 同步服务端口径）
-//   注：原先走的 /tasks/unified 在服务端契约中不存在（openapi-latest.json
+//   注：原先走的 /tasks/unified 在服务端契约中不存在（API-GUIDE
 //   无此路径，404 → 空页），是「任务列表无任务消息」的根因。
 // 轮询（复用抽屉打开期间 setInterval 模式）：打开期间每 5s 重拉双源列表
 //   （列表已含 progress，无需逐行进度轮询）；关闭抽屉立即停止。

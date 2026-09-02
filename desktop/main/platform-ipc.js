@@ -2,7 +2,7 @@
 // platform-ipc.js — S8 平台接入 + S9 系统运行 IPC（主进程）
 //
 // S8 平台接入（对照原客户端 main_window_pages.py L990-1245 数字人 Tab；
-//   服务端接口全部核对自 openapi-latest.json，禁止臆造）：
+//   服务端接口全部核对自 API-GUIDE，禁止臆造）：
 //   · platform:getConfig          GET /comfyui/config + GET /runninghub/config
 //                                 + 本地数字人 workflowId（integration 域）
 //   · platform:saveComfyui        PUT /comfyui/config {host, port}
@@ -25,7 +25,7 @@
 'use strict'
 const { app } = require('electron')
 
-/** 平台配置接口路径（openapi-latest.json 核对：ComfyUI/RunningHub tags） */
+/** 平台配置接口路径（API-GUIDE 核对：ComfyUI/RunningHub tags） */
 const PLATFORM_ENDPOINTS = {
   comfyui:   { config: '/comfyui/config',   status: '/comfyui/status' },
   runninghub: { config: '/runninghub/config', status: '/runninghub/status' },

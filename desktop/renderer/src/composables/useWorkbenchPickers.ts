@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
 // useWorkbenchPickers — 工作台输入区·产品/素材/脚本选择弹窗搜索域
-// 服务端契约（openapi-latest.json 已核实，响应为自由格式 → pickListItems
+// 服务端契约（API-GUIDE 已核实，响应为自由格式 → pickListItems
 // 容错解析 {items}|{data}|{results}|裸数组）：
 //   · GET  /api/product-library/search?q=&limit=   产品（品类/品牌/型号）
 //   · GET  /material/list?search=&brand=&model=&media_type=   图视网格（原版

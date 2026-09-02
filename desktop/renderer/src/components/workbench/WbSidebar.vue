@@ -76,8 +76,8 @@ function cancelRename(): void {
         </svg>
         定时任务
       </button>
-      <!-- 技能管理入口（2026-09-01 用户裁决：技能从输入框快捷条迁到此处，
-           管理面板在右侧侧边栏展示，不再用弹窗） -->
+      <!-- 技能广场入口（2026-09-01 用户裁决：技能从输入框快捷条迁到此处，
+           广场面板在右侧侧边栏展示，不再用弹窗） -->
       <button class="btn btn-secondary w-full h-btn text-sm skills-btn" @click="emit('open-skills')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
@@ -85,7 +85,7 @@ function cancelRename(): void {
           <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
           <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
         </svg>
-        技能管理
+        技能广场
       </button>
     </div>
 

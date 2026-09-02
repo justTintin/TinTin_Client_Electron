@@ -4,7 +4,7 @@
 //
 // 口径：
 //   · buildCoverWorkflow 保持既有服务端模板渲染链路结构（type/size/count/layers），
-//     M5 增量透传 template / title（字段命名对齐 openapi-latest.json CoverRequest：
+//     M5 增量透传 template / title（字段命名对齐 API-GUIDE CoverRequest：
 //     template=封面模板标识、title=封面标题；服务端 cover 工作流按字段名识别，
 //     不识别则忽略，不影响既有提交）。
 //   · parseAiCopyJson 对齐原版 cover_maker_page.py _ai_suggest 的 AI 输出解析

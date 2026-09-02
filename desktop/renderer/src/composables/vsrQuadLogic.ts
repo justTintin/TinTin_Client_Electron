@@ -7,7 +7,7 @@
 //   · 选区管理 _add_box/_delete_box L1104-1131
 //   · sub_areas 契约编组 _start_remote_removal L1294-1309
 // 本模块零依赖（无 vue/IPC），绘制与事件转发在组件层；提交/轮询/取消
-// 编排在 useVsrRemoval.ts。openapi 契约：POST /vsr/remove
+// 编排在 useVsrRemoval.ts。API-GUIDE 契约：POST /vsr/remove
 //   sub_areas = ''（智能）| [[ymin,ymax,xmin,xmax],...]（矩形，相对坐标）
 //             | [[[x,y]×4],...]（多边形，相对坐标）
 // ═══════════════════════════════════════════════════════════════
@@ -283,7 +283,7 @@ export function buildInpaintMode(purpose: VsrPurpose): string {
 // ── 提交字段编组 + 参数校验（对照 start_removal L1252-1262）────────
 
 export interface VsrSubmitFields {
-  /** 本地视频路径（主进程按 openapi 契约以 multipart 字段 `file` 读取上传） */
+  /** 本地视频路径（主进程按 API-GUIDE 契约以 multipart 字段 `file` 读取上传） */
   video: string
   inpaint_mode: string
   sub_areas: string

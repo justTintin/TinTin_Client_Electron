@@ -8,6 +8,9 @@
 // isExpectedOfflineError）由 server-proxy.js 注入，不重复实现。
 // ═══════════════════════════════════════════════════════════════
 
+const fs = require('node:fs')
+const path = require('node:path')
+
 function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError }) {
   // --- V3 新接口 S1~S3（rembg / vsr / reverse-prompt）————————————————
   ipcMain.handle('rembg:submit', async (event, payload, onProgressChannel) => {
@@ -47,7 +50,7 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
-  // M4 对齐 openapi 契约 Body_remove_subtitle_vsr_remove_post：
+  // M4 对齐 API-GUIDE 契约 Body_remove_subtitle_vsr_remove_post：
   //   file（multipart 文件）+ inpaint_mode/sub_areas/purpose/watermark_text/
   //   mode/mask_dilate/mask_expand_y/sttn_max_load_num；sub_areas='' 表示智能识别
   ipcMain.handle('vsr:remove', async (event, payload, onProgressChannel) => {
@@ -135,43 +138,22 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     try {
       const p = payload || {}
       if (!p.text) throw new Error('tts:generate missing `text`')
-      // 有参考音频时走 multipart；否则纯 JSON 即可
-      if (p.clone_ref_file) {
-        const fields = {}
-        fields.text = p.text
-        if (p.voice_id)  fields.voice_id  = p.voice_id
-        if (p.speed !== undefined)     fields.speed     = String(p.speed)
-        if (p.emotion)   fields.emotion   = p.emotion
-        if (p.format)    fields.format    = p.format
-        fields.clone_ref_file = p.clone_ref_file
-        const onProgress = onProgressChannel
-          ? (percent) => event.sender.send(onProgressChannel, percent)
-          : undefined
-        return await multipartUpload(API_ENDPOINTS.tts.generate, fields, onProgress)
-      } else {
-        const res = await httpRequest('POST', API_ENDPOINTS.tts.generate, {
-          body: {
-            text: p.text, voice_id: p.voice_id,
-            speed: p.speed, emotion: p.emotion, format: p.format
-          }
-        })
-        return res.data
+      // API-GUIDE 契约（/voxcpm/tts）：text(必填) + sample_id(推荐) + engine + speaker
+      // 服务端返回 WAV 二进制（Content-Type: audio/wav），IPC 传 Buffer 会丢失，转 base64 透传
+      const body = {
+        text: p.text,
+        ...(p.sample_id ? { sample_id: p.sample_id } : {}),
+        ...(p.prompt_audio ? { prompt_audio: p.prompt_audio } : {}),
+        ...(p.speaker || p.voice_id ? { speaker: p.speaker || p.voice_id } : {}),
+        ...(p.engine ? { engine: p.engine } : {}),
       }
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
-  ipcMain.handle('tts:cloneVoice', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.name || !p.reference_audio) throw new Error('tts:cloneVoice requires name+reference_audio')
-      const fields = {}
-      fields.name = p.name
-      fields.reference_audio = p.reference_audio
-      if (p.description) fields.description = p.description
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.tts.cloneVoice, fields, onProgress)
+      const res = await httpRequest('POST', API_ENDPOINTS.tts.generate, { body })
+      // 服务端返回 WAV 二进制 → 转 base64 经 IPC 传渲染层
+      if (Buffer.isBuffer(res.data)) {
+        return { audio_base64: res.data.toString('base64'), content_type: res.headers?.['content-type'] || 'audio/wav' }
+      }
+      // JSON 响应（audio_url 模式，兼容未来服务端切换）
+      return res.data
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -188,6 +170,35 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
       const res = await httpRequest('GET', path)
       return res.data || []
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // API-GUIDE：POST /voice/samples（multipart: file 音频 + name + text）
+  ipcMain.handle('tts:uploadSample', async (event, payload, onProgressChannel) => {
+    try {
+      const p = payload || {}
+      if (!p.file) throw new Error('tts:uploadSample requires `file`')
+      if (!p.name || !String(p.name).trim()) throw new Error('tts:uploadSample requires `name`')
+      const fields = {}
+      fields.file = p.file
+      fields.name = String(p.name).trim()
+      if (p.text) fields.text = String(p.text)
+      const onProgress = onProgressChannel
+        ? (percent) => event.sender.send(onProgressChannel, percent)
+        : undefined
+      return await multipartUpload(API_ENDPOINTS.tts.voicesSamples, fields, onProgress)
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // 将 base64 音频数据写入本地文件（TTS 响应 audio_base64 → 本地落盘）
+  ipcMain.handle('tts:saveAudio', async (_e, { base64, savePath }) => {
+    try {
+      if (!base64 || !savePath) throw new Error('tts:saveAudio requires `base64` and `savePath`')
+      const dir = path.dirname(savePath)
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      const buf = Buffer.from(base64, 'base64')
+      fs.writeFileSync(savePath, buf)
+      return savePath
+    } catch (err) { return { error: err.message } }
   })
 }
 

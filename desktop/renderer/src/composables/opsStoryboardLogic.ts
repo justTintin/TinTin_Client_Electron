@@ -8,7 +8,7 @@
 //     narration → audio；material_id int 化；saved_at 秒级 ISO；
 //     product{brand,model,category,name} + 顶层同名四字段
 //   · topic 清洗（L1496）：[\\/:*?"<>|\r\n\t] → '_'，截 40
-// 服务端 Schema（openapi-latest.json 已核实）：ScriptIn/Shot/ProductRef。
+// 服务端 Schema（API-GUIDE 已核实）：ScriptIn/Shot/ProductRef。
 // ═══════════════════════════════════════════════════════════════
 
 /* ── 画幅 ───────────────────────────────────────────────────── */

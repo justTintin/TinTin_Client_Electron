@@ -37,6 +37,8 @@ export interface QuickEntry {
   kind: 'agent' | 'skill'
   name: string
   desc: string
+  /** 服务端智能体的 agent_id（kind=agent 时有值，供 agentChat 请求传递） */
+  agentId?: string
 }
 
 /**
@@ -67,7 +69,7 @@ export function parseAgentsResponse(data: unknown): WorkbenchAgent[] {
 /** 快捷条条目：服务端智能体（原版每行 10 个改按宽度收纳；
  *  2026-08-31 移除首项「对话」，llm 直连入口实际不用） */
 export function buildQuickEntries(agents: WorkbenchAgent[]): QuickEntry[] {
-  return agents.map((a) => ({ key: a.id || a.name, kind: 'agent' as const, name: a.name, desc: a.desc }))
+  return agents.map((a) => ({ key: a.id || a.name, kind: 'agent' as const, name: a.name, desc: a.desc, agentId: a.id || undefined }))
 }
 
 /* ── 斜杠菜单（原版 _SlashPopup） ──────────────────────────── */

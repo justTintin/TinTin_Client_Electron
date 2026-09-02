@@ -5,7 +5,8 @@
 // appStore（无需 props）；THEME_TABS 常量随卡迁入。
 // ═══════════════════════════════════════════════════════════════
 
-import { useAppStore, type ThemeMode } from '../../stores/app'
+import { useAppStore, type ThemeMode, type FontWeightLevel } from '../../stores/app'
+import { computed } from 'vue'
 
 const appStore = useAppStore()
 
@@ -15,6 +16,18 @@ const THEME_TABS: Array<{ value: ThemeMode; label: string; icon: string }> = [
   { value: 'dark',   label: '暗色',    icon: '🌙' },
   { value: 'system', label: '跟随系统', icon: '🖥' },
 ]
+
+/* 字体粗细：3 档分段控件 */
+const FONT_WEIGHT_TABS: Array<{ value: FontWeightLevel; label: string; weight: number }> = [
+  { value: 'regular',  label: '常规', weight: 400 },
+  { value: 'medium',   label: '中等', weight: 500 },
+  { value: 'semibold', label: '半粗', weight: 600 },
+]
+
+const fwPreviewWeight = computed(() => {
+  const map: Record<string, number> = { regular: 400, medium: 500, semibold: 600 }
+  return map[appStore.fontWeight] || 500
+})
 </script>
 
 <template>
@@ -41,6 +54,39 @@ const THEME_TABS: Array<{ value: ThemeMode; label: string; icon: string }> = [
           {{ t.label }}
         </button>
       </div>
+    </div>
+
+    <!-- 字体粗细 -->
+    <div class="luo-card-head" style="margin-top: var(--space-4)">
+      <div>
+        <h2 class="luo-card-title">字体粗细</h2>
+        <p class="luo-card-desc">{{ appStore.fontWeightLabel }}</p>
+      </div>
+    </div>
+
+    <div class="seg-wrap">
+      <div class="segmented" role="tablist" aria-label="字体粗细">
+        <button
+          v-for="fw in FONT_WEIGHT_TABS"
+          :key="fw.value"
+          class="seg-item"
+          :class="{ active: appStore.fontWeight === fw.value }"
+          role="tab"
+          :aria-selected="appStore.fontWeight === fw.value"
+          @click="appStore.setFontWeight(fw.value)"
+        >
+          <span class="seg-icon" aria-hidden="true" :style="{ fontWeight: fw.weight }">Aa</span>
+          {{ fw.label }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 字体预览 -->
+    <div class="fw-preview">
+      <span class="fw-preview-text" :style="{ fontWeight: fwPreviewWeight }">
+        螺丝钉智能体 —— 当前字体粗细预览
+      </span>
+      <span class="fw-preview-value">{{ fwPreviewWeight }}</span>
     </div>
 
     <div class="theme-preview" aria-hidden="true">
@@ -185,6 +231,28 @@ const THEME_TABS: Array<{ value: ThemeMode; label: string; icon: string }> = [
 
 .theme-card .tp-label { color: var(--muted-foreground); font-size: 12px; }
 .theme-card .tp-value { color: var(--foreground); font-variant-numeric: tabular-nums; }
+
+/* 字体粗细预览行 */
+.fw-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-container-low);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+.fw-preview-text {
+  font-size: var(--font-size-lead);
+  color: var(--foreground);
+  transition: font-weight 0.15s ease;
+}
+.fw-preview-value {
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
 
 /* 主题卡响应式 */
 @media (max-width: 900px) {

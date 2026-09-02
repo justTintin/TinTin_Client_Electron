@@ -158,7 +158,6 @@ export const API_PATHS = {
   },
   tts: {
     generate: '/voxcpm/tts',
-    voicesList: '/voice/samples',
     voicesSamples: '/voice/samples',
   },
   workflow: {
@@ -399,7 +398,6 @@ export namespace TTSAPI {
     speaker?:   string
     created_at?: string
   }
-  export type VoicesListResponse = VoiceSample[]
   export type VoicesSamplesResponse = VoiceSample[]
 }
 
@@ -639,8 +637,8 @@ export namespace AgentAPI {
     agent_id?:            string
     model?:               string
     max_rounds?:          number
-    /** 'plan' = 转编排任务：先拆 plan 交 S2 编排执行，响应含 task_id */
-    mode?:                'plan' | 'chat'
+    /** 三档契约（2026-08-31）：chat=普通对话 / agent=编排自动执行 / plan=计划草稿待确认 */
+    mode?:                'chat' | 'agent' | 'plan'
     /** 传则续接服务端持久化会话（素材池自动注入）；不传则新建并回显 */
     session_id?:          string
     /** 多租户隔离（主进程 getMachineId 注入 body，与 X-Machine-ID 头同值） */
@@ -652,18 +650,25 @@ export namespace AgentAPI {
   export interface ChatIpcRequest {
     message:              string
     history?:             ChatRequest['history']
+    agent_id?:            string
     model?:               string
     /** 轻量建会话用 1（原版 create_session 口径）；缺省主进程补 3 */
     maxRounds?:           number
-    mode?:                'plan'
+    mode?:                'chat' | 'agent' | 'plan'
     sessionId?:           string
   }
   /** POST /agent/chat 响应 */
   export interface ChatResponse {
     reply:                string
     session_id?:          string
-    /** mode=plan 时返回（编排任务 id，供编排任务页轮询） */
+    /** mode=agent/plan 时返回编排任务 id */
     task_id?:             string
+    /** 任务状态（agent=running / plan=pending_approval） */
+    status?:              string
+    /** 计划草稿（mode=plan 时返回，含 goal + steps） */
+    plan?:                { goal: string; steps: Array<{ capability: string; params?: Record<string, any> }> }
+    /** 确认端点（mode=plan 草稿响应携带，客户端 POST 确认后执行） */
+    confirm?:             string
     attachments?:         any[]
     tool_calls?:          any[]
   }

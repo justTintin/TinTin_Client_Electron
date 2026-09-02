@@ -157,21 +157,14 @@ export function useVoiceCloneStudio() {
     return []
   }
 
-  /** 拉取音色与样本目录（对照 _populate_ref_audio_samples L613-683 数据源） */
+  /** 拉取样本目录（GET /voice/samples，一次请求同时填充 voiceOptions + samples） */
   async function loadCatalog(): Promise<void> {
-    try {
-      const raw = await window.tintin.server.ttsVoicesList()
-      const list = extractArray(raw)
-      if (!list.length) throw new Error((raw as any)?.error || '音色列表为空')
-      voiceOptions.value = list.map((v: any) => ({ id: v.id, name: v.name }))
-      if (voiceOptions.value.length && !voice.value) voice.value = voiceOptions.value[0].id
-    } catch (err) {
-      console.warn('[voice-clone] 拉取音色列表失败:', err)
-    }
     try {
       const raw = await window.tintin.server.ttsVoicesSamples()
       const list = extractArray(raw)
-      if (!list.length) throw new Error((raw as any)?.error || '参考样本列表为空')
+      if (!list.length) throw new Error((raw as any)?.error || '样本列表为空')
+      // 同时填充音色选项 + 样本列表（两者来自同一端点）
+      voiceOptions.value = list.map((v: any) => ({ id: String(v.id), name: v.name }))
       samples.value = list.map((s: any) => ({
         id: String(s.id),
         name: s.name,
@@ -179,8 +172,10 @@ export function useVoiceCloneStudio() {
         url: s.audio_url || s.url,
         text: s.text || '',
       }))
+      if (voiceOptions.value.length && !voice.value) voice.value = voiceOptions.value[0].id
     } catch (err) {
-      console.warn('[voice-clone] 拉取参考样本失败:', err)
+      console.warn('[voice-clone] 拉取样本目录失败:', err)
+      voiceOptions.value = []
       samples.value = []
     }
   }

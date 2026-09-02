@@ -35,7 +35,9 @@ const dialog = {
   openFile: (params) => ipcRenderer.invoke('dialog:openFile', params),
   openFiles: (params) => ipcRenderer.invoke('dialog:openFiles', params),
   openDir: (params) => ipcRenderer.invoke('dialog:openDir', params),
-  saveFile: (params) => ipcRenderer.invoke('dialog:saveFile', params)
+  saveFile: (params) => ipcRenderer.invoke('dialog:saveFile', params),
+  // 递归收集文件夹内全部视频文件（对齐原客户端 utils_media.py collect_video_files PR#3）
+  collectVideos: (params) => ipcRenderer.invoke('dialog:collectVideos', params),
 }
 
 // ── downloads ──
@@ -173,7 +175,6 @@ const server = {
   asrTranscribe:  (p, onProgress) => _withUploadProgress(onProgress, 'asr:transcribe', p),
   ttsGenerate:   (p) => ipcRenderer.invoke('tts:generate', p),
   ttsSaveAudio:  (p) => ipcRenderer.invoke('tts:saveAudio', p),
-  ttsVoicesList:    (params)       => ipcRenderer.invoke('tts:voicesList', params),
   ttsVoicesSamples: (params)       => ipcRenderer.invoke('tts:voicesSamples', params),
   ttsUploadSample:  (p, onProgress) => _withUploadProgress(onProgress, 'tts:uploadSample', p),
 

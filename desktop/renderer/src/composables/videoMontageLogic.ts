@@ -99,10 +99,12 @@ export interface SplitSceneRow {
   clipUrl: string
   downloadState: 'pending' | 'ok' | 'failed'
   checked: boolean
+  shotType?: string  // 景别分类（入场/出场/中景/特写/''）
 }
 
-/** shots → 镜头表格行（checked 默认 true，行号从 1 起） */
-export function shotsToRows(shots: SplitShot[], sourceName: string): SplitSceneRow[] {
+/** shots → 镜头表格行（checked 默认 true，行号从 1 起；sourcePath 用于景别分类） */
+export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?: string): SplitSceneRow[] {
+  const shotType = sourcePath ? classifyShotType(sourcePath) : ''
   return shots.map((s, i) => ({
     idx: i + 1,
     name: s.filename || `${sourceName}_shot_${String(s.shotIndex || i + 1).padStart(3, '0')}.mp4`,
@@ -116,6 +118,7 @@ export function shotsToRows(shots: SplitShot[], sourceName: string): SplitSceneR
     clipUrl: s.downloadUrl,
     downloadState: 'pending' as const,
     checked: true,
+    ...(shotType ? { shotType } : {}),
   }))
 }
 
@@ -404,6 +407,96 @@ export function buildResultUrl(
   return v > 0
     ? `${base}/montage/result/${taskId}/${v}`
     : `${base}/montage/result/${taskId}`
+}
+
+// ── 素材常量与景别分类（对齐原客户端 utils_media.py PR#3）──────────
+
+/** Step1 原始素材支持的视频扩展名（与 VideoMontage.vue 文件选择器共用） */
+export const VIDEO_EXTS = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.m4v'] as const
+
+/** 单次导入素材数量上限：防止误选整个媒体库时把上万个文件塞进列表卡死 UI */
+export const MAX_SOURCE_VIDEOS = 500
+
+/** 遍历素材文件夹时跳过的子目录名：混剪流程自身产物的派生目录，
+ *  避免把上一次生成的镜头片段/配音/成片当成原始素材再喂回流程。 */
+export const DERIVED_DIR_NAMES = new Set([
+  'splits', 'output', 'outputs', 'final', 'dubbed', 'bgm', 'temp', 'montage_cache',
+])
+
+/** 景别分类关键词（大小写不敏感子串匹配）。
+ *  与 docs/服务端景别分类与镜头编排需求.md 保持一致。 */
+export const SHOT_TYPE_KEYWORDS: Record<string, readonly string[]> = {
+  entrance: ['入场', '进场', '开场', 'entrance'],
+  exit:     ['出场', '离场', '退场', '收尾', 'exit'],
+  medium:   ['中景', 'medium shot', 'medium_shot'],
+  closeup:  ['特写', 'closeup', 'close-up', 'close_up'],
+}
+
+/** 景别键 → 中文名（UI 展示与文档用） */
+export const SHOT_TYPE_LABELS: Record<string, string> = {
+  entrance: '入场', exit: '出场', medium: '中景', closeup: '特写',
+}
+
+/** 景别键 → 列表项前景色（素材列表里一眼区分景别；未标注保持默认色） */
+export const SHOT_TYPE_COLORS: Record<string, string> = {
+  entrance: '#2ecc71',  // 绿：入场
+  exit:     '#e67e22',  // 橙：出场
+  medium:   '#3498db',  // 蓝：中景
+  closeup:  '#9b59b6',  // 紫：特写
+}
+
+/**
+ * 按「文件夹/文件命名」识别素材景别（入场/出场/中景/特写）。
+ * 对照原客户端 utils_media.py classify_shot_type()。
+ *
+ * 规则：
+ * - 关键词为大小写不敏感的子串匹配（见 SHOT_TYPE_KEYWORDS）；
+ * - 优先匹配文件名（去扩展名），其次父目录由深到浅逐级匹配，命中即返回；
+ * - 均未命中返回 ""（未标注，编排时当中间镜头处理）。
+ */
+export function classifyShotType(filePath: string): string {
+  if (!filePath) return ''
+  // 取文件名（去扩展名）+ 父目录由深到浅
+  const parts = filePath.replace(/\\/g, '/').split('/')
+  const fileName = parts[parts.length - 1] || ''
+  const nameNoExt = fileName.replace(/\.[^.]+$/, '')
+  const dirs = parts.slice(0, -1).filter(Boolean).reverse()
+  const segs = [nameNoExt, ...dirs]
+  for (const seg of segs) {
+    const low = seg.toLowerCase()
+    for (const [st, kws] of Object.entries(SHOT_TYPE_KEYWORDS)) {
+      if (kws.some((kw) => low.includes(kw))) return st
+    }
+  }
+  return ''
+}
+
+/**
+ * 按景别编排镜头顺序：入场放头部、出场放尾部，其余（含未标注）居中混排。
+ * 对照原客户端 utils_media.py apply_shot_layout_order()。
+ *
+ * - 各分组内保持原相对顺序（稳定排序，不额外洗牌，中景/特写天然交错）；
+ * - 没有任何入场/出场标注时原样返回（不影响无景别素材的既有行为）。
+ */
+export function applyShotLayoutOrder<T>(
+  seq: T[],
+  shotTypes: Map<T, string> | Record<string, string> | ((item: T) => string),
+): T[] {
+  const clips = [...seq]
+  if (!clips.length) return clips
+  const getType = (c: T): string => {
+    if (typeof shotTypes === 'function') return (shotTypes as (item: T) => string)(c)
+    if (shotTypes instanceof Map) return shotTypes.get(c) || ''
+    return (shotTypes as Record<string, string>)[String(c)] || ''
+  }
+  const heads = clips.filter((c) => getType(c) === 'entrance')
+  const tails = clips.filter((c) => getType(c) === 'exit')
+  if (!heads.length && !tails.length) return clips
+  const middle = clips.filter((c) => {
+    const t = getType(c)
+    return t !== 'entrance' && t !== 'exit'
+  })
+  return [...heads, ...middle, ...tails]
 }
 
 // ── Step4 成片混音（/montage/bgm，对照 FinalMixWorker 口径服务端化）──

@@ -25,7 +25,7 @@ const {
   srcVideos, threshold, minSceneLen, imageDuration,
   scenes, scoreFilter, filteredScenes, checkedCount,
   splitBusy, splitError, splitMsg,
-  addVideos, onDrop, removeVideo, runSplit,
+  addVideos, selectFolder, onDrop, removeVideo, runSplit,
   // Step2 BGM 节拍/卡点
   musicPath, musicName, pickMusic, beatError,
   beatmapBusy, beats, beatClips, detectBeats,
@@ -34,11 +34,14 @@ const {
   beatBusy, beatVariants, runBeatCompose, downloadBeat, TRANSITIONS,
   // Step3 AI 编排
   concatTransition, concatLayout, concatTransitionDuration,
+  edgeSpeedup, EDGE_SPEEDUP_OPTIONS,
   concatBusy, concatError, concatResults, runConcat, downloadConcat,
   // Step4 合成
   finalSource, bgmPath, bgmName, bgmVolume, sourceVolume,
   finalBusy, finalError, finalResults,
   pickBgm, pickLocalFinal, runFinalMix, downloadFinal, revealLocal,
+  // 景别分类
+  SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
 
 const LAYOUTS = [
@@ -82,8 +85,12 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
     <template v-if="step === 0">
       <section class="card">
         <div class="dropzone" @click="addVideos" @drop.prevent="onDrop" @dragover.prevent>
-          <span class="dz-main">{{ srcVideos.length ? `已选 ${srcVideos.length} 个视频·点击/拖入继续添加` : '拖入视频素材 或 点击选择' }}</span>
+          <span class="dz-main">{{ srcVideos.length ? `已选 ${srcVideos.length} 个视频·点击/拖入继续添加` : '拖入素材文件夹（自动遍历子文件夹内全部视频） 或 点击选择文件夹' }}</span>
           <span class="dz-hint">支持 mp4 / mov / avi / mkv / flv / webm / m4v，服务端完成分割与逐镜分析</span>
+        </div>
+        <div class="row">
+          <TButton label="选择文件夹" size="small" @click="selectFolder" />
+          <span class="muted">自动递归遍历子文件夹内全部视频文件（上限 500 个，跳过 splits/outputs 等派生目录）</span>
         </div>
 
         <ul class="file-list">
@@ -120,19 +127,25 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
           </label>
         </div>
         <table class="tbl">
-          <thead><tr><th style="width:28px"></th><th>序号</th><th>来源</th><th>镜头</th><th>时长</th><th>评分</th><th style="min-width:160px">主要画面</th><th style="min-width:120px">分析</th></tr></thead>
+          <thead><tr><th style="width:28px"></th><th>序号</th><th>来源</th><th>景别</th><th>镜头</th><th>时长</th><th>评分</th><th style="min-width:160px">主要画面</th><th style="min-width:120px">分析</th></tr></thead>
           <tbody>
             <tr v-for="r in filteredScenes" :key="r.idx">
               <td><input v-model="r.checked" type="checkbox" /></td>
               <td>{{ r.idx }}</td>
               <td>{{ r.sourceName }}</td>
+              <td>
+                <span v-if="r.shotType" class="shot-type-badge" :style="{ color: SHOT_TYPE_COLORS[r.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[r.shotType] || '#888' }">
+                  {{ SHOT_TYPE_LABELS[r.shotType] || r.shotType }}
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
               <td>{{ r.startSec.toFixed(1) }}s ~ {{ r.endSec.toFixed(1) }}s</td>
               <td>{{ r.duration.toFixed(1) }}s</td>
               <td>{{ r.score || '—' }}</td>
               <td>{{ r.description || '—' }}</td>
               <td>{{ r.analysis || '—' }}</td>
             </tr>
-            <tr v-if="!filteredScenes.length"><td colspan="8" class="muted">暂无已分割镜头，请先在上方开始解析</td></tr>
+            <tr v-if="!filteredScenes.length"><td colspan="9" class="muted">暂无已分割镜头，请先在上方开始解析</td></tr>
           </tbody>
         </table>
       </section>
@@ -221,6 +234,10 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
           <div class="field"><span class="label">转场动画</span><TSelect v-model="concatTransition" :options="TRANSITIONS" /></div>
           <div class="field"><span class="label">输出画幅</span><TSelect v-model="concatLayout" :options="LAYOUTS" /></div>
           <div class="field"><span class="label">转场时长(秒，0=默认)</span><input v-model.number="concatTransitionDuration" type="number" step="0.1" min="0" class="input" /></div>
+          <div class="field">
+            <span class="label">出入场加速 <span class="muted">(识别为入场/出场景别的镜头按此倍速加速)</span></span>
+            <TSelect v-model="edgeSpeedup" :options="EDGE_SPEEDUP_OPTIONS" />
+          </div>
         </div>
 
         <div class="row">
@@ -355,4 +372,8 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl th, .tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 .tbl th { color: var(--muted-foreground); font-weight: 500; font-size: 12px; }
+.shot-type-badge {
+  display: inline-block; padding: 1px 6px; border: 1px solid;
+  border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1.4;
+}
 </style>

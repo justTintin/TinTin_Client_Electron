@@ -29,6 +29,7 @@ function createAgentChatIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOIN
         machine_id: getMachineId()
       }
       if (Array.isArray(p.history) && p.history.length) body.history = p.history
+      if (p.agent_id) body.agent_id = p.agent_id
       if (p.model) body.model = p.model
       // maxRounds 可选透传（原版 create_session 用轻量 max_rounds=1 建会话；默认 3）
       if (p.maxRounds) body.max_rounds = Number(p.maxRounds) || 3

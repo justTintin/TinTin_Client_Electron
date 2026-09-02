@@ -34,6 +34,12 @@ import {
   extractSubmitTaskId,
   buildBgmPayload,
   extractBgmResult,
+  VIDEO_EXTS,
+  MAX_SOURCE_VIDEOS,
+  classifyShotType,
+  applyShotLayoutOrder,
+  SHOT_TYPE_LABELS,
+  SHOT_TYPE_COLORS,
   type SplitSceneRow,
   type BeatClip,
 } from './videoMontageLogic'
@@ -171,14 +177,36 @@ export function useVideoMontage() {
 
   function addVideos(): void {
     void (async () => {
+      const extArr = VIDEO_EXTS.map((e) => e.replace('.', ''))
       const res = await window.tintin.dialog.openFiles({
         title: '选择原始视频素材',
         multi: true,
-        filters: [{ name: '视频', extensions: ['mp4', 'mov', 'avi', 'mkv', 'flv', 'webm', 'm4v'] }],
+        filters: [{ name: '视频', extensions: extArr }],
       })
-      for (const fp of res || []) {
+      const remaining = MAX_SOURCE_VIDEOS - srcVideos.value.length
+      if (remaining <= 0) { splitError.value = `素材已达上限（${MAX_SOURCE_VIDEOS}）`; return }
+      for (const fp of (res || []).slice(0, remaining)) {
         if (fp && !srcVideos.value.includes(fp)) srcVideos.value.push(fp)
       }
+    })()
+  }
+
+  /** 选择素材文件夹，递归收集内部全部视频文件（对齐 PR#3 allow_dirs + collect_video_files） */
+  function selectFolder(): void {
+    void (async () => {
+      const dir = await window.tintin.dialog.openDir({ title: '选择素材文件夹（自动遍历子文件夹内全部视频）' })
+      if (!dir) return
+      const remaining = MAX_SOURCE_VIDEOS - srcVideos.value.length
+      if (remaining <= 0) { splitError.value = `素材已达上限（${MAX_SOURCE_VIDEOS}）`; return }
+      const videos = await window.tintin.dialog.collectVideos({
+        root: dir,
+        exts: [...VIDEO_EXTS],
+        limit: remaining,
+      })
+      for (const fp of videos) {
+        if (fp && !srcVideos.value.includes(fp)) srcVideos.value.push(fp)
+      }
+      if (!videos.length) splitMsg.value = '所选文件夹内未找到视频文件'
     })()
   }
 
@@ -215,7 +243,8 @@ export function useVideoMontage() {
           analyze: true,
           product_mode: false,
         }), '素材解析')
-        rows.push(...shotsToRows(parseSplitResponse(res), name))
+        // 传递 sourcePath 用于景别分类（对齐 PR#3 classify_shot_type）
+        rows.push(...shotsToRows(parseSplitResponse(res), name, v))
       }
       scenes.value = rows
       splitMsg.value = rows.length
@@ -386,6 +415,16 @@ export function useVideoMontage() {
   const concatBusy = ref(false)
   const concatError = ref('')
   const concatResults = ref<string[]>([])
+  // PR#3 出入场镜头加速倍率（对齐 step2_concat_view.py edge_speedup_combo）
+  const edgeSpeedup = ref(1.0)  // 1.0=不加速, 1.2/1.5/2.0/2.5/3.0
+  const EDGE_SPEEDUP_OPTIONS = [
+    { label: '不加速', value: 1.0 },
+    { label: '1.2 倍', value: 1.2 },
+    { label: '1.5 倍', value: 1.5 },
+    { label: '2 倍', value: 2.0 },
+    { label: '2.5 倍', value: 2.5 },
+    { label: '3 倍', value: 3.0 },
+  ]
 
   const TRANSITIONS: Array<SelectOptionLite> = [
     { label: '模糊', value: 'fade' }, { label: '淡入淡出', value: 'dissolve' },
@@ -398,8 +437,14 @@ export function useVideoMontage() {
 
   /** AI 编排：split 片段 clip_urls 优先（服务端内部流转免二次上传），无则回退本地源文件 */
   async function runConcat(): Promise<void> {
-    const checked = scenes.value.filter((s) => s.checked)
+    let checked = scenes.value.filter((s) => s.checked)
     if (!checked.length) { concatError.value = '请先勾选要编排的镜头片段'; return }
+    // PR#3 景别编排：入场放头部、出场放尾部，其余混排中间（对照 apply_shot_layout_order）
+    const shotTypeMap: Record<number, string> = {}
+    checked.forEach((s) => { if (s.shotType) shotTypeMap[s.idx] = s.shotType })
+    if (Object.keys(shotTypeMap).length) {
+      checked = applyShotLayoutOrder<SplitSceneRow>(checked, (s) => shotTypeMap[s.idx] || '')
+    }
     concatError.value = ''
     concatBusy.value = true
     clearBusy = clearAllBusy
@@ -442,6 +487,8 @@ export function useVideoMontage() {
         crf: payload.crf,
         preset: payload.preset,
         image_duration: payload.image_duration,
+        // PR#3 出入场镜头加速倍率
+        ...(edgeSpeedup.value !== 1.0 ? { edge_speedup: edgeSpeedup.value } : {}),
       }), 'AI 编排')
       const id = extractSubmitTaskId(res)
       statusText.value = `AI 编排任务已提交：${id}（轮询 /scheduled/tasks/${id}）`
@@ -617,7 +664,7 @@ export function useVideoMontage() {
     srcVideos, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg,
-    addVideos, onDrop, removeVideo, runSplit,
+    addVideos, selectFolder, onDrop, removeVideo, runSplit,
     // Step2
     musicPath, musicName, pickMusic, beatError,
     beatmapBusy, beats, beatClips, detectBeats,
@@ -626,11 +673,14 @@ export function useVideoMontage() {
     beatBusy, beatVariants, runBeatCompose, downloadBeat, TRANSITIONS,
     // Step3
     concatTransition, concatLayout, concatTransitionDuration,
+    edgeSpeedup, EDGE_SPEEDUP_OPTIONS,
     concatBusy, concatError, concatResults, runConcat, downloadConcat,
     // Step4
     finalSource, bgmPath, bgmName, bgmVolume, sourceVolume,
     finalBusy, finalError, finalResults,
     pickBgm, pickLocalFinal, runFinalMix, downloadFinal, revealLocal,
+    // 景别分类（UI 展示用）
+    SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
   }
 }
 

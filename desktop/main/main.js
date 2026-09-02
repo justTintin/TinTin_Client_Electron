@@ -775,6 +775,57 @@ ipcMain.handle('dialog:saveFile', async (event, params) => {
   return result.canceled ? null : result.filePath
 })
 
+// 递归收集文件夹内全部视频文件（对齐原客户端 utils_media.py collect_video_files PR#3）
+// 跳过隐藏/系统目录与混剪派生目录（splits/outputs/…），达到 limit 即停止遍历
+ipcMain.handle('dialog:collectVideos', async (_event, params) => {
+  const root = params?.root || ''
+  if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) return []
+  const exts = new Set(
+    (params?.exts || ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.m4v'])
+      .map((e) => e.startsWith('.') ? e.toLowerCase() : '.' + e.toLowerCase())
+  )
+  const limit = Math.min(Number(params?.limit) || 500, 5000)
+  const derivedDirs = new Set(params?.skipDirs || [
+    'splits', 'output', 'outputs', 'final', 'dubbed', 'bgm', 'temp', 'montage_cache',
+  ])
+  const found = []
+  function walk(dir) {
+    if (found.length >= limit) return
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch (_) { return }
+    for (const ent of entries) {
+      if (found.length >= limit) return
+      const full = path.join(dir, ent.name)
+      if (ent.isDirectory()) {
+        // 跳过隐藏/系统目录与混剪派生目录
+        if (ent.name.startsWith('.') || ent.name.startsWith('$')) continue
+        if (derivedDirs.has(ent.name.toLowerCase())) continue
+        walk(full)
+      } else if (ent.isFile()) {
+        const ext = path.extname(ent.name).toLowerCase()
+        if (exts.has(ext)) found.push(full)
+      }
+    }
+  }
+  walk(root)
+  // 自然序排序（目录+文件名）
+  found.sort((a, b) => {
+    const natKey = (p) => {
+      const base = path.basename(p).toLowerCase()
+      const parts = base.split(/(\d+)/)
+      return [path.dirname(p).toLowerCase(), ...parts.map((s, i) => i % 2 ? String(Number(s)).padStart(10, '0') : s)]
+    }
+    const ka = natKey(a), kb = natKey(b)
+    const len = Math.max(ka.length, kb.length)
+    for (let i = 0; i < len; i++) {
+      const cmp = String(ka[i] || '').localeCompare(String(kb[i] || ''), undefined, { numeric: true })
+      if (cmp !== 0) return cmp
+    }
+    return 0
+  })
+  return found.slice(0, limit)
+})
+
 // IPC: shell
 ipcMain.handle('shell:openExternal', (event, url) => shell.openExternal(url))
 ipcMain.handle('shell:openItem', (event, filePath) => shell.openPath(filePath))

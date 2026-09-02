@@ -52,6 +52,13 @@ declare interface TintinBridgeDialog {
     defaultPath?: string
     filters?: Array<{ name: string; extensions: string[] }>
   }): Promise<string | null>
+  /** 递归收集文件夹内全部视频文件（对齐 PR#3 collect_video_files） */
+  collectVideos(params?: {
+    root: string
+    exts?: string[]
+    limit?: number
+    skipDirs?: string[]
+  }): Promise<string[]>
 }
 
 // --------------------------------------------------------------------
@@ -200,11 +207,6 @@ declare interface TintinBridgeServer {
   ): Promise<IpcError<TTSAPI.GenerateResponse>>
   /** 将 base64 音频数据写入本地文件（TTS 响应 audio_base64 → 本地落盘） */
   ttsSaveAudio(payload: { base64: string; savePath: string }): Promise<string | { error: string }>
-  ttsVoicesList(params?: {
-    language?: string
-    page?: number
-    page_size?: number
-  }): Promise<IpcError<TTSAPI.VoicesListResponse>>
   ttsVoicesSamples(params?: {
     speaker?: string
     cloned_only?: boolean

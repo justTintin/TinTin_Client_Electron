@@ -101,7 +101,7 @@ export function useWorkbenchChat(options?: {
      模型切换只在系统设置；输入区只读 llm.defaultModel 偏好） ── */
   const mode = ref<ChatMode>('agent')
   /** 任务选择器（原版 chk_plan L1130-1135 勾选 → 2026-08-31 改三档选择器） */
-  const planMode = ref<PlanExecMode>('agent')
+  const planMode = ref<PlanExecMode>('plan-confirm')
   /** 服务端模型偏好（llm.defaultModel；空 = 服务端默认模型） */
   const selectedModel = ref<string>('')
   /** 当前选中的智能体 agent_id（服务端严格校验，2026-08-16 起；空=不指定） */

@@ -43,6 +43,8 @@ export namespace MontageAPI {
     crf?:                 number
     preset?:              string
     image_duration?:      number
+    /** 出入场镜头加速倍率（对齐 PR#3 edge_speedup_combo：1.0/1.2/1.5/2.0/2.5/3.0） */
+    edge_speedup?:        number
   }
   export type ConcatResponse = { id?: string; task_id?: string; [extra: string]: unknown }
 

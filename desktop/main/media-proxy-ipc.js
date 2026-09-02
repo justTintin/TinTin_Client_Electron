@@ -157,13 +157,6 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
-  ipcMain.handle('tts:voicesList', async (_e, params) => {
-    try {
-      const path = resolveEndpoint(API_ENDPOINTS.tts.voicesList, params || {})
-      const res = await httpRequest('GET', path)
-      return res.data || []
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
   ipcMain.handle('tts:voicesSamples', async (_e, params) => {
     try {
       const path = resolveEndpoint(API_ENDPOINTS.tts.voicesSamples, params || {})

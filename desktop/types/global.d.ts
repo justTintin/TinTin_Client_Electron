@@ -218,6 +218,12 @@ declare interface TintinBridgeServer {
     onProgress?: (percent: number) => void
   ): Promise<IpcError<TTSAPI.UploadSampleResponse>>
 
+  // ---------- voice dubbing (Step3 口播配音) ----------
+  /** 扫描目录中的视频文件（递归，上限 500 个） */
+  voiceScanDir(payload: { dir: string; maxCount?: number }): Promise<{ files: string[]; total: number } | { error: string }>
+  /** 合并视频+音频（ffmpeg） */
+  voiceMergeVideoAudio(payload: { videoPath: string; audioPath: string; outPath: string }): Promise<{ path: string } | { error: string }>
+
   // ---------- workflow（CoverMaker 一键成片编排）----------
   workflowRun(
     payload: WorkflowAPI.RunRequest

@@ -193,6 +193,85 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
       return savePath
     } catch (err) { return { error: err.message } }
   })
+
+  // ── Step3 口播配音专用 IPC ────────────────────────────────────────
+
+  // 扫描目录中的视频文件（递归，上限 500 个）
+  ipcMain.handle('voice:scanDir', async (_e, { dir, maxCount = 500 }) => {
+    try {
+      if (!dir || !fs.existsSync(dir)) throw new Error('目录不存在')
+      const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.m4v'])
+      const SKIP_DIRS = new Set(['splits', 'outputs', 'temp', 'cache', 'node_modules'])
+      const results = []
+      
+      function scanDir(currentDir, depth = 0) {
+        if (results.length >= maxCount || depth > 5) return
+        const entries = fs.readdirSync(currentDir, { withFileTypes: true })
+        for (const entry of entries) {
+          if (results.length >= maxCount) break
+          const fullPath = path.join(currentDir, entry.name)
+          if (entry.isDirectory()) {
+            if (!SKIP_DIRS.has(entry.name.toLowerCase())) {
+              scanDir(fullPath, depth + 1)
+            }
+          } else if (entry.isFile()) {
+            const ext = path.extname(entry.name).toLowerCase()
+            if (VIDEO_EXTS.has(ext)) {
+              results.push(fullPath)
+            }
+          }
+        }
+      }
+      
+      scanDir(dir)
+      return { files: results.slice(0, maxCount), total: results.length }
+    } catch (err) { return { error: err.message } }
+  })
+
+  // 合并视频+音频（ffmpeg -i video -i audio -c:v copy -c:a aac -shortest out）
+  ipcMain.handle('voice:mergeVideoAudio', async (_e, { videoPath, audioPath, outPath }) => {
+    try {
+      if (!videoPath || !audioPath || !outPath) throw new Error('缺少必要参数')
+      if (!fs.existsSync(videoPath)) throw new Error('视频文件不存在')
+      if (!fs.existsSync(audioPath)) throw new Error('音频文件不存在')
+      
+      const dir = path.dirname(outPath)
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      
+      const { spawn } = require('node:child_process')
+      const args = [
+        '-y',
+        '-i', videoPath,
+        '-i', audioPath,
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-shortest',
+        outPath
+      ]
+      
+      // 使用系统 ffmpeg（或打包后的 ffmpeg）
+      const ffmpegPath = process.resourcesPath 
+        ? path.join(process.resourcesPath, 'bin', 'ffmpeg.exe')
+        : 'ffmpeg'
+      
+      const proc = spawn(ffmpegPath, args, { windowsHide: true })
+      let stderr = ''
+      proc.stderr.on('data', (d) => stderr += d)
+      
+      return await new Promise((resolve) => {
+        proc.on('close', (code) => {
+          if (code !== 0) {
+            resolve({ error: `ffmpeg 合并失败: ${stderr}` })
+          } else {
+            resolve({ path: outPath })
+          }
+        })
+        proc.on('error', (err) => {
+          resolve({ error: `ffmpeg 启动失败: ${err.message}` })
+        })
+      })
+    } catch (err) { return { error: err.message } }
+  })
 }
 
 module.exports = { createMediaProxyIpc }

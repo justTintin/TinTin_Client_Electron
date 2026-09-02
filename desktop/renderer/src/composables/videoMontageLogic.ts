@@ -526,3 +526,89 @@ export function extractBgmResult(resp: unknown): { taskId: string; url: string }
   if (taskId) return { taskId, url: '' }
   return { taskId: '', url: String(r.video_url || r.url || r.output_url || r.file || '') }
 }
+
+// ── Step3 口播配音（对照 voice_clone_page.py VoiceCloneWorker）────────────────
+
+/** 配音行状态机 */
+export interface VoiceRow {
+  videoPath: string        // 视频文件路径
+  text: string             // 配音文案
+  speaker?: string         // 音色 ID
+  status: 'pending' | 'generating' | 'done' | 'failed'
+  progress: number         // 0-100
+  resultPath?: string      // 生成的 wav 路径
+  error?: string
+}
+
+/** 支持的视频扩展名（与 VIDEO_EXTS 同口径） */
+const VOICE_VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.m4v'])
+
+/** 从目录路径中过滤出视频文件（纯函数，不涉及 IPC） */
+export function filterVideoFiles(files: string[]): string[] {
+  return files.filter((f) => {
+    const ext = f.slice(f.lastIndexOf('.')).toLowerCase()
+    return VOICE_VIDEO_EXTS.has(ext)
+  })
+}
+
+/** 构建 TTS 请求载荷（对照 /voxcpm/tts） */
+export function buildTtsPayload(row: VoiceRow): { text: string; speaker?: string; prompt_audio?: string } {
+  const payload: { text: string; speaker?: string; prompt_audio?: string } = {
+    text: row.text,
+  }
+  if (row.speaker) payload.speaker = row.speaker
+  // prompt_audio 可选，用于音色克隆
+  return payload
+}
+
+/** 解析 TTS 响应（对照 VoiceCloneWorker 回调） */
+export function mapTtsResponse(resp: unknown): { ok: boolean; url?: string; error?: string } {
+  if (!resp || typeof resp !== 'object') return { ok: false, error: '响应格式错误' }
+  const r = resp as Record<string, unknown>
+  
+  // 检查错误
+  if (r.error) return { ok: false, error: String(r.error) }
+  if (r.status && String(r.status).toLowerCase() === 'failed') {
+    return { ok: false, error: String(r.error_msg || '任务失败') }
+  }
+  
+  // 提取音频 URL
+  const url = String(r.audio_url || r.url || r.output_url || '')
+  if (!url) return { ok: false, error: '响应中未找到音频 URL' }
+  
+  return { ok: true, url }
+}
+
+/** 状态文案映射 */
+export function voiceStatusText(status: VoiceRow['status']): string {
+  switch (status) {
+    case 'pending': return '待生成'
+    case 'generating': return '生成中'
+    case 'done': return '完成'
+    case 'failed': return '失败'
+  }
+}
+
+/** 状态 CSS 类名 */
+export function voiceStatusClass(status: VoiceRow['status']): string {
+  switch (status) {
+    case 'pending': return 'st-pending'
+    case 'generating': return 'st-running'
+    case 'done': return 'st-done'
+    case 'failed': return 'st-failed'
+  }
+}
+
+/** 检查是否所有行都完成（允许跳过空文案行） */
+export function allVoicesDone(rows: VoiceRow[]): boolean {
+  return rows.every((r) => {
+    // 空文案行视为已完成（跳过）
+    if (!r.text.trim()) return true
+    return r.status === 'done'
+  })
+}
+
+/** 过滤出需要生成的行（非空文案 + 未完成） */
+export function filterPendingVoices(rows: VoiceRow[]): VoiceRow[] {
+  return rows.filter((r) => r.text.trim() && r.status !== 'done')
+}

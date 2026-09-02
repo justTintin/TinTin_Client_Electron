@@ -13,7 +13,7 @@ import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useVideoMontage } from '@/composables/useVideoMontage'
 
-const STEPS = ['1. 素材解析', '2. BGM 节拍/卡点', '3. AI 编排', '4. 合成']
+const STEPS = ['1. 素材解析', '2. BGM 节拍/卡点', '3. AI 编排', '4. 口播配音', '5. 合成']
 const step = ref(0)
 function go(i: number) { step.value = Math.max(0, Math.min(STEPS.length - 1, i)) }
 
@@ -35,13 +35,21 @@ const {
   concatTransition, concatLayout, concatTransitionDuration,
   edgeSpeedup, EDGE_SPEEDUP_OPTIONS,
   concatBusy, concatError, concatResults, runConcat, downloadConcat,
-  // Step4 合成
+  // Step4 口播配音（新增）
+  voiceRows, selectedSpeaker, speakerOptions, batchGenerating,
+  loadSpeakerOptions, selectVoiceDir, updateVoiceText,
+  generateSingleVoice, generateAllVoices, playVoice, exportVoice,
+  allVoicesDone, voiceStatusText, voiceStatusClass,
+  // Step5 合成
   finalSource, bgmPath, bgmName, bgmVolume, sourceVolume,
   finalBusy, finalError, finalResults,
   pickBgm, pickLocalFinal, runFinalMix, downloadFinal, revealLocal,
   // 景别分类
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
+
+// 初始化时加载音色列表
+loadSpeakerOptions()
 
 const LAYOUTS = [
   { label: '竖屏 (1080x1920 抖音流)', value: 'vertical' },
@@ -260,11 +268,99 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
 
       <div class="row between">
         <TButton label="上一步：BGM 节拍/卡点" plain @click="go(1)" />
-        <TButton label="下一步：合成" icon="right" @click="go(3)" />
+        <TButton label="下一步：口播配音" icon="right" @click="go(3)" />
       </div>
     </template>
 
-    <!-- Step 4: 合成 -->
+    <!-- Step 4: 口播配音（新增） -->
+    <template v-else-if="step === 3">
+      <section class="card">
+        <div class="row between">
+          <span class="card-title">参考音色选择</span>
+        </div>
+        <div class="row">
+          <label class="label">音色:</label>
+          <TSelect v-model="selectedSpeaker" :options="speakerOptions" class="grow" />
+          <TButton label="刷新列表" size="small" plain @click="loadSpeakerOptions" />
+        </div>
+        <div class="row">
+          <span class="muted">选择预置音色或上传自定义音色样本（对照原客户端 _populate_ref_audio_samples）</span>
+        </div>
+
+        <div class="row between">
+          <span class="card-title">视频目录选择</span>
+        </div>
+        <div class="row">
+          <TButton label="选择视频目录" icon="folder" @click="selectVoiceDir" />
+          <span class="muted">已选 {{ voiceRows.length }} 个视频</span>
+        </div>
+        <div class="row">
+          <span class="muted">递归扫描目录下所有视频文件（.mp4/.mov/.avi/.mkv/.flv/.webm/.m4v），上限 500 个</span>
+        </div>
+
+        <div class="row between">
+          <span class="card-title">配音队列</span>
+          <TButton label="批量生成全部" icon="play" :loading="batchGenerating" :disabled="!voiceRows.length" @click="generateAllVoices" />
+        </div>
+        <div v-if="!voiceRows.length" class="muted">尚未选择视频目录，请先点击「选择视频目录」</div>
+        <table v-else class="tbl voice-table">
+          <thead>
+            <tr>
+              <th style="width:40px">#</th>
+              <th>视频文件</th>
+              <th style="width:300px">配音文案（双击编辑）</th>
+              <th style="width:100px">状态</th>
+              <th style="width:140px">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, i) in voiceRows" :key="i">
+              <td>{{ i + 1 }}</td>
+              <td class="video-name">{{ basename(row.videoPath) }}</td>
+              <td>
+                <textarea
+                  class="voice-text"
+                  :value="row.text"
+                  placeholder="留空则跳过此视频"
+                  @change="updateVoiceText(i, ($event.target as HTMLTextAreaElement).value)"
+                />
+              </td>
+              <td>
+                <span :class="voiceStatusClass(row.status)">{{ voiceStatusText(row.status) }}</span>
+                <progress v-if="row.status === 'generating'" class="voice-progress" :value="row.progress" max="100" />
+              </td>
+              <td class="voice-ops">
+                <TButton
+                  size="small"
+                  :loading="row.status === 'generating'"
+                  :disabled="!row.text.trim() || row.status === 'generating'"
+                  @click="generateSingleVoice(i)"
+                >生成</TButton>
+                <TButton
+                  size="small"
+                  plain
+                  :disabled="!row.resultPath"
+                  @click="playVoice(i)"
+                >▶</TButton>
+                <TButton
+                  size="small"
+                  plain
+                  :disabled="!row.resultPath"
+                  @click="exportVoice(i)"
+                ></TButton>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <div class="row between">
+        <TButton label="上一步：AI 编排" plain @click="go(2)" />
+        <TButton label="下一步：合成" icon="right" :disabled="!allVoicesDone()" @click="go(4)" />
+      </div>
+    </template>
+
+    <!-- Step 5: 合成 -->
     <template v-else>
       <section class="card">
         <div class="row between">
@@ -319,7 +415,7 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
       </section>
 
       <div class="row left">
-        <TButton label="上一步：AI 编排" plain @click="go(2)" />
+        <TButton label="上一步：口播配音" plain @click="go(3)" />
       </div>
     </template>
   </div>
@@ -372,4 +468,29 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
   display: inline-block; padding: 1px 6px; border: 1px solid;
   border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1.4;
 }
+
+/* Step4 口播配音样式 */
+.voice-table { margin-top: var(--space-3); }
+.voice-table .video-name { font-size: 12px; color: var(--foreground); word-break: break-all; max-width: 200px; }
+.voice-text {
+  width: 100%; min-height: 60px; padding: 6px 8px;
+  background: var(--surface-container); border: 1px solid var(--border);
+  border-radius: var(--radius-md); color: var(--foreground);
+  font-size: 12px; font-family: inherit; resize: vertical;
+  outline: none;
+}
+.voice-text:focus { border-color: var(--primary); }
+.voice-progress {
+  width: 80px; height: 6px; margin-top: 4px;
+  appearance: none; border-radius: 3px; overflow: hidden;
+}
+.voice-progress::-webkit-progress-bar { background: var(--surface-container); }
+.voice-progress::-webkit-progress-value { background: var(--primary); transition: width 0.3s; }
+.voice-ops { display: flex; gap: 4px; align-items: center; }
+
+/* 状态标签样式 */
+.st-pending { color: var(--muted-foreground); font-size: 12px; }
+.st-running { color: var(--primary); font-size: 12px; font-weight: 600; }
+.st-done { color: var(--success); font-size: 12px; font-weight: 600; }
+.st-failed { color: var(--danger, #e74c3c); font-size: 12px; font-weight: 600; }
 </style>

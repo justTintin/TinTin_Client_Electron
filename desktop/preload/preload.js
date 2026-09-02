@@ -178,6 +178,10 @@ const server = {
   ttsVoicesSamples: (params)       => ipcRenderer.invoke('tts:voicesSamples', params),
   ttsUploadSample:  (p, onProgress) => _withUploadProgress(onProgress, 'tts:uploadSample', p),
 
+  // ---------- voice dubbing (Step3 口播配音) ----------
+  voiceScanDir:         (p) => ipcRenderer.invoke('voice:scanDir', p),
+  voiceMergeVideoAudio: (p) => ipcRenderer.invoke('voice:mergeVideoAudio', p),
+
   // ---------- workflow ----------
   workflowRun: (payload) => ipcRenderer.invoke('workflow:run', payload),
 

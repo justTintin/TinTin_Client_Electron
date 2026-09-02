@@ -42,6 +42,15 @@ import {
   SHOT_TYPE_COLORS,
   type SplitSceneRow,
   type BeatClip,
+  // Step3 口播配音
+  type VoiceRow,
+  filterVideoFiles,
+  buildTtsPayload,
+  mapTtsResponse,
+  voiceStatusText,
+  voiceStatusClass,
+  allVoicesDone,
+  filterPendingVoices,
 } from './videoMontageLogic'
 import { readCacheDir } from './useSettingsConfig'
 import { joinDefaultPath } from './settingsIntegrationLogic'
@@ -651,6 +660,171 @@ export function useVideoMontage() {
     try { window.tintin.shell.revealInFolder(path) } catch (_) {}
   }
 
+  // ── Step3 口播配音（对照 voice_clone_page.py VoiceCloneWorker）────────────────
+  const voiceRows = ref<VoiceRow[]>([])
+  const selectedSpeaker = ref('')
+  const referenceAudio = ref('')
+  const speakerOptions = ref<Array<{ label: string; value: string }>>([])
+  const batchGenerating = ref(false)
+  const generatingIndex = ref(-1)
+
+  /** 加载音色列表（对照 _populate_ref_audio_samples） */
+  async function loadSpeakerOptions(): Promise<void> {
+    try {
+      const res = await window.tintin?.server?.ttsVoicesSamples?.()
+      if (res && !('error' in res)) {
+        const samples = (res as any).samples || res || []
+        speakerOptions.value = samples.map((s: any) => ({
+          label: s.name || s.speaker || '未命名',
+          value: s.speaker || s.id || '',
+        }))
+      }
+    } catch (_) { /* 预览环境无桥 */ }
+  }
+
+  /** 选择视频目录并扫描（对照 _select_voice_video_dir） */
+  async function selectVoiceDir(): Promise<void> {
+    try {
+      const res = await window.tintin?.dialog?.openDir?.({ title: '选择视频目录' })
+      if (!res || typeof res !== 'string') return
+      const dir = res
+      
+      // 调用主进程扫描
+      const scanRes = await window.tintin?.server?.voiceScanDir?.({ dir, maxCount: 500 })
+      if (!scanRes || 'error' in scanRes) {
+        throw new Error((scanRes as any)?.error || '扫描失败')
+      }
+      
+      const files = (scanRes as any).files || []
+      // 初始化配音行
+      voiceRows.value = files.map((f: string) => ({
+        videoPath: f,
+        text: '',
+        speaker: selectedSpeaker.value,
+        status: 'pending' as const,
+        progress: 0,
+      }))
+    } catch (e) {
+      console.error('选择视频目录失败:', e)
+    }
+  }
+
+  /** 更新文案（对照 _on_row_text_changed_widget） */
+  function updateVoiceText(index: number, text: string): void {
+    if (index >= 0 && index < voiceRows.value.length) {
+      voiceRows.value[index].text = text
+    }
+  }
+
+  /** 生成单行配音（对照 VoiceCloneWorker） */
+  async function generateSingleVoice(index: number): Promise<void> {
+    if (index < 0 || index >= voiceRows.value.length) return
+    const row = voiceRows.value[index]
+    if (!row.text.trim()) return // 空文案跳过
+    
+    try {
+      row.status = 'generating'
+      row.progress = 10
+      generatingIndex.value = index
+      
+      // 构建 TTS 载荷
+      const payload = buildTtsPayload(row)
+      const res = await window.tintin?.server?.ttsGenerate?.(payload)
+      
+      row.progress = 50
+      
+      // 解析响应
+      const ttsRes = mapTtsResponse(res)
+      if (!ttsRes.ok) {
+        throw new Error(ttsRes.error || 'TTS 生成失败')
+      }
+      
+      // 保存到本地
+      const cacheDir = await readCacheDir()
+      const fileName = `voice_${Date.now()}_${index}.wav`
+      const savePath = joinDefaultPath(cacheDir, fileName)
+      
+      if ((res as any).audio_base64) {
+        await window.tintin?.server?.ttsSaveAudio?.({ base64: (res as any).audio_base64, savePath })
+        row.resultPath = savePath
+      } else if (ttsRes.url) {
+        // 下载 URL
+        row.resultPath = ttsRes.url
+      }
+      
+      row.status = 'done'
+      row.progress = 100
+    } catch (e) {
+      row.status = 'failed'
+      row.error = errText(e)
+    } finally {
+      generatingIndex.value = -1
+    }
+  }
+
+  /** 批量生成全部（对照 _run_synthesize） */
+  async function generateAllVoices(): Promise<void> {
+    if (batchGenerating.value) return
+    batchGenerating.value = true
+    
+    try {
+      const pending = filterPendingVoices(voiceRows.value)
+      for (let i = 0; i < pending.length; i++) {
+        const row = pending[i]
+        const index = voiceRows.value.indexOf(row)
+        await generateSingleVoice(index)
+      }
+    } finally {
+      batchGenerating.value = false
+    }
+  }
+
+  /** 播放音频（对照 _on_btn_play_clicked_by_row） */
+  function playVoice(index: number): void {
+    if (index < 0 || index >= voiceRows.value.length) return
+    const row = voiceRows.value[index]
+    if (!row.resultPath) return
+    try {
+      window.tintin?.shell?.openItem?.(row.resultPath)
+    } catch (_) {}
+  }
+
+  /** 导出合并结果（对照 _on_btn_export_clicked_by_row） */
+  async function exportVoice(index: number): Promise<void> {
+    if (index < 0 || index >= voiceRows.value.length) return
+    const row = voiceRows.value[index]
+    if (!row.resultPath) return
+    
+    try {
+      const cacheDir = await readCacheDir()
+      const fileName = `dubbed_${Date.now()}_${index}.mp4`
+      const outPath = joinDefaultPath(cacheDir, fileName)
+      
+      const res = await window.tintin?.server?.voiceMergeVideoAudio?.({
+        videoPath: row.videoPath,
+        audioPath: row.resultPath,
+        outPath,
+      })
+      
+      if (res && 'error' in res) {
+        throw new Error((res as any).error)
+      }
+      
+      // 打开目录
+      window.tintin?.shell?.revealInFolder?.(outPath)
+    } catch (e) {
+      console.error('导出失败:', e)
+    }
+  }
+
+  /** 播放参考音频 */
+  function playReference(): void {
+    if (!referenceAudio.value) return
+    try {
+      window.tintin?.shell?.openItem?.(referenceAudio.value)
+    } catch (_) {}
+  }
+
   onUnmounted(() => {
     pollCancelled = true
     stopPolling()
@@ -671,10 +845,17 @@ export function useVideoMontage() {
     beatCount, beatTimeLimit, beatVariantCount, beatAspectRatio,
     beatTransition, beatTransitionDuration, beatMinDuration, beatMaxDuration,
     beatBusy, beatVariants, runBeatCompose, downloadBeat, TRANSITIONS,
-    // Step3
+    // Step3 AI 编排
     concatTransition, concatLayout, concatTransitionDuration,
     edgeSpeedup, EDGE_SPEEDUP_OPTIONS,
     concatBusy, concatError, concatResults, runConcat, downloadConcat,
+    // Step3.1 口播配音（新增）
+    voiceRows, selectedSpeaker, referenceAudio, speakerOptions,
+    batchGenerating, generatingIndex,
+    loadSpeakerOptions, selectVoiceDir, updateVoiceText,
+    generateSingleVoice, generateAllVoices, playVoice, exportVoice, playReference,
+    allVoicesDone: () => allVoicesDone(voiceRows.value),
+    voiceStatusText, voiceStatusClass,
     // Step4
     finalSource, bgmPath, bgmName, bgmVolume, sourceVolume,
     finalBusy, finalError, finalResults,

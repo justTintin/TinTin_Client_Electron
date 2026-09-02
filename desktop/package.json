@@ -99,6 +99,13 @@
     ],
     "win": {
       "icon": "../resources/icons/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": true,
+      "perMachine": false,
+      "include": "build/uninstall.nsh"
     }
   }
 }

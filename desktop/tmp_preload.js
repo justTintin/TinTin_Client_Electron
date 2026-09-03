@@ -184,13 +184,6 @@ const server = {
   voiceDubVideos:       (p) => ipcRenderer.invoke('voice:dubVideos', p),
   voiceFonts:           () => ipcRenderer.invoke('voice:fonts'),
   voiceExportAudio:     (p) => ipcRenderer.invoke('voice:exportAudio', p),
-
-  // ---------- 智能混剪 Step4 特效包装（FinalMixWorker 主进程化 + 剪映草稿导出）----------
-  finalMix:             (p) => ipcRenderer.invoke('final:mix', p),
-  finalCollectOutputs:  (p) => ipcRenderer.invoke('final:collectOutputs', p),
-  finalFindSrt:         (p) => ipcRenderer.invoke('final:findSrt', p),
-  jianyingExport:       (p) => ipcRenderer.invoke('jianying:export', p),
-  bgmDownloadUrl:       (p) => ipcRenderer.invoke('bgm:downloadUrl', p),
   /** 订阅 voice 域进度事件（cloneBatch/dubVideos），返回取消订阅函数 */
   onVoiceProgress:      (channel, cb) => {
     const h = (_e, d) => cb(d)

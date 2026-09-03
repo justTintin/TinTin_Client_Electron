@@ -21,6 +21,8 @@ interface ToolItem {
   emoji: string
   accent: string
   kind: ToolKind
+  /** 建设中：卡片带角标，点击进入建设中占位页（不加载真实组件） */
+  wip?: boolean
   /** kind=comp：真实组件 */
   comp?: Component
   /** kind=route：目标路由 */
@@ -41,7 +43,7 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     { id: 'storyboard',  title: '分镜脚本创作', desc: '文案 → 分镜 → 引用素材 → 保存脚本库', group: '创作', emoji: '🎬', accent: 'linear-gradient(135deg,#F97316 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtStoryboard.vue')) },
   ],
   图形: [
-    { id: 'cover-design',   title: '封面制作',   desc: '商品封面图快速制作', group: '图形', emoji: '🎨', accent: 'linear-gradient(135deg,#EC4899 0%,#F43F5E 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/CoverMaker.vue')) },
+    { id: 'cover-design',   title: '封面制作',   desc: '商品封面图快速制作', group: '图形', emoji: '🎨', accent: 'linear-gradient(135deg,#EC4899 0%,#F43F5E 100%)', kind: 'comp', wip: true, comp: defineAsyncComponent(() => import('@/components/media-tools/CoverMaker.vue')) },
     { id: 'image-matting',  title: '图像抠图',   desc: '智能抠图 / 去除背景', group: '图形', emoji: '✂️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ImageMatting.vue')) },
   ],
   视频: [
@@ -94,8 +96,15 @@ function backToGrid() {
       </div>
 
       <div class="tool-host">
+        <!-- 建设中占位（wip 优先，不加载真实组件） -->
+        <div v-if="activeTool.wip" class="tool-note">
+          <div class="note-icon">🚧</div>
+          <h2 class="note-title">{{ activeTool.title }}</h2>
+          <p class="note-desc">该功能正在建设中，敬请期待。</p>
+          <p class="note-tip">可返回媒体工具使用其他功能。</p>
+        </div>
         <!-- 真实组件 -->
-        <component v-if="activeTool.kind === 'comp' && activeTool.comp" :is="activeTool.comp" />
+        <component v-else-if="activeTool.kind === 'comp' && activeTool.comp" :is="activeTool.comp" />
         <!-- 能力定位占位 -->
         <div v-else class="tool-note">
           <div class="note-icon">{{ activeTool.emoji }}</div>
@@ -120,8 +129,10 @@ function backToGrid() {
             v-for="t in GROUP_TOOLS[g]"
             :key="t.id"
             class="tool-card"
+            :class="{ 'is-wip': t.wip }"
             @click="openTool(t)"
           >
+            <span v-if="t.wip" class="wip-badge">建设中</span>
             <div class="card-top">
               <div class="tool-icon" :style="{ background: t.accent }">
                 <span>{{ t.emoji }}</span>
@@ -273,6 +284,21 @@ function backToGrid() {
   transform: translateY(-2px);
   border-color: var(--primary-hover);
   box-shadow: var(--shadow-3);
+}
+/* 建设中卡片：降饱和 + 角标 */
+.tool-card.is-wip .tool-icon { filter: grayscale(0.6); opacity: 0.75; }
+.wip-badge {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  background: var(--surface-container);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  pointer-events: none;
 }
 .card-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: var(--space-4); }
 .tool-icon {

@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>媒体工具 · 智能混剪（4 步向导） | 螺丝钉 V3</title>
+    <style id="theme-vars">
+/* ═══════════════════════════════════════════════════════════════
+   TinTin V3 UI — 深色主题精简变量（与 colors_and_type.css 同源，
+   本页按原客户端深色运行时形态记录一比一复刻规格）
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  --indigo-400: #818cf8; --indigo-500: #6366f1; --indigo-600: #4f46e5;
+  --violet-500: #8b5cf6; --violet-600: #7c3aed;
+  --success: #34d399; --warning: #fbbf24; --error: #f87171;
+  --bg: #151722; --surface: #1e212b; --surface-2: #262a37;
+  --border: #333848; --fg: #f0f1f7; --fg-muted: #9ca1b1;
+  --radius-lg: 12px; --radius-md: 8px; --radius-sm: 6px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px 28px; background: var(--bg); color: var(--fg);
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 13px; line-height: 1.6; }
+.meta { color: var(--fg-muted); font-size: 12px; margin: 6px 0 20px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 28px 0 10px; color: var(--indigo-400); }
+h3 { font-size: 13px; margin: 16px 0 6px; }
+.note { background: var(--surface-2); border-left: 3px solid var(--violet-500);
+  padding: 8px 12px; border-radius: var(--radius-sm); color: var(--fg-muted); margin: 10px 0; }
+
+/* ── 高保真部件 ─────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 16px; margin-bottom: 14px; }
+.step-bar { display: flex; gap: 8px; padding: 8px 12px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: 14px; }
+.step-pill { flex: 1; text-align: center; padding: 5px 10px; border-radius: 999px; color: var(--fg-muted); }
+.step-pill.active { background: rgba(99,102,241,.18); color: var(--indigo-400); font-weight: 600; }
+.dropzone { border: 1.5px dashed var(--border); border-radius: var(--radius-lg);
+  padding: 28px; text-align: center; color: var(--fg-muted); margin-bottom: 12px; }
+.dropzone:hover { border-color: var(--indigo-500); }
+.sec-label { font-size: 13px; font-weight: 600; display: block; margin-bottom: 8px; }
+.file-list { border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.file-list li { list-style: none; padding: 7px 12px; background: var(--surface-2);
+  border-bottom: 1px solid var(--border); color: var(--fg-muted); word-break: break-all; }
+.file-list li.picked { background: rgba(99,102,241,.15); color: var(--fg); }
+ul.file-list { padding: 0; margin: 0 0 12px; }
+.param-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.param-row label { white-space: nowrap; }
+input[type=number], input[type=text], select, textarea {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--fg);
+  border-radius: var(--radius-md); padding: 5px 10px; font-size: 13px; outline: none; }
+input:focus, select:focus, textarea:focus { border-color: var(--indigo-500); }
+.spacer { flex: 1; }
+.btn { display: inline-block; padding: 7px 16px; border-radius: var(--radius-md);
+  border: 1px solid var(--indigo-500); background: var(--indigo-600); color: #fff;
+  font-size: 13px; cursor: pointer; white-space: nowrap; }
+.btn.plain { background: transparent; color: var(--indigo-400); }
+.btn.violet { border-color: var(--violet-600); background: var(--violet-600); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.hint { color: var(--fg-muted); font-size: 12px; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { color: var(--fg-muted); font-weight: 500; font-size: 12px; text-align: left;
+  padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ta-c { text-align: center; }
+.badge { display: inline-block; padding: 1px 6px; border: 1px solid var(--fg-muted);
+  border-radius: 4px; font-size: 11px; }
+.score-high { color: #2ecc71; font-weight: 600; }
+.score-mid { color: #f1c40f; font-weight: 600; }
+.score-low { color: #e74c3c; font-weight: 600; }
+.nav-row { display: flex; gap: 10px; align-items: center; margin: 14px 0; }
+.bottom-status { margin-top: 6px; }
+.pbar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; margin-top: 6px; }
+.pbar > i { display: block; height: 100%; width: 32%; background: var(--indigo-500); }
+.ctx-menu { display: inline-block; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
+.ctx-menu button { display: block; width: 100%; text-align: left; padding: 6px 12px;
+  background: none; border: none; color: var(--fg); cursor: pointer; border-radius: var(--radius-sm); }
+.ctx-menu button:hover { background: var(--surface-2); }
+
+/* ── 对照表 ─────────────────────────────── */
+table.spec { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0; }
+.spec th { background: var(--surface-2); text-align: left; padding: 6px 10px; color: var(--fg-muted); }
+.spec td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ok { color: var(--success); } .todo { color: var(--warning); } .ext { color: var(--indigo-400); }
+</style>
+</head>
+<body>
+
+<h1>媒体工具 · 智能混剪与批量视频制作（4 步向导）</h1>
+<p class="meta">
+    原版对照源：studio/gui/video_montage_page.py（steps_text L257 + setup L231-350）·
+    gui/montage/step1_split_view.py（L27-181）· step2_concat_view.py · step3_voice_view.py · step4_final_view.py<br>
+    实现组件：desktop/renderer/src/components/media-tools/VideoMontage.vue ·
+    composables/useVideoMontage.ts · videoMontageLogic.ts<br>
+    移植口径：<b>界面 + 代码双参考；界面一比一移植；功能跟着界面走</b>（详见页尾方法论）。
+</p>
+
+<!-- ═══════════ 步骤条（四步共享） ═══════════ -->
+<h2>步骤条（原版 steps_text L257，逐字）</h2>
+<div class="step-bar">
+    <div class="step-pill active">1. 镜头智能分割</div>
+    <div class="step-pill">2. 镜头重组</div>
+    <div class="step-pill">3. 口播配音</div>
+    <div class="step-pill">4. 特效包装</div>
+</div>
+
+<!-- ═══════════ Step 1 ═══════════ -->
+<h2>Step 1 · 镜头智能分割（一比一复刻 step1_split_view.py）</h2>
+
+<div class="card">
+    <div class="dropzone">拖入素材文件夹（自动遍历子文件夹内全部视频） 或 点击选择文件夹</div>
+    <div class="note">交互：dropzone 点击 = 选择文件夹（原版 drop_zone.clicked → _select_folder）；
+        拖入目录由 dialog.collectVideos 递归展开（文件路径传入返回 [] 可判别文件/目录回退）。</div>
+
+    <span class="sec-label">已选择的原始视频素材 (双击可播放预览，右键可删除):</span>
+    <ul class="file-list">
+        <li class="picked">X:\混剪素材\标志\GPW 1\狗屁王 混剪素材20260817_C9302.MP4（右键弹出下方菜单）</li>
+        <li>X:\混剪素材\标志\GPW 1\狗屁王 混剪素材20260817_C9303.MP4</li>
+    </ul>
+    <div class="ctx-menu" style="width:150px; margin-bottom:12px"><button>从素材列表移除</button></div>
+
+    <div class="param-row">
+        <label>分割阈值 (10-100):</label><input type="number" value="50" style="width:80px">
+        <label>最小镜头(秒):</label><input type="number" value="0.5" step="0.1" style="width:80px">
+        <label title="无法分割的视频，自动挑出多长的精华片段">精华时长:</label>
+        <input type="number" value="3" style="width:80px" title="无法分割的视频，自动挑出多长的精华片段">
+        <span class="spacer"></span>
+        <button class="btn">✂ 开始智能镜头分割</button>
+    </div>
+    <div class="hint">解析中提示显示于此（splitMsg）</div>
+</div>
+
+<div class="card">
+    <div class="param-row">
+        <span class="sec-label" style="margin:0; flex:1">已分割出的最小单位镜头片段 (双击可播放预览，双击画面描述列可手动修改):</span>
+        <span class="hint">评分过滤:</span>
+        <select style="width:100px"><option>≥ 6 分</option></select>
+    </div>
+    <table class="tbl">
+        <thead><tr>
+            <th style="width:32px"></th><th>序号</th><th style="min-width:140px">视频片段</th><th>景别</th><th>时长</th>
+            <th>画幅</th><th style="min-width:200px">主要画面</th><th>产品</th><th>型号</th><th>评分</th>
+        </tr></thead>
+        <tbody>
+            <tr>
+                <td><input type="checkbox" checked></td>
+                <td class="ta-c">1</td>
+                <td title="服务端片段 URL">20260817_C9288_...</td>
+                <td class="ta-c"><span class="badge">近景</span></td>
+                <td class="ta-c">1.2s</td>
+                <td class="ta-c">1920x1080</td>
+                <td><input type="text" value="粉色无线鼠标特写 白色桌面，背景模糊" style="width:100%"></td>
+                <td>—</td><td>—</td>
+                <td class="ta-c score-mid">4.1</td>
+            </tr>
+            <tr>
+                <td><input type="checkbox" checked></td>
+                <td class="ta-c">2</td>
+                <td>20260817_C9301_...</td>
+                <td class="ta-c"><span class="badge">特写</span></td>
+                <td class="ta-c">2.6s</td>
+                <td class="ta-c">1920x1080</td>
+                <td><input type="text" value="鼠标滚轮特写" style="width:100%"></td>
+                <td>—</td><td>—</td>
+                <td class="ta-c score-high">8.3</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="note">
+        评分着色（原版 L1443-1448）：≥8 绿 #2ecc71 / ≥6 黄 #f1c40f / &gt;0 红 #e74c3c，无分显 —。
+        画幅列兜底：服务端 shot 未返回 resolution 时 ffmpeg.probe 第一个源视频，全表共用（原版 _probed_resolution 口径）。
+        评分过滤默认 <b>≥ 6 分</b>（原版 L116），达到阈值的镜头才带入下一步。
+        「主要画面」列内嵌输入框可编辑，编辑写回行数据（原版会重命名本地片段文件；本端片段在服务端无本地文件）。
+        行双击 → 内嵌 &lt;video&gt; 弹层播放 download_url（片段文件在服务端）。
+    </div>
+</div>
+
+<div class="nav-row">
+    <button class="btn plain" title="清除本地混剪任务缓存（分割片段/素材清单），不会删除原始素材。">清空混剪缓存</button>
+    <span class="spacer"></span>
+    <button class="btn violet">➜ 下一步：镜头重组</button>
+</div>
+<div class="note">
+    差异说明（待裁决）：原版另有「打开已分割镜头目录」按钮——本端片段文件在服务端（clipUrl），本地无 splits 目录，
+    暂未纳入；如需补齐可做「批量下载片段到本地缓存目录后打开」。
+</div>
+
+<div class="bottom-status">
+    <span class="hint">正在调用服务端镜头分割（分割+逐镜分析）... ｜ 任务 &lt;id&gt;（轮询中显示取消按钮）</span>
+    <div class="pbar"><i></i></div>
+</div>
+<div class="note">页尾状态区为四步共享（原版底部 stage_label + progress_bar 同位置）。</div>
+
+<!-- ═══════════ Step 2 ═══════════ -->
+<h2>Step 2 · 镜头重组（已实现控件，文案逐字对齐）</h2>
+<div class="card">
+    <div class="param-row">
+        <label>转场动画:</label><select style="width:120px"><option>模糊</option></select>
+        <label>输出画幅:</label><select style="width:170px"><option>与原视频一致</option></select>
+        <label>转场时长(秒，0=默认)</label><input type="number" value="0" style="width:70px">
+        <label>出入场加速:</label><select style="width:100px"><option>不加速</option></select>
+    </div>
+    <div class="note">输出画幅下拉顺序（原版 addItem 顺序）：与原视频一致(source) → 竖屏 (1080x1920 抖音流) → 横屏 (1920x1080 宽屏)；
+        「与原视频一致」需 ffmpeg.probe 原片画幅传服务端（原版 BUGFIX #014 口径）。</div>
+    <div class="param-row">
+        <span class="hint" style="flex:1">镜头总数: 2 (已勾选: 2)</span>
+        <button class="btn">🎥 镜头重组</button>
+    </div>
+    <span class="sec-label">预合成视频列表 (双击播放预览，右键选中行查看镜头)</span>
+    <ul class="file-list"><li>🎞️ montage_1.mp4 <span class="spacer"></span><button class="btn plain" style="padding:3px 10px">下载</button></li></ul>
+</div>
+<div class="nav-row">
+    <button class="btn plain">上一步：镜头智能分割</button>
+    <span class="spacer"></span>
+    <button class="btn violet">➜ 下一步：口播配音</button>
+</div>
+<div class="note">
+    <b>控件级缺失（待裁决是否复刻）</b>：混合逻辑下拉（随机重组）、时长上限、批量视频数量 (1-10)、乱序程度（中/高/低）、
+    「AI 生成文案」按钮（btn_gen_script）、原视频未删镜头管理（ReorderableClipsTable 拖动/右键删除/分割镜头）、
+    「视频合成预览」（双击行播放）。
+</div>
+
+<!-- ═══════════ Step 3 ═══════════ -->
+<h2>Step 3 · 口播配音（已实现控件，文案逐字对齐）</h2>
+<div class="card">
+    <div class="param-row"><label>音色:</label><select style="width:220px"><option>预置音色列表（ttsVoicesSamples 预拉）</option></select></div>
+    <span class="sec-label">视频所在目录</span>
+    <div class="param-row"><button class="btn plain">📂 选择目录</button><span class="hint">已选 2 个视频（递归扫描，上限 500）</span></div>
+    <span class="sec-label">合成配音视频列表（双击文案直接编辑）</span>
+    <table class="tbl">
+        <thead><tr><th style="width:40px">#</th><th>视频文件</th><th style="width:300px">配音文案（双击编辑）</th><th style="width:100px">状态</th><th style="width:140px">操作</th></tr></thead>
+        <tbody>
+            <tr><td>1</td><td>montage_1.mp4</td><td><textarea style="width:100%">留空则跳过此视频</textarea></td>
+                <td><span class="hint">待生成</span></td>
+                <td><button class="btn" style="padding:3px 10px">生成</button> <button class="btn plain" style="padding:3px 10px">▶</button> <button class="btn plain" style="padding:3px 10px">导出</button></td></tr>
+        </tbody>
+    </table>
+    <div class="param-row" style="margin-top:10px"><span class="spacer"></span>
+        <button class="btn">🎙 开始音频克隆配音合成</button></div>
+</div>
+<div class="nav-row">
+    <button class="btn plain">上一步：镜头重组</button>
+    <span class="spacer"></span>
+    <button class="btn violet" disabled>➜ 下一步：特效包装</button>
+</div>
+<div class="note">
+    <b>控件级缺失（待裁决是否复刻）</b>：参考音频上传/播放/参考文案、TTS API 地址/并发数量/CFG/语速（min~max）、
+    「文案改写设置」（btn_ai_rewrite_settings）、「一键AI修改全部文案」、字幕字体/刷新字体、花字样式（7 色下拉）/固定花字、
+    「开始给视频配音 (替换原声)」（btn_dub_videos）。
+    「下一步：特效包装」原版始终可点；本端加 allVoicesDone 拦截，待裁决是否放开。
+</div>
+
+<!-- ═══════════ Step 4 ═══════════ -->
+<h2>Step 4 · 特效包装（已实现控件 + 本端扩展）</h2>
+<div class="card">
+    <div class="param-row">
+        <label>背景音乐:</label><input type="text" readonly placeholder="选择背景音乐 (mp3/wav)..." style="flex:1">
+        <button class="btn">📂 选择背景音乐</button>
+        <button class="btn plain ext">AI 生成 BGM</button>
+    </div>
+    <div class="param-row">
+        <label>BGM 音量</label><input type="range" min="0" max="200" style="flex:1"><span class="hint">60 %</span>
+        <label>原声音量</label><input type="range" min="0" max="200" style="flex:1"><span class="hint">100 %</span>
+    </div>
+    <div class="param-row"><span class="spacer"></span><button class="btn">🎉 开始最终合成</button></div>
+    <span class="sec-label">最终合成的成片视频列表:</span>
+    <ul class="file-list"><li>✅ montage_final_1.mp4 <button class="btn plain" style="padding:3px 10px">下载</button></li></ul>
+</div>
+<div class="nav-row"><button class="btn plain">上一步：口播配音</button></div>
+<div class="note">
+    <b>本端扩展（原版没有，架构补位）</b>：「AI 生成 BGM」面板（POST /audio/gen/bgm：prompt 必填 + style 英文 7 项下拉 + duration 3-60 滑条，
+    原客户端 audio_library_client.py gen_bgm L159-175 口径，无 mood）、「选择文件」（本地成片）、「下载」。
+    <b>控件级缺失（待裁决）</b>：BGM 试听/停止按钮与时间显示、「打开视频所在目录」（btn_open_final_dir）、
+    「一键导出剪映草稿」（btn_export_jianying）、「导出全部分镜数据(含转场)」（btn_export_jianying_all）、「视频预览」。
+</div>
+
+<!-- ═══════════ 附录 ═══════════ -->
+<h2>附录 A · 按钮文案对照表（原版原文 = 本端文案）</h2>
+<table class="spec">
+    <tr><th>原版 mdi_button / QLabel 原文</th><th>所在步骤</th><th>本端状态</th></tr>
+    <tr><td>开始智能镜头分割</td><td>Step1</td><td class="ok">已对齐</td></tr>
+    <tr><td>打开已分割镜头目录</td><td>Step1</td><td class="todo">未纳入（本地无 splits 目录，待裁决）</td></tr>
+    <tr><td>清空混剪缓存</td><td>Step1</td><td class="ok">已对齐</td></tr>
+    <tr><td>下一步：镜头重组</td><td>Step1</td><td class="ok">已对齐</td></tr>
+    <tr><td>镜头重组</td><td>Step2</td><td class="ok">已对齐</td></tr>
+    <tr><td>AI 生成文案</td><td>Step2</td><td class="todo">待裁决（功能缺失）</td></tr>
+    <tr><td>上一步：镜头智能分割 / 下一步：口播配音</td><td>Step2</td><td class="ok">已对齐</td></tr>
+    <tr><td>选择目录</td><td>Step3</td><td class="ok">已对齐</td></tr>
+    <tr><td>文案改写设置 / 一键AI修改全部文案</td><td>Step3</td><td class="todo">待裁决</td></tr>
+    <tr><td>刷新字体</td><td>Step3</td><td class="todo">待裁决（字幕字体整体缺失）</td></tr>
+    <tr><td>开始音频克隆配音合成</td><td>Step3</td><td class="ok">已对齐</td></tr>
+    <tr><td>开始给视频配音 (替换原声)</td><td>Step3</td><td class="todo">待裁决</td></tr>
+    <tr><td>上一步：镜头重组 / 下一步：特效包装</td><td>Step3</td><td class="ok">已对齐</td></tr>
+    <tr><td>选择背景音乐</td><td>Step4</td><td class="ok">已对齐</td></tr>
+    <tr><td>开始最终合成</td><td>Step4</td><td class="ok">已对齐</td></tr>
+    <tr><td>打开视频所在目录</td><td>Step4</td><td class="todo">待裁决</td></tr>
+    <tr><td>一键导出剪映草稿 / 导出全部分镜数据(含转场)</td><td>Step4</td><td class="todo">待裁决</td></tr>
+    <tr><td>上一步：口播配音</td><td>Step4</td><td class="ok">已对齐</td></tr>
+    <tr><td class="ext">下载 / 取消等待 / 选择文件 / AI 生成 BGM / 生成 BGM</td><td>多步</td><td class="ext">本端扩展（原版无，架构补位）</td></tr>
+</table>
+
+<h2>附录 B · 铁律待验证矛盾点</h2>
+<table class="spec">
+    <tr><th>矛盾点</th><th>说明</th></tr>
+    <tr><td>/montage/split 响应逐镜字段</td><td>shot_type / product / model / resolution 在 openapi 为空 schema（零文档）。
+        本端宽容解析（有则显示、无则 —）；「产品/型号」列多数为空。需验证服务端逐镜分析是否返回。</td></tr>
+    <tr><td>/audio/gen/bgm 契约 description</td><td>中文 style/mood 枚举与原客户端实现（{prompt, style, duration} 无 mood）矛盾，不采信。</td></tr>
+    <tr><td>/api/product-library/clients/{mid}/items/{id}</td><td>响应空 schema，实测无 features/selling_points；已改走 /grouped 全量缓存直取（工作台弹窗用 /search 实证条目自带字段）。</td></tr>
+</table>
+
+<h2>附录 C · 移植方法论（本次固化）</h2>
+<div class="note">
+    <b>界面 + 代码双参考；界面一比一移植；功能跟着界面走。</b><br>
+    ① 界面源 = 原客户端 view/page 的 setup_ui（控件清单、布局、文案、默认值、tooltip、下拉选项逐字逐项）；
+    ② 行为源 = controller/worker/client 调用链；③ 契约 = openapi 仅作端点参考，字段以原客户端实际调用为准；
+    ④ 原版界面没有的功能不私自加，架构补位功能必须标注「本端扩展」并列入待裁决；
+    ⑤ 交付前出逐控件对照表自查；⑥ UI 规格落盘本目录设计稿。
+</div>
+
+</body>
+</html>

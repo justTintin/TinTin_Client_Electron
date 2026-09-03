@@ -48,6 +48,12 @@ export function useOpsCopywriting() {
   const sellingPoints = ref('')
   /** 选中产品原始条目（brand/model/category/goods_no/spec_name...） */
   const currentProduct = ref<Record<string, unknown>>({})
+  /**
+   * 最近一次检索的全量产品条目缓存（对齐原客户端 ProductLibraryManager.load：
+   * /grouped 树节点自带 features/selling_points，选中时本地直取回填；
+   * 原 selectProduct 单独赌 GET /items/{id} 响应含同名字段，但 openapi 对该
+   * 响应为空 schema 零字段说明，实测回填为空 → 以原客户端口径为准） */
+  const productEntries = ref<Record<string, unknown>[]>([])
 
   /* ── 生成设置 ── */
   const platform = ref<string>('通用')
@@ -116,6 +122,8 @@ export function useOpsCopywriting() {
       items.sort((a, b) =>
         (String(a.category ?? '') + String(a.brand ?? '') + String(a.model ?? ''))
           .localeCompare(String(b.category ?? '') + String(b.brand ?? '') + String(b.model ?? '')))
+      // 保留全量条目（含 features/selling_points）供选中时本地直取回填
+      productEntries.value = items
       productOptions.value = items
         .filter((it) => it.id !== undefined && it.id !== null && String(it.id) !== '')
         .map((it) => ({ id: String(it.id), label: productComboLabel(it) }))
@@ -145,6 +153,16 @@ export function useOpsCopywriting() {
     features.value = ''
     sellingPoints.value = ''
     if (!id) return
+    // 优先本地缓存直取（原客户端 _on_product_selected → self.kb.get 口径）
+    const local = productEntries.value.find((it) => String(it.id) === id)
+    if (local) {
+      currentProduct.value = local
+      features.value = String(local.features ?? '')
+      sellingPoints.value = String(local.selling_points ?? '')
+      status.value = ''
+      return
+    }
+    // 兑底：服务端单条（原客户端 get_item 口径；响应含 {item} 包裹或直接 dict）
     const t = getTintin()
     if (!t?.server) return
     const mid = await ensureMachineId()

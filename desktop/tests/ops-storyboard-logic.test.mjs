@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════
 // ops-storyboard-logic.test.mjs — 分镜脚本创作·纯逻辑单测
 // 被测：renderer/src/composables/opsStoryboardLogic.ts（纯函数，无 vue 依赖）
 // 对照原客户端 gui/storyboard_page.py：
@@ -143,4 +143,73 @@ test('buildScriptPayload：空 topic/缺 product 兜底', () => {
   assert.deepEqual(payload.product, { brand: '', model: '', category: '', name: '' })
   assert.equal(payload.saved_at, '2026-01-02T03:04:05')
   assert.equal(payload.total_duration, 0)
+})
+
+/* -- 已有脚本·继续创作（对齐 _continue_from_script/_apply_server_script） -- */
+
+test('extractScriptItems：{items}|{data}|{results}|裸数组 容错展开；垃圾回空', () => {
+  const it = [{ id: 1 }]
+  assert.deepEqual(M.extractScriptItems({ items: it }), it)
+  assert.deepEqual(M.extractScriptItems({ data: it }), it)
+  assert.deepEqual(M.extractScriptItems({ results: it }), it)
+  assert.deepEqual(M.extractScriptItems(it), it)
+  assert.deepEqual(M.extractScriptItems({ items: 'x' }), [])
+  assert.deepEqual(M.extractScriptItems(null), [])
+  assert.deepEqual(M.extractScriptItems({}), [])
+})
+
+test('toScriptOption：摘要字段映射；无 id 丢弃；label 字段口径', () => {
+  const o = M.toScriptOption({ id: 'a1', topic: '春季新品', ratio: '9:16', shot_count: 9, saved_at: '2026-09-03T10:00:00' })
+  assert.equal(o.id, 'a1')
+  assert.equal(o.topic, '春季新品')
+  assert.equal(o.ratio, '9:16')
+  assert.equal(o.shotCount, 9)
+  assert.equal(o.savedAt, '2026-09-03T10:00:00')
+  assert.equal(M.toScriptOption({ topic: 'x' }), null)
+  assert.equal(M.toScriptOption({ id: '  ' }), null)
+  assert.equal(M.toScriptOption({ id: 7 }).shotCount, 0)
+})
+
+test('parseScriptDetail：{script} 包裹 / 裸 dict 兼容；product 优先顶层四字段兑底；垃圾回 null', () => {
+  const inner = {
+    topic: '开学季', ratio: '16:9', shots: [{ index: 1, audio: 'a' }],
+    product: { brand: 'B', model: 'M', category: 'C', name: 'N' },
+  }
+  const d1 = M.parseScriptDetail({ script: inner })
+  assert.equal(d1.topic, '开学季')
+  assert.equal(d1.ratio, '16:9')
+  assert.equal(d1.shots.length, 1)
+  assert.equal(d1.product.brand, 'B')
+  // 裸 dict + product 缺失 → 顶层四字段兑底（原 L1814-1818）
+  const d2 = M.parseScriptDetail({ ...inner, product: null, brand: 'B2', model: 'M2', category: 'C2', name: 'N2' })
+  assert.equal(d2.product.brand, 'B2')
+  assert.equal(d2.product.model, 'M2')
+  assert.equal(d2.product.category, 'C2')
+  // 非 dict shots → 空
+  const d3 = M.parseScriptDetail({ topic: 'x', shots: 'bad' })
+  assert.deepEqual(d3.shots, [])
+  assert.equal(M.parseScriptDetail(null), null)
+  assert.equal(M.parseScriptDetail('x'), null)
+  assert.deepEqual(M.parseScriptDetail({ script: 'bad' }).shots, [])
+})
+
+test('copyFromShots：镜头旁白拼接（过滤空行）；原 L1801-1802 口径', () => {
+  assert.equal(M.copyFromShots([{ audio: ' 第一句 ' }, { audio: '' }, { visual: 'x' }, { audio: '第二句' }]), '第一句\n第二句')
+  assert.equal(M.copyFromShots([]), '')
+  assert.equal(M.copyFromShots([{ audio: null }]), '')
+})
+
+test('buildAdjustCopyPrompt：原始文案 + 额外要求 + 固定指令（原 _adjust_copy 口径）', () => {
+  const { systemPrompt, userPrompt } = M.buildAdjustCopyPrompt({ copyText: '原文案', extraPrompt: '精简' })
+  assert.ok(systemPrompt.includes('优化和调整'))
+  assert.ok(userPrompt.includes('原始视频文案：\n原文案'))
+  assert.ok(userPrompt.includes('额外要求：\n精简'))
+  assert.ok(userPrompt.includes('保持核心信息不变'))
+  // 空 extra/style 不产生空段
+  const { userPrompt: u2 } = M.buildAdjustCopyPrompt({ copyText: 'x' })
+  assert.ok(!u2.includes('额外要求'))
+  assert.ok(!u2.includes('风格化要求'))
+  // styleText 存在时输出风格段（知识库批次接入即生效）
+  const { userPrompt: u3 } = M.buildAdjustCopyPrompt({ copyText: 'x', styleText: '克制冷静' })
+  assert.ok(u3.includes('风格化要求（HOW to write）：\n克制冷静'))
 })

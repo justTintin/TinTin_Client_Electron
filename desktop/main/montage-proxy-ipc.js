@@ -116,6 +116,23 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
       putField(fields, 'end_sec', p.end_sec)
     },
   ))
+
+  // 清空混剪任务缓存（对照原版 _clear_montage_cache → utils/montage_cache.py
+  // clear_montage_cache：删除 montage_cache 下全部任务目录，不触碰原始素材）。
+  // 防误删：目标路径必须包含 montage_cache 段才允许递归删除。
+  ipcMain.handle('montage:clearCache', async (_e, payload) => {
+    try {
+      const fs = require('fs')
+      const dir = String((payload || {}).dir || '')
+      if (!dir || !dir.includes('montage_cache')) {
+        return { error: '拒绝清理：目标目录不是混剪缓存目录（montage_cache）' }
+      }
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true })
+      return { ok: true }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
 }
 
 module.exports = { createMontageProxyIpc }

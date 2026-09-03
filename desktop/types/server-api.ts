@@ -177,6 +177,9 @@ export const API_PATHS = {
     bgm:      '/montage/bgm',
     auto:     '/montage/auto-mix',
   },
+  audio: {
+    genBgm:  '/audio/gen/bgm',    // AI 生成 BGM（MusicGen-small，原客户端 gen_bgm 同口径）
+  },
   prompt: {
     video:    '/prompt/video',
   },
@@ -495,6 +498,8 @@ export namespace MaterialAPI {
 // M6/M8 条目⑥⑦：MontageAPI 命名空间原样迁至 ./server-api-montage（IRON-02 拆分，
 // server-api.ts 收敛回 800 行内）；原位 re-export 保持既有引用路径不变。
 export { MontageAPI } from './server-api-montage'
+// 智能混剪 Step4 AI 生成 BGM（/audio/gen/bgm + /audio/bgm/tags）
+export { AudioAPI } from './server-api-audio'
 
 export namespace VSRAPI {
   // V3 S2 POST /vsr/enhance

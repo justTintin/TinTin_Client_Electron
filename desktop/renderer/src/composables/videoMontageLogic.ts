@@ -57,12 +57,25 @@ export interface SplitShot {
   shotIndex: number
   filename: string
   downloadUrl: string
-  score: number
+  score?: number
   analysis: string
   description: string
+  /** 服务端 shot_type（空=未返回，UI 端回退路径景别推断） */
+  shotType: string
+  /** 产品（服务端逐镜分析，多数为空） */
+  product: string
+  /** 型号（同上） */
+  model: string
+  /** 画幅 WxH（服务端返回，多数为空 → UI 端 ffprobe 探测源片兜底） */
+  resolution: string
 }
 
-/** /montage/split 响应 shots 归一化（对照 ServerSplitWorker L121-171；clips/segments 兜底） */
+/** /montage/split 响应 shots 归一化（对照 ServerSplitWorker L121-171；clips/segments 兜底）
+ *  服务端实际返回：
+ *    aesthetic_score: {total: 4.4, clarity: 1.0, composition: 7.5, engine: "laion+opencv"}
+ *    shot_analysis:   {shot_type: "空镜", visual_type: "外观", scene_primary: "...", confidence: 0.95}
+ *  顶层无 shot_type 字段，需从 shot_analysis.shot_type 取。
+ */
 export function parseSplitResponse(resp: unknown): SplitShot[] {
   if (!resp || typeof resp !== 'object') return []
   const r = resp as Record<string, unknown>
@@ -70,16 +83,40 @@ export function parseSplitResponse(resp: unknown): SplitShot[] {
   if (!Array.isArray(raw)) return []
   return raw
     .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-    .map((s) => ({
-      startSec: Number(s.start_sec) || 0,
-      endSec: Number(s.end_sec ?? s.start_sec ?? 0) || 0,
-      shotIndex: Math.floor(Number(s.shot_index) || 0),
-      filename: String(s.filename || ''),
-      downloadUrl: String(s.download_url || ''),
-      score: Number(s.aesthetic_score ?? s.score) || 0,
-      analysis: String(s.shot_analysis || ''),
-      description: String(s.description || ''),
-    }))
+    .map((s) => {
+      // aesthetic_score 可能是数字（旧版）或对象 {total, clarity, ...}
+      const rawScore = s.aesthetic_score ?? s.score
+      let score: number | undefined
+      if (rawScore != null) {
+        if (typeof rawScore === 'object' && rawScore !== null) {
+          score = Number((rawScore as Record<string, unknown>).total) || undefined
+        } else {
+          score = Number(rawScore) || undefined
+        }
+      }
+      // shot_type 嵌套在 shot_analysis 对象内，顶层不存在
+      const analysis = s.shot_analysis
+      const shotType = String(
+        (analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).shot_type : s.shot_type) || ''
+      )
+      const analysisText = analysis && typeof analysis === 'object'
+        ? String((analysis as Record<string, unknown>).scene_primary || (analysis as Record<string, unknown>).visual_type || '')
+        : String(analysis || '')
+      return {
+        startSec: Number(s.start_sec) || 0,
+        endSec: Number(s.end_sec ?? s.start_sec ?? 0) || 0,
+        shotIndex: Math.floor(Number(s.shot_index) || 0),
+        filename: String(s.filename || ''),
+        downloadUrl: String(s.download_url || ''),
+        score,
+        analysis: analysisText,
+        description: String(s.description || ''),
+        shotType,
+        product: String((analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).product : s.product) || ''),
+        model: String((analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).model : s.model) || ''),
+        resolution: String(s.resolution || ''),
+      }
+    })
 }
 
 export interface SplitSceneRow {
@@ -91,16 +128,21 @@ export interface SplitSceneRow {
   duration: number
   description: string
   analysis: string
-  score: number
+  score?: number
   clipUrl: string
   downloadState: 'pending' | 'ok' | 'failed'
+  /** 本地 splits 目录落盘路径（分割后批量下载填充；空=未落盘，预览回退内嵌） */
+  clipLocalPath?: string
   checked: boolean
-  shotType?: string  // 景别分类（入场/出场/中景/特写/''）
+  shotType?: string  // 景别分类（服务端 shot_type 优先，否则路径推断：入场/出场/中景/特写/''）
+  product?: string   // 产品列（服务端逐镜分析，空则 UI 显 —）
+  model?: string     // 型号列（同上）
+  resolution?: string // 画幅列（服务端返回，空则 UI 用 ffprobe 探测源片结果兜底）
 }
 
-/** shots → 镜头表格行（checked 默认 true，行号从 1 起；sourcePath 用于景别分类） */
+/** shots → 镜头表格行（checked 默认 true，行号从 1 起；sourcePath 用于景别兜底推断） */
 export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?: string): SplitSceneRow[] {
-  const shotType = sourcePath ? classifyShotType(sourcePath) : ''
+  const inferred = sourcePath ? classifyShotType(sourcePath) : ''
   return shots.map((s, i) => ({
     idx: i + 1,
     name: s.filename || `${sourceName}_shot_${String(s.shotIndex || i + 1).padStart(3, '0')}.mp4`,
@@ -114,7 +156,10 @@ export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?:
     clipUrl: s.downloadUrl,
     downloadState: 'pending' as const,
     checked: true,
-    ...(shotType ? { shotType } : {}),
+    ...(s.shotType || inferred ? { shotType: s.shotType || inferred } : {}),
+    ...(s.product ? { product: s.product } : {}),
+    ...(s.model ? { model: s.model } : {}),
+    ...(s.resolution ? { resolution: s.resolution } : {}),
   }))
 }
 
@@ -217,6 +262,244 @@ export function extractSubmitTaskId(resp: unknown): string {
   const id = r.id ?? r.task_id ?? r.job_id
   if (id === undefined || id === null || id === '') throw new Error('未返回任务 id')
   return String(id)
+}
+
+// ── Step1 splits 本地缓存目录（对齐 utils/montage_cache.py + utils_media.safe_source_name）──
+
+/**
+ * 视频文件名 → 统一短源名（splits 目录名/片段文件名共用）。
+ * 对照原客户端 gui/montage/utils_media.py safe_source_name(max_len=40)：
+ * 替换半角非法字符与控制字符为 _、折叠连续空白、剔除首尾点；
+ * 超长截断并附 8 位散列后缀保证唯一（原版 md5 前 8 位；渲染层无 node
+ * crypto，用 djb2 32bit hex 等效唯一性——架构差异，目的相同）。
+ */
+export function safeSourceName(name: string, maxLen = 40): string {
+  const base = String(name || '').replace(/\.[^.]+$/, '')
+  let cleaned = (base || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+  cleaned = cleaned.replace(/\s+/g, ' ').trim().replace(/^\.+|\.+$/g, '')
+  if (!cleaned) cleaned = 'video'
+  if (cleaned.length > maxLen) {
+    let h = 5381
+    for (let i = 0; i < base.length; i++) h = ((h << 5) + h + base.charCodeAt(i)) | 0
+    const digest = (h >>> 0).toString(16).padStart(8, '0')
+    cleaned = cleaned.slice(0, maxLen) + '_' + digest
+  }
+  return cleaned
+}
+
+/**
+ * 归一化服务端 split 响应的原片分辨率（对照原版 _detect_and_show_source_resolution L4768-4773：
+ * 支持 [w,h] 数组或 "WxH" 字符串；无效返回空串，由调用方回退本地探测）。
+ */
+export function normalizeSourceResolution(value: unknown): string {
+  if (Array.isArray(value) && value.length === 2) {
+    const w = Math.floor(Number(value[0]))
+    const h = Math.floor(Number(value[1]))
+    return w > 0 && h > 0 ? `${w}x${h}` : ''
+  }
+  const s = String(value || '').trim()
+  const m = /^(\d+)x(\d+)$/.exec(s)
+  return m && Number(m[1]) > 0 && Number(m[2]) > 0 ? s : ''
+}
+
+// ── Step2 镜头重组·预合成方案（对照 video_montage_page.py _build_precompose_plans L5223-5344）──
+
+/** 预合成方案（对照原版 plan dict：clips/deleted_flags/mode/confirmed/output_path） */
+export interface PrecomposePlan {
+  clips: SplitSceneRow[]
+  deletedFlags: boolean[]
+  mode: string
+  confirmed: boolean
+  /** 服务端成片 URL（确认合成后填充） */
+  outputUrl: string
+  /** 成片文件名（列表行展示） */
+  outputName: string
+  /** 本地成片路径（确认合成后下载落盘，供 Step4/口播配音使用） */
+  outputPath: string
+  /** 口播文案（生成口播文案后填充；原版同名 .txt 口径） */
+  copy: string
+}
+
+export function newPrecomposePlan(clips: SplitSceneRow[], mode = 'random'): PrecomposePlan {
+  return {
+    clips: [...clips],
+    deletedFlags: clips.map(() => false),
+    mode,
+    confirmed: false,
+    outputUrl: '',
+    outputName: '',
+    outputPath: '',
+    copy: '',
+  }
+}
+
+/**
+ * 生成预合成方案：随机洗牌 + 时长预算 + 景别编排。
+ * 对照原版 _build_precompose_plans L5223-5344：
+ * - 去重后按 randomness 洗牌（low 不洗牌；medium/high 洗牌，high 每批重洗）
+ * - 时长预算 max_total = duration_limit_sec × 1.1（0 = 无上限）；非首个片段放不下
+ *   跳过继续找更短的（不整批中断）；候选扫描上限 max(deck×3, target×3, 1)
+ * - cursor 跨批连续轮转（批间镜头错开）
+ * - 景别编排 apply_shot_layout_order：入场头/出场尾/其余居中
+ * 架构差异（注明）：原版对镜头做感知 hash 相似去重 + 质量择优替换，
+ * 本端片段在服务端无法本地计算 hash，去重退化为「同一镜头引用不重复入列」。
+ */
+export function buildPrecomposePlans(opts: {
+  clips: SplitSceneRow[]
+  batchCount: number
+  durationLimitSec: number
+  randomness: string
+  shotTypeOf?: (row: SplitSceneRow) => string
+  randomFn?: () => number
+}): PrecomposePlan[] {
+  const rnd = opts.randomFn || Math.random
+  // 去重（同一镜头引用只保留一份，对照原版 unique）
+  const seen = new Set<number>()
+  const unique: SplitSceneRow[] = []
+  for (const c of opts.clips || []) {
+    if (c && !seen.has(c.idx)) { seen.add(c.idx); unique.push(c) }
+  }
+  if (!unique.length) return []
+  console.log(`[plans] 去重后 unique=${unique.length}, batchCount=${opts.batchCount}, durationLimit=${opts.durationLimitSec}s, maxTotal=${(opts.durationLimitSec > 0 ? opts.durationLimitSec * 1.1 : 0).toFixed(1)}s`)
+  console.log(`[plans] 前 5 个 clip duration:`, unique.slice(0, 5).map(c => ({ idx: c.idx, dur: c.duration, name: c.name })))
+  const deck = [...unique]
+  if (opts.randomness !== 'low') {
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(rnd() * (i + 1))
+      ;[deck[i], deck[j]] = [deck[j], deck[i]]
+    }
+  }
+  const maxTotal = opts.durationLimitSec > 0 ? opts.durationLimitSec * 1.1 : 0
+  const target = unique.length
+  const shotTypeOf = opts.shotTypeOf || ((r: SplitSceneRow) => r.shotType || '')
+  const plans: PrecomposePlan[] = []
+  let cursor = 0
+  for (let b = 0; b < opts.batchCount; b++) {
+    if (opts.randomness === 'high') {
+      for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1))
+        ;[deck[i], deck[j]] = [deck[j], deck[i]]
+      }
+    }
+    const seq: SplitSceneRow[] = []
+    let totalDur = 0
+    let scanned = 0
+    let ci = cursor
+    const maxScan = Math.max(deck.length * 3, target * 3, 1)
+    while (seq.length < target && scanned < maxScan) {
+      if (maxTotal > 0 && totalDur >= maxTotal) break
+      scanned++
+      const clip = deck[ci % deck.length]
+      ci++
+      const clipDur = maxTotal > 0 ? Math.max(0, Number(clip.duration) || 0) : 0
+      // 时长预算：非首个片段且放不下 → 继续试更短的（不 break 整批）
+      if (maxTotal > 0 && seq.length && totalDur + clipDur > maxTotal) continue
+      seq.push(clip)
+      totalDur += clipDur
+    }
+    cursor = ci % deck.length
+    // 无时长上限时：补足到目标镜头数（循环取用，对照原版）
+    if (maxTotal <= 0) {
+      while (seq.length < target) {
+        seq.push(unique[Math.floor(rnd() * unique.length)] || unique[0])
+      }
+    }
+    // 兑底：极端情况至少保证 1 个镜头
+    if (!seq.length) seq.push(unique[0])
+    // 景别编排：入场头/出场尾/其余居中（有任何标注才生效，对照原版）
+    let ordered = seq
+    if (seq.some((c) => shotTypeOf(c))) {
+      ordered = applyShotLayoutOrder(seq, shotTypeOf)
+    }
+    plans.push(newPrecomposePlan(ordered))
+    console.log(`[plans] 方案 ${b + 1}: ${ordered.length} 个镜头, totalDur=${totalDur.toFixed(1)}s`)
+  }
+  return plans
+}
+
+// ── Step2 口播文案（对照 gui/montage/workers/script_workers.py SceneCopyWorker L235-266）──
+
+/**
+ * 构建口播文案 LLM 消息（逐字对照 SceneCopyWorker system/user prompt）：
+ * 每行对应一个镜头画面、字数按镜头时长估算（3.5 字/秒，夹 5-40）。
+ */
+export function buildSceneCopyMessages(opts: {
+  sceneDescriptions: string[]
+  brand?: string
+  product?: string
+  modelName?: string
+  extra?: string
+  totalDuration?: number
+}): { system: string; user: string; temperature: number } {
+  const n = (opts.sceneDescriptions || []).length
+  if (n === 0) throw new Error('该视频没有可用的画面镜头描述，无法按画面生成文案')
+  let maxCharsPerLine = 22
+  let durationHint = ''
+  const totalDuration = Number(opts.totalDuration) || 0
+  if (totalDuration > 0) {
+    const secPerShot = totalDuration / n
+    maxCharsPerLine = Math.max(5, Math.min(Math.floor(secPerShot * 3.5), 40))
+    durationHint = (
+      `\n本条视频总时长约 ${totalDuration.toFixed(1)} 秒，共 ${n} 个镜头，平均每个镜头约 ${secPerShot.toFixed(1)} 秒，` +
+      `每行文案请控制在 ${maxCharsPerLine} 字以内，确保能在对应镜头时长内以正常语速读完。`
+    )
+  }
+  const system = (
+    '你是资深电商短视频口播文案撰稿人。用户会给出一个产品的共同背景信息（品牌/品类/型号/卖点），' +
+    '以及该条组合视频按顺序排列的每一个镜头画面描述。\n' +
+    '请为这条视频撰写一段用于电商带货的口播文案（旁白），要求：\n' +
+    `1. 严格输出 ${n} 行，第 i 行对应第 i 个镜头画面，顺序不可打乱。\n` +
+    '2. 每行文案贴合对应镜头画面内容（如产品外观、特写、使用场景、价格对比等），' +
+    `口语化、有节奏、有卖点和号召力，每行约 5-${maxCharsPerLine} 字。${durationHint}\n` +
+    '3. 所有行围绕同一款产品（同一型号）展开，整体文案在逻辑与情感上连贯、朗朗上口。\n' +
+    '4. 若不确定具体参数，用准确的通用描述，切勿编造虚假数字。\n' +
+    '5. 不要 markdown、不要标题、不要编号、不要解释说明，只输出文案本身，每句独占一行。'
+  )
+  const scenesStr = (opts.sceneDescriptions || []).map((d, i) =>
+    `${i + 1}. ${(d || '').trim() || '（无画面描述，请根据上下文合理发挥）'}`).join('\n')
+  const user = (
+    '产品共同背景：\n' +
+    `品牌：${opts.brand || '未提供'}\n` +
+    `产品/品类：${opts.product || '未提供'}\n` +
+    `型号：${opts.modelName || '未提供'}\n` +
+    `补充卖点：${opts.extra || '无'}\n\n` +
+    `本条视频共有 ${n} 个镜头画面，按顺序如下：\n${scenesStr}\n\n` +
+    `请按要求生成口播文案，严格输出 ${n} 行。`
+  )
+  return { system, user, temperature: 0.6 }
+}
+
+/** 解析 LLM 文案响应（choices[0].message.content） */
+export function parseLlmCopyResponse(resp: unknown): string {
+  const r = (resp || {}) as Record<string, unknown>
+  const choices = r.choices as Array<Record<string, unknown>> | undefined
+  const msg = choices?.[0]?.message as Record<string, unknown> | undefined
+  const content = String(msg?.content || '').trim()
+  if (!content) throw new Error('大模型未返回文案内容')
+  return content
+}
+
+// ── Step2 预合成列表行文案（对照 _add_assembled_row L5383-5410）────────
+
+/** 文案预览：前 30 字，未生成返回占位（对照 _assembled_copy_preview） */
+export function copyPreviewText(copy: string): string {
+  const c = String(copy || '').trim().replace(/\n/g, ' ')
+  if (!c) return '未生成口播文案'
+  return c.slice(0, 30) + (c.length > 30 ? '…' : '')
+}
+
+/** 预合成列表行文案：`[n] 文件名/镜头数  状态  文案预览` */
+export function assembledRowText(opts: {
+  index: number
+  clipCount: number
+  outputName: string
+  confirmed: boolean
+  copyPreview: string
+}): string {
+  const fileText = opts.outputName || `${opts.clipCount} 个镜头`
+  const statusTxt = opts.confirmed && opts.outputName ? '已合成' : '待确认'
+  const copyMark = opts.copyPreview ? `  ${opts.copyPreview}` : ''
+  return `[${opts.index + 1}] ${fileText}  ${statusTxt}${copyMark}`
 }
 
 // ── 素材常量与景别分类（对齐原客户端 utils_media.py PR#3）──────────
@@ -337,88 +620,244 @@ export function extractBgmResult(resp: unknown): { taskId: string; url: string }
   return { taskId: '', url: String(r.video_url || r.url || r.output_url || r.file || '') }
 }
 
-// ── Step3 口播配音（对照 voice_clone_page.py VoiceCloneWorker）────────────────
+// ── Step4 AI 生成 BGM（/audio/gen/bgm，对齐原客户端 audio_material_page.py
+//    _GenBgmWorker L272-286 + audio_library_client.py gen_bgm L159-175：
+//    body = {prompt, style, duration}，无 mood —— 契约 description 中的中文
+//    style/mood 枚举与原客户端实现矛盾，以实际工作的原客户端为准）──
 
-/** 配音行状态机 */
-export interface VoiceRow {
-  videoPath: string        // 视频文件路径
-  text: string             // 配音文案
-  speaker?: string         // 音色 ID
-  status: 'pending' | 'generating' | 'done' | 'failed'
-  progress: number         // 0-100
-  resultPath?: string      // 生成的 wav 路径
-  error?: string
+/** style 下拉选项（原客户端 _build_tab_ai L1588-1594 硬编码 7 项，value 为英文值） */
+export const BGM_STYLE_OPTIONS = [
+  { label: '自动', value: 'auto' },
+  { label: '电子', value: 'electronic' },
+  { label: '古典', value: 'classical' },
+  { label: '摇滚', value: 'rock' },
+  { label: '爵士', value: 'jazz' },
+  { label: '氛围', value: 'ambient' },
+  { label: 'Lo-Fi', value: 'lofi' },
+] as const
+
+/** POST /audio/gen/bgm 载荷（原客户端 gen_bgm 同口径；duration 秒，UI 3-60 契约文档口径） */
+export interface BgmGenPayload {
+  prompt: string
+  style: string
+  duration?: number
 }
 
-/** 支持的视频扩展名（与 VIDEO_EXTS 同口径） */
-const VOICE_VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.m4v'])
-
-/** 从目录路径中过滤出视频文件（纯函数，不涉及 IPC） */
-export function filterVideoFiles(files: string[]): string[] {
-  return files.filter((f) => {
-    const ext = f.slice(f.lastIndexOf('.')).toLowerCase()
-    return VOICE_VIDEO_EXTS.has(ext)
-  })
-}
-
-/** 构建 TTS 请求载荷（对照 /voxcpm/tts） */
-export function buildTtsPayload(row: VoiceRow): { text: string; speaker?: string; prompt_audio?: string } {
-  const payload: { text: string; speaker?: string; prompt_audio?: string } = {
-    text: row.text,
+export function buildBgmGenPayload(opts: { prompt?: string; style?: string; duration?: number }): BgmGenPayload {
+  const prompt = String(opts.prompt || '').trim()
+  if (!prompt) throw new Error('请输入 BGM 描述（如：激昂的电子音乐，适合科技感视频）')
+  const p: BgmGenPayload = { prompt, style: String(opts.style || 'auto').trim() || 'auto' }
+  if (opts.duration !== undefined && opts.duration !== null) {
+    const d = Math.round(Number(opts.duration))
+    if (!Number.isFinite(d) || d < 3 || d > 60) throw new Error('BGM 时长需在 3-60 秒之间')
+    p.duration = d
   }
-  if (row.speaker) payload.speaker = row.speaker
-  // prompt_audio 可选，用于音色克隆
-  return payload
+  return p
 }
 
-/** 解析 TTS 响应（对照 VoiceCloneWorker 回调） */
-export function mapTtsResponse(resp: unknown): { ok: boolean; url?: string; error?: string } {
-  if (!resp || typeof resp !== 'object') return { ok: false, error: '响应格式错误' }
+/** /audio/gen/bgm 响应解析：url 必填（相对路径），其余元信息尽力保留（原客户端 _on_gen_bgm_done 同口径） */
+export function parseBgmGenResponse(resp: unknown): {
+  url: string; duration: number; prompt: string; engine: string; audioId: string
+} {
+  if (!resp || typeof resp !== 'object') throw new Error('BGM 生成响应为空')
   const r = resp as Record<string, unknown>
-  
-  // 检查错误
-  if (r.error) return { ok: false, error: String(r.error) }
-  if (r.status && String(r.status).toLowerCase() === 'failed') {
-    return { ok: false, error: String(r.error_msg || '任务失败') }
-  }
-  
-  // 提取音频 URL
-  const url = String(r.audio_url || r.url || r.output_url || '')
-  if (!url) return { ok: false, error: '响应中未找到音频 URL' }
-  
-  return { ok: true, url }
-}
-
-/** 状态文案映射 */
-export function voiceStatusText(status: VoiceRow['status']): string {
-  switch (status) {
-    case 'pending': return '待生成'
-    case 'generating': return '生成中'
-    case 'done': return '完成'
-    case 'failed': return '失败'
+  const url = String(r.url || r.audio_url || r.file_url || '')
+  if (!url) throw new Error('BGM 生成成功但未返回音频地址')
+  return {
+    url,
+    duration: Number(r.duration) || 0,
+    prompt: String(r.prompt || ''),
+    engine: String(r.engine || ''),
+    audioId: String(r.audio_id ?? ''),
   }
 }
 
-/** 状态 CSS 类名 */
-export function voiceStatusClass(status: VoiceRow['status']): string {
-  switch (status) {
-    case 'pending': return 'st-pending'
-    case 'generating': return 'st-running'
-    case 'done': return 'st-done'
-    case 'failed': return 'st-failed'
-  }
+/**
+ * 混音 BGM 源选择（本地文件优先于 AI 生成 URL；两者皆空报错）。
+ * 返回 /montage/bgm 的 bgm 字段形态：本地走 {path}（multipart 读盘），AI 走 bgm_url（服务端自行拉取）。
+ */
+export function pickBgmMixField(bgmPath: string, bgmGenUrl: string): { bgm?: { path: string }; bgm_url?: string } {
+  const local = String(bgmPath || '').trim()
+  const ai = String(bgmGenUrl || '').trim()
+  if (local) return { bgm: { path: local } }
+  if (ai) return { bgm_url: ai }
+  throw new Error('请先选择背景音乐或生成 BGM')
 }
 
-/** 检查是否所有行都完成（允许跳过空文案行） */
-export function allVoicesDone(rows: VoiceRow[]): boolean {
-  return rows.every((r) => {
-    // 空文案行视为已完成（跳过）
-    if (!r.text.trim()) return true
-    return r.status === 'done'
+// ── Step3 口播配音（对照 step3_voice_view.py 逐控件 / VoiceCloneWorker api 模式 /
+// VideoDubbingWorker / BatchAITextRewriteWorker；TTS 契约 POST /voxcpm/tts）────
+
+/** 配音行状态机（对照 _do_scan_voice_video_dir 行构建 + _start_synthesize_voice tasks 构建） */
+export interface VoiceRow {
+  path: string            // 视频绝对路径（行主键，原版 item Qt.UserRole 口径）
+  name: string            // basename（行首列文件名）
+  text: string            // 配音文案（行内编辑框）
+  originalText: string    // 伴随 .txt 缓存（original_texts 口径，供对比/AI 改写）
+  status: 'pending' | 'generating' | 'done'
+  progress: number        // 0-100（row_progress 口径）
+  wavPath: string         // 已生成 voices/voice_N.wav（generated_voice_paths 口径）
+  lengthMode: 'video' | 'audio'   // 时长模式（voice_length_mode 口径）
+  dubbedPath?: string     // 配音后视频（dubbed_video_paths 口径）
+  durationSec: number     // 视频时长（VoiceRowDetailWidget video_duration_sec，黄字 m:ss）
+  voiceDurSec: number     // 克隆音频时长（voice_audio_durations，绿字 m:ss；未生成为 0）
+}
+
+/** 行内时长展示（原版 f"{int(sec // 60)}:{int(sec % 60):02d}" 口径） */
+export function fmtDur(sec: number): string {
+  const s = Math.max(0, Math.floor(Number(sec) || 0))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+/** 花字样式 7 项（对照 step3_voice_view.py L249-255 addItem 顺序逐字） */
+export const FANCY_STYLE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'gold', label: '渐变金' },
+  { value: 'red', label: '渐变红' },
+  { value: 'blue', label: '渐变蓝' },
+  { value: 'purple', label: '渐变紫' },
+  { value: 'neon_green', label: '霓虹绿' },
+  { value: 'white_outline', label: '白字黑描边' },
+  { value: 'yellow_red', label: '黄字红描边' },
+]
+
+/** AI 改写自由度说明（对照 _show_ai_rewrite_settings desc QLabel 逐字） */
+export const AI_REWRITE_DESC =
+  '控制AI改写文案时的创造性程度：\n' +
+  '80-100% = 最小润色，保持原文字词句式不变\n' +
+  '50-79% = 较大幅度改写，使用不同表达方式，更有网感\n' +
+  '20-49% = 大幅重构，显著改变句式词汇\n' +
+  '0-19% = 彻底重写，完全不同的词句，最大化爆款潜力'
+
+/** 自由度 → temperature（对照 _show_ai_rewrite_settings L3405） */
+export function rewriteTemperature(pct: number): number {
+  return 1.0 - pct / 100.0
+}
+
+/** 改写 system prompt 四档指令（逐字对照 script_workers.py L449-475；
+ *  主进程 main/voice-tts-logic.js 有同源实现，双份由单测锁定） */
+export function buildRewriteSystemPrompt(temperature: number): string {
+  const freedomPct = Math.round((1.0 - temperature) * 100)
+  let rewriteInstruction: string
+  if (freedomPct >= 80) {
+    rewriteInstruction = '请对用户提供的文案进行最小幅度的润色，尽量保持原文字词和句式不变，只修正明显的语病或不通顺之处。'
+  } else if (freedomPct >= 50) {
+    rewriteInstruction = '请对用户提供的文案进行较大幅度的改写和润色，可以使用不同的表达方式和词汇，使其更朗朗上口、更生动、更有网感，但必须保留原有的核心意思。'
+  } else if (freedomPct >= 20) {
+    rewriteInstruction = '请对用户提供的文案进行大幅改写和重构，显著改变表达方式和句式结构，大胆使用新词汇，大幅提升感染力和传播力，只保留最核心的主题不变。'
+  } else {
+    rewriteInstruction = '请对用户提供的文案进行彻底的重写和创作，完全抛弃原文的用词和句式，用全新的、极具冲击力的方式表达核心意思，最大化网感和爆款潜力。'
+  }
+  return (
+    '你是一个顶尖的短视频脚本与广告文案改写、润色与重构专家。\n'
+    + rewriteInstruction + '\n'
+    + '要求：\n'
+    + '1. 如果用户提供了多行文案，请对每一行分别进行改写优化，并保持与原行一一对应的行数。\n'
+    + '2. 每行改写后的文案控制在15-35字之间。\n'
+    + '3. 请直接返回改写后的纯文本（保持多行格式，每行对应原输入的一行），千万不要返回任何多余的解释、问候、序号或包裹符号（不要有markdown的引文框）！'
+  )
+}
+
+/** 改写结果清洗：剥 markdown 代码块 + 引号包裹（对照 L481-493 逐行） */
+export function cleanRewriteContent(content: string): string {
+  let c = String(content || '')
+  if (c.startsWith('```')) {
+    const lines = c.split('\n')
+    if (lines[0].startsWith('```')) lines.shift()
+    if (lines.length && lines[lines.length - 1].startsWith('```')) lines.pop()
+    c = lines.join('\n').trim()
+  }
+  if ((c.startsWith('"') && c.endsWith('"')) || (c.startsWith("'") && c.endsWith("'"))) {
+    c = c.slice(1, -1).trim()
+  }
+  if ((c.startsWith('“') && c.endsWith('”')) || (c.startsWith('‘') && c.endsWith('’'))) {
+    c = c.slice(1, -1).trim()
+  }
+  return c
+}
+
+/** 花字输入解析：全角逗号归一后按半角逗号拆分（对照 _start_dubbing_videos L3726-3730） */
+export function parseFancyWords(raw: string): string[] {
+  const r = String(raw || '').trim()
+  if (!r) return []
+  return r.replace(/，/g, ',').split(',').map((w) => w.trim()).filter((w) => w)
+}
+
+/** 输出目录推导（逐行对照 _get_out_montage_dir L3969-3981，Windows 路径口径） */
+export function resolveOutMontageDir(dirPath: string): string {
+  const abs = String(dirPath || '').replace(/\//g, '\\').replace(/\\+$/, '')
+  if (/\\outputs$/i.test(abs)) return abs
+  const idx = (abs + '\\').toLowerCase().indexOf('\\outputs\\')
+  if (idx >= 0) return abs.slice(0, idx) + '\\outputs'
+  const parent = abs.slice(0, Math.max(abs.lastIndexOf('\\'), 0))
+  return parent + '\\outputs'
+}
+
+/** 行状态展示（对照行复合控件：已生成 → wav 文件名绿色粗体；未生成 → 灰） */
+export function voiceStatusText(row: Pick<VoiceRow, 'status' | 'wavPath'>): string {
+  if (row.status === 'generating') return '合成中...'
+  if (row.wavPath) return row.wavPath.slice(row.wavPath.lastIndexOf('\\') + 1)
+  return '未生成'
+}
+
+export function voiceStatusClass(row: Pick<VoiceRow, 'status' | 'wavPath'>): string {
+  if (row.status === 'generating') return 'st-running'
+  if (row.wavPath) return 'st-done'
+  return 'st-pending'
+}
+
+/** 从完整路径取 basename（渲染层无 node path） */
+export function pathBasename(p: string): string {
+  const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
+  return i >= 0 ? p.slice(i + 1) : p
+}
+
+// ══ Step4 特效包装（对照 video_montage_page.py + FinalMixWorker 入口逻辑）════
+
+/** final 输出目录（逐行对照 _get_out_final_dir L3983-3995，Windows 路径口径） */
+export function resolveOutFinalDir(firstVid: string): string {
+  const abs = String(firstVid || '').replace(/\//g, '\\').replace(/\\+$/, '')
+  const idx = (abs + '\\').toLowerCase().indexOf('\\outputs\\')
+  if (idx >= 0) return abs.slice(0, idx) + '\\final'
+  const dirName = abs.slice(0, Math.max(abs.lastIndexOf('\\'), 0))
+  const base = ['dubbed', 'outputs'].includes(dirName.slice(dirName.lastIndexOf('\\') + 1).toLowerCase())
+    ? dirName.slice(0, Math.max(dirName.lastIndexOf('\\'), 0))
+    : dirName
+  return base + '\\final'
+}
+
+/** 收集待混音候选（_collect_mix_candidates L4073-4112：dubbed 优先 + outputs 回退，去重保序） */
+export function collectMixCandidates(dubbedPaths: string[], outputsFiles: string[]): string[] {
+  const tasks: string[] = []
+  for (const p of dubbedPaths || []) { if (p) tasks.push(p) }
+  if (!tasks.length) {
+    for (const p of outputsFiles || []) { if (p) tasks.push(p) }
+  }
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const t of tasks) {
+    if (!seen.has(t)) { seen.add(t); unique.push(t) }
+  }
+  return unique
+}
+
+/** 构建混音任务输出路径（_start_final_mix L4132-4142：剥 dubbed_ 前缀 + {src}_final_{name}/final_{name}） */
+export function buildFinalTasks(candidates: string[], srcName: string, outFinalDir: string): Array<{ videoPath: string; outPath: string }> {
+  return candidates.map((vid) => {
+    let name = pathBasename(vid)
+    if (name.startsWith('dubbed_')) name = name.slice('dubbed_'.length)
+    const outName = srcName ? `${srcName}_final_${name}` : `final_${name}`
+    return { videoPath: vid, outPath: `${outFinalDir.replace(/\\+$/, '')}\\${outName}` }
   })
 }
 
-/** 过滤出需要生成的行（非空文案 + 未完成） */
-export function filterPendingVoices(rows: VoiceRow[]): VoiceRow[] {
-  return rows.filter((r) => r.text.trim() && r.status !== 'done')
+/** BGM 播放器时间标签（原版 format_time ms→mm:ss，lbl_bgm_time「00:00 / 00:00」口径） */
+export function fmtBgmTime(ms: number): string {
+  const s = Math.floor(Math.max(0, Number(ms) || 0) / 1000)
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+
+/** 源视频目录名（_start_final_mix L4133：basename(folder_path.rstrip("/\"))） */
+export function srcDirName(dirPath: string): string {
+  const s = String(dirPath || '').replace(/[\\/]+$/, '')
+  if (!s) return ''
+  return pathBasename(s)
 }

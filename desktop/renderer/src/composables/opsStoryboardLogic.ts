@@ -136,6 +136,101 @@ export function defaultStoryboardTopic(now: Date = new Date()): string {
   return `分镜脚本_${d}_${t}`
 }
 
+/* ── 已有脚本·继续创作（对齐 _continue_from_script/_apply_server_script
+      L1781-1822 + storyboard_client.py list/get 注释口径） ─────────── */
+
+/** 脚本列表摘要项（GET /api/storyboard/scripts → [{id, topic, ratio, shot_count, saved_at}]） */
+export interface ScriptSummary {
+  id: string
+  topic: string
+  ratio: string
+  shotCount: number
+  savedAt: string
+}
+
+/** {items}|{data}|{results}|裸数组 容错展开（同产品库域口径） */
+export function extractScriptItems(data: unknown): Record<string, unknown>[] {
+  if (Array.isArray(data)) return data as Record<string, unknown>[]
+  if (data && typeof data === 'object') {
+    for (const key of ['items', 'data', 'results']) {
+      const v = (data as Record<string, unknown>)[key]
+      if (Array.isArray(v)) return v as Record<string, unknown>[]
+    }
+  }
+  return []
+}
+
+/** 列表摘要项 → 下拉选项（label 对齐原版 L1769-1771：[选题] N镜 · 保存时间） */
+export function toScriptOption(it: Record<string, unknown>): ScriptSummary | null {
+  const id = String(it.id ?? '').trim()
+  if (!id) return null
+  const saved = String(it.saved_at ?? '').trim()
+  return {
+    id,
+    topic: String(it.topic ?? '').trim(),
+    ratio: String(it.ratio ?? '').trim(),
+    shotCount: Number(it.shot_count) || 0,
+    savedAt: saved,
+  }
+}
+
+export interface ScriptDetail {
+  topic: string
+  ratio: string
+  shots: Record<string, unknown>[]
+  product: Record<string, string>
+}
+
+/**
+ * 脚本详情响应解析（GET /api/storyboard/scripts/{id} 响应为空 schema）。
+ * 兼容 {script:{...}} 包裹 / 裸 dict；字段宽容取值；产品上下文对齐
+ * _apply_server_script L1811-1819：script.product 优先，顶层同名四字段兑底。
+ */
+export function parseScriptDetail(data: unknown): ScriptDetail | null {
+  if (!data || typeof data !== 'object') return null
+  const raw = data as Record<string, unknown>
+  const s = (raw.script && typeof raw.script === 'object' ? raw.script : raw) as Record<string, unknown>
+  const prodRaw = s.product && typeof s.product === 'object' ? (s.product as Record<string, unknown>) : {}
+  const pick = (k: string): string => String(prodRaw[k] ?? s[k] ?? '')
+  const shots = Array.isArray(s.shots) ? (s.shots as Record<string, unknown>[]) : []
+  return {
+    topic: String(s.topic ?? '').trim(),
+    ratio: String(s.ratio ?? '').trim(),
+    shots,
+    product: {
+      brand: pick('brand'),
+      model: pick('model'),
+      category: pick('category'),
+      name: pick('name'),
+    },
+  }
+}
+
+/** 视频文案 = 镜头旁白拼接（_apply_server_script L1801-1802 口径） */
+export function copyFromShots(shots: Record<string, unknown>[]): string {
+  const lines = shots
+    .map((sh) => String((sh as Record<string, unknown>).audio ?? '').trim())
+    .filter(Boolean)
+  return lines.join('\n')
+}
+
+/* ── 大模型调整文案（对齐 _adjust_copy L1852-1871） ───────────── */
+
+export function buildAdjustCopyPrompt(input: {
+  copyText: string
+  extraPrompt?: string
+  styleText?: string
+}): { systemPrompt: string; userPrompt: string } {
+  const parts = [`原始视频文案：\n${input.copyText}`]
+  if (input.styleText?.trim()) parts.push(`风格化要求（HOW to write）：\n${input.styleText.trim()}`)
+  if (input.extraPrompt?.trim()) parts.push(`额外要求：\n${input.extraPrompt.trim()}`)
+  parts.push('请根据以上要求重新输出优化后的视频文案，保持核心信息不变，只调整表达风格和措辞。')
+  return {
+    systemPrompt: '你是专业的短视频文案创作者，根据用户要求对视频文案进行优化和调整。',
+    userPrompt: parts.join('\n\n'),
+  }
+}
+
 /* ── 服务端保存契约（ScriptIn，对齐 L1564-1603） ─────────────── */
 
 export interface ScriptProductRef {

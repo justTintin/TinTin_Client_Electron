@@ -8,6 +8,7 @@ import type {
   TTSAPI,
   MaterialAPI,
   MontageAPI,
+  AudioAPI,
   VSRAPI,
   RembgAPI,
   VisionAPI,
@@ -218,11 +219,67 @@ declare interface TintinBridgeServer {
     onProgress?: (percent: number) => void
   ): Promise<IpcError<TTSAPI.UploadSampleResponse>>
 
-  // ---------- voice dubbing (Step3 口播配音) ----------
-  /** 扫描目录中的视频文件（递归，上限 500 个） */
-  voiceScanDir(payload: { dir: string; maxCount?: number }): Promise<{ files: string[]; total: number } | { error: string }>
-  /** 合并视频+音频（ffmpeg） */
-  voiceMergeVideoAudio(payload: { videoPath: string; audioPath: string; outPath: string }): Promise<{ path: string } | { error: string }>
+  // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
+  /** 扫描视频输入目录（对照 _do_scan_voice_video_dir：无 .flv，自动检测 voices/voice_N.wav 与伴随 .txt） */
+  voiceScanDir(payload: { dirPath: string; selectedFiles?: string[] }): Promise<{
+    files: Array<{ path: string; name: string; wavPath: string; originalText: string; durationSec: number }>
+    voicesDir: string
+  } | { error: string }>
+  /** 批量克隆人声（TTS 逐句 + wav 拼接 + 变速 + .timing.json；对照 VoiceCloneWorker api 模式） */
+  voiceCloneBatch(payload: {
+    tasks: Array<{ rowIdx: number; text: string; videoPath: string; outWavPath: string }>
+    refAudioPath: string
+    /** 服务端样本库参考声音（/voice/samples audio_url；主进程下载后转 b64 prompt_audio） */
+    refAudioUrl?: string
+    apiUrl: string
+    speedMin: number
+    speedMax: number
+    progressChannel?: string
+  }): Promise<{ results: Record<string, string>; durations: Record<string, number>; failures: Array<{ rowIdx: number; msg: string }> } | { error: string }>
+  /** 批量替换原声（ffmpeg 字幕/花字/atempo；对照 VideoDubbingWorker） */
+  voiceDubVideos(payload: {
+    tasks: Array<{ videoPath: string; voiceWavPath: string; outVideoPath: string; text: string }>
+    addSubtitles: boolean
+    lengthModes: Record<string, string>
+    fancyText: boolean
+    fancyStyle: string
+    fancyWords: string[]
+    subtitleFont: string
+    progressChannel?: string
+  }): Promise<{ results: Record<string, string> } | { error: string; results?: Record<string, string> }>
+  /** 服务端字体列表（GET /config/fonts） */
+  voiceFonts(): Promise<{ fonts: Array<{ id: string; family: string; filename?: string }> } | { error: string } | null>
+  /** 导出克隆声音（copy2 到用户选的保存路径） */
+  voiceExportAudio(payload: { srcPath: string; savePath: string }): Promise<{ ok: boolean; savePath: string } | { error: string }>
+  /** 订阅 voice 域进度事件（返回取消订阅函数） */
+  onVoiceProgress(channel: string, cb: (d: { rowIdx?: number; value?: number; stage?: string }) => void): () => void
+
+  // ---------- 智能混剪 Step4 特效包装（FinalMixWorker 主进程化 + 剪映草稿导出）----------
+  /** 最终混音合成（本地 ffmpeg：sidechain ducking + 淡入淡出 + loudnorm；无 BGM -c copy） */
+  finalMix(payload: {
+    tasks: Array<{ videoPath: string; outPath: string }>
+    bgmPath: string
+    bgmVolume: number
+    progressChannel?: string
+  }): Promise<{ results: string[] } | { error: string }>
+  /** 回退扫描 outputs 排列视频（_collect_mix_candidates 回退段 + _get_out_montage_dir 规则） */
+  finalCollectOutputs(payload: { dirPath: string }): Promise<{ files: string[]; outDir?: string } | { error: string }>
+  /** 查找视频同目录配套 .srt（_find_srt_for_video：兼容 dubbed_/final_ 前缀） */
+  finalFindSrt(payload: { videoPath: string }): Promise<{ srtPath: string } | { error: string }>
+  /** 剪映专业版草稿导出（JianyingExporter 一比一；mode single=单视频 / multi=多片段时间轴带转场） */
+  jianyingExport(payload: {
+    mode: 'single' | 'multi'
+    videoPath?: string
+    videoPaths?: string[]
+    transitions?: string | string[] | null
+    bgmPath?: string
+    bgmVolume?: number
+    srtPath?: string
+    srtPaths?: Array<string | null>
+    draftName?: string
+  }): Promise<{ success: boolean; message: string }>
+  /** AI 生成 BGM 服务端 URL 下载落盘（本端扩展：本地混音需本地文件） */
+  bgmDownloadUrl(payload: { url: string; destDir: string }): Promise<{ path: string } | { error: string } | null>
 
   // ---------- workflow（CoverMaker 一键成片编排）----------
   workflowRun(
@@ -267,6 +324,10 @@ declare interface TintinBridgeServer {
     payload: MontageAPI.BgmRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<MontageAPI.BgmResponse>>
+  /** 清空混剪任务缓存（对照原版 _clear_montage_cache：删 montage_cache 下任务目录，不动原始素材） */
+  clearMontageCache(dir: string): Promise<{ ok: boolean } | { error: string }>
+  /** POST /audio/gen/bgm — AI 生成 BGM（MusicGen-small，原客户端 gen_bgm 同口径：prompt+style+duration），生成即出 {url, duration, engine} */
+  audioGenBgm(payload: AudioAPI.GenBgmRequest): Promise<IpcError<AudioAPI.GenBgmResponse>>
   promptVideo(
     payload: MontageAPI.PromptVideoRequest,
     onProgress?: (percent: number) => void

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
  * VideoPreview 视频预览弹窗组件
- * 使用 HTML5 video 元素，支持播放控制与关闭。
+ * 使用 VideoPlayer（基于 plyr）实现完整播放控制。
  * src 可为本地文件路径或网络 URL。
  */
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { ref } from 'vue'
+import VideoPlayer from './VideoPlayer.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -24,28 +25,13 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'ended'): void
 }>()
 
-const videoRef = ref<HTMLVideoElement | null>(null)
 // 视频加载失败标记
 const hasError = ref(false)
 
-// 处理视频源：Electron 下本地路径需要 file:// 协议
-function resolveSrc(src: string): string {
-  if (!src) return ''
-  // 已是协议头（http/https/blob/file/data）直接使用
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  // Windows/Unix 本地路径补充 file://
-  // 替换反斜杠为正斜杠
-  const normalized = src.replace(/\\/g, '/')
-  return `file://${normalized}`
-}
-
 function handleClose() {
-  // 关闭前暂停播放
-  if (videoRef.value) {
-    videoRef.value.pause()
-  }
   emit('close')
 }
 
@@ -60,38 +46,6 @@ function handleMaskClick(event: MouseEvent) {
 function handleError() {
   hasError.value = true
 }
-
-// ESC 键关闭
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.visible) {
-    handleClose()
-  }
-}
-
-// 监听可见性，控制键盘监听与错误状态
-watch(
-  () => props.visible,
-  (val) => {
-    if (val) {
-      hasError.value = false
-      window.addEventListener('keydown', handleKeydown)
-    } else {
-      window.removeEventListener('keydown', handleKeydown)
-    }
-  }
-)
-
-// src 变化时重置错误状态
-watch(
-  () => props.src,
-  () => {
-    hasError.value = false
-  }
-)
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown)
-})
 </script>
 
 <template>
@@ -110,15 +64,13 @@ onBeforeUnmount(() => {
 
         <!-- 视频容器 -->
         <div class="video-preview__stage">
-          <video
+          <VideoPlayer
             v-if="src && !hasError"
-            ref="videoRef"
-            class="video-preview__video"
-            :src="resolveSrc(src)"
-            controls
+            :src="src"
             autoplay
             :loop="loop"
             @error="handleError"
+            @ended="emit('ended')"
           />
           <!-- 加载失败提示 -->
           <div v-else class="video-preview__error">
@@ -200,12 +152,6 @@ onBeforeUnmount(() => {
   justify-content: center;
   background: #000;
   min-height: 280px;
-}
-
-.video-preview__video {
-  width: 100%;
-  max-height: calc(90vh - 56px);
-  display: block;
 }
 
 .video-preview__error {

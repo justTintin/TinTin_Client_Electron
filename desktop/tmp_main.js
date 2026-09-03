@@ -2,7 +2,6 @@ const { app, BrowserWindow, ipcMain, dialog, shell, session, protocol } = requir
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
-const { logError: _logErr } = require('./logger')
 const { createTray } = require('./tray')
 const { initUpdater } = require('./updater')
 const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore, getMachineId } = require('./server-proxy')
@@ -476,9 +475,6 @@ if (!gotTheLock) {
   if (schedArg && schedArg.startsWith('agent:')) {
     localScheduler.runScheduledTrigger(schedArg).catch(() => {}).finally(() => app.quit())
   } else {
-    // 写日志方便排查（用户感知：双击后闪退 = 已有实例在托盘）
-    _logErr('app', 'second-instance denied (lock held); existing instance should focus its window')
-    // 不弹 dialog（阻塞型弹窗体验更差）；second-instance 事件会在主实例侧 focus
     app.quit()
   }
 } else {
@@ -491,8 +487,7 @@ if (!gotTheLock) {
   })
   app.on('second-instance', (_e, argv) => {
     if (mainWindow) {
-      if (!mainWindow.isVisible()) mainWindow.show()      // 隐藏到托盘时必须先 show
-      else if (mainWindow.isMinimized()) mainWindow.restore()
+      if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
     }
     const schedArg = localScheduler.findScheduledArg(argv)
@@ -866,12 +861,5 @@ app.on('window-all-closed', () => {
   }
 })
 
-// 捕获未处理异常（写入日志文件，避免闪退后无法排查）
-process.on('uncaughtException', (err) => {
-  console.error('[Main] Uncaught exception:', err)
-  try { _logErr('crash', `uncaughtException: ${err?.stack || err}`) } catch (_) {}
-})
-process.on('unhandledRejection', (reason) => {
-  console.error('[Main] Unhandled rejection:', reason)
-  try { _logErr('crash', `unhandledRejection: ${reason?.stack || reason}`) } catch (_) {}
-})
+// 捕获未处理异常
+process.on('uncaughtException', (err) => { console.error('[Main] Uncaught exception:', err) })

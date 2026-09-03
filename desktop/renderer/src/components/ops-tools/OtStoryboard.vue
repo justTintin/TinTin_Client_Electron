@@ -13,10 +13,36 @@ import { RATIO_OPTIONS, ratioToOrient, totalDuration } from '../../composables/o
 import { useOpsStoryboard } from '../../composables/useOpsStoryboard'
 
 const S = useOpsStoryboard()
+
+/** 下拉选项展示文案（原版 L1769-1771：[选题] N镜 · 保存时间） */
+function scriptLabel(o: { topic: string; shotCount: number; savedAt: string }): string {
+  let label = `[${o.topic}] ${o.shotCount}镜`
+  if (o.savedAt) label += ` · ${o.savedAt}`
+  return label
+}
 </script>
 
 <template>
   <section class="osb">
+    <!-- ═══ 已有脚本（继续创作） ═══ -->
+    <div class="card">
+      <div class="head-row">
+        <div class="card-title">已有脚本（继续创作）</div>
+        <button class="btn tiny" :disabled="S.scriptsLoading.value" @click="S.loadScripts">刷新</button>
+      </div>
+      <div class="head-row">
+        <select class="input grow" v-model="S.selectedScriptId.value">
+          <option value="">── 创建新脚本 ──</option>
+          <option v-if="S.scriptsError.value && !S.scriptOptions.value.length" disabled>{{ S.scriptsError.value }}</option>
+          <option v-for="o in S.scriptOptions.value" :key="o.id" :value="o.id">{{ scriptLabel(o) }}</option>
+        </select>
+        <button class="btn primary" :disabled="S.scriptsLoading.value" @click="S.continueScript">
+          继续创作
+        </button>
+      </div>
+      <p class="hint">选中脚本后点「继续创作」：回填文案（镜头旁白）、画幅、分镜与产品上下文，可继续编辑；选「创建新脚本」则清空重开。</p>
+    </div>
+
     <!-- ═══ 文案 + 画幅 + 生成 ═══ -->
     <div class="card">
       <div class="head-row">
@@ -38,6 +64,20 @@ const S = useOpsStoryboard()
         placeholder="粘贴或输入视频文案；也可从「产品文案创作」卡点「前往分镜脚本设计」自动带入。"
         v-model="S.copyText.value"
       ></textarea>
+      <label class="field">
+        <span class="lbl">附加提示词（调整文案，可选）</span>
+        <textarea
+          class="input ta short"
+          placeholder="可输入补充要求，配合大模型重新调整视频文案，如：精简到 300 字内 / 口语化更强…"
+          v-model="S.extraPrompt.value"
+        ></textarea>
+      </label>
+      <div class="head-row">
+        <span class="hint">风格化随知识库批次迁移，当前为纯文案驱动。</span>
+        <button class="btn" :disabled="S.adjusting.value" @click="S.adjustCopy">
+          {{ S.adjusting.value ? 'AI 正在调整文案…' : '大模型调整文案' }}
+        </button>
+      </div>
       <div v-if="S.status.value" class="status">{{ S.status.value }}</div>
     </div>
 
@@ -153,6 +193,8 @@ const S = useOpsStoryboard()
 .input.narrow { width: 110px; }
 .ta { padding: 8px 10px; resize: vertical; line-height: 1.5; }
 textarea.input { height: 110px; width: 100%; }
+.ta.short { height: 64px; }
+.input.grow { flex: 1 1 auto; width: auto; }
 .ta.sm { height: 72px; }
 
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }

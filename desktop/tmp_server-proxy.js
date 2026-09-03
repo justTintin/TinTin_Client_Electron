@@ -20,7 +20,6 @@ const path = require('node:path')
 const { createMontageProxyIpc } = require('./montage-proxy-ipc')
 // 智能混剪 Step3「口播配音」域（VoiceCloneWorker/VideoDubbingWorker 主进程化）
 const { createMontageVoiceIpc } = require('./montage-voice-ipc')
-const { createMontageFinalIpc } = require('./montage-final-ipc')
 // machine_id 稳定派生（W11 口径：config-store 'machineIdV2' 缓存优先 + 原版 license.py 口径派生写回）
 const { resolveMachineIdSync, MACHINE_ID_KEY } = require('./machine-id')
 
@@ -490,7 +489,6 @@ function createServerProxy(ipcMain, ctx) {
   ipcMain.handle('server:downloadResult', async (event, path, savePath) => {
     try {
       const res = await httpRequest('GET', path, { timeout: 600000 })
-      fs.mkdirSync(require('path').dirname(savePath), { recursive: true })
       fs.writeFileSync(savePath, res.raw)
       return savePath
     } catch (err) {
@@ -684,7 +682,6 @@ function createServerProxy(ipcMain, ctx) {
     try {
       if (!id || !savePath) throw new Error('tasks:downloadResult missing id/savePath')
       const res = await httpRequest('GET', API_ENDPOINTS.tasks.itemResult(id), { timeout: 600000 })
-      fs.mkdirSync(require('path').dirname(savePath), { recursive: true })
       fs.writeFileSync(savePath, res.raw)
       return savePath
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
@@ -807,11 +804,6 @@ function createServerProxy(ipcMain, ctx) {
   //     外迁 montage-voice-ipc.js（同上铁律）；TTS 直连用户可改 apiUrl（初值跟随
   //     server_url + /voxcpm/tts，原版 ai_config.vox_api_url 同源等价）------
   createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl })
-
-  // --- 智能混剪 Step4「特效包装」域（final:mix 本地 ffmpeg FinalMixWorker 一比一 /
-  //     final:collectOutputs 回退扫描 outputs / final:findSrt / jianying:export 剪映草稿 /
-  //     bgm:downloadUrl AI 生成 BGM 落盘）外迁 montage-final-ipc.js ------
-  createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl })
 
   // --- audio（智能混剪 Step4 AI 生成 BGM；对齐原客户端 audio_library_client.py
   // gen_bgm L159-175：body = {prompt, style, duration}，无 mood；契约 description

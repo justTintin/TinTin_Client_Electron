@@ -45,6 +45,9 @@ export namespace MontageAPI {
     image_duration?:      number
     /** 出入场镜头加速倍率（对齐 PR#3 edge_speedup_combo：1.0/1.2/1.5/2.0/2.5/3.0） */
     edge_speedup?:        number
+    /** 景别标注 JSON 串（对照原版 L3004-3015：文件名→entrance/exit/medium/closeup；
+     *  服务端仅对 entrance/exit 片段应用 edge_speedup 加速，缺省时加速无效） */
+    clip_shot_types?:     string
   }
   export type ConcatResponse = { id?: string; task_id?: string; [extra: string]: unknown }
 

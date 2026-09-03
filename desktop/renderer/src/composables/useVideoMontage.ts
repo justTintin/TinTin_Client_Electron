@@ -1,17 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
 // useVideoMontage — 智能混剪·服务端四步链路编排（M8 条目⑥ runner 层）
-// 四步（用户验收口径，对照原客户端 gui/video_montage_page.py + gui/montage/*）：
+// 四步（对照原客户端 gui/video_montage_page.py steps_text L257，严格一致）：
 //   1. 素材解析   POST /montage/split（同步返回 shots[]，ServerSplitWorker L121-171）
-//   2. BGM 节拍/卡点
-//      · 节拍检测 POST /audio/beatmap → 任务 → 轮询 GET /tasks/unified/{id}
-//        （契约：客户端轮询 GET /tasks/unified/{id} 取结果；BeatDetectWorker L341-519）
-//      · 卡点成片 POST /montage/beat → 任务 → 轮询 /tasks/unified/{id} →
-//        GET /montage/result/{task_id}[/{variant}]（BeatVideoGenWorker L526-781）
-//   3. AI 编排   POST /montage/concat → 任务 → 轮询 GET /scheduled/tasks/{id} →
+//   2. AI 编排    POST /montage/concat → 任务 → 轮询 GET /scheduled/tasks/{id} →
 //        GET /montage/concat/result/{id}（montage_concat_server_worker L57-165：
 //        stc.get_task 轮询 / status completed → result.video_url|url|output_url →
 //        download_result 落盘；status failed/error → error_msg 透出）
-//   4. 合成      POST /montage/bgm（同步返回 {ok, path, video_url}，契约注明）
+//   3. 口播配音   TTS（voxcpm）逐条生成 + 视频合成（voice_clone_page.py VoiceCloneWorker）
+//   4. 合成       POST /montage/bgm（同步返回 {ok, path, video_url}，特效包装/混音）
+// 注：原客户端「卡点成片」属独立「一键成片」页（compile_video_page.py tab3，
+//     BeatMontageController），不在智能混剪向导内，本端亦不纳入。
 // 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（复用 useVideoRepair 模式）。
 // 纯函数在 videoMontageLogic.ts（parser/builder 层），本文件仅编排（IRON-06/07）。
 // ═══════════════════════════════════════════════════════════════
@@ -23,12 +21,6 @@ import {
   pollPhaseText,
   parseSplitResponse,
   shotsToRows,
-  buildBeatmapPayload,
-  extractBeats,
-  extractBeatClips,
-  buildBeatPayload,
-  extractBeatVariants,
-  buildResultUrl,
   buildConcatPayload,
   extractConcatResultUrl,
   extractSubmitTaskId,
@@ -41,7 +33,6 @@ import {
   SHOT_TYPE_LABELS,
   SHOT_TYPE_COLORS,
   type SplitSceneRow,
-  type BeatClip,
   // Step3 口播配音
   type VoiceRow,
   filterVideoFiles,
@@ -272,152 +263,13 @@ export function useVideoMontage() {
     return f > 0 ? scenes.value.filter((s) => s.score >= f) : scenes.value
   })
 
-  // ══ Step2 BGM 节拍/卡点（/audio/beatmap + /montage/beat，均异步）═══
-  const musicPath = ref('')
-  const musicName = ref('')
-  const beatError = ref('')
-  const beatmapBusy = ref(false)
-  const beats = ref<number[]>([])
-  const beatClips = ref<BeatClip[]>([])
-
-  function pickMusic(): void {
-    void (async () => {
-      const res = await window.tintin.dialog.openFile({
-        title: '选择背景音乐',
-        filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'ogg'] }],
-      })
-      if (res) {
-        musicPath.value = String(res)
-        musicName.value = musicPath.value.split(/[\\/]/).pop() || musicPath.value
-        beats.value = []
-        beatClips.value = []
-      }
-    })()
-  }
-
+  /** 取消/复位统一清 busy（AI 编排 / 合成两个异步步） */
   function clearAllBusy(): void {
-    beatmapBusy.value = false
-    beatBusy.value = false
     concatBusy.value = false
     finalBusy.value = false
   }
 
-  /** 节拍检测：提交 → /tasks/unified/{id} 轮询 → beats/beat_clips 展示 */
-  async function detectBeats(): Promise<void> {
-    if (!musicPath.value) { beatError.value = '请先选择 BGM 音乐'; return }
-    beatError.value = ''
-    beatmapBusy.value = true
-    clearBusy = clearAllBusy
-    beats.value = []
-    beatClips.value = []
-    try {
-      const bm = buildBeatmapPayload(musicPath.value)
-      const res = unwrapIpc(
-        await window.tintin.server.audioBeatmap({
-          file: { path: bm.file },
-          count: bm.count,
-          segment_duration: bm.segment_duration,
-        }),
-        'BGM 节拍检测',
-      )
-      const id = extractSubmitTaskId(res)
-      statusText.value = `节拍检测任务已提交：${id}`
-      startPolling({
-        id,
-        channel: 'unified',
-        onDone: (result) => {
-          beats.value = extractBeats(result)
-          beatClips.value = extractBeatClips(result)
-          statusText.value = `节拍检测完成：${beats.value.length} 个节拍 / ${beatClips.value.length} 个卡点片段`
-          notify('节拍检测完成', statusText.value)
-        },
-        onFail: (msg) => {
-          beatError.value = msg
-          notify('节拍检测失败', `任务 ${id}：${msg}`)
-        },
-      })
-    } catch (e) {
-      beatError.value = errText(e)
-      notify('节拍检测失败', beatError.value)
-    } finally {
-      beatmapBusy.value = false
-      clearBusy = null
-    }
-  }
-
-  // 卡点成片参数（契约 Body_beat_compose_montage_beat_post）
-  const beatCount = ref(0)            // 0=按切点全用
-  const beatTimeLimit = ref(0)        // 0=完整有效区间
-  const beatVariantCount = ref(1)     // 1~5
-  const beatAspectRatio = ref('9:16')
-  const beatTransition = ref('fade')  // 契约直用服务端转场名
-  const beatTransitionDuration = ref(0)
-  const beatMinDuration = ref(1)
-  const beatMaxDuration = ref(3)
-  const beatBusy = ref(false)
-  const beatVariants = ref<Array<{ variant: number; url: string }>>([])
-
-  /** 卡点成片：music+原始视频 → 服务端分割/卡点/拼接/混音 → 变体结果列表 */
-  async function runBeatCompose(): Promise<void> {
-    if (!srcVideos.value.length) { beatError.value = '请先在「素材解析」添加视频'; return }
-    beatError.value = ''
-    beatBusy.value = true
-    clearBusy = clearAllBusy
-    beatVariants.value = []
-    try {
-      const p = buildBeatPayload({
-        music: musicPath.value,
-        videos: srcVideos.value,
-        count: beatCount.value,
-        timeLimit: beatTimeLimit.value,
-        variantCount: beatVariantCount.value,
-        aspectRatio: beatAspectRatio.value,
-        transition: beatTransition.value,
-        transitionDuration: beatTransitionDuration.value,
-        minDuration: beatMinDuration.value,
-        maxDuration: beatMaxDuration.value,
-      })
-      const res = unwrapIpc(await window.tintin.server.montageBeat({
-        music: { path: p.music },
-        videos: p.videos.map((v) => ({ path: v })),
-        count: p.count,
-        time_limit: p.time_limit,
-        variant_count: p.variant_count,
-        min_duration: p.min_duration,
-        max_duration: p.max_duration,
-        aspect_ratio: p.aspect_ratio,
-        transition: p.transition,
-        transition_duration: p.transition_duration,
-      }), '卡点成片')
-      const id = extractSubmitTaskId(res)
-      statusText.value = `卡点成片任务已提交：${id}`
-      startPolling({
-        id,
-        channel: 'unified',
-        onDone: async (result) => {
-          await ensureServerUrl()
-          beatVariants.value = extractBeatVariants(result).map((v) => ({
-            variant: v.variant,
-            url: toAbsolute(buildResultUrl(serverUrl.value, id, v.file, v.variant)),
-          }))
-          statusText.value = `卡点成片完成：${beatVariants.value.length} 个变体`
-          notify('卡点成片完成', `任务 ${id}：${beatVariants.value.length} 个变体可下载`)
-        },
-        onFail: (msg) => {
-          beatError.value = msg
-          notify('卡点成片失败', `任务 ${id}：${msg}`)
-        },
-      })
-    } catch (e) {
-      beatError.value = errText(e)
-      notify('卡点成片失败', beatError.value)
-    } finally {
-      beatBusy.value = false
-      clearBusy = null
-    }
-  }
-
-  // ══ Step3 AI 编排（/montage/concat → /scheduled/tasks/{id} 轮询）═══
+  // ══ Step2 AI 编排（/montage/concat → /scheduled/tasks/{id} 轮询）═══
   const concatTransition = ref('fade')   // 客户端风格名，提交前经 mapTransition 安全映射
   const concatLayout = ref('vertical')
   const concatTransitionDuration = ref(0)
@@ -642,10 +494,6 @@ export function useVideoMontage() {
     }
   }
 
-  function downloadBeat(idx: number): void {
-    const v = beatVariants.value[idx]
-    if (v) void download(v.url, resultFileName('beat', v.variant), `beat:${idx}`)
-  }
   function downloadConcat(idx: number): void {
     const url = concatResults.value[idx]
     if (url) void download(url, resultFileName('montage', idx + 1), `concat:${idx}`)
@@ -834,29 +682,23 @@ export function useVideoMontage() {
     // 共享
     serverUrl, polling, activeTaskId, statusText, cancelPolling, stopPolling,
     downloadingKey, download, resultFileName,
-    // Step1
+    // Step1 素材解析
     srcVideos, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg,
     addVideos, selectFolder, onDrop, removeVideo, runSplit,
-    // Step2
-    musicPath, musicName, pickMusic, beatError,
-    beatmapBusy, beats, beatClips, detectBeats,
-    beatCount, beatTimeLimit, beatVariantCount, beatAspectRatio,
-    beatTransition, beatTransitionDuration, beatMinDuration, beatMaxDuration,
-    beatBusy, beatVariants, runBeatCompose, downloadBeat, TRANSITIONS,
-    // Step3 AI 编排
+    // Step2 AI 编排
     concatTransition, concatLayout, concatTransitionDuration,
-    edgeSpeedup, EDGE_SPEEDUP_OPTIONS,
+    edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
     concatBusy, concatError, concatResults, runConcat, downloadConcat,
-    // Step3.1 口播配音（新增）
+    // Step3 口播配音
     voiceRows, selectedSpeaker, referenceAudio, speakerOptions,
     batchGenerating, generatingIndex,
     loadSpeakerOptions, selectVoiceDir, updateVoiceText,
     generateSingleVoice, generateAllVoices, playVoice, exportVoice, playReference,
     allVoicesDone: () => allVoicesDone(voiceRows.value),
     voiceStatusText, voiceStatusClass,
-    // Step4
+    // Step4 合成
     finalSource, bgmPath, bgmName, bgmVolume, sourceVolume,
     finalBusy, finalError, finalResults,
     pickBgm, pickLocalFinal, runFinalMix, downloadFinal, revealLocal,

@@ -9,10 +9,6 @@
 //     layout→width/height、source 探测回退 1080x1920、options 白名单）
 //   · montage_concat_server_worker L57-128（files/clip_urls 至少一项；clip_urls
 //     JSON 字符串；result.video_url/url/output_url 提取）
-//   · BeatDetectWorker L453-519（beats/beat_times/timestamps/beat_points 提取、
-//     clips {start,end,strength} 排序过滤）
-//   · BeatVideoGenWorker L526-781（/montage/beat 仅传非空参数、result.variants /
-//     result.file、结果 URL http 原样 // 前缀拼 server / 否则 /montage/result/{tid}[/{variant}]）
 // 运行：node --test "tests/*.test.mjs"
 // ═══════════════════════════════════════════════════════════════
 
@@ -126,91 +122,11 @@ test('extractConcatResultUrl：video_url/url/output_url 依次提取（对照 L1
   assert.equal(R.extractConcatResultUrl(null), '')
 })
 
-test('extractSubmitTaskId：id/task_id/job_id（对照 L103-105 与 beat L760-764）', () => {
+test('extractSubmitTaskId：id/task_id/job_id（对照 L103-105）', () => {
   assert.equal(R.extractSubmitTaskId({ id: '9' }), '9')
   assert.equal(R.extractSubmitTaskId({ task_id: 't' }), 't')
   assert.equal(R.extractSubmitTaskId({ job_id: 'j' }), 'j')
   assert.throws(() => R.extractSubmitTaskId({}), /未返回任务/)
-})
-
-// ── BGM 节拍检测（对照 BeatDetectWorker L341-519）──
-
-test('buildBeatmapPayload：count>0 才传 count；segment_duration>0 才传（对照 L379-383）', () => {
-  assert.deepEqual(R.buildBeatmapPayload('/m.mp3', { count: 4, segmentDuration: 2 }), { file: '/m.mp3', count: 4, segment_duration: 2 })
-  assert.deepEqual(R.buildBeatmapPayload('/m.mp3', {}), { file: '/m.mp3' })
-  assert.throws(() => R.buildBeatmapPayload('', {}), /缺少音频文件/)
-})
-
-test('extractBeats：beats/beat_times/timestamps/beat_points + result 嵌套 + 数值排序（对照 L453-476）', () => {
-  assert.deepEqual(R.extractBeats({ beats: [3, 1, 2] }), [1, 2, 3])
-  assert.deepEqual(R.extractBeats({ beat_times: ['0.5', 1.5] }), [0.5, 1.5])
-  assert.deepEqual(R.extractBeats({ result: { timestamps: [2, 1] } }), [1, 2])
-  assert.deepEqual(R.extractBeats({ beat_points: [1] }), [1])
-  assert.deepEqual(R.extractBeats({}), [])
-  // 对照 L500-502：'x' 无法 float() → 异常 → 整体返回 []（null 跳过，但非法元素一票否决）
-  assert.deepEqual(R.extractBeats({ beats: [null, 'x', 1] }), [])
-})
-
-test('extractBeatClips：clips {start,end,strength} 排序、过滤非法（对照 L478-519）', () => {
-  const clips = R.extractBeatClips({
-    clips: [
-      { start: '2', end: 3, strength: '2' },
-      { start: 0, end: 1 },
-      { start: 5, end: 4 },   // end<=start 丢弃
-      { start: 'x', end: 9 }, // 非法丢弃
-      { start: 4, end: 5, strength: null },
-    ],
-  })
-  assert.deepEqual(clips, [
-    { start: 0, end: 1, strength: 1 },
-    { start: 2, end: 3, strength: 2 },
-    { start: 4, end: 5, strength: 1 },
-  ])
-  assert.deepEqual(R.extractBeatClips({ result: { clips: [{ start: 0, end: 1 }] } }).length, 1)
-  assert.deepEqual(R.extractBeatClips({}), [])
-})
-
-// ── 卡点成片（对照 BeatVideoGenWorker L526-781）──
-
-test('buildBeatPayload：仅传非空参数（对照 _submit_one L721-728）', () => {
-  const p = R.buildBeatPayload({
-    music: 'D:/m.mp3',
-    videos: ['D:/a.mp4', 'D:/b.mp4'],
-    count: 0, timeLimit: 30, variantCount: 2,
-    minDuration: 1, maxDuration: 3,
-    width: 1080, height: 1920, fps: 30, crf: 20,
-    transition: 'fade', transitionDuration: 0.3,
-  })
-  assert.equal(p.count, undefined) // 0 → 不传
-  assert.equal(p.time_limit, 30)
-  assert.equal(p.variant_count, 2)
-  assert.equal(p.min_duration, 1)
-  assert.equal(p.max_duration, 3)
-  assert.equal(p.aspect_ratio, undefined) // 空 → 不传
-  assert.equal(p.transition, 'fade')
-})
-
-test('buildBeatPayload：music/videos 必填校验（对照 L713-718）', () => {
-  assert.throws(() => R.buildBeatPayload({ videos: ['/a.mp4'] }), /缺少音乐文件/)
-  assert.throws(() => R.buildBeatPayload({ music: '/m.mp3', videos: [] }), /没有可上传的镜头视频/)
-})
-
-test('extractBeatVariants：variants[] 优先，否则 result.file 单变体（对照 L624-653）', () => {
-  const r1 = R.extractBeatVariants({ variants: [{ variant: 1, file: '/a.mp4' }, { variant: 2, file: '/b.mp4' }] })
-  assert.equal(r1.length, 2)
-  assert.deepEqual(r1[0], { variant: 1, file: '/a.mp4' })
-  const r2 = R.extractBeatVariants({ file: '/c.mp4' })
-  assert.deepEqual(r2, [{ variant: 1, file: '/c.mp4' }])
-  const r3 = R.extractBeatVariants({})
-  assert.deepEqual(r3, [{ variant: 1, file: '' }])
-})
-
-test('buildResultUrl：http 原样 / / 前缀拼 server / 否则 result_url（对照 _download L767-775）', () => {
-  const s = 'http://s:8766'
-  assert.equal(R.buildResultUrl(s, 't1', 'http://cdn/x.mp4', 0), 'http://cdn/x.mp4')
-  assert.equal(R.buildResultUrl(s, 't1', '/files/x.mp4', 0), 'http://s:8766/files/x.mp4')
-  assert.equal(R.buildResultUrl(s, 't1', '', 2), 'http://s:8766/montage/result/t1/2')
-  assert.equal(R.buildResultUrl(s, 't1', '', undefined), 'http://s:8766/montage/result/t1')
 })
 
 // ── Step4 成片混音 /montage/bgm（对照原 FinalMixWorker 口径的服务端化）──

@@ -202,21 +202,38 @@ function extractFramesBatch(ffmpegPath, video, times, tag, width = 512, quality 
 }
 
 /**
- * 嵌入封面到视频
+ * 封面片头嵌入（M9 直播切片最终导出）。
+ * 对照原客户端 live_clip/utils.py embed_cover_to_video L142-171（旧实现为
+ * attached_pic 元数据封面且 -t 会截断正片，与原版语义不符，2026-09-03 重写）：
+ * 封面按视频画幅 pad → 作为 2s 片头与正片 concat，音频延迟对齐片头，
+ * -shortest 收尾。横竖版封面由渲染层按视频画幅选好传入（原版在函数内
+ * 按 cover_/cover_vertical_ 命名约定选择，此处上移到调用方）。
+ * 原版 get_video_encode_args(crf=23, preset=fast) 此处对齐为 libx264。
  */
-function embedCover(ffmpegPath, video, cover, outPath, durationSec = 2) {
+async function embedCover(ffmpegPath, ffprobePath, video, cover, outPath, durationSec = 2) {
+  const info = await probe(ffprobePath, video)
+  const w = info.width > 0 ? info.width : 1080
+  const h = info.height > 0 ? info.height : 1920
+  const fps = info.fps > 0 ? info.fps : 30
+  const cd = Math.max(0.5, Number(durationSec) || 2)
+  const filter = [
+    `[0:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,` +
+      `trim=duration=${cd},fps=${fps},setpts=PTS-STARTPTS,setsar=1,format=yuv420p[v0]`,
+    `[1:v]fps=${fps},format=yuv420p[v1]`,
+    `[v0][v1]concat=n=2:v=1:a=0[v]`,
+    `[1:a]adelay=${Math.round(cd * 1000)}:all=1[a]`,
+  ].join(';')
   return new Promise((resolve, reject) => {
     const args = [
       '-y',
+      '-loop', '1', '-i', cover,
       '-i', video,
-      '-i', cover,
-      '-map', '0:v',
-      '-map', '0:a?',
-      '-map', '1:v',
-      '-c:v:0', 'copy',
-      '-c:v:1', 'mjpeg',
-      '-disposition:v:1', 'attached_pic',
-      '-t', String(durationSec),
+      '-filter_complex', filter,
+      '-map', '[v]',
+      '-map', '[a]',
+      '-c:v', 'libx264', '-crf', '23', '-preset', 'fast',
+      '-c:a', 'aac',
+      '-shortest',
       outPath
     ]
     const proc = spawn(ffmpegPath, args, { windowsHide: true })
@@ -224,12 +241,62 @@ function embedCover(ffmpegPath, video, cover, outPath, durationSec = 2) {
     proc.stderr.on('data', (d) => stderr += d)
     proc.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(`ffmpeg embedCover failed: ${stderr}`))
+        reject(new Error(`ffmpeg embedCover failed: ${stderr.slice(-500)}`))
         return
       }
       resolve(outPath)
     })
   })
+}
+
+/**
+ * 带缓存的音频提取（M9 直播切片，对照原客户端 live_clip/page.py L469-601）。
+ * 音频已存在 + 未勾选「强制重新提取」+ 视频源未变更（mtimeMs+size+路径写
+ * 入 .meta 校验，原版 L542-568 同口径）→ 直接复用缓存；否则删除旧缓存后按
+ * 原版 AudioExtractWorker 同参数提取（pcm_s16le / 16kHz / 单声道 wav，
+ * 原版 L61-63 同口径，服务端 ASR 输入）。
+ * @returns {Promise<{path: string, cached: boolean}>}
+ */
+function extractAudioCached(ffmpegPath, video, forceReextract) {
+  return (async () => {
+    const vname = path.basename(video).replace(/\.[^.]+$/, '')
+    const audioPath = path.join(require('node:os').tmpdir(), `${vname}_audio.wav`)
+    const metaPath = path.join(require('node:os').tmpdir(), `${vname}_audio.meta`)
+    const vstat = await fs.promises.stat(video)
+    const curMeta = `${vstat.mtimeMs}_${vstat.size}_${video}`
+    if (!forceReextract) {
+      try {
+        const saved = (await fs.promises.readFile(metaPath, 'utf8')).trim()
+        if (saved === curMeta) {
+          const st = await fs.promises.stat(audioPath)
+          if (st.size > 0) return { path: audioPath, cached: true }
+        }
+      } catch (_) { /* 缓存缺失/读取失败 → 走重新提取 */ }
+    }
+    await Promise.all([
+      fs.promises.unlink(audioPath).catch(() => {}),
+      fs.promises.unlink(metaPath).catch(() => {}),
+    ])
+    await new Promise((resolve, reject) => {
+      const args = [
+        '-y', '-threads', '0', '-i', video, '-vn',
+        '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
+        audioPath
+      ]
+      const proc = spawn(ffmpegPath, args, { windowsHide: true })
+      let stderr = ''
+      proc.stderr.on('data', (d) => stderr += d)
+      proc.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`ffmpeg extractAudioCached failed: ${stderr.slice(-500)}`))
+          return
+        }
+        resolve()
+      })
+    })
+    await fs.promises.writeFile(metaPath, curMeta, 'utf8')
+    return { path: audioPath, cached: false }
+  })()
 }
 
 /**
@@ -292,23 +359,52 @@ function extractAudio(ffmpegPath, video, outPath, format = 'aac') {
 
 /**
  * 区间切片（直播/长视频快速裁切）
- * ffmpeg -y -ss <start> -i <video> -t <duration> -avoid_negative_ts make_zero -c copy <out>
+ * 默认（opts 不传）：流拷贝 —— ffmpeg -y -ss <start> -i <video> -t <duration>
+ *                    -avoid_negative_ts make_zero -c copy <out>
+ * opts.reencode（M9 直播切片对齐原版 VideoClipWorker L288-317）：两段式
+ *   精确 seek（输入级提前 30s 关键帧定位 + 输出级精确到点）+ 重编码
+ *   （libx264 crf23 preset fast + aac，原版 get_video_encode_args 同参数）。
+ * opts.srtPath（烧录切片段字幕，原版 L296-306 同口径）： subtitles=basename
+ *   滤镜 + cwd=srt 目录（切片段字幕由渲染层裁剪好落盘，主进程只做 I/O）。
  */
-function cutClip(ffmpegPath, video, outPath, startSec, endSec) {
+function cutClip(ffmpegPath, video, outPath, startSec, endSec, opts) {
   return new Promise((resolve, reject) => {
     const start = Math.max(0, Number(startSec) || 0)
     const end = Number(endSec) || Math.max(start + 1, start)
-    const duration = Math.max(0.5, end - start)
-    const args = [
-      '-y',
-      '-ss', String(start),
-      '-i', video,
-      '-t', String(duration),
-      '-avoid_negative_ts', 'make_zero',
-      '-c', 'copy',
-      outPath
-    ]
-    const proc = spawn(ffmpegPath, args, { windowsHide: true })
+    const reencode = !!(opts && opts.reencode)
+    const srtPath = (opts && opts.srtPath) || ''
+    let args
+    let cwd
+    if (!reencode) {
+      const duration = Math.max(0.5, end - start)
+      args = [
+        '-y',
+        '-ss', String(start),
+        '-i', video,
+        '-t', String(duration),
+        '-avoid_negative_ts', 'make_zero',
+        '-c', 'copy',
+        outPath
+      ]
+    } else {
+      const fastStart = Math.max(0, start - 30)
+      const remainStart = start - fastStart
+      const duration = Math.max(0.1, end - start)
+      const vf = srtPath ? `subtitles=${path.basename(srtPath)},format=yuv420p` : 'format=yuv420p'
+      if (srtPath) cwd = path.dirname(srtPath)
+      args = [
+        '-y',
+        '-ss', fastStart.toFixed(3),
+        '-i', video,
+        '-ss', remainStart.toFixed(3),
+        '-t', duration.toFixed(3),
+        '-vf', vf,
+        '-c:v', 'libx264', '-crf', '23', '-preset', 'fast',
+        '-c:a', 'aac',
+        outPath
+      ]
+    }
+    const proc = spawn(ffmpegPath, args, { windowsHide: true, cwd })
     let stderr = ''
     proc.stderr.on('data', (d) => stderr += d)
     proc.on('close', (code) => {
@@ -343,7 +439,11 @@ function createFfmpegGate(ipcMain, studioRoot) {
   })
 
   ipcMain.handle('ffmpeg:embedCover', async (event, video, cover, outPath, durationSec) => {
-    return await embedCover(ffmpegPath, video, cover, outPath, durationSec)
+    return await embedCover(ffmpegPath, ffprobePath, video, cover, outPath, durationSec)
+  })
+
+  ipcMain.handle('ffmpeg:extractAudioCached', async (event, video, forceReextract) => {
+    return await extractAudioCached(ffmpegPath, video, forceReextract)
   })
 
   ipcMain.handle('ffmpeg:concatSegments', async (event, paths, outPath) => {
@@ -354,8 +454,8 @@ function createFfmpegGate(ipcMain, studioRoot) {
     return await extractAudio(ffmpegPath, video, outPath, format)
   })
 
-  ipcMain.handle('ffmpeg:cut', async (event, video, outPath, startSec, endSec) => {
-    return await cutClip(ffmpegPath, video, outPath, startSec, endSec)
+  ipcMain.handle('ffmpeg:cut', async (event, video, outPath, startSec, endSec, opts) => {
+    return await cutClip(ffmpegPath, video, outPath, startSec, endSec, opts)
   })
 }
 

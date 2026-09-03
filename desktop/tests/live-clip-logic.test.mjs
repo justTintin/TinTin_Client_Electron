@@ -178,3 +178,144 @@ test('HOT_KEYWORDS_CN：39 词对齐原版 utils.py L14-21', () => {
     assert.ok(L.HOT_KEYWORDS_CN.includes(w), `缺少热词 ${w}`)
   }
 })
+
+// ── SRT 生成 / 裁剪（M9 补齐：原版 _format_timestamp / _RemoteWorker / slice_srt）──
+
+test('formatSrtTimestamp：hh:mm:ss,mmm 进位链对齐原版 page.py L742-756', () => {
+  assert.equal(L.formatSrtTimestamp(0), '00:00:00,000')
+  assert.equal(L.formatSrtTimestamp(59.5), '00:00:59,500')
+  assert.equal(L.formatSrtTimestamp(3661.5), '01:01:01,500')
+  // ms==1000 → 秒进位（原版 L747-755 链式进位）
+  assert.equal(L.formatSrtTimestamp(0.99999), '00:00:01,000')
+  assert.equal(L.formatSrtTimestamp(59.99999), '00:01:00,000')
+  assert.equal(L.formatSrtTimestamp(3599.99999), '01:00:00,000')
+  // 负数兜底 0
+  assert.equal(L.formatSrtTimestamp(-5), '00:00:00,000')
+})
+
+test('buildSrtFromSegments：序号/时间轴/空行格式对齐原版 _RemoteWorker L484-492', () => {
+  const srt = L.buildSrtFromSegments([
+    { start: 0, end: 2.5, text: ' 第一行 ' },
+    { start: 3, end: 5, text: '第二行\n换行' },
+  ])
+  const lines = srt.split('\n')
+  assert.equal(lines[0], '1')
+  assert.equal(lines[1], '00:00:00,000 --> 00:00:02,500')
+  assert.equal(lines[2], '第一行')
+  assert.equal(lines[3], '')
+  assert.equal(lines[4], '2')
+  assert.equal(lines[6], '第二行 换行') // text 内换行替换为空格
+  // 空输入
+  assert.equal(L.buildSrtFromSegments([]), '')
+  assert.equal(L.buildSrtFromSegments(null), '')
+})
+
+test('clipSegmentsForRange：重叠保留平移、不重叠过滤（原版 slice_srt L72-76 语义）', () => {
+  const segs = [
+    { start: 0, end: 10, text: 'a' },
+    { start: 8, end: 14, text: 'b' },
+    { start: 20, end: 30, text: 'c' },
+  ]
+  const out = L.clipSegmentsForRange(segs, 10, 20)
+  // a: end=10 不 > startSec=10 → 丢；b: 8<20 && 14>10 → 平移保留；c: 20 不 < 20 → 丢
+  assert.equal(out.length, 1)
+  assert.deepEqual(out[0], { start: 0, end: 4, text: 'b' })
+  // 空输入
+  assert.deepEqual(L.clipSegmentsForRange(null, 0, 10), [])
+})
+
+// ── LLM 分析（M9 接线：原版 _llm_analyze 请求段 L172-231）──
+
+test('buildLlmChunks：[mm:ss] text 行 + 4000 字符分块 + 5 行重叠（原版 L172-193）', () => {
+  // 单块：短字幕全部进一个块
+  const small = L.buildLlmChunks([{ start: 75, end: 80, text: '大分钟偏移' }])
+  assert.equal(small.length, 1)
+  assert.equal(small[0], '[01:15] 大分钟偏移')
+  // 多块：构造长字幕（每行约 30 字符，145 行 > 4000 字符 → ≥2 块，第二块首 5 行 =第一块末 5 行）
+  const long = []
+  for (let i = 0; i < 145; i++) long.push({ start: i * 2, end: i * 2 + 2, text: `第${i}句测试文本内容固定长度二十几个字符左右啊` })
+  const chunks = L.buildLlmChunks(long)
+  assert.ok(chunks.length >= 2, `应分多块，实际 ${chunks.length}`)
+  const lastLines = (s) => s.split('\n')
+  const firstTail = lastLines(chunks[0]).slice(-5)
+  const secondHead = lastLines(chunks[1]).slice(0, 5)
+  assert.deepEqual(secondHead, firstTail, '第二块前 5 行应与第一块末 5 行重叠')
+  // 空输入
+  assert.deepEqual(L.buildLlmChunks([]), [])
+  assert.deepEqual(L.buildLlmChunks(null), [])
+})
+
+test('buildLlmPrompt：逐字保留原版 prompt 结构 + 拼接分块', () => {
+  const p = L.buildLlmPrompt('[00:10] 内容')
+  assert.ok(p.startsWith('你是专业的直播视频内容分析师'))
+  assert.ok(p.includes('【分析与剪裁规则】'))
+  assert.ok(p.includes('【输出格式要求】'))
+  assert.ok(p.includes('不要转换为 `时:分:秒`'))
+  assert.ok(p.endsWith('【待分析字幕文本】：\n[00:10] 内容'))
+})
+
+test('parseLlmPlanResponse：纯 JSON / ```块 / 方括号块 + mm:ss→秒 + score 默认 5.0', () => {
+  // 纯 JSON 数组
+  const a = L.parseLlmPlanResponse('[{"start":"12:34","end":"13:04","title":"甲","score":8.5}]')
+  assert.equal(a.length, 1)
+  assert.equal(a[0].start, 12 * 60 + 34)
+  assert.equal(a[0].end, 13 * 60 + 4)
+  assert.equal(a[0].score, 8.5)
+  // Markdown 代码块包裹
+  const b = L.parseLlmPlanResponse('结果如下：\n```json\n[{"start":"00:05","end":"00:35","title":"乙"}]\n```\n以上')
+  assert.equal(b.length, 1)
+  assert.equal(b[0].start, 5)
+  assert.equal(b[0].score, 5.0) // 默认分
+  // 大分钟 75:20（原版 prompt 明确允许）
+  const c = L.parseLlmPlanResponse('[{"start":"75:20","end":"76:00","title":"丙"}]')
+  assert.equal(c[0].start, 75 * 60 + 20)
+  // 非法项过滤（end<=start / 非法时间）
+  const d = L.parseLlmPlanResponse('[{"start":"01:00","end":"00:30","title":"逆序"},{"start":"bad","end":"02:00"},{"start":"01:00","end":"02:00","title":"有效"}]')
+  assert.equal(d.length, 1)
+  assert.equal(d[0].title, '有效')
+  // 解析失败 → []
+  assert.deepEqual(L.parseLlmPlanResponse('完全不是 JSON'), [])
+  assert.deepEqual(L.parseLlmPlanResponse(''), [])
+  assert.deepEqual(L.parseLlmPlanResponse(null), [])
+})
+
+test('mergeLlmPlan：相邻 gap≤15 且合并后 ≤300 合并、标题 / 连接截 25（原版 L233-251）', () => {
+  const merged = L.mergeLlmPlan([
+    { start: 0, end: 60, title: '甲', score: 5 },
+    { start: 70, end: 120, title: '乙', score: 9 }, // gap 10 → 合并
+    { start: 300, end: 360, title: '丙', score: 7 }, // gap 180 → 独立
+  ])
+  assert.equal(merged.length, 2)
+  // 合并块：end 取 max(120)，score 取 max(9)，标题甲/乙
+  const m = merged.find((x) => x.start === 0)
+  assert.equal(m.end, 120)
+  assert.equal(m.score, 9)
+  assert.equal(m.title, '甲/乙')
+})
+
+// ── 切片命名 / 评分过滤（M9 补齐）──
+
+test('clipFileName：clip_NNN_标题.mp4，非法字符→_，截 30，序号补零（原版 L280-281）', () => {
+  assert.equal(L.clipFileName(0, '精彩片段：第一期!'), 'clip_001_精彩片段_第一期_.mp4')
+  assert.equal(L.clipFileName(9, 'abc'), 'clip_010_abc.mp4')
+  const long = L.clipFileName(0, '标'.repeat(40))
+  assert.ok(long.startsWith('clip_001_'))
+  // 标题截 30 字（30 个「标」）
+  assert.ok(long.includes('标'.repeat(30)))
+  assert.ok(!long.includes('标'.repeat(31)))
+  // 空标题兜底 'clip'（原版 clip.get("title", "clip")）
+  assert.equal(L.clipFileName(2, ''), 'clip_003_clip.mp4')
+})
+
+test('SCORE_FILTER_OPTIONS：7 档对齐原版 page.py L264-272，默认 ≥9.0', () => {
+  assert.equal(L.SCORE_FILTER_OPTIONS.length, 7)
+  assert.deepEqual(L.SCORE_FILTER_OPTIONS.map((o) => o.value), [0, 3, 5, 6, 7, 8, 9])
+  assert.equal(L.SCORE_FILTER_DEFAULT, 9.0)
+})
+
+test('scoreClass：≥7 绿 / ≥5 黄（原版 _on_analysis L682-685）', () => {
+  assert.equal(L.scoreClass(7), 'score-high')
+  assert.equal(L.scoreClass(9.5), 'score-high')
+  assert.equal(L.scoreClass(5), 'score-mid')
+  assert.equal(L.scoreClass(4.9), '')
+})

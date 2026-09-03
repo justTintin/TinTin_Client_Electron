@@ -102,8 +102,7 @@ const API_ENDPOINTS = {
     webDownload: '/material/web_download', webDownloadStatus: (id) => `/material/web_download/${id}`,
     enqueueAnalysis: '/material/enqueue_analysis', scan: '/material/scan'
   },
-  montage: { split: '/montage/split', concat: '/montage/concat', beat: '/montage/beat', bgm: '/montage/bgm', auto: '/montage/auto-mix' },
-  audio:   { beatmap: '/audio/beatmap' },
+  montage: { split: '/montage/split', concat: '/montage/concat', bgm: '/montage/bgm', auto: '/montage/auto-mix' },
   prompt:  { video: '/prompt/video' },
   vsr:     { enhance: '/vsr/enhance', remove: '/vsr/remove' },
   rembg:   { matting: '/rembg/matting' },
@@ -246,8 +245,8 @@ function multipartUpload(urlPath, fields, onProgress) {
     const parts = []
     let totalSize = 0
 
-    // 数组值展开为同名多 part（如 /montage/concat 的 files[] List[UploadFile]、
-    // /montage/beat 的 videos[]，对照原客户端 requests files=[("files", ...)*n] 口径）
+    // 数组值展开为同名多 part（如 /montage/concat 的 files[] List[UploadFile]，
+    // 对照原客户端 requests files=[("files", ...)*n] 口径）
     const entries = []
     for (const [key, value] of Object.entries(fields || {})) {
       if (Array.isArray(value)) {
@@ -793,9 +792,9 @@ function createServerProxy(ipcMain, ctx) {
       return await multipartUpload(API_ENDPOINTS.montage.split, fields, onProgress)
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
-  // --- montage / audio-beatmap / prompt-video（montage-proxy-ipc.js 域）------
-  // M6/M8 条目⑥⑦：concat/beat 改 multipart（原 JSON body 与契约不符）、
-  // 新增 bgm / beatmap / prompt:video，详见 montage-proxy-ipc.js 头注
+  // --- montage / prompt-video（montage-proxy-ipc.js 域）------
+  // M6/M8 条目⑥⑦：concat 改 multipart（原 JSON body 与契约不符）、
+  // 新增 bgm / prompt:video，详见 montage-proxy-ipc.js 头注
   createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpectedOfflineError })
 
   // --- storyboard -----------------------------------------------------

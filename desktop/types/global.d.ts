@@ -254,7 +254,7 @@ declare interface TintinBridgeServer {
     onProgress?: (percent: number) => void
   ): Promise<IpcError<MaterialAPI.OcrResponse>>
 
-  // ---------- montage / audio / prompt（M6/M8 条目⑥⑦ 服务端链路）----------
+  // ---------- montage / prompt（M6/M8 条目⑥⑦ 服务端链路）----------
   montageSplit(
     payload: MontageAPI.SplitRequest,
     onProgress?: (percent: number) => void
@@ -263,18 +263,10 @@ declare interface TintinBridgeServer {
     payload: MontageAPI.ConcatRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<MontageAPI.ConcatResponse>>
-  montageBeat(
-    payload: MontageAPI.BeatRequest,
-    onProgress?: (percent: number) => void
-  ): Promise<IpcError<MontageAPI.BeatResponse>>
   montageBgm(
     payload: MontageAPI.BgmRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<MontageAPI.BgmResponse>>
-  audioBeatmap(
-    payload: MontageAPI.BeatmapRequest,
-    onProgress?: (percent: number) => void
-  ): Promise<IpcError<MontageAPI.BeatmapResponse>>
   promptVideo(
     payload: MontageAPI.PromptVideoRequest,
     onProgress?: (percent: number) => void
@@ -327,6 +319,7 @@ declare interface TintinBridgeFfmpeg {
     outDir?: string
     error?: string
   }>
+  /** 封面片头嵌入（原版 embed_cover_to_video 同语义：封面 2s 片头 concat + 音频延迟） */
   embedCover(
     video: string,
     cover: string,
@@ -335,6 +328,30 @@ declare interface TintinBridgeFfmpeg {
   ): Promise<string>
   concatSegments(paths: string[], outPath: string): Promise<string>
   extractAudio(video: string, outPath: string, format?: string): Promise<string>
+  /**
+   * 带缓存音频提取（M9 直播切片，原版 page.py L469-601 同口径）：
+   * meta（mtime+size+路径）校验通过且未强制 → 复用缓存；否则按原版
+   * AudioExtractWorker 同参数（pcm_s16le/16kHz/单声道 wav）重新提取。
+   */
+  extractAudioCached(
+    video: string,
+    forceReextract?: boolean
+  ): Promise<{ path: string; cached: boolean; error?: string }>
+  /** opts.reencode：两段式精确 seek + 重编码（原版 VideoClipWorker 同口径）；opts.srtPath：烧录切片段字幕 */
+  cut(
+    video: string,
+    outPath: string,
+    startSec: number,
+    endSec: number,
+    opts?: { reencode?: boolean; srtPath?: string }
+  ): Promise<string>
+}
+
+/** 直播切片 M9 本地文件 I/O（渲染层策略 + 主进程纯 I/O，见 main/liveclip-ipc.js） */
+declare interface TintinBridgeLiveclip {
+  writeImageFile(payload: { path: string; base64: string }): Promise<{ ok?: boolean; path?: string; error?: string }>
+  writeTextFile(payload: { path: string; content: string }): Promise<{ ok?: boolean; path?: string; error?: string }>
+  writeTempText(payload: { basename: string; content: string }): Promise<{ path?: string; error?: string }>
 }
 declare interface TintinBridgeShell {
   openExternal(url: string): void
@@ -619,6 +636,8 @@ declare interface TintinBridge {
   downloads: TintinBridgeDownloads
   server: TintinBridgeServer
   ffmpeg: TintinBridgeFfmpeg
+  // M9 直播切片（封面/导出字幕/临时烧字幕 SRT）
+  liveclip: TintinBridgeLiveclip
   shell: TintinBridgeShell
   bridge: TintinBridgeBridge
   // P1.5 厚壳化

@@ -196,12 +196,10 @@ const server = {
   materialStockSearch:(payload) => ipcRenderer.invoke('material:stockSearch', payload),
   materialOcr:        (p, onProgress) => _withUploadProgress(onProgress, 'material:ocr', p),
 
-  // ---------- montage / audio / prompt（M6/M8 条目⑥⑦ 服务端链路）----------
+  // ---------- montage / prompt（M6/M8 条目⑥⑦ 服务端链路）----------
   montageSplit:    (p, onProgress) => _withUploadProgress(onProgress, 'montage:split', p),
   montageConcat:   (p, onProgress) => _withUploadProgress(onProgress, 'montage:concat', p),
-  montageBeat:     (p, onProgress) => _withUploadProgress(onProgress, 'montage:beat', p),
   montageBgm:      (p, onProgress) => _withUploadProgress(onProgress, 'montage:bgm', p),
-  audioBeatmap:    (p, onProgress) => _withUploadProgress(onProgress, 'audio:beatmap', p),
   promptVideo:     (p, onProgress) => _withUploadProgress(onProgress, 'prompt:video', p),
 
   // ---------- storyboard ----------
@@ -221,7 +219,17 @@ const ffmpeg = {
   embedCover: (video, cover, outPath, durationSec) => ipcRenderer.invoke('ffmpeg:embedCover', video, cover, outPath, durationSec),
   concatSegments: (paths, outPath) => ipcRenderer.invoke('ffmpeg:concatSegments', paths, outPath),
   extractAudio: (video, outPath, format) => ipcRenderer.invoke('ffmpeg:extractAudio', video, outPath, format),
-  cut: (video, outPath, startSec, endSec) => ipcRenderer.invoke('ffmpeg:cut', video, outPath, startSec, endSec)
+  // M9 直播切片：带缓存音频提取（meta 校验 + 原版 wav 参数）→ { path, cached }
+  extractAudioCached: (video, forceReextract) => ipcRenderer.invoke('ffmpeg:extractAudioCached', video, forceReextract),
+  // opts 可选：{ reencode?: boolean, srtPath?: string }（烧字幕重编码，原版 VideoClipWorker 同口径）
+  cut: (video, outPath, startSec, endSec, opts) => ipcRenderer.invoke('ffmpeg:cut', video, outPath, startSec, endSec, opts)
+}
+
+// ── 直播切片 M9 本地文件 I/O（渲染层策略 + 主进程纯 I/O，见 main/liveclip-ipc.js）──
+const liveclip = {
+  writeImageFile: (payload) => ipcRenderer.invoke('liveclip:writeImageFile', payload),
+  writeTextFile:  (payload) => ipcRenderer.invoke('liveclip:writeTextFile', payload),
+  writeTempText:  (payload) => ipcRenderer.invoke('liveclip:writeTempText', payload),
 }
 
 // ── 视频评价预测记录库（prediction:*，对照 video_prediction_manager.py）──
@@ -579,6 +587,8 @@ contextBridge.exposeInMainWorld('tintin', {
   // P2 本地定时任务（schtasks；漏暴露导致「浏览器预览模式」误判，2026-08-31 补）
   scheduled,
   ffmpeg,
+  // M9 直播切片（封面/导出字幕/临时烧字幕 SRT）
+  liveclip,
   shell,
   bridge,
   config,

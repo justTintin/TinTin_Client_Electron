@@ -72,9 +72,9 @@ const BASELINE_UNWIRED = {
   'system:licenseVerify':          '授权校验 UI 未落地（等产品决策是否启用）',
   // ── VSR 旧提交式通道：SubtitleRemoval 只用 vsr:remove（useVsrRemoval.ts L157）──
   'vsr:submit':                    '字幕/水印去除已改走 vsr:remove 一步式，本通道无消费方，待废弃',
-  // ── ffmpeg 通用能力：封面嵌入 / 分段拼接暂无调用方 ──
-  'ffmpeg:embedCover':             'M9 直播切片「封面生成 + 嵌封面成片」待接线（报告 §2.7）',
-  'ffmpeg:concatSegments':         'M9 同上（FinalExportWorker 对应能力）',
+  // ── ffmpeg 通用能力：分段拼接暂无调用方（embedCover 已于 2026-09-03
+  //    M9 直播切片最终导出真实接线，按基线只减不增规则从此处移除）──
+  'ffmpeg:concatSegments':         'M9 直播切片最终导出对应能力待接线',
   // ── 媒体存储设置：下载目录/收藏夹走 browser 域，此四条为重复通道 ──
   'media:storageGetSettings':      '与 browser 域下载设置重复，待废弃或接线（择一）',
   'media:storageSaveSettings':     '同上',

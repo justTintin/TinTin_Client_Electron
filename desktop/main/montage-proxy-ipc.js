@@ -1,19 +1,15 @@
 // ═══════════════════════════════════════════════════════════════
 // montage-proxy-ipc.js — 服务端代理·智能混剪/提示词反推域 IPC（M6/M8 条目⑥⑦）
-// 按原客户端口径恢复服务端链路（utils/montage_client.py split/concat/beat +
-// split_workers.py BeatDetectWorker）与 /prompt/video（prompt_reverse_page L461-502）：
+// 按原客户端口径恢复服务端链路（utils/montage_client.py split/concat）
+// 与 /prompt/video（prompt_reverse_page L461-502）：
 //   · montage:concat  POST /montage/concat  multipart（files[] + clip_urls JSON 串）
 //     对照 gui/montage/workers/montage_concat_server_worker.py L57-128
-//   · montage:beat    POST /montage/beat    multipart（music + videos[] + 参数）
-//     对照 gui/montage/workers/split_workers.py BeatVideoGenWorker L562-781
 //   · montage:bgm     POST /montage/bgm     multipart（file + bgm + 音量）
-//   · audio:beatmap   POST /audio/beatmap   multipart（file + count/segment_duration）
-//     对照 BeatDetectWorker L376-484
 //   · prompt:video    POST /prompt/video    multipart（file + start_sec/end_sec）
 //     对照 gui/prompt_reverse_page.py _VideoPromptWorker L461-502
 // 契约（API-GUIDE，禁止臆造）：
-//   Body_montage_concat_montage_concat_post / Body_beat_compose_montage_beat_post /
-//   Body_montage_add_bgm_montage_bgm_post / Body_beatmap_audio_beatmap_post /
+//   Body_montage_concat_montage_concat_post /
+//   Body_montage_add_bgm_montage_bgm_post /
 //   Body_video_prompt_prompt_video_post
 // 依赖（multipartUpload/API_ENDPOINTS/isExpectedOfflineError）由 server-proxy.js
 // 注入，不重复实现（同 media-proxy-ipc.js 模式）。
@@ -83,38 +79,6 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
     },
   ))
 
-  // POST /montage/beat — 卡点成片（对照 BeatVideoGenWorker L713-728 _submit_one：
-  // music 必填、videos/clip_urls 至少一项、仅传非空参数）
-  ipcMain.handle('montage:beat', uploadHandler(
-    API_ENDPOINTS.montage.beat,
-    (p) => {
-      if (!p.music) return '缺少音乐文件'
-      const hasVideos = Array.isArray(p.videos) && p.videos.length > 0
-      const hasClipUrls = typeof p.clip_urls === 'string' && p.clip_urls.length > 2
-      if (!hasVideos && !hasClipUrls) return '没有可上传的镜头视频（videos 或 clip_urls 至少一项）'
-      return ''
-    },
-    (fields, p) => {
-      fields.music = filePathField(p.music)
-      if (Array.isArray(p.videos) && p.videos.length) fields.videos = p.videos.map(filePathField)
-      putField(fields, 'clip_urls', p.clip_urls)
-      putField(fields, 'threshold', p.threshold)
-      putField(fields, 'min_scene_len', p.min_scene_len)
-      putField(fields, 'count', p.count)
-      putField(fields, 'time_limit', p.time_limit)
-      putField(fields, 'variant_count', p.variant_count)
-      putField(fields, 'min_duration', p.min_duration)
-      putField(fields, 'max_duration', p.max_duration)
-      putField(fields, 'aspect_ratio', p.aspect_ratio)
-      putField(fields, 'width', p.width)
-      putField(fields, 'height', p.height)
-      putField(fields, 'fps', p.fps)
-      putField(fields, 'crf', p.crf)
-      putField(fields, 'transition', p.transition)
-      putField(fields, 'transition_duration', p.transition_duration)
-    },
-  ))
-
   // POST /montage/bgm — 成片混音（Body_montage_add_bgm_montage_bgm_post：
   // file+bgm 必填（或 video_url/bgm_url/audio_id 三选一），bgm_volume/source_volume 可选）
   ipcMain.handle('montage:bgm', uploadHandler(
@@ -132,20 +96,6 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
       putField(fields, 'audio_id', p.audio_id)
       putField(fields, 'bgm_volume', p.bgm_volume)
       putField(fields, 'source_volume', p.source_volume)
-    },
-  ))
-
-  // POST /audio/beatmap — BGM 节拍检测（对照 BeatDetectWorker L414-419：
-  // count>0 才传 count、segment_duration>0 才传）
-  ipcMain.handle('audio:beatmap', uploadHandler(
-    API_ENDPOINTS.audio.beatmap,
-    (p) => (!p.file ? '缺少音频文件' : ''),
-    (fields, p) => {
-      fields.file = filePathField(p.file)
-      putField(fields, 'count', p.count)
-      putField(fields, 'segment_duration', p.segment_duration)
-      putField(fields, 'min_duration', p.min_duration)
-      putField(fields, 'max_duration', p.max_duration)
     },
   ))
 

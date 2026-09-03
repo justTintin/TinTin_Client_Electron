@@ -48,28 +48,6 @@ export namespace MontageAPI {
   }
   export type ConcatResponse = { id?: string; task_id?: string; [extra: string]: unknown }
 
-  /** POST /montage/beat（Body_beat_compose_montage_beat_post，multipart：music+videos[]） */
-  export interface BeatRequest {
-    music?:               { path: string } | Blob
-    videos?:              Array<{ path: string }>
-    clip_urls?:           string
-    threshold?:           number
-    min_scene_len?:       number
-    count?:               number    // 镜头个数上限（0=按切点全用）
-    time_limit?:          number    // 成片总时长上限秒（0=完整有效区间）
-    variant_count?:       number    // 变体数量 1~5
-    min_duration?:        number
-    max_duration?:        number
-    aspect_ratio?:        string    // 9:16 / 16:9 / 1:1 / 3:4 / 4:3
-    width?:               number
-    height?:              number
-    fps?:                 number
-    crf?:                 number
-    transition?:          string
-    transition_duration?: number
-  }
-  export type BeatResponse = { id?: string; task_id?: string; [extra: string]: unknown }
-
   /** POST /montage/bgm（Body_montage_add_bgm_montage_bgm_post：file+bgm 必填，音量可选） */
   export interface BgmRequest {
     file?:          { path: string } | Blob
@@ -81,16 +59,6 @@ export namespace MontageAPI {
     source_volume?: number   // 默认 1.0
   }
   export type BgmResponse = { ok?: boolean; path?: string; video_url?: string; [extra: string]: unknown }
-
-  /** POST /audio/beatmap（Body_beatmap_audio_beatmap_post：file 必填） */
-  export interface BeatmapRequest {
-    file:             { path: string } | Blob
-    count?:           number  // >0 才传（对照 BeatDetectWorker L416-419）
-    segment_duration?: number
-    min_duration?:    number
-    max_duration?:    number
-  }
-  export type BeatmapResponse = { task_id?: string; id?: string; job_id?: string; [extra: string]: unknown }
 
   /** POST /prompt/video（Body_video_prompt_prompt_video_post：时间窗随提交，无本地裁切） */
   export interface PromptVideoRequest {

@@ -174,12 +174,8 @@ export const API_PATHS = {
   montage: {
     split:    '/montage/split',
     concat:   '/montage/concat',
-    beat:     '/montage/beat',
     bgm:      '/montage/bgm',
     auto:     '/montage/auto-mix',
-  },
-  audio: {
-    beatmap:  '/audio/beatmap',
   },
   prompt: {
     video:    '/prompt/video',

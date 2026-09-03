@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
 // VideoMontage.vue — 智能混剪·服务端四步向导（M8 条目⑥ UI 层）
-// 验收口径四步：1.素材解析 → 2.BGM 节拍/卡点 → 3.AI 编排 → 4.合成
-// （对照原客户端 gui/video_montage_page.py + gui/montage/*，链路全部走服务端：
-//   montage:split / audio:beatmap / montage:beat / montage:concat / montage:bgm）
+// 四步（对照原客户端 gui/video_montage_page.py steps_text L257，严格一致）：
+//   1.素材解析(镜头智能分割) → 2.AI 编排(镜头重组) → 3.口播配音 → 4.合成(特效包装)
+// 链路全部走服务端：montage:split / montage:concat / montage:bgm
+// 注：原客户端「卡点成片」属独立「一键成片」页（compile_video_page.py tab3，
+//     BeatMontageController），不在智能混剪向导内，本端亦不纳入。
 // 组件只绘制 + 事件转发；选段/载荷/轮询/下载业务全部在 useVideoMontage
 // （纯函数 videoMontageLogic.ts，IRON-06/07 分层）。
 // 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（重按按钮即重试）。
@@ -13,7 +15,7 @@ import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useVideoMontage } from '@/composables/useVideoMontage'
 
-const STEPS = ['1. 素材解析', '2. BGM 节拍/卡点', '3. AI 编排', '4. 口播配音', '5. 合成']
+const STEPS = ['1. 素材解析', '2. AI 编排', '3. 口播配音', '4. 合成']
 const step = ref(0)
 function go(i: number) { step.value = Math.max(0, Math.min(STEPS.length - 1, i)) }
 
@@ -25,22 +27,16 @@ const {
   scenes, scoreFilter, filteredScenes, checkedCount,
   splitBusy, splitError, splitMsg,
   addVideos, selectFolder, onDrop, removeVideo, runSplit,
-  // Step2 BGM 节拍/卡点
-  musicPath, musicName, pickMusic, beatError,
-  beatmapBusy, beats, beatClips, detectBeats,
-  beatCount, beatTimeLimit, beatVariantCount, beatAspectRatio,
-  beatTransition, beatTransitionDuration, beatMinDuration, beatMaxDuration,
-  beatBusy, beatVariants, runBeatCompose, downloadBeat, TRANSITIONS,
-  // Step3 AI 编排
+  // Step2 AI 编排
   concatTransition, concatLayout, concatTransitionDuration,
-  edgeSpeedup, EDGE_SPEEDUP_OPTIONS,
+  edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
   concatBusy, concatError, concatResults, runConcat, downloadConcat,
-  // Step4 口播配音（新增）
+  // Step3 口播配音
   voiceRows, selectedSpeaker, speakerOptions, batchGenerating,
   loadSpeakerOptions, selectVoiceDir, updateVoiceText,
   generateSingleVoice, generateAllVoices, playVoice, exportVoice,
   allVoicesDone, voiceStatusText, voiceStatusClass,
-  // Step5 合成
+  // Step4 合成
   finalSource, bgmPath, bgmName, bgmVolume, sourceVolume,
   finalBusy, finalError, finalResults,
   pickBgm, pickLocalFinal, runFinalMix, downloadFinal, revealLocal,
@@ -56,10 +52,6 @@ const LAYOUTS = [
   { label: '横屏 (1920x1080 宽屏)', value: 'horizontal' },
   { label: '与原视频一致', value: 'source' },
 ]
-const ASPECTS = ['9:16', '16:9', '1:1', '3:4', '4:3'].map((s) => ({ label: s, value: s }))
-// /montage/beat 契约转场枚举（服务端直用名，非客户端映射名）
-const BEAT_TRANSITIONS = ['none', 'fade', 'wipeleft', 'wiperight', 'slideup', 'slidedown',
-  'circleopen', 'dissolve', 'pixelize', 'radial', 'random'].map((s) => ({ label: s, value: s }))
 
 function basename(p: string) { return String(p || '').split(/[\\/]/).pop() || p }
 function urlTail(u: string) { return String(u || '').split('/').pop() || u }
@@ -155,84 +147,12 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
       </section>
 
       <div class="row right">
-        <TButton label="下一步：BGM 节拍/卡点" icon="right" :disabled="!scenes.length" @click="go(1)" />
+        <TButton label="下一步：AI 编排" icon="right" :disabled="!scenes.length" @click="go(1)" />
       </div>
     </template>
 
-    <!-- Step 2: BGM 节拍/卡点 -->
+    <!-- Step 2: AI 编排 -->
     <template v-else-if="step === 1">
-      <section class="card">
-        <div class="row">
-          <label class="label">背景音乐 (BGM):</label>
-          <input :value="musicPath" placeholder="选择 BGM 音乐 (mp3/wav)..." readonly class="input grow" @click="pickMusic" />
-          <TButton label="选择音乐" size="small" @click="pickMusic" />
-        </div>
-
-        <div class="row">
-          <TButton label="节拍检测" icon="voice" :loading="beatmapBusy" :disabled="!musicPath" @click="detectBeats" />
-          <span class="muted">上传音乐入服务端队列，轮询 /tasks/unified 取节拍与卡点片段</span>
-        </div>
-
-        <div v-if="beats.length" class="row">
-          <span class="card-title">节拍 {{ beats.length }} 个</span>
-          <span class="muted">前 20：{{ beats.slice(0, 20).map((b) => b.toFixed(2)).join(' / ') }}{{ beats.length > 20 ? ' …' : '' }}</span>
-        </div>
-        <table v-if="beatClips.length" class="tbl">
-          <thead><tr><th>#</th><th>开始(秒)</th><th>结束(秒)</th><th>强度</th></tr></thead>
-          <tbody>
-            <tr v-for="(c, i) in beatClips" :key="i">
-              <td>{{ i + 1 }}</td>
-              <td>{{ c.start.toFixed(2) }}</td>
-              <td>{{ c.end.toFixed(2) }}</td>
-              <td>{{ c.strength.toFixed(2) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section class="card">
-        <div class="row between">
-          <span class="card-title">卡点一键成片 <span class="muted">(服务端自动 分割→卡点→切点→指派→转场→混音)</span></span>
-        </div>
-        <div class="grid2">
-          <div class="field"><span class="label">镜头个数上限 (0=按切点全用)</span><input v-model.number="beatCount" type="number" min="0" class="input" /></div>
-          <div class="field"><span class="label">成片总时长上限秒 (0=完整)</span><input v-model.number="beatTimeLimit" type="number" min="0" class="input" /></div>
-          <div class="field"><span class="label">变体数量 (1-5)</span><input v-model.number="beatVariantCount" type="number" min="1" max="5" class="input" /></div>
-          <div class="field"><span class="label">画面比例</span><TSelect v-model="beatAspectRatio" :options="ASPECTS" /></div>
-          <div class="field"><span class="label">转场</span><TSelect v-model="beatTransition" :options="BEAT_TRANSITIONS" /></div>
-          <div class="field"><span class="label">转场时长(秒)</span><input v-model.number="beatTransitionDuration" type="number" step="0.1" min="0" class="input" /></div>
-          <div class="field"><span class="label">镜头最短秒</span><input v-model.number="beatMinDuration" type="number" step="0.5" min="0" class="input" /></div>
-          <div class="field"><span class="label">镜头最长秒</span><input v-model.number="beatMaxDuration" type="number" step="0.5" min="0" class="input" /></div>
-        </div>
-        <div class="row">
-          <TButton label="开始卡点成片" icon="video" :loading="beatBusy" @click="runBeatCompose" />
-          <span class="muted">素材：{{ srcVideos.length }} 个源视频{{ musicPath ? ` + ${basename(musicName)}` : '（需先选择音乐）' }}</span>
-        </div>
-        <div v-if="beatError" class="error-msg">⚠ {{ beatError }}（修正后重按「开始卡点成片」重试）</div>
-
-        <div class="row between">
-          <span class="card-title">卡点成片结果</span>
-        </div>
-        <ul class="file-list">
-          <li v-for="(v, i) in beatVariants" :key="i">
-            <span>🎞️ 变体 {{ v.variant }} · {{ urlTail(v.url) }}</span>
-            <span class="row" style="gap: 8px">
-              <TButton label="下载" size="small" plain
-                :loading="downloadingKey === `beat:${i}`" @click="downloadBeat(i)" />
-            </span>
-          </li>
-          <li v-if="!beatVariants.length" class="muted">尚无卡点成片，选择音乐后点击「开始卡点成片」</li>
-        </ul>
-      </section>
-
-      <div class="row between">
-        <TButton label="上一步：素材解析" plain @click="go(0)" />
-        <TButton label="下一步：AI 编排" icon="right" @click="go(2)" />
-      </div>
-    </template>
-
-    <!-- Step 3: AI 编排 -->
-    <template v-else-if="step === 2">
       <section class="card">
         <div class="grid2">
           <div class="field"><span class="label">转场动画</span><TSelect v-model="concatTransition" :options="TRANSITIONS" /></div>
@@ -267,13 +187,13 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
       </section>
 
       <div class="row between">
-        <TButton label="上一步：BGM 节拍/卡点" plain @click="go(1)" />
-        <TButton label="下一步：口播配音" icon="right" @click="go(3)" />
+        <TButton label="上一步：素材解析" plain @click="go(0)" />
+        <TButton label="下一步：口播配音" icon="right" @click="go(2)" />
       </div>
     </template>
 
-    <!-- Step 4: 口播配音（新增） -->
-    <template v-else-if="step === 3">
+    <!-- Step 3: 口播配音 -->
+    <template v-else-if="step === 2">
       <section class="card">
         <div class="row between">
           <span class="card-title">参考音色选择</span>
@@ -355,12 +275,12 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
       </section>
 
       <div class="row between">
-        <TButton label="上一步：AI 编排" plain @click="go(2)" />
-        <TButton label="下一步：合成" icon="right" :disabled="!allVoicesDone()" @click="go(4)" />
+        <TButton label="上一步：AI 编排" plain @click="go(1)" />
+        <TButton label="下一步：合成" icon="right" :disabled="!allVoicesDone()" @click="go(3)" />
       </div>
     </template>
 
-    <!-- Step 5: 合成 -->
+    <!-- Step 4: 合成 -->
     <template v-else>
       <section class="card">
         <div class="row between">
@@ -415,7 +335,7 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
       </section>
 
       <div class="row left">
-        <TButton label="上一步：口播配音" plain @click="go(3)" />
+        <TButton label="上一步：口播配音" plain @click="go(2)" />
       </div>
     </template>
   </div>
@@ -469,7 +389,7 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
   border-radius: 4px; font-size: 11px; font-weight: 600; line-height: 1.4;
 }
 
-/* Step4 口播配音样式 */
+/* Step3 口播配音样式 */
 .voice-table { margin-top: var(--space-3); }
 .voice-table .video-name { font-size: 12px; color: var(--foreground); word-break: break-all; max-width: 200px; }
 .voice-text {

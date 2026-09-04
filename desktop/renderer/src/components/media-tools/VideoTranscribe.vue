@@ -277,12 +277,12 @@ function applyRewrite(): void {
 
 .dropzone {
   display: flex; align-items: center; justify-content: center; gap: var(--space-3);
-  padding: var(--space-4); background: var(--surface-container);
-  border: 1.5px dashed var(--border); border-radius: var(--radius-lg);
+  padding: var(--space-4); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
+  border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg);
   color: var(--muted-foreground); cursor: pointer;
   transition: border-color var(--duration-fast), background var(--duration-fast);
 }
-.dropzone:hover, .dropzone.is-active { border-color: var(--primary); background: var(--surface-container-high); }
+.dropzone:hover, .dropzone.is-active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
 .dropzone__text { font-size: var(--font-size-caption); }
 
 .stage-line { font-size: var(--font-size-caption); color: var(--foreground-muted); }

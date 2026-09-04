@@ -183,11 +183,11 @@ onMounted(loadWorkflows)
 
 .dropzone {
   display: flex; align-items: center; gap: var(--space-3); padding: var(--space-5);
-  background: var(--surface-container); border: 1.5px dashed var(--border);
+  background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border));
   border-radius: var(--radius-lg); color: var(--muted-foreground); cursor: pointer;
   transition: border-color var(--duration-fast), background var(--duration-fast);
 }
-.dropzone:hover, .dropzone.is-active { border-color: var(--primary); background: var(--surface-container-high); }
+.dropzone:hover, .dropzone.is-active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
 .dropzone.has-file { border-style: solid; color: var(--foreground); }
 .dropzone__text { display: flex; flex-direction: column; gap: 2px; }
 .dropzone__main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); color: var(--foreground); }

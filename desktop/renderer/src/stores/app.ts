@@ -12,6 +12,9 @@ export type TabKey = 'workbench' | 'browser' | 'ops-tools' | 'media-tools' | 'se
 /** 外观主题模式 */
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+/** 界面风格：标准 / 玻璃质感（macOS 风格） */
+export type VisualStyle = 'standard' | 'glass'
+
 /** 字体粗细档位 */
 export type FontWeightLevel = 'regular' | 'medium' | 'semibold'
 
@@ -28,8 +31,10 @@ const FONT_WEIGHT_MAP: Record<FontWeightLevel, {
 }
 
 const THEME_STORAGE_KEY = 'tintin.themeMode'
+const VISUAL_STYLE_STORAGE_KEY = 'tintin.visualStyle'
 const FONT_WEIGHT_STORAGE_KEY = 'tintin.fontWeight'
 const DARK_CLASS = 'dark'
+const GLASS_CLASS = 'glass-mode'
 
 /**
  * 持久化：优先走 IPC（tintin.config.get/set → electron-store）
@@ -108,6 +113,40 @@ function writeFontWeightStorage(level: FontWeightLevel) {
   }
 }
 
+/**
+ * 界面风格持久化：与主题模式同口径
+ */
+function readVisualStyleStorage(): VisualStyle | null {
+  const w = window as any
+  if (w?.tintin?.config?.get) {
+    try {
+      const v = w.tintin.config.get('visualStyle')
+      if (v === 'standard' || v === 'glass') return v
+    } catch (_) { /* ignore */ }
+  }
+  if (typeof localStorage !== 'undefined') {
+    const v = localStorage.getItem(VISUAL_STYLE_STORAGE_KEY)
+    if (v === 'standard' || v === 'glass') return v
+  }
+  return null
+}
+
+function writeVisualStyleStorage(style: VisualStyle) {
+  const w = window as any
+  let ipcOk = false
+  if (w?.tintin?.config?.set) {
+    try {
+      w.tintin.config.set('visualStyle', style)
+      ipcOk = true
+    } catch (_) { /* ignore */ }
+  }
+  if (!ipcOk && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(VISUAL_STYLE_STORAGE_KEY, style)
+    } catch (_) { /* ignore */ }
+  }
+}
+
 /** 将字体粗细档位应用到 DOM（覆盖 CSS 自定义属性） */
 function applyFontWeightToDom(level: FontWeightLevel) {
   if (typeof document === 'undefined') return
@@ -129,6 +168,13 @@ function setHtmlDarkClass(enable: boolean) {
   const html = document.documentElement
   if (enable) html.classList.add(DARK_CLASS)
   else html.classList.remove(DARK_CLASS)
+}
+
+function setHtmlGlassClass(enable: boolean) {
+  if (typeof document === 'undefined') return
+  const html = document.documentElement
+  if (enable) html.classList.add(GLASS_CLASS)
+  else html.classList.remove(GLASS_CLASS)
 }
 
 export const useAppStore = defineStore('app', () => {
@@ -172,6 +218,9 @@ export const useAppStore = defineStore('app', () => {
   // 字体粗细：regular(400) / medium(500, 默认) / semibold(600)
   const fontWeight = ref<FontWeightLevel>('medium')
 
+  // 界面风格：standard(默认) / glass（玻璃质感，macOS 风格）
+  const visualStyle = ref<VisualStyle>('standard')
+
   /** 解析后的实际主题（考虑 system → 系统偏好） */
   const resolvedTheme = computed<'light' | 'dark'>(() => {
     if (themeMode.value === 'system') return systemPrefersDark() ? 'dark' : 'light'
@@ -196,6 +245,15 @@ export const useAppStore = defineStore('app', () => {
       semibold: '半粗（600，更清晰）',
     }
     return labels[fontWeight.value]
+  })
+
+  /** 界面风格可读描述 */
+  const visualStyleLabel = computed(() => {
+    const labels: Record<VisualStyle, string> = {
+      standard: '标准风格（实色卡片，简洁清爽）',
+      glass:    '玻璃质感（半透明毛玻璃，macOS 风格）',
+    }
+    return labels[visualStyle.value]
   })
 
   /** matchMedia listener：system 模式下系统切主题时实时同步 */
@@ -254,6 +312,21 @@ export const useAppStore = defineStore('app', () => {
     applyFontWeightToDom(fontWeight.value)
   }
 
+  /** 切换界面风格（对外 API） */
+  function setVisualStyle(style: VisualStyle) {
+    if (visualStyle.value === style) return
+    visualStyle.value = style
+    writeVisualStyleStorage(style)
+    setHtmlGlassClass(style === 'glass')
+  }
+
+  /** 启动初始化：读持久化 + 首次应用 */
+  function initVisualStyle() {
+    const stored = readVisualStyleStorage()
+    if (stored) visualStyle.value = stored
+    setHtmlGlassClass(visualStyle.value === 'glass')
+  }
+
   /** 切换当前 Tab */
   function setActiveTab(tab: TabKey): void {
     activeTab.value = tab
@@ -283,12 +356,16 @@ export const useAppStore = defineStore('app', () => {
     themeModeLabel,
     fontWeight,
     fontWeightLabel,
+    visualStyle,
+    visualStyleLabel,
     setActiveTab,
     setVersion,
     toggleSidebar,
     setThemeMode,
     setFontWeight,
+    setVisualStyle,
     initTheme,
     initFontWeight,
+    initVisualStyle,
   }
 })

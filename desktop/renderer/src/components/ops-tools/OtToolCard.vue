@@ -19,7 +19,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="ot-card" @click="emit('open')">
+  <div class="ot-card glass-card stagger-item" @click="emit('open')">
     <div class="card-top">
       <div class="tool-icon" :style="{ background: accent }">
         <span>{{ emoji }}</span>
@@ -49,16 +49,70 @@ const emit = defineEmits<{
   cursor: pointer;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   transition:
     transform var(--duration-normal) var(--easing-default),
     border-color var(--duration-fast),
     box-shadow var(--duration-normal) var(--easing-default),
     background var(--duration-fast);
 }
+/* 极光渐变激变效果 */
+.ot-card::before {
+  content: '';
+  position: absolute;
+  inset: -60%;
+  z-index: 0;
+  background: conic-gradient(
+    from 0deg at 50% 50%,
+    #a78bfa 0deg,
+    #fbbf24 60deg,
+    #f472b6 120deg,
+    #67e8f9 180deg,
+    #a78bfa 240deg,
+    #fbbf24 300deg,
+    #a78bfa 360deg
+  );
+  opacity: 0;
+  filter: blur(40px);
+  animation: aurora-spin 8s linear infinite;
+  transition: opacity 0.4s;
+  pointer-events: none;
+}
+.ot-card:hover::before {
+  opacity: 0.18;
+}
+@keyframes aurora-spin {
+  to { transform: rotate(360deg); }
+}
+/* 确保卡片内容在渐变之上 */
+.ot-card > * {
+  position: relative;
+  z-index: 1;
+}
 .ot-card:hover {
   transform: translateY(-2px);
   border-color: var(--primary-hover);
   box-shadow: var(--shadow-3);
+}
+/* 暗色模式下渐变更明显 */
+:root.dark .ot-card:hover::before {
+  opacity: 0.25;
+}
+/* 玻璃质感模式覆盖 */
+:global(html.glass-mode) .ot-card {
+  background: color-mix(in srgb, var(--card) 72%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+:global(html.glass-mode):root.dark .ot-card {
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .card-top {
   display: flex;

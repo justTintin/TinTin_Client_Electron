@@ -79,7 +79,8 @@ function backToGrid() {
 <template>
   <section class="media-tools">
     <!-- ═══ 工具详情页 ═══ -->
-    <template v-if="activeTool">
+    <Transition name="slide-up" mode="out-in">
+    <div v-if="activeTool" key="detail" class="detail-view">
       <div class="tool-bar">
         <button class="back-btn" @click="backToGrid">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -103,8 +104,10 @@ function backToGrid() {
           <p class="note-desc">该功能正在建设中，敬请期待。</p>
           <p class="note-tip">可返回媒体工具使用其他功能。</p>
         </div>
-        <!-- 真实组件 -->
-        <component v-else-if="activeTool.kind === 'comp' && activeTool.comp" :is="activeTool.comp" />
+        <!-- 真实组件（KeepAlive 缓存实例，切走不销毁，回来状态保留） -->
+        <KeepAlive v-else-if="activeTool.kind === 'comp' && activeTool.comp">
+          <component :is="activeTool.comp" :key="activeTool.id" />
+        </KeepAlive>
         <!-- 能力定位占位 -->
         <div v-else class="tool-note">
           <div class="note-icon">{{ activeTool.emoji }}</div>
@@ -113,10 +116,10 @@ function backToGrid() {
           <p class="note-tip">可返回媒体工具，从下方卡片进入。</p>
         </div>
       </div>
-    </template>
+    </div>
 
     <!-- ═══ 工具网格（按原分组） ═══ -->
-    <template v-else>
+    <div v-else key="grid" class="grid-view">
       <div class="page-head">
         <h1 class="page-title">媒体工具</h1>
         <p class="page-sub">选择需要执行的 AI 生产能力</p>
@@ -126,10 +129,11 @@ function backToGrid() {
         <div class="group-label">{{ g }}</div>
         <div class="tools-grid">
           <div
-            v-for="t in GROUP_TOOLS[g]"
+            v-for="(t, idx) in GROUP_TOOLS[g]"
             :key="t.id"
-            class="tool-card"
+            class="tool-card glass-card stagger-item"
             :class="{ 'is-wip': t.wip }"
+            :style="{ animationDelay: `${idx * 35}ms` }"
             @click="openTool(t)"
           >
             <span v-if="t.wip" class="wip-badge">建设中</span>
@@ -151,7 +155,8 @@ function backToGrid() {
           </div>
         </div>
       </div>
-    </template>
+    </div>
+    </Transition>
   </section>
 </template>
 
@@ -162,6 +167,20 @@ function backToGrid() {
   overflow-y: auto;
   padding: var(--space-6);
   background: var(--background);
+}
+
+/* 网格 ↔ 详情 切换动画 */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: opacity 0.2s var(--easing-out), transform 0.2s var(--easing-out);
+}
+.slide-up-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 /* 页头 */
@@ -274,16 +293,70 @@ function backToGrid() {
   cursor: pointer;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   transition:
     transform var(--duration-normal) var(--easing-default),
     border-color var(--duration-fast),
     box-shadow var(--duration-normal) var(--easing-default),
     background var(--duration-fast);
 }
+/* 极光渐变激变效果 */
+.tool-card::before {
+  content: '';
+  position: absolute;
+  inset: -60%;
+  z-index: 0;
+  background: conic-gradient(
+    from 0deg at 50% 50%,
+    #a78bfa 0deg,
+    #fbbf24 60deg,
+    #f472b6 120deg,
+    #67e8f9 180deg,
+    #a78bfa 240deg,
+    #fbbf24 300deg,
+    #a78bfa 360deg
+  );
+  opacity: 0;
+  filter: blur(40px);
+  animation: aurora-spin 8s linear infinite;
+  transition: opacity 0.4s;
+  pointer-events: none;
+}
+.tool-card:hover::before {
+  opacity: 0.18;
+}
+@keyframes aurora-spin {
+  to { transform: rotate(360deg); }
+}
+/* 确保卡片内容在渐变之上 */
+.tool-card > * {
+  position: relative;
+  z-index: 1;
+}
 .tool-card:hover {
   transform: translateY(-2px);
   border-color: var(--primary-hover);
   box-shadow: var(--shadow-3);
+}
+/* 暗色模式下渐变更明显 */
+:root.dark .tool-card:hover::before {
+  opacity: 0.25;
+}
+/* 玻璃质感模式覆盖 */
+:global(html.glass-mode) .tool-card {
+  background: color-mix(in srgb, var(--card) 72%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+:global(html.glass-mode):root.dark .tool-card {
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 /* 建设中卡片：降饱和 + 角标 */
 .tool-card.is-wip .tool-icon { filter: grayscale(0.6); opacity: 0.75; }

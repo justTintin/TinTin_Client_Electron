@@ -751,8 +751,12 @@ ipcMain.on('browser:panelBusy', (e, busy) => {
 
 // IPC: dialog
 ipcMain.handle('dialog:openFile', async (event, params) => {
-  // 父窗口取发起方（浮动面板选文件时对话框挂面板/其父窗口，避免被浏览器独立窗口遮挡）
-  const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow
+  // 父窗口：浮动面板是子窗口（setParentWindow），Windows 上对子窗口弹模态对话框
+  // 会被父窗口遮挡导致用户看不到。检测发起方为浮动面板时改用顶层浏览器窗口。
+  let parent = BrowserWindow.fromWebContents(event.sender) || mainWindow
+  if (parent && floatingPanelWindow && !floatingPanelWindow.isDestroyed() && parent === floatingPanelWindow) {
+    parent = browserWindow.getBrowserWindow() || mainWindow
+  }
   const result = await dialog.showOpenDialog(parent, {
     title: params?.title || '选择文件',
     properties: ['openFile'],

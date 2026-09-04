@@ -176,8 +176,8 @@ function scoreClass(score: number): string {
             <button class="video-remove-btn" title="从素材列表移除" @click="removeVideo(i)">×</button>
           </li>
           <li v-if="!srcVideos.length" class="muted">暂无素材，拖入或点击上方区域选择</li>
-          <li v-if="srcVideos.length" class="video-count">选择视频共 {{ srcVideos.length }} 行</li>
         </ul>
+        <div v-if="srcVideos.length" class="video-count-footer">选择视频共 {{ srcVideos.length }} 行</div>
 
         <!-- 参数行 + 行内右对齐「开始智能镜头分割」（原版 split_row 同布局） -->
         <div class="row">
@@ -298,51 +298,67 @@ function scoreClass(score: number): string {
         </div>
         <div v-if="concatError" class="error-msg">⚠ {{ concatError }}（修正后重按「镜头重组」重试）</div>
 
-        <!-- 中间结果区（原版 result_box：列表/详情，预览改为 VideoPreview 弹窗不占布局） -->
+        <!-- 中间结果区（原版 result_box） -->
         <div class="result-box">
+          <!-- 预合成视频列表：全宽，固定 10 行高度 -->
           <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
-          <!-- 行文案对照 _add_assembled_row L5383-5410：[n] 文件名/N 个镜头  待确认/已合成  文案预览；
-               单击 = _on_assembled_item_clicked（详情+序列预览）；双击 = _on_assembled_double_clicked（查看文案） -->
           <ul class="plan-list">
             <li v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
               :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
               @contextmenu.prevent="openPlanMenu($event, i)">{{ planRowText(i) }}</li>
+            <!-- 不足 10 行时占位，保持固定高度 -->
+            <li v-for="n in Math.max(0, 10 - assemblePlans.length)" :key="'ph'+n" class="plan-placeholder"></li>
             <li v-if="!assemblePlans.length" class="muted">尚无预合成视频，勾选镜头后点击「镜头重组」</li>
           </ul>
 
-          <span class="sec-label">视频组成镜头详情 (拖动把手调序，右键删除/恢复镜头):</span>
-          <!-- 表头对照 video_montage_page.py L300-301：[⠿|分割文件名|时长|景别|描述文案|评分]，行号 = 原版 vertical header -->
-          <table class="tbl detail-tbl">
-            <thead><tr>
-              <th class="w32">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
-              <th>时长</th><th>景别</th><th style="min-width:180px">描述文案</th><th>评分</th>
-            </tr></thead>
-            <tbody v-if="currentPlan">
-              <tr v-for="(c, ri) in currentPlan.clips" :key="ri"
-                :class="{ 'row-deleted': currentPlan.deletedFlags[ri] }"
-                draggable="true"
-                @dragstart="onDetailDragStart(ri)" @dragend="onDetailDragEnd"
-                @drop.prevent="onDetailDrop(ri)" @dragover.prevent
-                @contextmenu.prevent="openDetailMenu($event, ri)">
-                <td class="ta-c">{{ ri + 1 }}</td>
-                <td class="ta-c grip-cell" title="拖动调序">⠿</td>
-                <td class="clip-name" :title="c.clipUrl || c.name">{{ c.name }}</td>
-                <td class="ta-c">{{ c.duration > 0 ? c.duration.toFixed(1) + 's' : '—' }}</td>
-                <td class="ta-c">
-                  <span v-if="c.shotType" class="shot-type-badge"
-                    :style="{ color: SHOT_TYPE_COLORS[c.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[c.shotType] || '#888' }">
-                    {{ SHOT_TYPE_LABELS[c.shotType] || c.shotType }}
-                  </span>
-                  <span v-else class="muted">—</span>
-                </td>
-                <td class="clip-desc" :title="c.description">{{ c.description || '—' }}</td>
-                <td class="ta-c" :class="scoreClass(c.score)">{{ c.score ? c.score.toFixed(1) : '—' }}</td>
-              </tr>
-            </tbody>
-            <tbody v-else>
-              <tr><td colspan="7" class="muted">单击上方预合成项查看镜头详情</td></tr>
-            </tbody>
-          </table>
+          <!-- 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） -->
+          <div class="result-bottom">
+            <div class="detail-col">
+              <span class="sec-label">视频组成镜头详情 (拖动把手调序，右键删除/恢复镜头):</span>
+              <div class="detail-scroll-wrap">
+                <table class="tbl detail-tbl">
+                  <thead><tr>
+                    <th class="w32">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
+                    <th>时长</th><th>景别</th><th style="min-width:180px">描述文案</th><th>评分</th>
+                  </tr></thead>
+                  <tbody v-if="currentPlan">
+                    <tr v-for="(c, ri) in currentPlan.clips" :key="ri"
+                      :class="{ 'row-deleted': currentPlan.deletedFlags[ri] }"
+                      draggable="true"
+                      @dragstart="onDetailDragStart(ri)" @dragend="onDetailDragEnd"
+                      @drop.prevent="onDetailDrop(ri)" @dragover.prevent
+                      @contextmenu.prevent="openDetailMenu($event, ri)">
+                      <td class="ta-c">{{ ri + 1 }}</td>
+                      <td class="ta-c grip-cell" title="拖动调序">⠿</td>
+                      <td class="clip-name" :title="c.clipUrl || c.name">{{ c.name }}</td>
+                      <td class="ta-c">{{ c.duration > 0 ? c.duration.toFixed(1) + 's' : '—' }}</td>
+                      <td class="ta-c">
+                        <span v-if="c.shotType" class="shot-type-badge"
+                          :style="{ color: SHOT_TYPE_COLORS[c.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[c.shotType] || '#888' }">
+                          {{ SHOT_TYPE_LABELS[c.shotType] || c.shotType }}
+                        </span>
+                        <span v-else class="muted">—</span>
+                      </td>
+                      <td class="clip-desc" :title="c.description">{{ c.description || '—' }}</td>
+                      <td class="ta-c" :class="scoreClass(c.score)">{{ c.score ? c.score.toFixed(1) : '—' }}</td>
+                    </tr>
+                    <!-- 不足 10 行时占位 -->
+                    <tr v-for="n in Math.max(0, 10 - (currentPlan?.clips.length || 0))" :key="'dph'+n" class="detail-placeholder-row"><td colspan="7"></td></tr>
+                  </tbody>
+                  <tbody v-else>
+                    <tr><td colspan="7" class="muted">单击上方预合成项查看镜头详情</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="player-col">
+              <span class="sec-label">视频播放预览:</span>
+              <div class="player-wrap">
+                <VideoPlayer v-if="seqSrc" :src="seqSrc" autoplay class="player-video" @ended="onSeqEnded" />
+                <div v-else class="player-empty">单击预合成项预览序列</div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -776,8 +792,8 @@ function scoreClass(score: number): string {
 }
 
 .card { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
-.dropzone { display: flex; flex-direction: column; gap: 4px; padding: var(--space-5); background: var(--surface-container); border: 1.5px dashed var(--border); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast); }
-.dropzone:hover { border-color: var(--primary); }
+.dropzone { display: flex; flex-direction: column; gap: 4px; padding: var(--space-5); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast), background var(--duration-fast); }
+.dropzone:hover { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
 .dz-main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); }
 .dz-hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 
@@ -794,6 +810,7 @@ function scoreClass(score: number): string {
 .video-remove-btn { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
 .video-remove-btn:hover { color: var(--danger); border-color: var(--danger); }
 .video-count { justify-content: center; color: var(--muted-foreground); font-size: 12px; padding: 4px 10px; background: transparent; border: none; }
+.video-count-footer { text-align: center; color: var(--muted-foreground); font-size: 12px; padding: 4px 0; }
 
 .row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
@@ -838,15 +855,37 @@ function scoreClass(score: number): string {
   display: flex; flex-direction: column; gap: 10px; padding: 10px;
   background: var(--surface-container); border: 1px dashed var(--border); border-radius: var(--radius-md);
 }
+/* 预合成列表：固定 10 行高度（每行 ~30px + 4px gap），不足占位，多余滚动 */
 .plan-list {
   display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 0; padding: 0;
-  max-height: 300px; overflow-y: auto; font-size: 13px;
+  height: 336px; /* 10 行 × (26px 内容 + 4px gap) */
+  overflow-y: auto; font-size: 13px;
 }
 .plan-list li {
   padding: 5px 10px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; flex: none;
 }
 .plan-list li.picked { border-color: var(--primary); }
+.plan-list li.plan-placeholder {
+  visibility: hidden; pointer-events: none; border-color: transparent; background: transparent;
+}
+/* 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） */
+.result-bottom { display: flex; gap: 15px; align-items: flex-start; }
+.detail-col { flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+/* 详情表滚动容器：固定 10 行高度（表头 ~30px + 10 行 × 30px + 2px 边框补偿） */
+.detail-scroll-wrap {
+  max-height: 332px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.detail-scroll-wrap .tbl { border-radius: 0; }
+.detail-placeholder-row td { height: 30px; border-bottom: 1px solid var(--border); }
+/* 右侧播放器（高度匹配左侧详情表 10 行） */
+.player-col { flex: 2; min-width: 220px; display: flex; flex-direction: column; gap: 6px; }
+.player-wrap {
+  height: 332px; background: #000; border: 1px solid var(--border); border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.player-video { width: 100%; height: 100%; object-fit: contain; }
+.player-empty { color: var(--muted-foreground); font-size: 12px; }
 .detail-tbl td { height: 30px; }
 .grip-cell { cursor: grab; color: var(--muted-foreground); user-select: none; }
 .row-deleted td {

@@ -57,6 +57,8 @@ export interface SplitShot {
   shotIndex: number
   filename: string
   downloadUrl: string
+  /** 服务端绝对路径（resolve_asset 白名单内，可直接喂 /montage/concat 的 clip_urls） */
+  serverPath: string
   score?: number
   analysis: string
   description: string
@@ -108,6 +110,7 @@ export function parseSplitResponse(resp: unknown): SplitShot[] {
         shotIndex: Math.floor(Number(s.shot_index) || 0),
         filename: String(s.filename || ''),
         downloadUrl: String(s.download_url || ''),
+        serverPath: String(s.path || ''),
         score,
         analysis: analysisText,
         description: String(s.description || ''),
@@ -130,6 +133,8 @@ export interface SplitSceneRow {
   analysis: string
   score?: number
   clipUrl: string
+  /** 服务端绝对路径（resolve_asset 白名单内，/montage/concat clip_urls 用此字段） */
+  serverPath: string
   downloadState: 'pending' | 'ok' | 'failed'
   /** 本地 splits 目录落盘路径（分割后批量下载填充；空=未落盘，预览回退内嵌） */
   clipLocalPath?: string
@@ -154,6 +159,7 @@ export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?:
     analysis: s.analysis,
     score: s.score,
     clipUrl: s.downloadUrl,
+    serverPath: s.serverPath,
     downloadState: 'pending' as const,
     checked: true,
     ...(s.shotType || inferred ? { shotType: s.shotType || inferred } : {}),

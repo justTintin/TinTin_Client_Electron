@@ -164,7 +164,7 @@ function userExtensions(): InstalledExtension[] {
           </svg>
         </button>
       </div>
-      <div class="hist-wrapper">
+      <div class="hist-wrapper ext-panel-wrapper">
         <button
           class="ic-btn"
           title="扩展"

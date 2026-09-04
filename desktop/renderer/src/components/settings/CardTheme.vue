@@ -5,7 +5,7 @@
 // appStore（无需 props）；THEME_TABS 常量随卡迁入。
 // ═══════════════════════════════════════════════════════════════
 
-import { useAppStore, type ThemeMode, type FontWeightLevel } from '../../stores/app'
+import { useAppStore, type ThemeMode, type FontWeightLevel, type VisualStyle } from '../../stores/app'
 import { computed } from 'vue'
 
 const appStore = useAppStore()
@@ -15,6 +15,12 @@ const THEME_TABS: Array<{ value: ThemeMode; label: string; icon: string }> = [
   { value: 'light',  label: '亮色',    icon: '☀' },
   { value: 'dark',   label: '暗色',    icon: '🌙' },
   { value: 'system', label: '跟随系统', icon: '🖥' },
+]
+
+/* 界面风格：2 档分段控件 */
+const VISUAL_STYLE_TABS: Array<{ value: VisualStyle; label: string; icon: string }> = [
+  { value: 'standard', label: '标准',   icon: '▣' },
+  { value: 'glass',    label: '玻璃质感', icon: '◐' },
 ]
 
 /* 字体粗细：3 档分段控件 */
@@ -52,6 +58,31 @@ const fwPreviewWeight = computed(() => {
         >
           <span class="seg-icon" aria-hidden="true">{{ t.icon }}</span>
           {{ t.label }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 界面风格 -->
+    <div class="luo-card-head" style="margin-top: var(--space-4)">
+      <div>
+        <h2 class="luo-card-title">界面风格</h2>
+        <p class="luo-card-desc">{{ appStore.visualStyleLabel }}</p>
+      </div>
+    </div>
+
+    <div class="seg-wrap">
+      <div class="segmented" role="tablist" aria-label="界面风格">
+        <button
+          v-for="vs in VISUAL_STYLE_TABS"
+          :key="vs.value"
+          class="seg-item"
+          :class="{ active: appStore.visualStyle === vs.value }"
+          role="tab"
+          :aria-selected="appStore.visualStyle === vs.value"
+          @click="appStore.setVisualStyle(vs.value)"
+        >
+          <span class="seg-icon" aria-hidden="true">{{ vs.icon }}</span>
+          {{ vs.label }}
         </button>
       </div>
     </div>

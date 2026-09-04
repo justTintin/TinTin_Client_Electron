@@ -15,18 +15,22 @@ import Browser from '../src/browser/Browser.vue'
 import '../src/styles/tokens.css'
 import '../src/styles/global.css'
 
-/** 应用级主题初始化：读 tintinBrowser.config（electron-store）→ 应用 dark class。
- *  与主应用 stores/app.initTheme 口径一致（system 跟随系统偏好）。 */
+/** 应用级主题初始化：读 tintinBrowser.config（electron-store）→ 应用 dark class + glass-mode class。
+ *  与主应用 stores/app.initTheme/initVisualStyle 口径一致（system 跟随系统偏好）。 */
 async function initTheme(): Promise<void> {
   try {
     const t = (window as any).tintinBrowser
     let mode = 'light'
+    let visualStyle = 'standard'
     if (t?.config?.get) {
       const v = await t.config.get('themeMode')
       if (v === 'light' || v === 'dark' || v === 'system') mode = v
+      const vs = await t.config.get('visualStyle')
+      if (vs === 'standard' || vs === 'glass') visualStyle = vs
     }
     const dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
     if (dark) document.documentElement.classList.add('dark')
+    if (visualStyle === 'glass') document.documentElement.classList.add('glass-mode')
   } catch (_) { /* 主题初始化失败不阻塞挂载 */ }
 }
 

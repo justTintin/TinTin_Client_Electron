@@ -278,8 +278,8 @@ export default {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-6);
-  background: var(--surface-container);
-  border: 1.5px dashed var(--border);
+  background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
+  border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border));
   border-radius: var(--radius-lg);
   color: var(--muted-foreground);
   cursor: pointer;
@@ -289,7 +289,7 @@ export default {
 .dropzone:hover,
 .dropzone.is-active {
   border-color: var(--primary);
-  background: var(--surface-container-high);
+  background: color-mix(in srgb, var(--primary) 12%, var(--surface-container));
 }
 .dropzone.has-file {
   border-style: solid;

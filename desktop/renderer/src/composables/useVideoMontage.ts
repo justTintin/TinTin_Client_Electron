@@ -275,7 +275,7 @@ export function useVideoMontage() {
   const splitsJobId = ref('')
   const splitsDownloading = ref(false)
 
-  /** 逐个素材调 /montage/split（同步返回 shots[]），解析失败/离线统一透出（失败重试=重按） */
+  /** 逐个素材调 /montage/split（同步返回 shots[]）；ECONNRESET/ETIMEDOUT 等瞬时断线自动重试 1 次 */
   async function runSplit(): Promise<void> {
     if (!srcVideos.value.length) { splitError.value = '请先选择视频素材'; return }
     splitBusy.value = true
@@ -285,15 +285,33 @@ export function useVideoMontage() {
       const rows: SplitSceneRow[] = []
       for (const v of srcVideos.value) {
         const name = v.split(/[\\/]/).pop() || v
-        const res = unwrapIpc(await window.tintin.server.montageSplit({
-          file: { path: v },
-          threshold: Number(threshold.value),
-          min_scene_len: Number(minSceneLen.value),
-          image_duration: Number(imageDuration.value),
-          dedup: true,
-          analyze: true,
-          product_mode: false,
-        }), '素材解析')
+        // 瞬时断线（ECONNRESET/ETIMEDOUT）自动重试 1 次，避免误报 OFFLINE
+        // 注意：server-proxy 的 isExpectedOfflineError 会把 ECONNRESET 吞为 null，
+        // 所以重试条件需检查 null / {error}，不能只靠 catch
+        let raw: unknown = null
+        let lastErr: unknown = null
+        for (let attempt = 0; attempt < 2; attempt++) {
+          lastErr = null
+          try {
+            raw = await window.tintin.server.montageSplit({
+              file: { path: v },
+              threshold: Number(threshold.value),
+              min_scene_len: Number(minSceneLen.value),
+              image_duration: Number(imageDuration.value),
+              dedup: true,
+              analyze: true,
+              product_mode: false,
+            })
+          } catch (e) { lastErr = e }
+          // null = IPC 层吞掉了瞬时网络错误（ECONNRESET 等），服务端实际可能在线
+          if (raw !== null && raw !== undefined) break
+          if (attempt === 0) console.warn(`[split] ${name}: 首次请求失败（null），自动重试…`)
+        }
+        // 重试后仍为 null 或 catch 到异常 → 抛错
+        if (raw === null || raw === undefined) {
+          throw lastErr || new Error('服务端不可达（OFFLINE）')
+        }
+        const res = unwrapIpc(raw as any, '素材解析')
         // 传递 sourcePath 用于景别分类（对齐 PR#3 classify_shot_type）
         const shots = parseSplitResponse(res)
         console.log(`[split] ${name}: ${shots.length} shots, 首个 clipUrl=${shots[0]?.downloadUrl || '(空)'}`)
@@ -555,14 +573,14 @@ export function useVideoMontage() {
   const seqSrc = ref('')
 
   function setSeqClip(i: number): void {
-    if (!seqClips.value.length) { seqIdx.value = -1; seqSrc.value = ''; previewUrl.value = ''; return }
+    if (!seqClips.value.length) { seqIdx.value = -1; seqSrc.value = ''; return }
     const n = seqClips.value.length
     seqIdx.value = ((i % n) + n) % n
     void (async () => {
       await ensureServerUrl()
       const url = toAbsolute(seqClips.value[seqIdx.value].clipUrl)
       seqSrc.value = url
-      previewUrl.value = url
+      // 不再设置 previewUrl，避免弹出 VideoPreview 弹窗（播放由右侧内嵌 VideoPlayer 承担）
     })()
   }
 
@@ -621,13 +639,16 @@ export function useVideoMontage() {
   
   // ── 确认合成（对照 _confirm_all_precompose → _confirm_precompose → _submit_concat_to_server）──
   function planClipUrls(p: PrecomposePlan): string[] {
+    // 使用服务端绝对路径 path（resolve_asset 白名单内），文件已在服务端无需上传
+    // 原客户端传 files 是因为镜头在它本地；我们走服务端分割流，直接用 split 返回的 path
     return p.clips
       .filter((_, i) => !p.deletedFlags[i])
-      .map((s) => (s.clipUrl ? toAbsolute(s.clipUrl) : ''))
+      .map((s) => s.serverPath || '')
       .filter(Boolean)
   }
   
   /** 提交单条 /montage/concat 并轮询至完成，返回成片 URL（原版 MontageConcatServerWorker 同口径）
+   *  clip_urls 使用服务端绝对路径（split 返回的 path 字段），文件已在服务端无需上传
    *  clipShotTypes：镜头文件名→景别键（对照原版 L3004-3015 clip_shot_types，仅非空景别收进） */
   async function submitConcatTask(clipUrls: string[], clipShotTypes?: Record<string, string>): Promise<string> {
     await ensureServerUrl()
@@ -667,7 +688,7 @@ export function useVideoMontage() {
     for (const [k, v] of Object.entries(clipShotTypes || {})) {
       if (v) stPayload[k] = v
     }
-    const res = unwrapIpc(await window.tintin.server.montageConcat({
+    const concatReq: Record<string, unknown> = {
       clip_urls: payload.clip_urls,
       transition: payload.transition,
       transition_duration: payload.transition_duration,
@@ -678,7 +699,9 @@ export function useVideoMontage() {
       preset: payload.preset,
       ...(edgeSpeedup.value !== 1.0 ? { edge_speedup: edgeSpeedup.value } : {}),
       ...(Object.keys(stPayload).length ? { clip_shot_types: JSON.stringify(stPayload) } : {}),
-    }), '确认合成')
+    }
+    console.log('[concat] 提交载荷:', JSON.stringify({ ...concatReq, clip_urls: payload.clip_urls?.slice(0, 200) }))
+    const res = unwrapIpc(await window.tintin.server.montageConcat(concatReq), '确认合成')
     const id = extractSubmitTaskId(res)
     statusText.value = `确认合成任务已提交：${id}`
     return await new Promise<string>((resolve, reject) => {
@@ -703,8 +726,8 @@ export function useVideoMontage() {
       concatError.value = '该预合成没有可用镜头（可能都被标记删除），请先在下方镜头列表恢复至少 1 个。'
       return
     }
-    // 调试：打印 clipUrls 前 3 个，排查 URL 是否有效
-    console.log(`[concat] 预合成 ${index + 1}，${clipUrls.length} 个镜头，示例 URL:`, clipUrls.slice(0, 3))
+    console.log(`[concat] 预合成 ${index + 1}，${clipUrls.length} 个镜头（服务端绝对路径）`)
+    if (clipUrls.length) console.log('[concat] 示例 clipUrls:', clipUrls.slice(0, 3))
     statusText.value = ` 正在确认合成预合成 ${index + 1}... (剩余 ${planConfirmQueue.value.length} 条待确认)`
     try {
       // 景别标注：key = 服务端片段文件名（= clip_url basename，对照原版 os.path.basename(clip)）

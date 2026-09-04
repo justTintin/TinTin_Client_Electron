@@ -272,7 +272,7 @@ function _toolbarAnchor(btn: Element | null): { x: number; y: number } {
 function openExtensionsPanel(): void {
   const t = (window as any).tintinBrowser
   if (!isElectronShell.value || !t?.browser?.openExtensionsPanel) return
-  const btn = document.querySelector('.right-actions > .hist-wrapper:first-child button')
+  const btn = document.querySelector('.right-actions > .ext-panel-wrapper button')
   const a = _toolbarAnchor(btn)
   t.browser.openExtensionsPanel(a.x, a.y)
 }

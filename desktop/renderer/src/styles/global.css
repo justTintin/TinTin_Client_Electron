@@ -588,3 +588,86 @@ video {
   background: var(--interactive-hover);
   color: var(--foreground);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   路由/页面切换动画（fade）
+   ═══════════════════════════════════════════════════════════ */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.22s var(--easing-out), transform 0.22s var(--easing-out);
+}
+.fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   卡片交错入场动画（stagger）
+   用法：父容器 .stagger-grid，子元素 .stagger-item
+   ═══════════════════════════════════════════════════════════ */
+.stagger-item {
+  opacity: 0;
+  transform: translateY(12px);
+  animation: stagger-in 0.35s var(--easing-out) forwards;
+}
+@keyframes stagger-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* 为前 12 个子元素设置递增延迟 */
+.stagger-item:nth-child(1)  { animation-delay: 0ms; }
+.stagger-item:nth-child(2)  { animation-delay: 35ms; }
+.stagger-item:nth-child(3)  { animation-delay: 70ms; }
+.stagger-item:nth-child(4)  { animation-delay: 105ms; }
+.stagger-item:nth-child(5)  { animation-delay: 140ms; }
+.stagger-item:nth-child(6)  { animation-delay: 175ms; }
+.stagger-item:nth-child(7)  { animation-delay: 210ms; }
+.stagger-item:nth-child(8)  { animation-delay: 245ms; }
+.stagger-item:nth-child(9)  { animation-delay: 280ms; }
+.stagger-item:nth-child(10) { animation-delay: 315ms; }
+.stagger-item:nth-child(11) { animation-delay: 350ms; }
+.stagger-item:nth-child(12) { animation-delay: 385ms; }
+
+/* ═══════════════════════════════════════════════════════════
+   通用加载旋转器（.spinner）
+   ═══════════════════════════════════════════════════════════ */
+.spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.spinner.lg { width: 32px; height: 32px; border-width: 3px; }
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   玻璃拟态卡片（.glass-card）
+   仅当 <html class="glass-mode"> 时生效（设置页「界面风格」切换）
+   ═══════════════════════════════════════════════════════════ */
+html.glass-mode .glass-card {
+  position: relative;
+  background: color-mix(in srgb, var(--card) 72%, transparent);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+html.glass-mode:root.dark .glass-card {
+  background: color-mix(in srgb, var(--card) 80%, transparent);
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}

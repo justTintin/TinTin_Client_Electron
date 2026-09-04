@@ -34,7 +34,24 @@
       color: var(--foreground, #1f2328);
     }
     body[data-theme="dark"] .hist-title { color: #e6e6e6; }
-    .hist-actions { display: flex; gap: 8px; }
+    .hist-actions { display: flex; gap: 8px; align-items: center; }
+    .hist-close {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--foreground-muted, #6b7280);
+      font-size: 14px;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+    .hist-close:hover { background: var(--surface-hover, rgba(0,0,0,0.04)); color: var(--foreground, #1f2328); }
+    body[data-theme="dark"] .hist-close { color: #999; }
+    body[data-theme="dark"] .hist-close:hover { background: rgba(255,255,255,0.08); color: #e6e6e6; }
     .hist-btn {
       background: transparent;
       border: none;
@@ -140,6 +157,7 @@
     <div class="hist-title">历史记录</div>
     <div class="hist-actions">
       <button class="hist-btn" id="btn-clear">清空</button>
+      <button class="hist-close" id="btn-close" aria-label="关闭">✕</button>
     </div>
   </div>
   <div class="hist-list" id="hist-list">
@@ -214,6 +232,11 @@
           renderHistory([]);
         }
       });
+    });
+
+    // 关闭按钮
+    document.getElementById('btn-close').addEventListener('click', () => {
+      ipcRenderer.send('history:close');
     });
 
     // 点击外部关闭

@@ -75,6 +75,7 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
       putField(fields, 'image_duration', p.image_duration)
       // PR#3 出入场镜头加速倍率（对齐 step2_concat_view edge_speedup_combo）
       putField(fields, 'edge_speedup', p.edge_speedup)
+      putField(fields, 'clip_shot_types', p.clip_shot_types)
       if (p.lut) fields.lut = filePathField(p.lut)
     },
   ))

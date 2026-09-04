@@ -57,8 +57,9 @@ function backToGrid() {
 
 <template>
   <section class="ops-tools">
+    <Transition name="slide-up" mode="out-in">
     <!-- ═══ 模块详情页 ═══ -->
-    <template v-if="activeTool">
+    <div v-if="activeTool" key="detail" class="detail-view">
       <div class="tool-bar">
         <button class="back-btn" @click="backToGrid">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -75,12 +76,14 @@ function backToGrid() {
       </div>
 
       <div class="tool-host">
-        <component v-if="activeTool.kind === 'comp' && activeTool.comp" :is="activeTool.comp" />
+        <keep-alive v-if="activeTool.kind === 'comp' && activeTool.comp">
+          <component :is="activeTool.comp" :key="activeTool.id" />
+        </keep-alive>
       </div>
-    </template>
+    </div>
 
     <!-- ═══ 模块网格（按分组） ═══ -->
-    <template v-else>
+    <div v-else key="grid" class="grid-view">
       <div class="page-head">
         <h1 class="page-title">运营工具</h1>
         <p class="page-sub">产品资料 · 我的知识库 · 视频评价预测 · 视频营销检测</p>
@@ -90,18 +93,20 @@ function backToGrid() {
         <div class="group-label">{{ g }}</div>
         <div class="tools-grid">
           <OtToolCard
-            v-for="t in GROUP_TOOLS[g]"
+            v-for="(t, idx) in GROUP_TOOLS[g]"
             :key="t.id"
             :emoji="t.emoji"
             :accent="t.accent"
             :title="t.title"
             :desc="t.desc"
             :status="t.status"
+            :style="{ animationDelay: `${idx * 35}ms` }"
             @open="openTool(t)"
           />
         </div>
       </div>
-    </template>
+    </div>
+    </Transition>
   </section>
 </template>
 
@@ -112,6 +117,20 @@ function backToGrid() {
   overflow-y: auto;
   padding: var(--space-6);
   background: var(--background);
+}
+
+/* 网格 ↔ 详情 切换动画 */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: opacity 0.2s var(--easing-out), transform 0.2s var(--easing-out);
+}
+.slide-up-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 /* 页头 */

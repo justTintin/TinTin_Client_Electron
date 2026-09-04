@@ -57,7 +57,26 @@ const statusMeta = computed(() => {
 })
 
 // 系统资源占位（V3 暂用静态展示，后续接入 systeminformation 桥接）
-const systemStats = ref({ cpu: 12, mem: 34, gpu: 8 })
+// 多 GPU 结构：gpus 数组每项含 name / usage(%) / vram(%) / vramUsed(MB) / vramTotal(MB)
+interface GpuStat { name: string; usage: number; vram: number; vramUsed: number; vramTotal: number }
+const systemStats = ref<{ cpu: number; mem: number; gpus: GpuStat[] }>({
+  cpu: 12,
+  mem: 34,
+  gpus: [{ name: 'GPU 0', usage: 8, vram: 23, vramUsed: 1843, vramTotal: 8192 }],
+})
+
+/** 格式化百分比：固定 3 字符宽度（含 %），不足左补空格，防止位数变化引起布局抖动 */
+function fmtPct(v: number): string {
+  const n = Math.round(v)
+  const s = n >= 100 ? '100' : n >= 10 ? String(n) : ` ${n}`
+  return `${s}%`
+}
+
+/** 格式化显存：MB → "x.x GB" 或 "xxx MB" */
+function fmtVram(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
+  return `${Math.round(mb)} MB`
+}
 
 /** 点击 Tab：同步 store 并跳转 + C6 切 Tab 防泄露（切非 browser Tab 先 detachAll） */
 async function switchTab(tab: TabKey, to: RouteLocationRaw): Promise<void> {
@@ -251,9 +270,15 @@ onBeforeUnmount(() => {
           <span class="status-text">{{ statusMeta.text }}</span>
         </div>
         <div class="system-stats">
-          <span>CPU {{ systemStats.cpu }}%</span>
-          <span>内存 {{ systemStats.mem }}%</span>
-          <span>GPU {{ systemStats.gpu }}%</span>
+          <span class="stat-item"><span class="stat-label">CPU</span><span class="stat-num">{{ fmtPct(systemStats.cpu) }}</span></span>
+          <span class="stat-item"><span class="stat-label">内存</span><span class="stat-num">{{ fmtPct(systemStats.mem) }}</span></span>
+          <template v-for="(g, gi) in systemStats.gpus" :key="gi">
+            <span class="stat-item">
+              <span class="stat-label">{{ g.name }}</span>
+              <span class="stat-num">{{ fmtPct(g.usage) }}</span>
+              <span class="stat-vram">{{ fmtVram(g.vramUsed) }}/{{ fmtVram(g.vramTotal) }}</span>
+            </span>
+          </template>
         </div>
 
         <!-- D2 批次1：浏览器已拆为独立渲染入口/独立窗口；本按钮为入口占位，批次2 接 IPC -->
@@ -319,7 +344,9 @@ onBeforeUnmount(() => {
     <main class="app-main">
       <router-view v-slot="{ Component }">
         <transition name="fade" mode="out-in">
-          <component :is="Component" />
+          <keep-alive>
+            <component :is="Component" />
+          </keep-alive>
         </transition>
       </router-view>
     </main>
@@ -545,6 +572,28 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   font-size: var(--font-size-caption);
   color: var(--foreground-muted);
+}
+.stat-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.stat-label {
+  color: var(--foreground-muted);
+}
+.stat-num {
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--foreground);
+  font-weight: 500;
+}
+.stat-vram {
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground-muted);
+  font-size: 11px;
+  margin-left: 2px;
 }
 
 /* ─── D2 批次1：打开浏览器独立窗口按钮（占位；批次2 接 IPC） ─── */

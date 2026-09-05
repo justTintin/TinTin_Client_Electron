@@ -31,30 +31,34 @@ interface ToolItem {
 
 const router = useRouter()
 
-/* 分组顺序与工具（原客户端 media_tools_page.py：图形/视频/提示词 3 组 8 张 + 混剪/切片入口） */
-const GROUPS = ['创作', '图形', '视频', '提示词'] as const
+/* 分组顺序与工具（原客户端 media_tools_page.py：图形/视频/提示词 3 组 8 张 + 混剪/切片入口）
+   2026-09-04 用户裁决：混剪/切片划入「视频」组；新增「音频」组（音频生成 + 声音克隆）；视频修复转建设中
+   音频生成：移植原客户端 audio_material_page.py「 AI 生成」tab（BGM MusicGen + 音效 AudioLDM2）
+   2026-09-04 二次裁决：「创作」组改名「文案脚本」（分镜脚本创作）；提示词组 2 卡划归运营工具
+   2026-09-05 用户裁决：删除「产品知识」卡——其文案生成能力已迁入运营工具·产品资料页
+   （OtCopywritingPanel.vue），本组仅保留分镜脚本创作 */
+const GROUPS = ['文案脚本', '图形', '视频', '音频'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
-  创作: [
-    { id: 'video-montage', title: '智能混剪', desc: '4步流水线：镜头切割/重组/口播配音/特效', group: '创作', emoji: '✂️', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoMontage.vue')) },
-    { id: 'live-slice',    title: '直播切片', desc: '视频分析热点发现→切片与封面生成', group: '创作', emoji: '📡', accent: 'linear-gradient(135deg,#EF4444 0%,#DC2626 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/LiveClip.vue')) },
-    // 2026-08-30 用户裁决：产品文案创作/分镜脚本创作 自原「方案脚本」组划归媒体工具
-    { id: 'copywriting', title: '产品文案创作', desc: '选产品 → 风格化 → 一键生成文案', group: '创作', emoji: '✍️', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtProductCopywriting.vue')) },
-    { id: 'storyboard',  title: '分镜脚本创作', desc: '文案 → 分镜 → 引用素材 → 保存脚本库', group: '创作', emoji: '🎬', accent: 'linear-gradient(135deg,#F97316 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtStoryboard.vue')) },
+  文案脚本: [
+    // 2026-08-30 用户裁决：分镜脚本创作 自原「方案脚本」组划归媒体工具；
+    // 2026-09-05 用户裁决：删除「产品知识」卡（文案生成已迁运营工具·产品资料页）
+    { id: 'storyboard',  title: '分镜脚本创作', desc: '文案 → 分镜 → 引用素材 → 保存脚本库', group: '文案脚本', emoji: '🎬', accent: 'linear-gradient(135deg,#F97316 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtStoryboard.vue')) },
   ],
   图形: [
     { id: 'cover-design',   title: '封面制作',   desc: '商品封面图快速制作', group: '图形', emoji: '🎨', accent: 'linear-gradient(135deg,#EC4899 0%,#F43F5E 100%)', kind: 'comp', wip: true, comp: defineAsyncComponent(() => import('@/components/media-tools/CoverMaker.vue')) },
     { id: 'image-matting',  title: '图像抠图',   desc: '智能抠图 / 去除背景', group: '图形', emoji: '✂️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ImageMatting.vue')) },
   ],
   视频: [
-    { id: 'video-repair',      title: '视频修复',     desc: '画质修复 / 工作流处理', group: '视频', emoji: '🛠️', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoRepair.vue')) },
+    { id: 'video-montage', title: '智能混剪', desc: '4步流水线：镜头切割/重组/口播配音/特效', group: '视频', emoji: '✂️', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoMontage.vue')) },
+    { id: 'live-slice',    title: '直播切片', desc: '视频分析热点发现→切片与封面生成', group: '视频', emoji: '📡', accent: 'linear-gradient(135deg,#EF4444 0%,#DC2626 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/LiveClip.vue')) },
+    { id: 'video-repair',      title: '视频修复',     desc: '画质修复 / 工作流处理', group: '视频', emoji: '🛠️', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', wip: true, comp: defineAsyncComponent(() => import('@/components/media-tools/VideoRepair.vue')) },
     { id: 'video-transcribe',  title: '视频转文字',   desc: '视频语音自动转写',       group: '视频', emoji: '📄', accent: 'linear-gradient(135deg,#6366F1 0%,#A855F7 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoTranscribe.vue')) },
-    { id: 'voice-clone',       title: '声音克隆',     desc: '克隆音色生成配音',       group: '视频', emoji: '🎵', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VoiceClone.vue')) },
     { id: 'subtitle-removal',  title: '视频去水印字幕', desc: '去除字幕 / 台标水印',  group: '视频', emoji: '🔤', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/SubtitleRemoval.vue')) },
   ],
-  提示词: [
-    { id: 'reverse-prompt-image', title: '图片反推提示词', desc: '上传图片，AI 生成绘画提示词', group: '提示词', emoji: '🖼️', accent: 'linear-gradient(135deg,#10B981 0%,#14B8A6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ReversePromptImage.vue')) },
-    { id: 'reverse-prompt-video', title: '视频反推提示词', desc: '上传视频，框选片段生成提示词', group: '提示词', emoji: '🎬', accent: 'linear-gradient(135deg,#3B82F6 0%,#8B5CF6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ReversePromptVideo.vue')) },
+  音频: [
+    { id: 'audio-gen',   title: '音频生成', desc: 'AI 生成 BGM / 音效，一键入库', group: '音频', emoji: '🔊', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/AudioGen.vue')) },
+    { id: 'voice-clone', title: '声音克隆', desc: '克隆音色生成配音',       group: '音频', emoji: '🎵', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VoiceClone.vue')) },
   ],
 }
 
@@ -133,7 +137,7 @@ function backToGrid() {
             :key="t.id"
             class="tool-card glass-card stagger-item"
             :class="{ 'is-wip': t.wip }"
-            :style="{ animationDelay: `${idx * 35}ms` }"
+            :style="{ animationDelay: `${idx * 35}ms`, '--card-accent': t.accent }"
             @click="openTool(t)"
           >
             <span v-if="t.wip" class="wip-badge">建设中</span>
@@ -146,7 +150,7 @@ function backToGrid() {
             <p class="tool-desc">{{ t.desc }}</p>
             <div class="card-foot">
               <span class="arrow-ic">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M5 12h14" />
                   <path d="M12 5l7 7-7 7" />
                 </svg>
@@ -287,7 +291,8 @@ function backToGrid() {
 .tool-card {
   position: relative;
   background: var(--card);
-  border: 1px solid var(--border);
+  /* 2026-09-04 用户裁决：主色调淡染底色已承担视觉分区，卡片描边移除 */
+  border: none;
   border-radius: var(--radius-xl);
   padding: var(--space-5);
   cursor: pointer;
@@ -296,34 +301,37 @@ function backToGrid() {
   overflow: hidden;
   transition:
     transform var(--duration-normal) var(--easing-default),
-    border-color var(--duration-fast),
     box-shadow var(--duration-normal) var(--easing-default),
     background var(--duration-fast);
 }
-/* 极光渐变激变效果 */
+/* 主色调光晕层（2026-09-04 用户裁决二稿：默认以图标底色 accent 淡染卡片，
+   hover/点击时卡片变毛玻璃——半透明+backdrop blur，光晕同步增强） */
 .tool-card::before {
   content: '';
   position: absolute;
   inset: -60%;
   z-index: 0;
-  background: conic-gradient(
-    from 0deg at 50% 50%,
-    #a78bfa 0deg,
-    #fbbf24 60deg,
-    #f472b6 120deg,
-    #67e8f9 180deg,
-    #a78bfa 240deg,
-    #fbbf24 300deg,
-    #a78bfa 360deg
+  background: var(
+    --card-accent,
+    conic-gradient(
+      from 0deg at 50% 50%,
+      #a78bfa 0deg,
+      #fbbf24 60deg,
+      #f472b6 120deg,
+      #67e8f9 180deg,
+      #a78bfa 240deg,
+      #fbbf24 300deg,
+      #a78bfa 360deg
+    )
   );
-  opacity: 0;
+  opacity: 0.07;
   filter: blur(40px);
   animation: aurora-spin 8s linear infinite;
   transition: opacity 0.4s;
   pointer-events: none;
 }
 .tool-card:hover::before {
-  opacity: 0.18;
+  opacity: 0.16;
 }
 @keyframes aurora-spin {
   to { transform: rotate(360deg); }
@@ -335,8 +343,11 @@ function backToGrid() {
 }
 .tool-card:hover {
   transform: translateY(-2px);
-  border-color: var(--primary-hover);
   box-shadow: var(--shadow-3);
+  /* 毛玻璃：半透明卡身 + 背景模糊，图标同色光晕隐约透出 */
+  background: color-mix(in srgb, var(--card) 62%, transparent);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
 }
 /* 暗色模式下渐变更明显 */
 :root.dark .tool-card:hover::before {
@@ -395,16 +406,16 @@ function backToGrid() {
   flex: 1 1 auto;
 }
 .card-foot {
-  margin-top: var(--space-4);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
+  /* 2026-09-04 用户裁决：分割线移除后，箭头中线上移对齐原分割线位置
+     （原分割线 = desc底 + margin 16px；箭头 36px 半高 18px → margin-top = 16-18 = -2px） */
+  margin-top: -2px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
 }
 .arrow-ic {
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;

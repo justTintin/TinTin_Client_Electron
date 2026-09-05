@@ -224,13 +224,15 @@ function subText(s: SkillEntry): string {
   margin-bottom: var(--space-2);
 }
 
+/* 2026-09-05 列表行间统一规范：页面内嵌密集列表 = 分隔线式 */
 .skill-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: 7px var(--space-2);
-  border-radius: var(--radius-md);
+  border-bottom: 1px solid var(--border);
 }
+.skill-row:last-child { border-bottom: none; }
 .skill-row:hover { background: var(--surface-container); }
 
 .skill-main {

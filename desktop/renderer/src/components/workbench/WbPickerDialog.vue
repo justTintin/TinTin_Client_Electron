@@ -103,14 +103,15 @@ function onRowClick(item: PickerItem) {
           </button>
         </div>
 
-        <!-- 预览模式：右侧详情区（产品弹窗：性能参数+核心卖点全文） -->
-        <div v-if="previewable" class="picker-preview custom-scroll">
-          <slot name="preview" :item="sel" />
-        </div>
-
-        <!-- 预览模式底部操作栏（如「选择该产品」按钮，位于右边框外） -->
-        <div v-if="previewable && sel" class="picker-preview-footer">
-          <slot name="preview-footer" :item="sel" :confirm="onPick" />
+        <!-- 预览模式右侧列：纵向堆叠 预览框 + 确认按钮（2026-09-04 用户裁决：
+             预览框高度减少一行，按钮在框下方；修复原 footer 与预览框并排拉成竖条） -->
+        <div v-if="previewable" class="picker-side">
+          <div class="picker-preview custom-scroll">
+            <slot name="preview" :item="sel" />
+          </div>
+          <div v-if="sel" class="picker-preview-footer">
+            <slot name="preview-footer" :item="sel" :confirm="onPick" />
+          </div>
         </div>
       </div>
 
@@ -187,10 +188,18 @@ function onRowClick(item: PickerItem) {
   gap: 6px;
 }
 
-/* 预览模式：右侧详情区固定占比（像素材弹窗预览区），独立滚动 */
-.picker-preview {
+/* 预览模式右侧列：纵向 预览框 + footer（宽度沿用原预览区占比） */
+.picker-side {
   flex: 0 0 46%;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 预览模式：预览框弹性填满侧列（扣除 footer 一行按钮高度），独立滚动 */
+.picker-preview {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -207,12 +216,16 @@ function onRowClick(item: PickerItem) {
 .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
 .custom-scroll::-webkit-scrollbar-thumb { background: var(--surface-container-high); border-radius: 3px; }
 
-/* 预览模式底部操作栏（按钮位于右边框外，与预览区同宽） */
+/* 预览模式底部操作栏（预览框下方一行；按钮宽度与预览框对齐，
+   2026-09-04 用户裁决，同素材弹窗 mtd-btn--full 口径） */
 .picker-preview-footer {
   flex: 0 0 auto;
   display: flex;
-  justify-content: flex-end;
   padding-top: var(--space-2);
+}
+.picker-preview-footer :deep(button) {
+  flex: 1 1 auto;
+  width: 100%;
 }
 
 .picker-state {

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>音频生成 — 媒体工具·音频组（V3 复刻规格）</title>
+<style>
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; color: #1f2328; background: #f6f7f9; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 28px; }
+  .spec { background: #fff; border: 1px solid #d0d7de; border-radius: 10px; padding: 20px; max-width: 860px; }
+  .group { border: 1px solid #d0d7de; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .group h3 { margin: 0 0 12px; font-size: 14px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .lbl { font-size: 13px; }
+  .input { flex: 1; min-width: 320px; height: 32px; border: 1px solid #d0d7de; border-radius: 6px; padding: 0 10px; font-size: 13px; color: #8b949e; }
+  .sel, .spin { height: 32px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px; padding: 0 8px; color: #495057; }
+  .btn { height: 32px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; padding: 0 14px; }
+  .primary { background: #6366f1; color: #fff; }
+  .secondary { background: #eef0f3; color: #1f2328; border-color: #d0d7de; }
+  .ghost { background: transparent; color: #6366f1; border-color: #d0d7de; }
+  .muted { font-size: 12px; color: #8b949e; white-space: pre-line; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
+  th, td { border: 1px solid #d0d7de; padding: 5px 8px; text-align: left; }
+  th { background: #f0f2f5; }
+  .warn { color: #b45309; }
+</style>
+</head>
+<body>
+<h1>音频生成（AudioGen.vue）— 媒体工具·音频组</h1>
+<p>移植源：原客户端 <code>gui/audio_material_page.py</code>「 AI 生成」tab（<code>_build_tab_ai</code> L1568-1684 + 处理器 L1686-1852）；行为源 <code>utils/audio_library_client.py</code>。UI 文案逐字对照，前导空格为原版 icon 占位不移植。</p>
+
+<div class="spec">
+  <div class="group">
+    <h3>生成 BGM</h3>
+    <div class="row"><span class="lbl">描述:</span><span class="input">描述你想要的 BGM 风格，如：激昂的电子音乐，适合科技感视频</span></div>
+    <div class="row"><span class="lbl">风格:</span><span class="sel">自动▾</span><span class="lbl">时长(秒):</span><span class="spin">30</span><span style="flex:1"></span><button class="btn primary">生成 BGM</button></div>
+    <div class="row"><span class="muted">BGM 生成中，可能需要 30-60 秒...</span></div>
+    <div class="row"><span class="muted">生成成功！{name}
+时长: {duration} 秒
+URL: {url}</span></div>
+    <div class="row"><button class="btn ghost">播放生成的 BGM</button><button class="btn secondary">保存到 BGM 库</button></div>
+  </div>
+
+  <div class="group">
+    <h3>生成音效</h3>
+    <div class="row"><span class="lbl">描述:</span><span class="input">描述你想要的音效，如：门铃声、打字声、雨声、爆炸效果</span></div>
+    <div class="row"><span class="lbl">时长(秒):</span><span class="spin">3</span><span style="flex:1"></span><button class="btn primary">生成音效</button></div>
+    <div class="row"><span class="muted">音效生成中，可能需要 15-30 秒...</span></div>
+    <div class="row"><button class="btn ghost">播放生成的音效</button><button class="btn secondary">保存到音效库</button></div>
+  </div>
+
+  <h2>逐控件对照表（完工自查门）</h2>
+  <table>
+    <tr><th>原版控件</th><th>本端控件</th><th>文案原文</th><th>默认值 / 约束</th></tr>
+    <tr><td>QGroupBox bgm_group</td><td>.gen-group 组1</td><td> 生成 BGM</td><td>—</td></tr>
+    <tr><td>QLineEdit ai_bgm_prompt</td><td>text-input</td><td>placeholder 逐字</td><td>空；Enter 触发生成（本端扩展）</td></tr>
+    <tr><td>QComboBox ai_bgm_style</td><td>TSelect</td><td>自动/电子/古典/摇滚/爵士/氛围/Lo-Fi</td><td>auto；7 项逐字（L1588-1594）</td></tr>
+    <tr><td>QSpinBox ai_bgm_duration</td><td>number input</td><td>时长(秒):</td><td><span class="warn">5-120 默认 30 步长 5（⚠ 契约文档 3-60，矛盾待验证）</span></td></tr>
+    <tr><td>btn_ai_bgm_gen</td><td>TButton primary</td><td>生成 BGM</td><td>空描述 → 「请输入 BGM 描述。」</td></tr>
+    <tr><td>ai_bgm_progress (0,0)</td><td>.gen-progress 不定动画</td><td>—</td><td>生成中显示</td></tr>
+    <tr><td>ai_bgm_result_label</td><td>.result-label</td><td>BGM 生成中，可能需要 30-60 秒... / 生成成功！{name}\n时长: {duration} 秒\nURL: {url} / BGM 生成失败：{msg}</td><td>多行 muted</td></tr>
+    <tr><td>btn_ai_bgm_play (icon play)</td><td>TButton ghost</td><td>播放生成的 BGM</td><td>无结果禁用；内联 audio（本端扩展）</td></tr>
+    <tr><td>btn_ai_bgm_save</td><td>TButton secondary</td><td>保存到 BGM 库 / 保存中...</td><td>无结果禁用；tag="AI生成" scene="" mood=""（L1749）</td></tr>
+    <tr><td>QGroupBox sfx_group</td><td>.gen-group 组2</td><td> 生成音效</td><td>—</td></tr>
+    <tr><td>QLineEdit ai_sfx_prompt</td><td>text-input</td><td>placeholder 逐字</td><td>空描述 → 「请输入音效描述。」</td></tr>
+    <tr><td>QSpinBox ai_sfx_duration</td><td>number input</td><td>时长(秒):</td><td>1-15 默认 3（无步长设置=1）</td></tr>
+    <tr><td>btn_ai_sfx_gen</td><td>TButton primary</td><td>生成音效</td><td>—</td></tr>
+    <tr><td>ai_sfx_result_label</td><td>.result-label</td><td>音效生成中，可能需要 15-30 秒... / 生成成功！… / 音效生成失败：{msg}</td><td>name 候选顺序与 BGM 相反（name|filename）</td></tr>
+    <tr><td>btn_ai_sfx_play / btn_ai_sfx_save</td><td>TButton ghost/secondary</td><td>播放生成的音效 / 保存到音效库</td><td>保存走 /sfx/analyze PANNs 标注入库</td></tr>
+  </table>
+
+  <h2>待裁决清单（铁律上报）</h2>
+  <table>
+    <tr><th>#</th><th>矛盾点</th><th>文档说法</th><th>原客户端做法</th><th>临时口径</th></tr>
+    <tr><td>1</td><td>BGM duration 边界</td><td>3-60 秒</td><td>UI QSpinBox 5-120（默认 30 步长 5）直接透传</td><td>主进程不拦截区间，透传服务端裁决</td></tr>
+    <tr><td>2</td><td>/audio/gen/sfx</td><td>openapi-latest.json 未收录</td><td>POST {prompt, duration}（gen_sfx L179-196）</td><td>以原客户端实际调用为准</td></tr>
+    <tr><td>3</td><td>/audio/bgm/upload</td><td>openapi-latest.json 未收录</td><td>multipart file+tag/scene/mood（L71-94）</td><td>同上</td></tr>
+    <tr><td>4</td><td>/sfx/analyze</td><td>openapi-latest.json 未收录</td><td>multipart file（PANNs 自动标注，L127-147）</td><td>同上</td></tr>
+    <tr><td>5</td><td>播放方式</td><td>—</td><td>临时文件下载 + QMediaPlayer 统一播放器</td><td>本端扩展：内联 &lt;audio controls&gt; 流式播放，按钮文案保留</td></tr>
+    <tr><td>6</td><td>保存成功弹窗</td><td>—</td><td>QMessageBox 展示 python dict repr</td><td>本端扩展：系统通知 + JSON 文本</td></tr>
+  </table>
+</div>
+</body>
+</html>

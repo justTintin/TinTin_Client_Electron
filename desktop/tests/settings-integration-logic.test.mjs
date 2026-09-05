@@ -5,8 +5,8 @@
 //   对应 S8 用例（PLATFORM_TABS/maskKey/validateComfyui/buildComfyuiBody/
 //   validateRunninghub/buildRunninghubBody/parsePlatformStatus）同步删除。
 // 对照原客户端（以原代码为准）：
-//   · S9 LUT 配置 L2041-2120：name → path 映射（.cube/.3dl/.lut）；
-//     缓存目录 L1973-2039（local_config.cache_dir）；系统信息 L1622-1637
+//   · 缓存目录 L1973-2039（local_config.cache_dir）；系统信息 L1622-1637
+// 2026-09-04 用户裁决：LUT 配置逻辑整体删除（本端无消费方），对应用例同步删除
 // 运行：cd desktop && node --test "tests/*.test.mjs"
 // ═══════════════════════════════════════════════════════════════
 
@@ -15,25 +15,10 @@ import assert from 'node:assert/strict'
 
 const S = await import('../renderer/src/composables/settingsIntegrationLogic.ts')
 
-// ── S9 缓存目录 / LUT ──
+// ── S9 缓存目录 ──
 
 test('CACHE_DIR_KEY：local.cacheDir（对齐原 local_config.cache_dir 语义）', () => {
   assert.equal(S.CACHE_DIR_KEY, 'local.cacheDir')
-})
-
-test('LUT_EXTS：.cube / .3dl / .lut（对齐原 L2048）', () => {
-  assert.deepEqual([...S.LUT_EXTS], ['.cube', '.3dl', '.lut'])
-})
-
-test('normalizeLutName：去扩展名（对齐原 _add_lut_entry L2099）', () => {
-  assert.equal(S.normalizeLutName('S-Log3.cube'), 'S-Log3')
-  assert.equal(S.normalizeLutName('D:\\lut\\D-Log.3dl'), 'D-Log')
-  assert.equal(S.normalizeLutName('noext'), 'noext')
-})
-
-test('validateLutName：空名拦截', () => {
-  assert.equal(S.validateLutName(''), '请输入 LUT 显示名称')
-  assert.equal(S.validateLutName('S-Log3'), '')
 })
 
 // ── 缓存目录消费端：下载默认路径拼接（对齐原 aigen L1044 cache_dir 优先语义） ──

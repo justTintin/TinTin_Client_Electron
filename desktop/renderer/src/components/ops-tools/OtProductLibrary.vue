@@ -10,14 +10,28 @@
 // opsProductLibraryLogic（纯函数，有单测）；本组件只绘制 + 事件转发。
 // ═══════════════════════════════════════════════════════════════
 
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import {
   BASIC_FIELDS,
   PRODUCT_FIELDS,
 } from '../../composables/opsProductLibraryLogic'
 import { useOpsProductLibrary } from '../../composables/useOpsProductLibrary'
+import OtCopywritingPanel from './OtCopywritingPanel.vue'
 
 const P = useOpsProductLibrary()
+
+/* ── 大类折叠（2026-09-04 用户裁决：平铺过长，默认全折叠，点击展开/收起） ── */
+const collapsedCats = ref<Set<string>>(new Set())
+function toggleCat(label: string): void {
+  const next = new Set(collapsedCats.value)
+  if (next.has(label)) next.delete(label)
+  else next.add(label)
+  collapsedCats.value = next
+}
+/** 大类产品总数（各品牌叶子数求和，折叠时提示规模） */
+function catCount(cat: { children: Array<{ children: unknown[] }> }): number {
+  return cat.children.reduce((n, b) => n + b.children.length, 0)
+}
 
 /** 表单字段双列渲染（基本资料 11 字段；locked 只读，对齐 _apply_field_locks） */
 const basicRows = BASIC_FIELDS
@@ -77,21 +91,33 @@ function onDelete() {
           <template v-else-if="!P.nodes.value.length">暂无产品，请先「从仓库同步」</template>
           <template v-else>
             <div v-for="cat in P.nodes.value" :key="cat.label" class="tree-cat">
-              <div class="tree-cat-label">{{ cat.label }}</div>
-              <div v-for="brand in cat.children" :key="brand.label" class="tree-brand">
-                <div class="tree-brand-label">{{ brand.label }}</div>
-                <button
-                  v-for="leaf in brand.children"
-                  :key="leaf.id"
-                  class="tree-leaf"
-                  :class="{ active: P.editingId.value === leaf.id }"
-                  @click="P.selectNode(leaf.id)"
-                >{{ leaf.label }}</button>
-              </div>
+              <button
+                class="tree-cat-label"
+                type="button"
+                :title="collapsedCats.has(cat.label) ? '展开' : '收起'"
+                @click="toggleCat(cat.label)"
+              >
+                <span class="tree-cat-arrow" :class="{ collapsed: collapsedCats.has(cat.label) }">▾</span>
+                {{ cat.label }}
+                <span class="tree-cat-count">{{ catCount(cat) }}</span>
+              </button>
+              <template v-if="!collapsedCats.has(cat.label)">
+                <div v-for="brand in cat.children" :key="brand.label" class="tree-brand">
+                  <div class="tree-brand-label">{{ brand.label }}</div>
+                  <button
+                    v-for="leaf in brand.children"
+                    :key="leaf.id"
+                    class="tree-leaf"
+                    :class="{ active: P.editingId.value === leaf.id }"
+                    @click="P.selectNode(leaf.id)"
+                  >{{ leaf.label }}</button>
+                </div>
+              </template>
             </div>
           </template>
         </div>
-        <button class="btn" @click="P.clearForm">＋ 新增型号（清空表单）</button>
+        <!-- 2026-09-05 用户裁决：删除「新增型号（清空表单）」——与右侧操作栏「清空」按钮
+             重复（同为 P.clearForm），且仅清空表单不创建数据，无独立价值 -->
       </div>
 
       <!-- ═══ 右侧：基本资料 + 智能挖掘 ═══ -->
@@ -143,15 +169,25 @@ function onDelete() {
           <div v-if="P.mineStatus.value" class="mine-status">{{ P.mineStatus.value }}</div>
         </div>
 
-        <!-- 底部操作条 -->
+        <!-- 底部操作条（2026-09-05 用户裁决：按钮靠右，保存最右；状态占位左侧） -->
         <div class="opl-actions">
+          <span class="form-status">{{ P.formStatus.value }}</span>
+          <button class="btn" @click="P.clearForm">清空</button>
+          <button class="btn" @click="onDelete">🗑 删除</button>
           <button class="btn primary" :disabled="P.saving.value" @click="P.save">
             {{ P.saving.value ? '保存中…' : (P.editingId.value ? '💾 保存修改' : '💾 保存（新增）') }}
           </button>
-          <button class="btn" @click="onDelete">🗑 删除</button>
-          <button class="btn" @click="P.clearForm">清空</button>
-          <span class="form-status">{{ P.formStatus.value }}</span>
         </div>
+
+        <!-- ═══ 文案生成（2026-09-05 用户裁决：自媒体工具·产品知识页迁入） ═══
+             产品上下文 = 当前树选中条目（editingId/form）；性能参数/核心卖点
+             直接读上方智能挖掘表单，新增模式（editingId 空）时生成被拦截 -->
+        <OtCopywritingPanel
+          :product-id="P.editingId.value ?? ''"
+          :features="String(P.form.value.features ?? '')"
+          :selling-points="String(P.form.value.selling_points ?? '')"
+          :product="P.form.value"
+        />
       </div>
     </div>
   </section>
@@ -198,7 +234,23 @@ function onDelete() {
 /* 树 */
 .tree { flex: 1; min-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 .tree-empty { font-size: 12px; color: var(--muted-foreground); padding: var(--space-2); }
-.tree-cat-label { font-size: 13px; font-weight: 700; color: var(--foreground); padding: var(--space-1) 4px; }
+.tree-cat-label {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  font-size: 13px; font-weight: 700; color: var(--foreground);
+  padding: var(--space-1) 4px; border: none; background: transparent;
+  cursor: pointer; text-align: left; border-radius: var(--radius-sm);
+  font-family: inherit;
+}
+.tree-cat-label:hover { background: var(--surface-container); }
+.tree-cat-arrow {
+  font-size: 10px; color: var(--muted-foreground);
+  transition: transform var(--duration-fast);
+}
+.tree-cat-arrow.collapsed { transform: rotate(-90deg); }
+.tree-cat-count {
+  margin-left: auto; font-size: 11px; font-weight: 500;
+  color: var(--muted-foreground);
+}
 .tree-brand-label { font-size: 12px; font-weight: 600; color: var(--muted-foreground); padding: 2px 4px 2px 18px; }
 .tree-leaf {
   text-align: left; border: none; background: transparent; cursor: pointer;
@@ -216,7 +268,7 @@ function onDelete() {
 .req { color: var(--error, #EF4444); font-style: normal; }
 .mine-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .mine-field { display: flex; flex-direction: column; gap: 4px; }
-.ta { height: 96px; padding: 8px 10px; resize: vertical; line-height: 1.5; }
+.ta { height: 192px; padding: 8px 10px; resize: vertical; line-height: 1.5; } /* 2026-09-05 用户裁决：96→192px，参数/卖点篇幅加倍 */
 .mine-status { font-size: 12px; color: var(--muted-foreground); }
 
 /* 底部操作条 */

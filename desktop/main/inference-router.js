@@ -73,7 +73,11 @@ class InferenceRouter {
     const nativeModulesOk = Object.values(iv.details.nativeModules || {}).every((m) => m.ok)
     const modelsOk = Object.values(iv.details.pkgs || {}).every((p) => p.skipped || p.allOk)
     const cap = {
-      mode: iv.inferenceMode,
+      // 2026-09-04 修复：mode 必须是用户选择（store），不能用校验计算值覆盖——
+      // 原实现模型缺失时 iv.inferenceMode 恒为 'server-only'，设置页切换后被 refresh 刷回，
+      // 表现为「推理模式不能切换」。就绪度建议改放 effectiveMode 供参考。
+      mode: this._getMode(),
+      effectiveMode: iv.inferenceMode,
       nativeModulesOk,
       modelsOk,
       avgLocalMs: this._avgLocalDuration(),

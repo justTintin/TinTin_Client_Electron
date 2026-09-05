@@ -22,6 +22,13 @@ defineProps<{
   buildDate: string
   channel: string
   machineCode: string
+  /** 服务端激活信息（2026-09-04 用户裁决：从服务端拉取；null=离线/未接入，回退客户端免激活形态） */
+  licenseInfo: {
+    activated: boolean
+    activatedAt: string
+    expiresAt: string
+    serverMachineId: string
+  } | null
   sysInfoRows: Array<{ label: string; value: string }>
   sysInfoLoading: boolean
 }>()
@@ -53,11 +60,11 @@ async function copyMachineCode(code: string) {
       <div class="brand-title">螺丝钉-电商智能体矩阵</div>
       <div class="brand-dev">此智能体由 <b>大怪工作室</b> 开发</div>
       <div class="brand-contact">
-        联系电话：<span class="brand-phone">17361907260</span>（微信同号）
+        联系电话：<span class="brand-phone">18652930899</span>（微信同号）
       </div>
     </div>
 
-    <!-- 软件授权与激活（对齐原 L1670-1745：客户端免激活形态，常量文案） -->
+    <!-- 软件授权与激活（2026-09-04 用户裁决：激活信息从服务端拉取，修改服务端地址后刷新） -->
     <div class="license-card">
       <div class="license-title">软件授权与激活</div>
 
@@ -75,16 +82,21 @@ async function copyMachineCode(code: string) {
       </div>
 
       <div class="license-row">
-        <span class="license-k">授权状态</span>
-        <span class="license-ok">已激活 (客户端免激活)</span>
+        <span class="license-k">激活机器码</span>
+        <span class="machine-code" :title="licenseInfo?.serverMachineId || ''">{{ licenseInfo?.serverMachineId || '—' }}</span>
       </div>
       <div class="license-row">
-        <span class="license-k">激活签名</span>
-        <span class="license-v">服务端统一授权验证</span>
+        <span class="license-k">授权状态</span>
+        <span v-if="licenseInfo?.activated" class="license-ok">已激活（服务端授权）</span>
+        <span v-else class="license-ok">已激活 (客户端免激活)</span>
+      </div>
+      <div class="license-row">
+        <span class="license-k">激活日期</span>
+        <span class="license-v">{{ licenseInfo?.activatedAt || '—' }}</span>
       </div>
       <div class="license-row">
         <span class="license-k">有效期至</span>
-        <span class="license-v">自适应计算服务端授权状态</span>
+        <span class="license-v">{{ licenseInfo?.expiresAt || '自适应计算服务端授权状态' }}</span>
       </div>
     </div>
 

@@ -42,7 +42,7 @@ const appStore = useAppStore()
 const menuItems = ref<SettingsMenuItem[]>([
   { id: 'platform',   label: '平台接入',   desc: '服务端 · 模型',        icon: 'platform' },
   { id: 'account',    label: '账号与登录', desc: '飞书 · 即梦',          icon: 'account' },
-  { id: 'local',      label: '本地配置',   desc: '缓存目录 · 清理 · LUT', icon: 'local' },
+  { id: 'local',      label: '本地配置',   desc: '缓存目录 · 清理',      icon: 'local' },
   { id: 'theme',      label: '外观主题',   desc: '亮色 / 暗色 / 跟随',   icon: 'theme' },
   { id: 'env',        label: '环境与维护', desc: '日志 · 自启动 · 检测', icon: 'env' },
   { id: 'inference',  label: '本地推理能力', desc: 'OCR · 向量 · 封面', icon: 'inference' },
@@ -122,6 +122,7 @@ const {
   saveLogLevel,
   loadEnvCfg,
   machineCode,
+  licenseInfo,
 } = useSettingsGeneral()
 
 /* ── 日志查看器（对齐原客户端日志查看页；过滤编组在 logViewLogic） ── */
@@ -160,9 +161,10 @@ const {
   checkJimeng,
 } = useSettingsAccounts()
 
-/* ── 本地配置（缓存目录/LUT）+ 系统信息：useSettingsIntegration 单实例。
+/* ── 本地配置（缓存目录）+ 系统信息：useSettingsIntegration 单实例。
  *    2026-08-30 用户裁决：「系统与运行」卡解散——自启动迁环境与维护、
- *    缓存目录+LUT 迁本地配置、系统信息迁关于；S8 平台接入此前已移除。 ── */
+ *    缓存目录迁本地配置、系统信息迁关于；S8 平台接入此前已移除。
+ *    2026-09-04 用户裁决：LUT 调色文件逻辑整体删除（本端无消费方）。 ── */
 const {
   autoStart,
   autoStartLoading,
@@ -170,9 +172,6 @@ const {
   cacheDir,
   cacheDirIsDefault,
   pickCacheDir,
-  lutList,
-  addLut,
-  removeLut,
   sysInfoRows,
   sysInfoLoading,
   loadSysInfo,
@@ -299,19 +298,16 @@ onBeforeUnmount(() => {
           @check-jimeng="checkJimeng"
         />
 
-        <!-- 二、本地配置卡（缓存目录 + 缓存清理 + LUT；2026-08-30 删数据目录/字体/代理占位，
-             闭环整改：缓存清理自环境与维护迁入与缓存目录同卡） -->
+        <!-- 二、本地配置卡（缓存目录 + 缓存清理；2026-08-30 删数据目录/字体/代理占位，
+             闭环整改：缓存清理自环境与维护迁入与缓存目录同卡；2026-09-04 删 LUT） -->
         <CardLocalConfig
           data-section="local"
           :cache-dir="cacheDir"
           :cache-dir-is-default="cacheDirIsDefault"
-          :lut-list="lutList"
           :hint="integrationHint"
           :cache-clearing="cacheClearing"
           :clear-hint="actionHint"
           @pick-cache-dir="pickCacheDir"
-          @add-lut="addLut"
-          @remove-lut="removeLut"
           @clear="clearCache"
         />
 
@@ -359,6 +355,7 @@ onBeforeUnmount(() => {
           :build-date="buildDate"
           :channel="channel"
           :machine-code="machineCode"
+          :license-info="licenseInfo"
           :sys-info-rows="sysInfoRows"
           :sys-info-loading="sysInfoLoading"
           @refresh-sysinfo="loadSysInfo"

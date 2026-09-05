@@ -10,10 +10,17 @@ import { ref, computed } from 'vue'
 /** 3 种推理模式（对齐 inference-router 的 store 取值） */
 export type InferenceMode = 'server-only' | 'hybrid-auto' | 'force-local'
 
-export const MODE_TABS: Array<{ value: InferenceMode; label: string; hint: string }> = [
-  { value: 'server-only', label: '仅服务端', hint: '所有 OCR / 向量 / 封面走服务端 HTTP；新安装默认。' },
-  { value: 'hybrid-auto', label: '混合自动', hint: '模型已下载时本地优先；失败/耗时过高自动切服务端（用户零感知）。' },
-  { value: 'force-local', label: '强制本地', hint: '仅使用本地能力；本地不可用时直接返回错误，用于隐私合规场景。' },
+/**
+ * 2026-09-04 用户裁决：当前阶段仅支持服务端推理——本地推理整链路未上线
+ * （CDN 未部署、模型文件与 SHA256 均为占位值），混合自动/强制本地禁用、
+ * 模型下载列表不在服务端模式下显示。上线时改此常量即可恢复全部 UI。
+ */
+export const LOCAL_INFERENCE_AVAILABLE = false
+
+export const MODE_TABS: Array<{ value: InferenceMode; label: string; hint: string; enabled: boolean }> = [
+  { value: 'server-only', label: '仅服务端', hint: '所有 OCR / 向量 / 封面走服务端 HTTP；新安装默认。', enabled: true },
+  { value: 'hybrid-auto', label: '混合自动', hint: '模型已下载时本地优先；失败/耗时过高自动切服务端（用户零感知）。', enabled: LOCAL_INFERENCE_AVAILABLE },
+  { value: 'force-local', label: '强制本地', hint: '仅使用本地能力；本地不可用时直接返回错误，用于隐私合规场景。', enabled: LOCAL_INFERENCE_AVAILABLE },
 ]
 
 /** 能力状态（inference:getCapability 返回的精简结构） */
@@ -122,6 +129,9 @@ export function useInferenceSettings() {
 
   /** 切换模式（写回 electron-store → inference:setMode） */
   async function setMode(m: InferenceMode): Promise<void> {
+    // 2026-09-04 用户裁决：仅服务端可用；未开放模式直接忽略
+    const tab = MODE_TABS.find((x) => x.value === m)
+    if (!tab?.enabled) return
     const tintin = (window as any).tintin
     if (!tintin?.inference) return
     a2Busy.value = true
@@ -184,6 +194,7 @@ export function useInferenceSettings() {
     totalSizeMB,
     // consts
     MODE_TABS,
+    LOCAL_INFERENCE_AVAILABLE,
     // methods
     statusSummary,
     refreshA2,

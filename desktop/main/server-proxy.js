@@ -17,6 +17,7 @@ const http = require('node:http')
 const { URL } = require('node:url')
 const fs = require('node:fs')
 const path = require('node:path')
+const os = require('node:os')
 const { createMontageProxyIpc } = require('./montage-proxy-ipc')
 // 智能混剪 Step3「口播配音」域（VoiceCloneWorker/VideoDubbingWorker 主进程化）
 const { createMontageVoiceIpc } = require('./montage-voice-ipc')
@@ -106,7 +107,7 @@ const API_ENDPOINTS = {
     enqueueAnalysis: '/material/enqueue_analysis', scan: '/material/scan'
   },
   montage: { split: '/montage/split', concat: '/montage/concat', bgm: '/montage/bgm', auto: '/montage/auto-mix' },
-  audio:   { genBgm: '/audio/gen/bgm' },
+  audio:   { genBgm: '/audio/gen/bgm', genSfx: '/audio/gen/sfx', bgmUpload: '/audio/bgm/upload', libraryUpload: '/audio/library/upload', sfxAnalyze: '/sfx/analyze' },
   prompt:  { video: '/prompt/video' },
   vsr:     { enhance: '/vsr/enhance', remove: '/vsr/remove' },
   rembg:   { matting: '/rembg/matting' },
@@ -141,7 +142,7 @@ const API_ENDPOINTS = {
   scheduled: { tasks: '/scheduled/tasks', taskItem: (id) => `/scheduled/tasks/${id}` },
   skills:    { list: '/skills', item: (id) => `/skills/${encodeURIComponent(id)}` },
   editor:    { renderPackage: (id) => `/editor/render/${id}/package` },
-  system:    { license: '/system/license', guide: '/guide' },
+  system:    { license: '/system/license', licenseMachineId: '/system/license/machine-id', guide: '/guide' },
 }
 
 /** 解析 endpoint（支持 string | (id)=>string 两种形态），拼接 query string */
@@ -241,66 +242,60 @@ function httpRequest(method, fullPath, { body, headers = {}, timeout = 30000 } =
 }
 
 /**
+ * 构造 multipart/form-data body（纯函数，可单测）
+ * 口径对齐原客户端 requests.post(files={"file": (basename, f)}, data={...})：
+ *   · 文件字段：name=key、filename=basename（带扩展名，服务端 FastAPI UploadFile 靠它识别类型）、
+ *     Content-Type 按扩展名映射（.mp3→audio/mpeg、.wav→audio/wav，与 requests 推断一致）
+ *   · 数组值展开为同名多 part；{ path } 对象同文件字段，可覆写 filename/contentType
+ */
+function buildMultipartBody(fields) {
+  const boundary = '----TintinBoundary' + Math.random().toString(16).substring(2)
+  const parts = []
+
+  // 数组值展开为同名多 part（如 /montage/concat 的 files[] List[UploadFile]，
+  // 对照原客户端 requests files=[("files", ...)*n] 口径）
+  const entries = []
+  for (const [key, value] of Object.entries(fields || {})) {
+    if (Array.isArray(value)) {
+      for (const v of value) entries.push([key, v])
+    } else {
+      entries.push([key, value])
+    }
+  }
+
+  for (const [key, value] of entries) {
+    let header = `--${boundary}\r\n`
+    if (value instanceof fs.ReadStream || (value && typeof value.pipe === 'function')) {
+      // 文件流
+      const filePath = value.path
+      const filename = path.basename(filePath)
+      header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
+      header += `Content-Type: ${getMimeType(filename)}\r\n\r\n`
+      parts.push(Buffer.from(header, 'utf-8'), fs.readFileSync(filePath))
+    } else if (value && value.path) {
+      // { path: '...' } 对象
+      const filePath = value.path
+      const filename = value.filename || path.basename(filePath)
+      header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
+      header += `Content-Type: ${value.contentType || getMimeType(filename)}\r\n\r\n`
+      parts.push(Buffer.from(header, 'utf-8'), fs.readFileSync(filePath))
+    } else {
+      // 普通文本字段
+      header += `Content-Disposition: form-data; name="${key}"\r\n\r\n`
+      parts.push(Buffer.from(header, 'utf-8'), Buffer.from(String(value), 'utf-8'))
+    }
+  }
+
+  const endBuf = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8')
+  return { body: Buffer.concat([...parts, endBuf]), boundary }
+}
+
+/**
  * Multipart/form-data 上传
  */
 function multipartUpload(urlPath, fields, onProgress) {
   return new Promise((resolve, reject) => {
-    const boundary = '----TintinBoundary' + Math.random().toString(16).substring(2)
-    const parts = []
-    let totalSize = 0
-
-    // 数组值展开为同名多 part（如 /montage/concat 的 files[] List[UploadFile]，
-    // 对照原客户端 requests files=[("files", ...)*n] 口径）
-    const entries = []
-    for (const [key, value] of Object.entries(fields || {})) {
-      if (Array.isArray(value)) {
-        for (const v of value) entries.push([key, v])
-      } else {
-        entries.push([key, value])
-      }
-    }
-
-    for (const [key, value] of entries) {
-      let header = `--${boundary}\r\n`
-      if (value instanceof fs.ReadStream || (value && typeof value.pipe === 'function')) {
-        // 文件流
-        const filePath = value.path
-        const filename = path.basename(filePath)
-        const stat = fs.statSync(filePath)
-        header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
-        header += `Content-Type: ${getMimeType(filename)}\r\n\r\n`
-        const headerBuf = Buffer.from(header, 'utf-8')
-        parts.push({ type: 'header', data: headerBuf })
-        const fileBuf = fs.readFileSync(filePath)
-        parts.push({ type: 'file', data: fileBuf })
-        totalSize += headerBuf.length + fileBuf.length
-      } else if (value && value.path) {
-        // { path: '...' } 对象
-        const filePath = value.path
-        const filename = value.filename || path.basename(filePath)
-        const stat = fs.statSync(filePath)
-        header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
-        header += `Content-Type: ${value.contentType || getMimeType(filename)}\r\n\r\n`
-        const headerBuf = Buffer.from(header, 'utf-8')
-        const fileBuf = fs.readFileSync(filePath)
-        parts.push({ type: 'header', data: headerBuf })
-        parts.push({ type: 'file', data: fileBuf })
-        totalSize += headerBuf.length + fileBuf.length
-      } else {
-        // 普通文本字段
-        header += `Content-Disposition: form-data; name="${key}"\r\n\r\n`
-        const headerBuf = Buffer.from(header, 'utf-8')
-        const valBuf = Buffer.from(String(value), 'utf-8')
-        parts.push({ type: 'header', data: headerBuf })
-        parts.push({ type: 'value', data: valBuf })
-        totalSize += headerBuf.length + valBuf.length
-      }
-    }
-
-    const endBuf = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8')
-    totalSize += endBuf.length
-
-    const bodyBuf = Buffer.concat(parts.map(p => p.data).concat([endBuf]))
+    const { body: bodyBuf, boundary } = buildMultipartBody(fields)
 
     const baseUrl = getServerUrl()
     const fullUrl = new URL(urlPath.startsWith('http') ? urlPath : baseUrl + urlPath)
@@ -813,22 +808,114 @@ function createServerProxy(ipcMain, ctx) {
   //     bgm:downloadUrl AI 生成 BGM 落盘）外迁 montage-final-ipc.js ------
   createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl })
 
-  // --- audio（智能混剪 Step4 AI 生成 BGM；对齐原客户端 audio_library_client.py
-  // gen_bgm L159-175：body = {prompt, style, duration}，无 mood；契约 description
-  // 中的中文枚举与原客户端实现矛盾，以实际工作的原客户端为准）---
+  // --- audio（智能混剪 Step4 生成 BGM + 音频生成 tab；2026-09-05 用户裁决：BGM 生成
+  //  切服务端 GUIDE 新口径——body = {style, mood?, duration}，无 prompt 字段（服务端
+  //  自组 prompt）；style 'auto'=按历史评价优选，中文值对齐 /audio/bgm/tags 的 style 组；
+  //  mood 对齐 mood 组，空串不传。openapi 为宽容 schema，GUIDE 为准）---
   ipcMain.handle('audio:genBgm', async (_e, payload) => {
     try {
       const p = payload || {}
-      if (!String(p.prompt || '').trim()) throw new Error('audio:genBgm requires prompt')
+      // duration 边界矛盾（铁律上报，2026-09-04）：GUIDE 口径 3-10/3-60 不一且示例传 20，
+      // 原客户端 UI 实为 5-120（默认 30 步长 5）——本地不拦截区间，透传服务端裁决；
+      // 各调用方 UI 校验维持各自口径（Step4 面板 3-60 / 音频生成 tab 5-120）。
       const d = Number(p.duration)
-      if (p.duration !== undefined && (!Number.isFinite(d) || d < 3 || d > 60)) {
-        throw new Error('BGM 时长需在 3-60 秒之间')
-      }
-      const body = { prompt: String(p.prompt).trim(), style: String(p.style || 'auto') }
-      if (p.duration !== undefined && p.duration !== null) body.duration = Math.round(d)
+      const body = { style: String(p.style || 'auto') }
+      const mood = String(p.mood || '').trim()
+      if (mood) body.mood = mood
+      // 向后兼容：智能混剪 Step4 的 AI BGM 仍为 prompt 驱动 UI（audio_library_client 旧口径），
+      // 新契约虽无 prompt 字段，宽容 schema 下附带转发无害；待 Step4 切新口径后移除
+      const prompt = String(p.prompt || '').trim()
+      if (prompt) body.prompt = prompt
+      if (p.duration !== undefined && p.duration !== null && Number.isFinite(d)) body.duration = Math.round(d)
       // MusicGen 生成耗时较长（30-60s，原客户端 _on_gen_bgm 提示同口径），放宽超时
       const res = await httpRequest('POST', API_ENDPOINTS.audio.genBgm, { body, timeout: 300000 })
       return res.data
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // --- 音频生成 tab（媒体工具·音频组，原客户端 audio_material_page.py _build_tab_ai
+  // L1568-1852 + audio_library_client.py 一比一移植）---
+  // audio:genSfx ← gen_sfx L179-196：POST /audio/gen/sfx，body={prompt,duration}（AudioLDM2；
+  // 该端点未见于 openapi-latest.json，以原客户端实际调用为准）
+  ipcMain.handle('audio:genSfx', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      if (!String(p.prompt || '').trim()) throw new Error('audio:genSfx requires prompt')
+      const body = { prompt: String(p.prompt).trim() }
+      const d = Number(p.duration)
+      if (p.duration !== undefined && p.duration !== null && Number.isFinite(d)) body.duration = Math.round(d)
+      // 原客户端 timeout=60s；提示口径 15-30s，放宽至 120s 防慢机超时
+      const res = await httpRequest('POST', API_ENDPOINTS.audio.genSfx, { body, timeout: 120000 })
+      return res.data
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // audio:bgmUpload ← POST /audio/bgm/upload，multipart file+style/scene/mood/tags
+  // （2026-09-04 服务端契约更新：tag 字段移除——旧「tag=AI生成」写法作废；服务端固定
+  //  category='配乐'，style 承接原 tag 的剪映风格标签语义，候选源 GET /audio/bgm/tags）
+  ipcMain.handle('audio:bgmUpload', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      if (!p.filePath) throw new Error('audio:bgmUpload requires filePath')
+      if (!fs.existsSync(p.filePath)) throw new Error(`文件不存在: ${p.filePath}`)
+      return await multipartUpload(API_ENDPOINTS.audio.bgmUpload, {
+        file: { path: String(p.filePath) },
+        style: String(p.style || ''), tags: String(p.tags || ''),
+        scene: String(p.scene || ''), mood: String(p.mood || ''),
+      })
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // audio:libraryUpload ← POST /audio/library/upload，multipart file+category+tags
+  // （2026-09-05 服务端音频分流至独立 audio_library 表：扫描/上传的新音频不再进 materials，
+  //  /material/list 不再返回新音频 → 保存音效入库切此通道 category='音效'，
+  //  旧 /sfx/analyze 音效库不进左列表）
+  ipcMain.handle('audio:libraryUpload', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      if (!p.filePath) throw new Error('audio:libraryUpload requires filePath')
+      if (!fs.existsSync(p.filePath)) throw new Error(`文件不存在: ${p.filePath}`)
+      return await multipartUpload(API_ENDPOINTS.audio.libraryUpload, {
+        file: { path: String(p.filePath) },
+        category: String(p.category || ''), tags: String(p.tags || ''),
+      })
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // audio:sfxAnalyze ← sfx_analyze L127-147：POST /sfx/analyze，multipart file（PANNs 自动标注入库）
+  // @deprecated 2026-09-05：服务端音频分流 audio_library 表，/sfx 音效库不进左列表，
+  // 客户端已切 audio:libraryUpload；handler 暂保留待清理
+  ipcMain.handle('audio:sfxAnalyze', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      if (!p.filePath) throw new Error('audio:sfxAnalyze requires filePath')
+      if (!fs.existsSync(p.filePath)) throw new Error(`文件不存在: ${p.filePath}`)
+      return await multipartUpload(API_ENDPOINTS.audio.sfxAnalyze, { file: { path: String(p.filePath) } })
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // audio:downloadTemp — 本端扩展（原 _on_save_bgm_to_lib/_on_save_sfx_to_lib L1735-1748/1816-1829
+  // 在 GUI 侧 requests.get(url) 落临时目录后上传入库；渲染层无请求能力，收拢到主进程同口径：
+  // ext 按 Content-Type 判定（wav→.wav / mpeg|mp3→.mp3），否则用调用方 defaultExt
+  // （BGM 默认 .mp3、音效默认 .wav，与原版一致）
+  ipcMain.handle('audio:downloadTemp', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      let u = String(p.url || '')
+      if (!u) throw new Error('audio:downloadTemp requires url')
+      if (!/^https?:/i.test(u)) {
+        u = getServerUrl().replace(/\/$/, '') + (u.startsWith('/') ? u : '/' + u)
+      }
+      const res = await httpRequest('GET', u, { timeout: 60000 })
+      const ct = String(res.headers?.['content-type'] || '')
+      let ext = String(p.defaultExt || '.mp3')
+      if (ct.includes('wav')) ext = '.wav'
+      else if (ct.includes('mpeg') || ct.includes('mp3')) ext = '.mp3'
+      const tmpDir = path.join(os.tmpdir(), 'tintin_ai_audio')
+      fs.mkdirSync(tmpDir, { recursive: true })
+      const dest = path.join(tmpDir, `${String(p.prefix || 'ai_audio_')}${process.pid}${ext}`)
+      fs.writeFileSync(dest, Buffer.from(res.raw || ''))
+      return { path: dest, contentType: ct }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -870,6 +957,7 @@ module.exports = {
   getMachineId,
   setConfigStore,
   API_ENDPOINTS,
+  buildMultipartBody,
   // A2 inference-router 需要：直接复用 server-proxy 的 HTTP 请求能力（不经过 IPC）
   httpRequest,
   multipartUpload

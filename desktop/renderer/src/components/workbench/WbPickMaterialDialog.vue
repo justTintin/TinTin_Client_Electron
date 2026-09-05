@@ -287,10 +287,11 @@ watch(
   <!-- 2026-08-31 用户裁决：弹窗 80% 主界面，vw/vh 随窗口缩放 -->
   <TDialog :visible="visible" title="选择素材" width="80vw" :show-footer="false" @close="emit('close')">
     <div class="mtd">
+      <!-- 2026-09-04 用户裁决：三 tab 改用全局 luo-tab 分段切换样式（同工作台顶栏） -->
       <div class="mtd-tabs">
-        <button class="mtd-tab" :class="{ active: tab === 'image' }" type="button" @click="tab = 'image'">图片</button>
-        <button class="mtd-tab" :class="{ active: tab === 'video' }" type="button" @click="tab = 'video'">视频</button>
-        <button class="mtd-tab" :class="{ active: tab === 'audio' }" type="button" @click="tab = 'audio'">音频</button>
+        <button class="luo-tab" :class="{ active: tab === 'image' }" type="button" @click="tab = 'image'">图片</button>
+        <button class="luo-tab" :class="{ active: tab === 'video' }" type="button" @click="tab = 'video'">视频</button>
+        <button class="luo-tab" :class="{ active: tab === 'audio' }" type="button" @click="tab = 'audio'">音频</button>
       </div>
 
       <!-- ─── Tab1/Tab2 图片/视频（同域不同 media_type） ─── -->
@@ -427,7 +428,7 @@ watch(
         <div class="mtd-player">
           <span class="mtd-player-name">{{ currentAudio ? audioName(currentAudio) : '点击列表中的音频试听' }}</span>
           <audio v-if="currentAudio && audioUrl" :src="audioUrl" controls class="mtd-player-audio" />
-          <button class="mtd-btn" :disabled="!currentAudio" @click="confirmAudio()">选择该音频</button>
+          <button class="mtd-btn mtd-btn--right" :disabled="!currentAudio" @click="confirmAudio()">选择该音频</button>
         </div>
       </div>
 
@@ -446,25 +447,19 @@ watch(
 
 .mtd-tabs {
   display: flex;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--border);
-  padding-bottom: var(--space-2);
-}
-.mtd-tab {
-  padding: 6px 16px;
-  font-size: var(--font-size-body);
-  border: 1px solid var(--border);
+  /* 2026-09-04 用户裁决：三 tab 占满一行并平分（图片/视频/音频各 1/3，文字居中） */
+  gap: var(--space-1);
+  /* 容器底色对齐工作台顶栏 .tab-bar（surface-container 圆角胶囊） */
+  background: var(--color-surface-container);
   border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--muted-foreground);
-  transition: all var(--duration-fast);
+  padding: var(--space-1);
 }
-.mtd-tab:hover { color: var(--primary); }
-.mtd-tab.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-foreground);
+.mtd-tabs .luo-tab {
+  flex: 1 1 0;
+  justify-content: center;
 }
+/* tab 按钮复用全局 .luo-tab 分段切换样式（styles/global.css L428：
+   无底色胶囊 + hover 浅底 + active 主色容器/加粗，同工作台顶栏） */
 
 .mtd-filter {
   display: flex;
@@ -672,6 +667,9 @@ watch(
   white-space: nowrap;
 }
 .mtd-au-sub { flex: 0 0 auto; font-size: 11px; color: var(--muted-foreground); }
+
+/* 播放条内确认按钮推到最右（2026-09-04 用户裁决：默认进入即右对齐） */
+.mtd-player .mtd-btn--right { margin-left: auto; }
 
 .mtd-player {
   flex: 0 0 auto;

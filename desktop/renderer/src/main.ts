@@ -9,7 +9,8 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 
-// 全局样式：先 tokens 后 global，保证 token 优先级
+// 全局样式：先字体（@font-face）→ tokens → global，保证 token 优先级
+import './styles/fonts.css'
 import './styles/tokens.css'
 import './styles/global.css'
 

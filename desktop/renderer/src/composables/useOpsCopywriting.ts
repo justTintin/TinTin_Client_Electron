@@ -184,7 +184,7 @@ export function useOpsCopywriting() {
 
   async function generate(): Promise<void> {
     if (generating.value) return
-    if (!selectedProductId.value) { status.value = '请先在检索框搜索并选择一个产品。'; return }
+    if (!selectedProductId.value) { status.value = '请先选择一个产品。'; return }
     if (!features.value.trim() && !sellingPoints.value.trim()) {
       status.value = '请先在「产品资料」页为该产品填写性能参数或核心卖点。'
       return

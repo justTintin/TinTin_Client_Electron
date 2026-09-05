@@ -37,7 +37,6 @@ import { useBrowserFavorites } from './composables/useBrowserFavorites'
 import { useBrowserDownloads } from './composables/useBrowserDownloads'
 import { useBrowserBounds } from './composables/useBrowserBounds'
 import { useBrowserLogin } from './composables/useBrowserLogin'
-import type { LoginState } from './composables/useBrowserLogin'
 import { useBrowserDailyAssets } from './composables/useBrowserDailyAssets'
 import { useBrowserCreators } from './composables/useBrowserCreators'
 import BrowserSidebar from './components/BrowserSidebar.vue'
@@ -71,17 +70,12 @@ const boundsApi = useBrowserBounds({
   getActivePlatformId: nav.getActivePlatformId,
   platforms: nav.platforms,
 })
-// 登录状态域（条目⑧ B11）：cookieList 判定 + 工具栏/左栏徽章
+// 登录状态域（条目⑧）：cookieList 判定 → 左栏平台行尾状态点
+// 2026-09-04 用户裁决：右上角登录胶囊已移除（与左栏状态点重复），本域仅供左栏
 const loginApi = useBrowserLogin(nav.activeNavId)
 // B9/B10（浏览器域移植批次2）：每日素材 + 达人库域（进主页导航复用 nav 域能力）
 const dailyAssetsApi = useBrowserDailyAssets()
 const creatorsApi = useBrowserCreators({ onOpenHomepage: nav.navigateToCreatorHomepage })
-/** 工具栏徽章用激活平台登录态：仅「有判定规则的平台」展示（web/autolisting → null 不渲染） */
-const activeLoginStateProp = computed<LoginState | null>(() => {
-  const id = nav.activeNavId.value
-  if (id === 'web' || id === 'autolisting' || id === 'favorites' || id === 'dailyassets' || id === 'creators' || id === 'collect') return null
-  return loginApi.activeLoginState.value
-})
 navWiring.leftDrawerOpen = boundsApi.leftDrawerOpen
 navWiring.isNarrow = boundsApi.isNarrow
 navWiring.scheduleRecalcBounds = boundsApi.scheduleRecalcBounds
@@ -178,13 +172,6 @@ const {
 
 /* ── 子组件 v-model 中转（保持子组件纯展示） ── */
 function setAddress(v: string): void { addressUrl.value = v }
-
-/** 工具栏登录徽章点击：重检当前激活平台（条目⑧） */
-function onRefreshLogin(): void {
-  const id = nav.activeNavId.value
-  if (!id || id === 'web' || id === 'autolisting' || id === 'favorites' || id === 'collect') return
-  void loginApi.refreshOne(id)
-}
 
 /** B7：侧栏「素材采集」入口（activeNavId==='collect'）→ CreatorsView 固定展示采集清单 Tab */
 const creatorsCollectMode = computed(() => nav.activeNavId.value === 'collect')
@@ -476,7 +463,6 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
       :icon-src="extIconSrc"
       :history-count="historyEntries.length"
       :active-download-count="activeDownloadCount"
-      :login-state="activeLoginStateProp"
       @toggle-left-drawer="toggleLeftDrawer"
       @back="navBack"
       @forward="navForward"
@@ -487,7 +473,6 @@ type SniffedMediaLike = typeof sniffedMedia.value[number]
       @open-history-panel="openHistoryPanel"
       @open-downloads-panel="openDownloadsPanel"
       @open-settings="goSettings"
-      @refresh-login="onRefreshLogin"
     />
 
     <!-- ─── 主体：左栏 + 渲染区 + 右栏 ─── -->

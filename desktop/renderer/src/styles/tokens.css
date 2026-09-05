@@ -161,9 +161,9 @@
   /* ═══════════════════════════════════════════════════════════
      字体与排版
      ═══════════════════════════════════════════════════════════ */
-  --font-display: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-heading: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-body:    'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-display: 'Inter', 'MiSans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-heading: 'Inter', 'MiSans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-body:    'Inter', 'MiSans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
   --font-mono:    'JetBrains Mono', 'Fira Code', Consolas, monospace;
   --font-family:  var(--font-body);
   --font-family-base: var(--font-body);

@@ -541,8 +541,9 @@ function scoreClass(score: number): string {
           <div class="row">
             <label class="label">风格:</label>
             <TSelect v-model="bgmGenStyle" :options="bgmStyleOptions" />
-            <label class="label">时长 <span class="muted">({{ bgmGenDuration }} 秒，3-60)</span></label>
-            <input v-model.number="bgmGenDuration" type="range" min="3" max="60" step="1" class="grow" />
+            <!-- 2026-09-05 用户裁决：客户端生成 BGM 上限 30 秒 -->
+            <label class="label">时长 <span class="muted">({{ bgmGenDuration }} 秒，3-30)</span></label>
+            <input v-model.number="bgmGenDuration" type="range" min="3" max="30" step="1" class="grow" />
             <TButton label="生成 BGM" icon="play" :loading="bgmGenBusy" @click="generateBgm" />
           </div>
           <div class="row">
@@ -797,9 +798,12 @@ function scoreClass(score: number): string {
 .dz-main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); }
 .dz-hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 
-.file-list { display: flex; flex-direction: column; gap: 6px; list-style: none; margin: 0; padding: 0; font-size: 13px; }
-.file-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 6px 10px; background: var(--surface-container); border: 1px solid var(--border); border-radius: var(--radius-md); word-break: break-all; }
-.file-list li.picked { border-color: var(--primary); }
+/* 2026-09-05 用户裁决：全程序列表行间统一规范——页面内嵌密集列表 = 分隔线式（1px 横线），
+   弹窗选择列表 = 卡片式（边框+圆角+空隙）；本页三处列表统一改分隔线式 */
+.file-list { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.file-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 6px 10px; border-bottom: 1px solid var(--border); word-break: break-all; }
+.file-list li:last-child { border-bottom: none; }
+.file-list li.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
 /* Step1 素材列表（缩略图 + 路径 + 播放/删除按钮） */
 .src-video-list { max-height: 480px; overflow-y: auto; }
 .src-video-list li { padding: 4px 8px; }
@@ -855,19 +859,20 @@ function scoreClass(score: number): string {
   display: flex; flex-direction: column; gap: 10px; padding: 10px;
   background: var(--surface-container); border: 1px dashed var(--border); border-radius: var(--radius-md);
 }
-/* 预合成列表：固定 10 行高度（每行 ~30px + 4px gap），不足占位，多余滚动 */
+/* 预合成列表：固定 10 行高度（分隔线式每行 ~29px），不足占位，多余滚动 */
 .plan-list {
-  display: flex; flex-direction: column; gap: 4px; list-style: none; margin: 0; padding: 0;
-  height: 336px; /* 10 行 × (26px 内容 + 4px gap) */
+  display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0;
+  height: 290px; /* 10 行 × 29px（文字 18 + padding 10 + 分隔线 1）；分隔线式后行距重算 */
   overflow-y: auto; font-size: 13px;
 }
 .plan-list li {
-  padding: 5px 10px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 10px; border-bottom: 1px solid var(--border);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; flex: none;
 }
-.plan-list li.picked { border-color: var(--primary); }
+.plan-list li:last-child { border-bottom: none; }
+.plan-list li.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
 .plan-list li.plan-placeholder {
-  visibility: hidden; pointer-events: none; border-color: transparent; background: transparent;
+  visibility: hidden; pointer-events: none;
 }
 /* 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） */
 .result-bottom { display: flex; gap: 15px; align-items: flex-start; }
@@ -981,11 +986,12 @@ function scoreClass(score: number): string {
 .dub-header { font-size: 14px; font-weight: 700; color: var(--success); }
 .dub-dir { font-size: 12px; color: var(--foreground); word-break: break-all; }
 .dub-dir-path { color: var(--primary); }
-.dub-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.dub-list { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; }
 .dub-item {
   display: flex; align-items: center; gap: 10px; padding: 6px 10px;
-  background: var(--surface-container); border: 1px solid var(--border); border-radius: var(--radius-md);
+  border-bottom: 1px solid var(--border);
 }
+.dub-item:last-child { border-bottom: none; }
 .dub-name {
   flex: 1; min-width: 0; font-size: 13px; font-weight: 700;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -6,9 +6,9 @@
 // 事件映射：汉堡→toggle-left-drawer；后退/前进/刷新→back/forward/reload；
 // 地址栏输入→update:address，回车→url-enter；扩展图标与扩展按钮→open-ext-panel；
 // 历史按钮→open-history-panel；设置→open-settings
+// 2026-09-04 用户裁决：移除右上角登录状态胶囊（与左栏平台行尾状态点重复，
+// 同源 useBrowserLogin；页面加载 onViewReady 已自动重检，无需手动刷新入口）
 import type { InstalledExtension } from '../composables/useBrowserDownloads'
-import { loginStateText } from '../composables/useBrowserLogin'
-import type { LoginState } from '../composables/useBrowserLogin'
 
 const props = defineProps<{
   /** <900px 汉堡抽屉展开态（控制 menu-btn active） */
@@ -29,8 +29,6 @@ const props = defineProps<{
   historyCount: number
   /** 进行中下载任务数（⬇按钮角标） */
   activeDownloadCount: number
-  /** 激活平台登录态（条目⑧徽章；null=无规则平台/非平台模式 → 不渲染） */
-  loginState: LoginState | null
 }>()
 
 const emit = defineEmits<{
@@ -44,8 +42,6 @@ const emit = defineEmits<{
   (e: 'open-history-panel'): void
   (e: 'open-downloads-panel'): void
   (e: 'open-settings'): void
-  /** 点击登录徽章：重检当前平台（条目⑧） */
-  (e: 'refresh-login'): void
 }>()
 
 function onAddressInput(e: Event): void {
@@ -133,19 +129,6 @@ function userExtensions(): InstalledExtension[] {
     </div>
 
     <div class="right-actions">
-      <!-- 登录状态徽章（条目⑧ B11：对照原 renderLoginStatusBadges；
-           仅平台模式显示，点击重检；检测失败不阻塞浏览） -->
-      <button
-        v-if="props.loginState"
-        class="login-pill"
-        :class="props.loginState"
-        :title="`登录状态：${loginStateText(props.loginState)}（点击重新检测）`"
-        aria-label="登录状态"
-        @click="$emit('refresh-login')"
-      >
-        <span class="login-pill-dot"></span>
-        {{ loginStateText(props.loginState) }}
-      </button>
       <div
         v-for="ext in userExtensions()"
         :key="ext.id"
@@ -361,53 +344,6 @@ function userExtensions(): InstalledExtension[] {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-}
-
-/* ── 登录状态徽章（条目⑧；对照原徽章绿=已登录/红=未登录 + 检测中态） ── */
-.login-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-  border: 1px solid var(--border);
-  background: var(--surface-container);
-  color: var(--muted-foreground);
-  cursor: pointer;
-  font-family: inherit;
-  transition: all var(--duration-fast);
-}
-.login-pill:hover { border-color: var(--primary); color: var(--foreground); }
-.login-pill-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  flex: 0 0 auto;
-  background: var(--muted-foreground);
-}
-.login-pill.logged_in {
-  background: rgba(16, 185, 129, 0.10);
-  border-color: rgba(16, 185, 129, 0.30);
-  color: var(--success);
-}
-.login-pill.logged_in .login-pill-dot { background: var(--success); }
-.login-pill.logged_out {
-  background: rgba(239, 68, 68, 0.06);
-  border-color: rgba(239, 68, 68, 0.22);
-  color: var(--error);
-}
-.login-pill.logged_out .login-pill-dot { background: var(--error); }
-.login-pill.checking .login-pill-dot {
-  background: conic-gradient(from 0deg, var(--primary) 0%, transparent 60%);
-  animation: login-pill-spin 1.1s linear infinite;
-}
-@keyframes login-pill-spin { from { transform: rotate(0) } to { transform: rotate(360deg) } }
-@media (prefers-reduced-motion: reduce) {
-  .login-pill.checking .login-pill-dot { animation: none; }
 }
 
 /* ═══ Phase 3: 历史记录弹出面板 ═══ */

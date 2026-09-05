@@ -926,7 +926,7 @@ export function useVideoMontage() {
   const bgmSource = ref<'local' | 'ai'>('local')   // 'ai' 仅作 AI 面板展开开关
   const bgmGenPrompt = ref('')
   const bgmGenStyle = ref('auto')
-  const bgmGenDuration = ref(30)   // 秒（契约文档 3-60；原客户端默认 30）
+  const bgmGenDuration = ref(30)   // 秒（2026-09-05 用户裁决：客户端生成 BGM 上限 30 秒，滑杆 max=30 + 生成前 clamp）
   const bgmGenBusy = ref(false)
   const bgmGenError = ref('')
   const bgmGenUrl = ref('')        // 生成结果相对路径（预览/下载用）
@@ -939,7 +939,7 @@ export function useVideoMontage() {
       payload = buildBgmGenPayload({
         prompt: bgmGenPrompt.value,
         style: bgmGenStyle.value,
-        duration: bgmGenDuration.value,
+        duration: Math.min(30, Math.max(3, Math.round(Number(bgmGenDuration.value) || 30))),
       })
     } catch (e) {
       bgmGenError.value = errText(e)

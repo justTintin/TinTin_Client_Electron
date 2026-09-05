@@ -61,7 +61,7 @@ function scriptLabel(o: { topic: string; shotCount: number; savedAt: string }): 
       </div>
       <textarea
         class="input ta"
-        placeholder="粘贴或输入视频文案；也可从「产品文案创作」卡点「前往分镜脚本设计」自动带入。"
+        placeholder="粘贴或输入视频文案；也可从「产品知识」卡点「前往分镜脚本设计」自动带入。"
         v-model="S.copyText.value"
       ></textarea>
       <label class="field">
@@ -242,13 +242,15 @@ textarea.input { height: 110px; width: 100%; }
   display: flex; flex-direction: column; gap: var(--space-3);
 }
 .mat-head { display: flex; align-items: center; justify-content: space-between; }
-.mat-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; min-height: 120px; }
+/* 2026-09-05 列表行间统一规范：页面内嵌密集列表 = 分隔线式 */
+.mat-list { overflow-y: auto; display: flex; flex-direction: column; min-height: 120px; }
 .mat-item {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--background); cursor: pointer; text-align: left;
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  cursor: pointer; text-align: left;
 }
-.mat-item:hover { border-color: var(--primary); }
+.mat-item:last-child { border-bottom: none; }
+.mat-item:hover { background: var(--surface-container); }
 .mat-name { font-size: 13px; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mat-score { font-size: 12px; color: var(--primary); font-weight: 600; }
 

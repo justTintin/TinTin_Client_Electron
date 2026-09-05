@@ -689,8 +689,10 @@ function fmt(sec: number): string {
 :deep(.score-high) { color: var(--success); font-weight: 600; }
 :deep(.score-mid) { color: #eab308; font-weight: 600; }
 
-.file-list { display: flex; flex-direction: column; gap: 6px; list-style: none; margin: 0; padding: 0; font-size: 13px; }
-.clip-item { display: flex; align-items: flex-start; gap: var(--space-3); padding: 8px 10px; background: var(--surface-container); border: 1px solid var(--border); border-radius: var(--radius-md); }
+/* 2026-09-05 列表行间统一规范：页面内嵌密集列表 = 分隔线式 */
+.file-list { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.clip-item { display: flex; align-items: flex-start; gap: var(--space-3); padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.clip-item:last-child { border-bottom: none; }
 .clip-main { display: flex; flex-direction: column; gap: 6px; flex: 1 1 auto; min-width: 0; }
 .cover-thumb { flex: 0 0 auto; width: 96px; height: 54px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--border); }
 .clip-state { flex: 0 0 auto; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--muted-foreground); background: var(--surface-container-high); }

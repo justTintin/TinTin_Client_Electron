@@ -6,6 +6,8 @@
 //   视频运营：视频评价预测 / 视频营销检测
 // 2026-08-30 用户裁决：飞书脚本创作不移植；产品文案创作、分镜脚本创作
 //   划归媒体工具 Tab（组件同目录 components/ops-tools/，由 MediaTools 引用）。
+// 2026-09-04 用户裁决：媒体工具提示词组 2 卡（图片/视频反推提示词）划归运营工具
+//   （组件仍在 components/media-tools/，由 OpsTools 引用）。
 // ═══════════════════════════════════════════════════════════════
 
 import { shallowRef, defineAsyncComponent, type Component } from 'vue'
@@ -27,13 +29,19 @@ interface ToolItem {
   status?: 'ready' | 'planned'
 }
 
-/* 分组与模块（落地文档 2026-08-30 §三 定稿卡片清单） */
-const GROUPS = ['方案脚本', '视频运营'] as const
+/* 分组与模块（落地文档 2026-08-30 §三 定稿卡片清单；2026-09-04 增提示词组，
+   方案脚本组改名「产品知识」，提示词置于视频运营上方） */
+const GROUPS = ['产品知识', '提示词', '视频运营'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
-  方案脚本: [
-    { id: 'product-library', title: '产品资料', desc: '品类/品牌/型号树状管理，服务端同步', group: '方案脚本', emoji: '📦', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtProductLibrary.vue')), status: 'ready' },
-    { id: 'knowledge-base',  title: '我的知识库', desc: '风格化画像 + 参考素材蒸馏', group: '方案脚本', emoji: '📚', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtKnowledgeBase.vue')), status: 'planned' },
+  产品知识: [
+    { id: 'product-library', title: '产品资料', desc: '品类/品牌/型号树状管理，服务端同步', group: '产品知识', emoji: '📦', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtProductLibrary.vue')), status: 'ready' },
+    { id: 'knowledge-base',  title: '我的知识库', desc: '风格化画像 + 参考素材蒸馏', group: '产品知识', emoji: '📚', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtKnowledgeBase.vue')), status: 'planned' },
+  ],
+  提示词: [
+    // 2026-09-04 自媒体工具提示词组划入（组件仍在 media-tools/，完整实现 status=ready）
+    { id: 'reverse-prompt-image', title: '图片反推提示词', desc: '上传图片，AI 生成绘画提示词', group: '提示词', emoji: '🖼️', accent: 'linear-gradient(135deg,#10B981 0%,#14B8A6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ReversePromptImage.vue')), status: 'ready' },
+    { id: 'reverse-prompt-video', title: '视频反推提示词', desc: '上传视频，框选片段生成提示词', group: '提示词', emoji: '🎬', accent: 'linear-gradient(135deg,#3B82F6 0%,#8B5CF6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ReversePromptVideo.vue')), status: 'ready' },
   ],
   视频运营: [
     { id: 'video-score',    title: '视频评价预测', desc: '关键帧 → 视觉模型预测视频表现', group: '视频运营', emoji: '📈', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtVideoScore.vue')), status: 'ready' },
@@ -86,7 +94,7 @@ function backToGrid() {
     <div v-else key="grid" class="grid-view">
       <div class="page-head">
         <h1 class="page-title">运营工具</h1>
-        <p class="page-sub">产品资料 · 我的知识库 · 视频评价预测 · 视频营销检测</p>
+        <p class="page-sub">产品资料 · 我的知识库 · 视频评价预测 · 视频营销检测 · 反推提示词</p>
       </div>
 
       <div v-for="g in GROUPS" :key="g" class="group-block">

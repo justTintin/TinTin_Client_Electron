@@ -374,21 +374,21 @@ onMounted(() => { init() })
 }
 
 /* ── 待回填历史 ── */
-.history-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+/* 2026-09-05 列表行间统一规范：页面内嵌密集列表 = 分隔线式 */
+.history-list { display: flex; flex-direction: column; max-height: 220px; overflow-y: auto; }
 .history-item {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   padding: 6px 10px;
-  background: var(--surface-container, transparent);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-bottom: 1px solid var(--border);
   color: var(--foreground);
   font-size: 12px;
   cursor: pointer;
   text-align: left;
 }
-.history-item:hover { border-color: var(--primary); }
+.history-item:last-child { border-bottom: none; }
+.history-item:hover { background: var(--surface-container); }
 .h-platform {
   flex: none;
   padding: 1px 8px;

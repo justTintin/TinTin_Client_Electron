@@ -220,6 +220,13 @@ const server = {
   clearMontageCache: (dir) => ipcRenderer.invoke('montage:clearCache', { dir }),
   // 智能混剪 Step4 AI 生成 BGM（/audio/gen/bgm，原客户端 gen_bgm 同口径）
   audioGenBgm:     (payload) => ipcRenderer.invoke('audio:genBgm', payload),
+  // 音频生成 tab（原客户端 audio_material_page.py AI 生成 tab 一比一移植）
+  audioGenSfx:       (payload) => ipcRenderer.invoke('audio:genSfx', payload),
+  audioBgmUpload:    (payload) => ipcRenderer.invoke('audio:bgmUpload', payload),
+    // 音频库直传（2026-09-05 服务端音频分流 audio_library 表：保存音效入库走此通道）
+    audioLibraryUpload: (payload) => ipcRenderer.invoke('audio:libraryUpload', payload),
+  audioSfxAnalyze:   (payload) => ipcRenderer.invoke('audio:sfxAnalyze', payload),   // deprecated：音频已分流，保留待清理
+  audioDownloadTemp: (payload) => ipcRenderer.invoke('audio:downloadTemp', payload),
   promptVideo:     (p, onProgress) => _withUploadProgress(onProgress, 'prompt:video', p),
 
   // ---------- storyboard ----------

@@ -289,12 +289,14 @@ function toggleFold(id: string) {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* 2026-09-05 用户裁决：贴边边距 12px → 24px（space-6），上下左右统一 */
   padding: var(--space-6);
 }
 
 .messages-inner {
-  /* 与输入区 input-wrap/ctx-pills/input-foot 同宽（64rem，2026-08-31 对齐） */
-  max-width: 64rem;
+  /* 2026-09-04 用户裁决：去 64rem 限宽，内容列跟随中间区可用宽度（左右 12px 贴边），
+     与输入区 input-wrap/ctx-pills/input-foot 同步放开；气泡自身仍有 max-width 防横跨 */
+  max-width: none;
   margin: 0 auto;
   display: flex;
   flex-direction: column;

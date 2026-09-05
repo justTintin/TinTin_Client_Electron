@@ -191,7 +191,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // 产品文案创作 → 分镜脚本创作 的跨卡草案信号（对齐 pendingHotspotNav 模式）：
-  // OtProductCopywriting.goToStoryboard 写入，OtStoryboard 挂载时消费并清空
+  // OtCopywritingPanel.goToStoryboard 写入（原 OtProductCopywriting，2026-09-05 迁入产品资料页），OtStoryboard 挂载时消费并清空
   const pendingStoryboard = ref<{ copyText: string; product: Record<string, string> } | null>(null)
 
   /** 写入分镜草案（文案创作卡 → 分镜脚本卡） */

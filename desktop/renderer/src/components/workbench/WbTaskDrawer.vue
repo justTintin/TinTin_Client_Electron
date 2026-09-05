@@ -282,16 +282,14 @@ function isTerminal(row: TaskRow): boolean {
   font-weight: normal;
 }
 
-/* ── 任务行 ── */
+/* ── 任务行（2026-09-05 列表行间统一规范：页面内嵌密集列表 = 分隔线式）── */
 .taskq-row {
   padding: var(--space-3);
-  border-radius: var(--radius-lg);
-  background: var(--surface-container);
-  border: 1px solid var(--border);
-  margin-bottom: var(--space-2);
-  transition: border-color var(--duration-fast);
+  border-bottom: 1px solid var(--border);
+  transition: background var(--duration-fast);
 }
-.taskq-row:hover { border-color: var(--primary); }
+.taskq-row:last-child { border-bottom: none; }
+.taskq-row:hover { background: var(--surface-container); }
 
 .taskq-head {
   display: flex;

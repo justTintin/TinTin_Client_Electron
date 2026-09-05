@@ -1,6 +1,6 @@
 # 螺丝钉 V3 Electron 客户端 UI 设计文档
 
-> 版本：V3.0 设计稿 | 日期：2026-08-25 | 对应需求：`PRD_Electron_v3_SchemeA.md`
+> 版本：V3.1 设计稿 | 日期：2026-09-04 | 对应需求：`PRD_Electron_v3_SchemeA.md`
 >
 > 设计目标：在保留 Luosiding 品牌资产的前提下，借鉴 Cherry Studio 的侧边栏 + 内容区布局、卡片式导航、冷静中性的暗色界面语言，为「螺丝钉-电商智能体矩阵」重写一套面向生产效率的 Electron 三 Tab 工作台。
 
@@ -123,6 +123,35 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 | Tab 切换、面板展开 | 200ms | cubic-bezier(0.4, 0, 0.2, 1) |
 | 卡片 hover 抬升 | 150ms | ease-out |
 | 进度条/加载 | 300ms | linear |
+| 路由切换 fade | 220ms | var(--easing-out) + translateY(8px→0) |
+| 工具内组件切换 slide-up | 200ms | var(--easing-out) + translateY(16px→0) |
+| 卡片 stagger 入场 | 350ms | var(--easing-out)，子项递增 35ms 延迟 |
+| 卡片极光渐变 hover | 8s 旋转循环 | linear，opacity 400ms 淡入 0.18/暗色 0.25 |
+
+全局动画类（`global.css`）：
+
+- `.fade-enter-active` / `.fade-leave-active`：路由级过渡。
+- `.slide-up-enter-active`：工具内组件切换。
+- `.stagger-item`：卡片交错入场（前 12 个子元素递增 35ms）。
+- `.spinner` / `.spinner.lg`：通用加载旋转器（border 2/3px + spin 0.7s）。
+
+### 2.6 界面风格切换（2026-09-04 新增）
+
+系统设置 → 外观主题新增「界面风格」分段选择器，支持两档：
+
+| 风格 | 效果 | 实现 |
+|---|---|---|
+| ▣ 标准 | 实色卡片 `var(--card)`，简洁清爽（默认） | 原有样式 |
+| ◐ 玻璃质感 | 半透明毛玻璃，macOS 风格 | `html.glass-mode` class 控制 |
+
+玻璃质感生效范围：
+
+- 卡片背景 `color-mix(in srgb, var(--card) 72%, transparent)`（暗色 80%）。
+- `backdrop-filter: blur(12px) saturate(160%)`。
+- 半透明边框 `color-mix(in srgb, var(--border) 60%, transparent)`。
+- 内发光 `inset 0 1px 0 rgba(255,255,255,0.08)`。
+
+持久化：`tintin.visualStyle`（electron-store），启动时 `initVisualStyle()` 在 mount 前应用避免闪烁。浏览器独立入口 `browser/main.ts` 同步读取该配置。
 
 ---
 
@@ -155,13 +184,20 @@ font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
 |---|---|---|
 | 左 | Logo 20px + 产品名「螺丝钉-电商智能体矩阵」+ 版本号 caption | 版本号用 muted-foreground。 |
 | 中 | Tab 胶囊：工作台 / 浏览器 / 媒体工具 | 当前 Tab 使用 `--surface-container-high` 填充 + primary 下划线。 |
-| 右 | 服务器状态灯（绿/黄/红）+ CPU/内存/GPU/显存小条 + 通知铃铛 | 状态灯每 60s 刷新；hover 显示 tooltip。 |
+| 右 | 服务器状态灯（绿/黄/红）+ CPU/内存/GPU/显存监控 + 通知铃铛 | 状态灯每 60s 刷新；hover 显示 tooltip。监控栏支持多 GPU |
 
 顶栏视觉：
 
 - 背景使用 `--surface`。
 - 底部 1px `--border-subtle` 分割线。
 - 图标统一 20px，状态文字 caption。
+
+监控栏（2026-09-04 更新）：
+
+- 数字固定宽度防抖动：`fmtPct()` 左补空格至 3 字符 + `min-width: 3ch` + `text-align: right` + `font-variant-numeric: tabular-nums`。
+- 结构：`CPU  12%` / `内存  34%` / `GPU 0   8%  1.8 GB/8.0 GB`。
+- 多 GPU：`gpus[]` 数组逐卡展开，每卡含 usage(%) + vramUsed/vramTotal（≥1024MB 自动切 GB 单位）。
+- 当前为静态占位数据，待接入 systeminformation 桥接。
 
 ### 3.3 底栏（Footer）
 
@@ -422,12 +458,13 @@ BrowserSidebar 分两组，**不混排**：
 
 卡片规范：
 
-- 圆角 12px，背景 `--surface`，border 1px `--border`。
-- 顶部 4px primary accent bar（参考 Luosiding Feature Card）。
+- 圆角 12px，背景 `--surface`，border 1px `--border`，`overflow: hidden`。
 - 图标 44px，居中，使用 accent 色或 primary 色。
 - 标题 15px bold，说明 12px `--muted-foreground`。
-- hover：border 变 primary，背景 `--surface-container-high`，shadow-2。
+- hover：border 变 primary，背景 `--surface-container-high`，shadow-3，translateY(-2px)。
 - 禁用态（服务端未部署）：opacity 0.45，grayscale，tooltip「当前服务端未部署此能力」。
+- **极光渐变激变效果（2026-09-04 新增）**：hover 时 `::before` 伪元素淡显 conic-gradient（紫 #a78bfa → 黄 #fbbf24 → 粉 #f472b6 → 青 #67e8f9 循环），blur(40px) 柔化 + 8s 匀速旋转动画；opacity 0→0.18（暗色 0.25）；卡片内容 z-index:1 在渐变之上。
+- 玻璃质感模式（`html.glass-mode`）下卡片背景改半透明 + backdrop-filter 毛玻璃。
 
 响应式网格：
 
@@ -453,7 +490,7 @@ BrowserSidebar 分两组，**不混排**：
 - 顶部返回为 ghost 按钮 + 左箭头。
 - 标题居中，开始按钮 primary。
 - 表单使用两列或单列布局，间距 16px。
-- 上传区使用虚线拖拽区域：border dashed `--border`，hover 背景 `--surface-container-high`。
+- 上传区使用虚线拖拽区域：border 1.5px dashed 主色调 40% 染色（`color-mix(in srgb, var(--primary) 40%, var(--border))`），背景主色调 6% 染色，hover 加深至 12%——全 9 个拖拽输入组件统一（2026-09-04）。
 - 结果区显示缩略图/视频播放器 + 下载按钮。
 
 ### 6.3 图像抠图页示例
@@ -653,3 +690,4 @@ electron/renderer/src/
 |---|---|---|---|
 | 2026-08-25 | 1.0 | 初始设计文档：布局、三 Tab、组件规范、实现路径 | — |
 | 2026-08-27 | 1.1 | **§五 浏览器按实际实现重写**：工具栏（☰/←/→/⟳/🔒地址栏含扩展·历史/🧩/⬇/⚙）；左历史侧栏 → 右侧嗅探面板（卡片内嵌进度）；下载管理 → ⬇ 置顶浮窗（📁 可改路径）；分区 8 平台独立；废弃「⚡解析并导入」按钮与底部全局进度池 | — |
+| 2026-09-04 | 1.2 | **§2.5 动效扩充**：路由 fade / slide-up / stagger 入场 / spinner 加载器四组全局动画类；**§2.6 新增**：界面风格切换（标准/玻璃质感，html.glass-mode + electron-store 持久化）；**§3.2 监控栏更新**：固定宽度防抖 + 显存 + 多 GPU；**§6.1 卡片规范更新**：极光 conic-gradient 激变 hover 效果 + 玻璃质感覆盖；**§6.2 拖拽区**：主色调染色虚线统一（9 组件） | — |

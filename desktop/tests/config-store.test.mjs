@@ -46,9 +46,8 @@ test('routeKeyToDomain：各域 key 路由到正确域', () => {
   assert.equal(routeKeyToDomain('feishu.appSecret'), 'integration')
   assert.equal(routeKeyToDomain('jimeng.sessionid'), 'integration')
   assert.equal(routeKeyToDomain('digitalhuman.workflowId'), 'integration')
-  // S9 本地配置/LUT（显式 app 域）
+  // S9 本地配置（显式 app 域；2026-09-04 删 LUT，video.lutMap 路由用例同步移除）
   assert.equal(routeKeyToDomain('local.cacheDir'), 'app')
-  assert.equal(routeKeyToDomain('video.lutMap'), 'app')
   // download
   assert.equal(routeKeyToDomain('downloadDir'), 'download')
   // 兜底：未识别 key 归 app

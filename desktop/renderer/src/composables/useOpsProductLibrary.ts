@@ -296,7 +296,10 @@ export function useOpsProductLibrary() {
     mineStatus.value = '正在调用服务端 AI 挖掘（挖掘即持久化）...'
     mineDeadline = Date.now() + MINE_TIMEOUT_MS
     try {
-      await callJson(() => t.server.post(`${base(mid)}/mine`, { item_ids: [itemId], model: '' }))
+      /* 契约口径（openapi MineRequest）：model 默认 'deepseek-v4-flash'，服务端按名称查模型表。
+         2026-09-05 修复：不可显式传 model:'' —— 空串覆盖 pydantic 默认值，
+         服务端报「未找到模型:」；省略字段让服务端默认值生效（与原客户端不传同口径） */
+      await callJson(() => t.server.post(`${base(mid)}/mine`, { item_ids: [itemId] }))
       pollMine(mid, itemId)
     } catch (e) {
       mining.value = false
@@ -365,7 +368,7 @@ export function useOpsProductLibrary() {
     bulkMining.value = true
     mineStatus.value = '正在触发服务端批量挖掘...'
     try {
-      await callJson(() => t.server.post(`${base(mid)}/mine`, { item_ids: [], model: '' }))
+      await callJson(() => t.server.post(`${base(mid)}/mine`, { item_ids: [] }))
       pollBulk(mid)
     } catch (e) {
       bulkMining.value = false

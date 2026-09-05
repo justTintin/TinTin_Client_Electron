@@ -3999,7 +3999,7 @@ export interface paths {
         put?: never;
         /**
          * Audio Gen Sfx
-         * @description AI 生成音效（AudioLDM2）→ 生成即出（/output/audio_gen 可访问）+ 入音效库（/sfx）。
+         * @description 生成音效→ 生成即出（/output/audio_gen 可访问）+ 入音效库（/sfx）。
          *
          *     body: {"prompt":"short UI click beep"(必填), "duration":3(秒,0.5-10),
          *            "name":"", "category":"ai_generated", "tags":""}

@@ -178,7 +178,7 @@ export function useOpsStoryboard() {
     if (draft?.copyText) {
       copyText.value = draft.copyText
       product.value = draft.product || {}
-      status.value = '已载入来自「产品文案创作」的文案，可直接生成分镜。'
+      status.value = '已载入来自「产品知识」的文案，可直接生成分镜。'
     }
     if (!topic.value) topic.value = defaultStoryboardTopic()
     void loadScripts()

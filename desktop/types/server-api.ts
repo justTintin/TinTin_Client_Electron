@@ -232,6 +232,7 @@ export const API_PATHS = {
   },
   system: {
     license: '/system/license',
+    licenseMachineId: '/system/license/machine-id',
     guide:   '/guide',
   },
 } as const

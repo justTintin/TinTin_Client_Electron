@@ -19,7 +19,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="ot-card glass-card stagger-item" @click="emit('open')">
+  <div class="ot-card glass-card stagger-item" :style="{ '--card-accent': accent }" @click="emit('open')">
     <div class="card-top">
       <div class="tool-icon" :style="{ background: accent }">
         <span>{{ emoji }}</span>
@@ -30,7 +30,7 @@ const emit = defineEmits<{
     <p class="tool-desc">{{ desc }}</p>
     <div class="card-foot">
       <span class="arrow-ic">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14" />
           <path d="M12 5l7 7-7 7" />
         </svg>
@@ -43,7 +43,8 @@ const emit = defineEmits<{
 .ot-card {
   position: relative;
   background: var(--card);
-  border: 1px solid var(--border);
+  /* 2026-09-04 用户裁决：主色调淡染底色已承担视觉分区，卡片描边移除 */
+  border: none;
   border-radius: var(--radius-xl);
   padding: var(--space-5);
   cursor: pointer;
@@ -52,34 +53,37 @@ const emit = defineEmits<{
   overflow: hidden;
   transition:
     transform var(--duration-normal) var(--easing-default),
-    border-color var(--duration-fast),
     box-shadow var(--duration-normal) var(--easing-default),
     background var(--duration-fast);
 }
-/* 极光渐变激变效果 */
+/* 主色调光晕层（2026-09-04 用户裁决二稿：默认以图标底色 accent 淡染卡片，
+   hover/点击时卡片变毛玻璃——半透明+backdrop blur，光晕同步增强） */
 .ot-card::before {
   content: '';
   position: absolute;
   inset: -60%;
   z-index: 0;
-  background: conic-gradient(
-    from 0deg at 50% 50%,
-    #a78bfa 0deg,
-    #fbbf24 60deg,
-    #f472b6 120deg,
-    #67e8f9 180deg,
-    #a78bfa 240deg,
-    #fbbf24 300deg,
-    #a78bfa 360deg
+  background: var(
+    --card-accent,
+    conic-gradient(
+      from 0deg at 50% 50%,
+      #a78bfa 0deg,
+      #fbbf24 60deg,
+      #f472b6 120deg,
+      #67e8f9 180deg,
+      #a78bfa 240deg,
+      #fbbf24 300deg,
+      #a78bfa 360deg
+    )
   );
-  opacity: 0;
+  opacity: 0.07;
   filter: blur(40px);
   animation: aurora-spin 8s linear infinite;
   transition: opacity 0.4s;
   pointer-events: none;
 }
 .ot-card:hover::before {
-  opacity: 0.18;
+  opacity: 0.16;
 }
 @keyframes aurora-spin {
   to { transform: rotate(360deg); }
@@ -91,8 +95,11 @@ const emit = defineEmits<{
 }
 .ot-card:hover {
   transform: translateY(-2px);
-  border-color: var(--primary-hover);
   box-shadow: var(--shadow-3);
+  /* 毛玻璃：半透明卡身 + 背景模糊，图标同色光晕隐约透出 */
+  background: color-mix(in srgb, var(--card) 62%, transparent);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
 }
 /* 暗色模式下渐变更明显 */
 :root.dark .ot-card:hover::before {
@@ -103,7 +110,6 @@ const emit = defineEmits<{
   background: color-mix(in srgb, var(--card) 72%, transparent);
   backdrop-filter: blur(12px) saturate(160%);
   -webkit-backdrop-filter: blur(12px) saturate(160%);
-  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   box-shadow:
     0 2px 8px rgba(0, 0, 0, 0.04),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -150,16 +156,16 @@ const emit = defineEmits<{
   flex: 1 1 auto;
 }
 .card-foot {
-  margin-top: var(--space-4);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
+  /* 2026-09-04 用户裁决：分割线移除后，箭头中线上移对齐原分割线位置
+     （原分割线 = desc底 + margin 16px；箭头 36px 半高 18px → margin-top = 16-18 = -2px） */
+  margin-top: -2px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
 }
 .arrow-ic {
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;

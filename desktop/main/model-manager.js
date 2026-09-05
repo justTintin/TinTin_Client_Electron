@@ -277,10 +277,11 @@ async function downloadPkg(pkgId, { store /* electron-store 实例 */ } = {}) {
     return { taskId, pkgId, ok: false, error: err.message || String(err) }
   } finally {
     runningTasks.delete(pkgId)
-    // 刷新冷启动校验结果，写回 store
+    // 刷新校验结果写回 store（2026-09-04 修复：不再覆盖 inference.mode——
+    // 用户显式选择的模式只能由 inference:setMode 写入；原实现在每次下载
+    // 结束后把计算值强写回 mode，二次覆盖用户选择）
     if (store) {
       const iv = verifyInstallation()
-      store.set('inference.mode', iv.inferenceMode)
       store.set('inference.lastVerifyAt', Date.now())
       store.set('inference.verifyReport', iv.details)
     }
@@ -320,7 +321,7 @@ function createModelManager({ store } = {}) {
         id: p.id,
         totalSize: p.totalSize,
         files: p.files.map((f) => ({ name: f.name, size: f.size })),
-        status: vr.skipped ? 'SKIPPED' : (vr.allOk ? 'INSTALLED' : 'NOT_INSTALLED'),
+        status: vr.skipped ? 'SKIPPED' : (runningTasks.has(p.id) ? 'DOWNLOADING' : (vr.allOk ? 'INSTALLED' : 'NOT_INSTALLED')),
         platformOnly: p.platformOnly || null
       }
     }),

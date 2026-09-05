@@ -1,6 +1,6 @@
 {
   "name": "tintin-client-electron",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "螺丝钉-电商智能体矩阵 V3 (Electron)",
   "main": "main/main.js",
   "author": "TinTin Team",

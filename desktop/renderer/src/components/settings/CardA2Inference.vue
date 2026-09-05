@@ -17,12 +17,16 @@ const {
   lastError,
   totalSizeMB,
   MODE_TABS,
+  LOCAL_INFERENCE_AVAILABLE,
   statusSummary,
   refreshA2,
   setMode,
   actOnPkg: _actOnPkg,
   attachDownloadBus,
 } = useInferenceSettings()
+
+// 2026-09-04 用户裁决：仅服务端推理可用，能力概览与模型下载列表随本地推理一并隐藏
+const localInferenceAvailable = LOCAL_INFERENCE_AVAILABLE
 
 /** 供模板调用的包装：保持原模板 @click 签名 */
 function actOnPkg(row: PkgRow, action: 'download' | 'cancel' | 'uninstall') {
@@ -42,8 +46,8 @@ defineExpose({
       <div>
         <h2 class="luo-card-title">本地推理能力</h2>
         <p class="luo-card-desc">
-          按需下载 ONNX 模型（约 {{ totalSizeMB }} MB）与原生扩展后，OCR、向量检索、封面合成可 100% 在本地运行，
-          断网仍可用，数据不出本机，符合隐私合规要求。
+          当前版本仅支持服务端推理：所有 OCR / 向量检索 / 封面合成走服务端 HTTP。
+          本地推理能力（模型下载后断网可用、数据不出本机）将在后续版本开放。
         </p>
       </div>
       <div class="a2-status-chip" :class="currentMode">
@@ -60,8 +64,9 @@ defineExpose({
           v-for="m in MODE_TABS"
           :key="m.value"
           class="seg-item"
-          :class="{ active: currentMode === m.value, disabled: a2Busy }"
-          :disabled="a2Busy"
+          :class="{ active: currentMode === m.value, disabled: a2Busy || !m.enabled }"
+          :disabled="a2Busy || !m.enabled"
+          :title="m.enabled ? undefined : '暂未开放，当前版本仅支持服务端推理'"
           @click="setMode(m.value)"
         >{{ m.label }}</button>
       </div>
@@ -70,7 +75,8 @@ defineExpose({
       </p>
     </div>
 
-    <!-- 能力概览（4 指标）-->
+    <!-- 能力概览 + 模型/扩展包（本地推理未开放时整块隐藏，2026-09-04 用户裁决） -->
+    <template v-if="localInferenceAvailable">
     <div class="a2-grid-metrics">
       <div class="a2-metric">
         <div class="a2-m-k">原生模块</div>
@@ -138,8 +144,7 @@ defineExpose({
         </div>
       </div>
     </div>
-
-    <!-- 错误提示 -->
+    </template>
     <div v-if="lastError" class="a2-error">{{ lastError }}</div>
 
     <!-- 脚注：不阻塞 / 自动降级说明 -->

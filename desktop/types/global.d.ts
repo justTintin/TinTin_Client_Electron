@@ -326,8 +326,19 @@ declare interface TintinBridgeServer {
   ): Promise<IpcError<MontageAPI.BgmResponse>>
   /** 清空混剪任务缓存（对照原版 _clear_montage_cache：删 montage_cache 下任务目录，不动原始素材） */
   clearMontageCache(dir: string): Promise<{ ok: boolean } | { error: string }>
-  /** POST /audio/gen/bgm — AI 生成 BGM（MusicGen-small，原客户端 gen_bgm 同口径：prompt+style+duration），生成即出 {url, duration, engine} */
+  /** POST /audio/gen/bgm — 生成 BGM（MusicGen-small；2026-09-05 服务端 GUIDE 新口径 {style,mood?,duration}，无 prompt），生成即出 {url, duration, engine} */
   audioGenBgm(payload: AudioAPI.GenBgmRequest): Promise<IpcError<AudioAPI.GenBgmResponse>>
+  /** POST /audio/gen/sfx — AI 生成音效（AudioLDM2，原客户端 gen_sfx 同口径 {prompt,duration}） */
+  audioGenSfx(payload: AudioAPI.GenSfxRequest): Promise<IpcError<AudioAPI.GenSfxResponse>>
+  /** POST /audio/bgm/upload — 上传 BGM 入库（2026-09-04 服务端契约更新：multipart file+style/scene/mood/tags，tag 字段移除） */
+  audioBgmUpload(payload: AudioAPI.BgmUploadRequest): Promise<IpcError<AudioAPI.BgmUploadResponse>>
+  /** POST /audio/library/upload — 音频库直传（2026-09-05 服务端音频分流 audio_library 表：
+   *  保存音效入库走此通道 category='音效'；/sfx 音效库不进左列表） */
+  audioLibraryUpload(payload: AudioAPI.LibraryUploadRequest): Promise<IpcError<Record<string, unknown>>>
+  /** @deprecated POST /sfx/analyze — 旧音效库分析入库（音频已分流 audio_library，客户端不再调用，保留待清理） */
+  audioSfxAnalyze(payload: AudioAPI.SfxAnalyzeRequest): Promise<IpcError<AudioAPI.SfxAnalyzeResponse>>
+  /** 生成结果 URL 下载临时目录（本端扩展：入库需本地文件，ext 按 Content-Type 判定） */
+  audioDownloadTemp(payload: AudioAPI.DownloadTempRequest): Promise<AudioAPI.DownloadTempResponse>
   promptVideo(
     payload: MontageAPI.PromptVideoRequest,
     onProgress?: (percent: number) => void

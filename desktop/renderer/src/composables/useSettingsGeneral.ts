@@ -70,6 +70,61 @@ export function useSettingsGeneral() {
     try { machineCode.value = await formatMachineCode(await t.env.getMachineInfo()) } catch (_) { /* 静默 */ }
   }
 
+  /* ── 关于卡·软件授权与激活（2026-09-04 用户裁决：激活信息从服务端拉取，
+     修改服务端地址后跟着刷新；契约 GET /system/license（License Status）+
+     GET /system/license/machine-id（服务端口径机器码）；两者响应均为空 schema，
+     采取防御解析；离线/未激活回退「客户端免激活」形态展示） ── */
+  interface LicenseInfoState {
+    activated: boolean
+    activatedAt: string
+    expiresAt: string
+    /** 激活服务端记录/计算的机器码（服务端口径） */
+    serverMachineId: string
+  }
+  const licenseInfo = ref<LicenseInfoState | null>(null)
+  const licenseLoading = ref(false)
+
+  /** 多候选键取首个非空值（空 schema 防御解析） */
+  function pickStr(src: Record<string, unknown>, keys: string[]): string {
+    for (const k of keys) {
+      const v = src[k]
+      if (v !== undefined && v !== null && String(v).trim()) return String(v).trim()
+    }
+    return ''
+  }
+
+  /** 拉取服务端激活信息（失败静默 → null 回退客户端免激活形态） */
+  async function loadLicenseStatus(): Promise<void> {
+    const t = getTintin()
+    if (!t?.server) return
+    licenseLoading.value = true
+    try {
+      const [status, midRaw] = await Promise.all([
+        t.server.get('/system/license'),
+        t.server.get('/system/license/machine-id'),
+      ])
+      const st = (status && typeof status === 'object' ? status : {}) as Record<string, unknown>
+      const activatedRaw = st.activated ?? st.is_active ?? st.active
+      const activated = activatedRaw !== undefined
+        ? !!activatedRaw
+        : ['status', 'license_status'].some((k) => String(st[k] ?? '').toLowerCase() === 'active')
+      const midStr = typeof midRaw === 'string'
+        ? midRaw.trim()
+        : pickStr((midRaw && typeof midRaw === 'object' ? midRaw : {}) as Record<string, unknown>,
+            ['machine_id', 'machineId', 'machine_code', 'machineCode'])
+      licenseInfo.value = {
+        activated,
+        activatedAt: pickStr(st, ['activated_at', 'activated_time', 'activate_time', 'issued', 'issued_at', 'created_at']),
+        expiresAt: pickStr(st, ['expires_at', 'expires', 'expiry', 'expire_time', 'valid_until']),
+        serverMachineId: midStr,
+      }
+    } catch (_) {
+      licenseInfo.value = null
+    } finally {
+      licenseLoading.value = false
+    }
+  }
+
   /**
    * 触发标题栏状态胶囊重查（serverStore 是全渲染层唯一状态源）。
    * env:serverPing 与胶囊在线判定为同一 IPC 通道，保存地址/测试连接后
@@ -157,6 +212,7 @@ export function useSettingsGeneral() {
       serverUrl.value = url
       await pingServer()
       await fetchLlm() // 地址生效后刷新模型列表（用户裁决：模型列表从服务端拉取）
+      await loadLicenseStatus() // 2026-09-04 用户裁决：地址变更后授权/激活信息跟着刷新
       actionHint.value = '服务端地址已保存'
     } catch (_e) { actionHint.value = '保存失败' }
     finally { setTimeout(() => { actionHint.value = ''; savingServerUrl.value = false }, 1200) }
@@ -178,6 +234,7 @@ export function useSettingsGeneral() {
   async function loadEnvCfg() {
     logLevel.value = String(await readCfg('env.logLevel', 'INFO')).toUpperCase()
     void loadMachineCode()
+    void loadLicenseStatus() // 2026-09-04 用户裁决：进入设置即拉取服务端激活信息
   }
 
   /* ── 按功能测试连接（用户裁决 2026-08-28：取消独立 LLM 测试）──
@@ -280,6 +337,10 @@ export function useSettingsGeneral() {
     serverUrl,
     savingServerUrl,
     saveServerUrl,
+    // 软件授权与激活（服务端拉取）
+    licenseInfo,
+    licenseLoading,
+    loadLicenseStatus,
     // 按功能测试连接
     testingFuncs,
     funcResults,

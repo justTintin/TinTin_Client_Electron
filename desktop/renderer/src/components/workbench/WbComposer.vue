@@ -500,14 +500,16 @@ defineExpose({ focus, focusEnd })
 /* ─── 输入区（加宽：48rem → 64rem） ─── */
 .input-bar {
   flex: 0 0 auto;
-  padding: var(--space-4);
+  /* 左右与消息列表同步（space-6=24px，2026-09-05 用户裁决 12px→24px）；上下保持 */
+  padding: var(--space-4) var(--space-6);
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
 
-/* 豆包式一体输入容器：圆角容器 = 上部 textarea + 底部工具行 */
+/* 豆包式一体输入容器：圆角容器 = 上部 textarea + 底部工具行
+   （2026-09-04 用户裁决：随消息列去 64rem 限宽，跟随可用宽度贴边） */
 .input-wrap {
-  max-width: 64rem;
+  max-width: none;
   margin: 0 auto;
   position: relative;
   background: var(--surface-container);
@@ -698,7 +700,7 @@ defineExpose({ focus, focusEnd })
 
 /* ─── 上下文胶囊（原版「上下文」区） ─── */
 .ctx-pills {
-  max-width: 64rem;
+  max-width: none;
   margin: 0 auto var(--space-2);
   display: flex;
   flex-wrap: wrap;
@@ -773,7 +775,7 @@ defineExpose({ focus, focusEnd })
 
 /* ─── 底部信息行：快捷条（左） + 键位提示 / 转编排任务（右） ─── */
 .input-foot {
-  max-width: 64rem;
+  max-width: none;
   margin: var(--space-3) auto 0;
   display: flex;
   align-items: center;

@@ -10,6 +10,7 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const { app } = require('electron')
 
 function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError }) {
   // --- V3 新接口 S1~S3（rembg / vsr / reverse-prompt）————————————————
@@ -138,22 +139,41 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     try {
       const p = payload || {}
       if (!p.text) throw new Error('tts:generate missing `text`')
-      // API-GUIDE 契约（/voxcpm/tts）：text(必填) + sample_id(推荐) + engine + speaker
-      // 服务端返回 WAV 二进制（Content-Type: audio/wav），IPC 传 Buffer 会丢失，转 base64 透传
+      // 2026-09-05 用户裁决：声音克隆固定使用 IndexTTS，不再使用 voxcpm（voxcpm 分支已删除；
+      // 智能混剪口播配音的 /voxcpm/tts 走 montage-voice-ipc.js 独立通道，与本 handler 无关）。
+      // 契约（服务端 openapi.json 实测）：POST /indextts/tts IndexTTSRequest =
+      //   text + sample_id/prompt_audio/lang/duration_factor/emo_text/emo_alpha/resp
+      //   （契约无 engine 字段，不发）；内部任务队列 enqueue("indextts_tts")，HTTP 语义不变：
+      //   等完成后返回 WAV 二进制（+X-Audio-Url 头）；resp=json 返 {audio_url, task_id, ...}
       const body = {
         text: p.text,
         ...(p.sample_id ? { sample_id: p.sample_id } : {}),
         ...(p.prompt_audio ? { prompt_audio: p.prompt_audio } : {}),
-        ...(p.speaker || p.voice_id ? { speaker: p.speaker || p.voice_id } : {}),
-        ...(p.engine ? { engine: p.engine } : {}),
+        ...(p.lang ? { lang: p.lang } : {}),
+        ...(p.duration_factor !== undefined ? { duration_factor: p.duration_factor } : {}),
+        ...(p.emo_text ? { emo_text: p.emo_text } : {}),
+        ...(p.emo_alpha !== undefined ? { emo_alpha: p.emo_alpha } : {}),
+        ...(p.resp ? { resp: p.resp } : {}),
       }
-      const res = await httpRequest('POST', API_ENDPOINTS.tts.generate, { body })
+      // 异步任务队列排队 + 推理耗时不可控（同步等完成后响应），超时放宽到 300s
+      const res = await httpRequest('POST', API_ENDPOINTS.tts.indextts, { body, timeout: 300000 })
       // 服务端返回 WAV 二进制 → 转 base64 经 IPC 传渲染层
       if (Buffer.isBuffer(res.data)) {
         return { audio_base64: res.data.toString('base64'), content_type: res.headers?.['content-type'] || 'audio/wav' }
       }
-      // JSON 响应（audio_url 模式，兼容未来服务端切换）
-      return res.data
+      // JSON 响应：实测（2026-09-05）audio_url 是相对路径（如 /output/tts/tts_xxx.wav），
+      // 渲染层无法直接加载/下载 → 主进程主动取回音频二进制转 base64 一并返回，
+      // 渲染层既有 audio_base64 链路（blob 播放/落盘/另存为）无需感知相对路径
+      const d = res.data
+      if (d && typeof d === 'object' && d.audio_url && !/^https?:/i.test(d.audio_url)) {
+        try {
+          const audioRes = await httpRequest('GET', d.audio_url, { timeout: 120000 })
+          if (Buffer.isBuffer(audioRes.data)) {
+            return { ...d, audio_base64: audioRes.data.toString('base64'), content_type: audioRes.headers?.['content-type'] || 'audio/wav' }
+          }
+        } catch (_) { /* 取回失败则透传原 JSON，由渲染层按 audio_url 兼容处理 */ }
+      }
+      return d
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -162,6 +182,17 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
       const path = resolveEndpoint(API_ENDPOINTS.tts.voicesSamples, params || {})
       const res = await httpRequest('GET', path)
       return res.data || []
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // 样本试听：GET 样本音频（audio_url 为相对路径，httpRequest 自动拼 baseUrl），转 base64 返回
+  ipcMain.handle('tts:fetchSampleAudio', async (_e, payload) => {
+    try {
+      const url = String((payload || {}).url || '').trim()
+      if (!url) throw new Error('tts:fetchSampleAudio missing `url`')
+      const res = await httpRequest('GET', url, { timeout: 60000 })
+      if (!Buffer.isBuffer(res.data)) return { error: '非音频响应' }
+      return { audio_base64: res.data.toString('base64'), content_type: res.headers?.['content-type'] || 'audio/wav' }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -183,14 +214,26 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
   })
 
   // 将 base64 音频数据写入本地文件（TTS 响应 audio_base64 → 本地落盘）
-  ipcMain.handle('tts:saveAudio', async (_e, { base64, savePath }) => {
+  ipcMain.handle('tts:saveAudio', async (_e, { base64, savePath, fromPath }) => {
     try {
-      if (!base64 || !savePath) throw new Error('tts:saveAudio requires `base64` and `savePath`')
-      const dir = path.dirname(savePath)
+      if (!savePath || (!base64 && !fromPath)) throw new Error('tts:saveAudio requires `savePath` and `base64`/`fromPath`')
+      // 2026-09-05 修复：配置 cacheDir 可能是相对路径（如“资产输出”），此前 writeFileSync
+      // 直接落到主进程工作目录（打包后不可预期且不可写）——统一解析到 userData 下，
+      // 并返回绝对路径供渲染层播放/打开目录/file:// 直用
+      const resolveRooted = (p) => {
+        const s = String(p || '')
+        return path.isAbsolute(s) ? s : path.join(app.getPath('userData'), s)
+      }
+      const target = resolveRooted(savePath)
+      const dir = path.dirname(target)
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-      const buf = Buffer.from(base64, 'base64')
-      fs.writeFileSync(savePath, buf)
-      return savePath
+      if (fromPath) {
+        // 复制模式（另存为：从已落盘文件复制，最可靠，不经 base64 往返）
+        fs.copyFileSync(resolveRooted(fromPath), target)
+      } else {
+        fs.writeFileSync(target, Buffer.from(base64, 'base64'))
+      }
+      return target
     } catch (err) { return { error: err.message } }
   })
 

@@ -177,6 +177,7 @@ const server = {
   ttsSaveAudio:  (p) => ipcRenderer.invoke('tts:saveAudio', p),
   ttsVoicesSamples: (params)       => ipcRenderer.invoke('tts:voicesSamples', params),
   ttsUploadSample:  (p, onProgress) => _withUploadProgress(onProgress, 'tts:uploadSample', p),
+  ttsFetchSampleAudio: (p) => ipcRenderer.invoke('tts:fetchSampleAudio', p),
 
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   voiceScanDir:         (p) => ipcRenderer.invoke('voice:scanDir', p),

@@ -402,13 +402,13 @@ function scoreClass(score: number): string {
         <!-- 3. TTS API 与推理参数行（L114-175；inference_timesteps/cfg 存而不用，控件保留、值不随请求发送） -->
         <div class="row">
           <label class="label">TTS API:</label>
-          <input v-model="ttsApiUrl" class="input grow" placeholder="跟随系统设置 → VoxCPM/TTS 地址（形如 http://<服务端>:8000/voxcpm/tts）" />
+          <input v-model="ttsApiUrl" class="input grow" placeholder="跟随系统设置 → IndexTTS 地址（形如 http://<服务端>:8000/indextts/tts）" />
           <label class="param-label">推理步数:</label>
           <input v-model.number="ttsSteps" type="number" class="input w60" min="4" max="50" step="5"
-            title="VoxCPM 推理步数（4-30，默认10）&#10;步数越多音质越细腻，但速度越慢&#10;推荐：快速=10，高质量=20-30" />
+            title="推理步数（存而不用，不随请求发送；保留控件兼容原版布局）" />
           <label class="param-label">CFG:</label>
           <input v-model.number="ttsCfg" type="number" class="input w60" min="0.5" max="5.0" step="0.5"
-            title="引导强度（0.5-5.0，默认2.0）&#10;越高越贴近参考音色但可能过拟合&#10;推荐范围：1.5 - 3.0" />
+            title="引导强度（存而不用，不随请求发送；保留控件兼容原版布局）" />
           <label class="param-label">速率:</label>
           <input v-model.number="ttsSpeedMin" type="number" class="input w60" min="0.5" max="1.0" step="0.05"
             title="变速下限（默认0.90）&#10;音频比视频长时最多允许拉慢到此倍速&#10;超出范围时不再强制调速，保留自然音质" />

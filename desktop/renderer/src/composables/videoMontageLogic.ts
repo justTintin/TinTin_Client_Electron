@@ -691,7 +691,8 @@ export function pickBgmMixField(bgmPath: string, bgmGenUrl: string): { bgm?: { p
 }
 
 // ── Step3 口播配音（对照 step3_voice_view.py 逐控件 / VoiceCloneWorker api 模式 /
-// VideoDubbingWorker / BatchAITextRewriteWorker；TTS 契约 POST /voxcpm/tts）────
+// VideoDubbingWorker / BatchAITextRewriteWorker；TTS 契约 POST /indextts/tts（2026-09-05 服务端
+// 将删 /voxcpm/*，随声音克隆裁决统一切 IndexTTS）────
 
 /** 配音行状态机（对照 _do_scan_voice_video_dir 行构建 + _start_synthesize_voice tasks 构建） */
 export interface VoiceRow {

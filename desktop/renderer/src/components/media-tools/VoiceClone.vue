@@ -4,7 +4,7 @@
 // 布局：TTS引擎 → 样本选择(下拉) → 参考文本 → 待克隆文案 → 克隆/拆分
 //       底部：上传新样本（音频+名称+文字 → 服务端 → 自动刷新下拉）
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
@@ -13,11 +13,15 @@ import type { RowStatus } from '@/composables/useVoiceCloneStudio'
 
 const s = useVoiceCloneStudio()
 const {
-  refText, transcribing, voiceOptions, samples, voice, ttsEngine, selectedSampleId,
+  refText, transcribing, voiceOptions, samples, voice, selectedSampleId,
   ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
   wholeText, rows, splitting, generating, stageText, maxChars,
   wholeTask, wholeProgress, uploadingSample,
+  // 整体克隆：解包视图 + 合成进度 + 另存为（wholeTask 内嵌 ref 模板不解包，禁直接 wholeTask.xxx 判断）
+  wholeStatus, wholeIsProcessing, wholeErrorMsg, wholeResultUrl, wholeResultPath,
+  wholeSynthProgress, saveWholeAudioAs, uploadingToLib, uploadWholeToLibrary,
   refReady, canSplit,
+  samplePreviewUrl, samplePreviewLoading, playSample, stopSamplePreview,
   loadCatalog, selectSample, uploadNewSample, transcribeRefAudio,
   splitIntoRows, updateRowText, removeRow, addRow, clearRows,
   generateRow, generateAll, generateWhole, downloadRow,
@@ -37,6 +41,13 @@ const EMO_OPTIONS = [
 ]
 
 const isDragging = ref(false)
+
+// ─ 样本试听：音频元素 + 样本切换/建�?URL 后自动播放 ──
+const sampleAudioEl = ref<HTMLAudioElement | null>(null)
+watch(samplePreviewUrl, () => {
+  const el = sampleAudioEl.value
+  if (el) { el.currentTime = 0; el.play().catch(() => {}); }
+}, { flush: 'post' })
 
 // ─ 底部上传新样本 ──
 const newSampleFilePath = ref('')
@@ -112,9 +123,9 @@ async function transcribeForNewSample(): Promise<void> {
 /** 打开输出目录（使用保存后的本地文件路径） */
 function openOutputFolder(): void {
   try {
-    const filePath = wholeTask.resultPath
+    const filePath = wholeResultPath.value
     if (!filePath) {
-      notify('提示', '文件尚未保存到本地，请使用"下载本行音频"保存')
+      notify('提示', '文件尚未保存到本地，请使用「下载」另存')
       return
     }
     const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') > 0 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'))
@@ -136,26 +147,10 @@ function rowStatusClass(st: RowStatus): string {
 
 /** 克隆成功后显示的文件名 */
 const wholeFileName = computed(() => {
-  const p = wholeTask.resultPath
+  const p = wholeResultPath.value
   if (!p) return ''
   return p.includes('\\') ? p.split('\\').pop()! : p.split('/').pop()!
 })
-
-/** 播放克隆音频（本地文件用系统默认播放器，blob URL 用页面 audio 元素） */
-function playWholeAudio(): void {
-  const localPath = wholeTask.resultPath
-  if (localPath) {
-    // 本地文件：用系统默认音频播放器打开
-    window.tintin?.shell?.openPath?.(localPath)
-  } else {
-    // blob URL：滚动到 audio 元素并自动播放
-    const audioEl = document.querySelector('.tool-form > .form-field > audio.audio-player') as HTMLAudioElement
-    if (audioEl) {
-      audioEl.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      audioEl.play().catch(() => {})
-    }
-  }
-}
 
 onMounted(loadCatalog)
 </script>
@@ -163,17 +158,63 @@ onMounted(loadCatalog)
 <template>
   <div class="tool-form">
 
-    <!-- ① TTS 引擎 -->
+    <!-- ① 声音样本（下拉选择） -->
     <div class="form-field">
-      <label class="form-label">TTS 引擎</label>
-      <div class="segmented">
-        <button class="segmented__btn" :class="{ 'is-active': ttsEngine === 'voxcpm2' }" @click="ttsEngine = 'voxcpm2'">VoxCPM2（48kHz）</button>
-        <button class="segmented__btn" :class="{ 'is-active': ttsEngine === 'indextts' }" @click="ttsEngine = 'indextts'">IndexTTS（快速/情感）</button>
+      <label class="form-label">声音样本</label>
+      <TSelect
+        :model-value="selectedSampleId"
+        :options="samples.map((s) => ({ label: s.name, value: s.id }))"
+        placeholder="选择声音样本"
+        @update:model-value="(v: string) => selectSample(v)"
+      />
+      <div class="sample-preview">
+        <TButton
+          :label="samplePreviewLoading ? '加载中…' : '试听样本'"
+          icon="play"
+          size="small"
+          :disabled="!selectedSampleId || samplePreviewLoading"
+          @click="playSample(selectedSampleId)"
+        />
+        <audio v-if="samplePreviewUrl" ref="sampleAudioEl" :src="samplePreviewUrl" controls class="sample-audio" @ended="stopSamplePreview" />
       </div>
     </div>
 
-    <!-- ①+ IndexTTS 专属参数 -->
-    <div v-if="ttsEngine === 'indextts'" class="engine-params">
+    <!-- ③ 样本参考文本（选择样本后自动填充） -->
+    <div class="form-field">
+      <div class="field-head">
+        <label class="form-label">样本参考文本</label>
+        <TButton
+          :label="transcribing ? '正在识别...' : '识别参考音频文本'"
+          icon="search"
+          size="small"
+          :disabled="transcribing || !refReady"
+          :loading="transcribing"
+          @click="transcribeRefAudio"
+        />
+      </div>
+      <textarea
+        v-model="refText"
+        class="text-area"
+        rows="3"
+        placeholder="选择样本后自动填充；也可手动编辑"
+      />
+      <span class="form-hint">
+        拆分合并用的单行字数上限：约 {{ maxChars }} 字（15 秒安全时长；由样本语速推算）
+      </span>
+    </div>
+
+    <!-- ③ 克隆模型：当前固定 IndexTTS；QwenTTS 入口占位，等服务端实现后启用（voxcpm 已删除不恢复） -->
+    <div class="form-field">
+      <label class="form-label">克隆模型</label>
+      <div class="segmented">
+        <button class="segmented__btn is-active" type="button">IndexTTS（快速/情感）</button>
+        <button class="segmented__btn" type="button" disabled title="QwenTTS 等待服务端实现，启用后开放">QwenTTS（待服务端实现）</button>
+      </div>
+      <span class="form-hint">当前使用 IndexTTS；整体克隆与逐行生成都用此模型与下方参数</span>
+    </div>
+
+    <!-- ③+ IndexTTS 参数 -->
+    <div class="engine-params">
       <div class="form-field">
         <div class="field-head">
           <label class="form-label">语速（duration_factor）</label>
@@ -218,41 +259,6 @@ onMounted(loadCatalog)
       </div>
     </div>
 
-    <!-- ② 声音样本（下拉选择） -->
-    <div class="form-field">
-      <label class="form-label">声音样本</label>
-      <TSelect
-        :model-value="selectedSampleId"
-        :options="samples.map((s) => ({ label: s.name, value: s.id }))"
-        placeholder="选择声音样本"
-        @update:model-value="(v: string) => selectSample(v)"
-      />
-    </div>
-
-    <!-- ③ 样本参考文本（选择样本后自动填充） -->
-    <div class="form-field">
-      <div class="field-head">
-        <label class="form-label">样本参考文本</label>
-        <TButton
-          :label="transcribing ? '正在识别...' : '识别参考音频文本'"
-          icon="search"
-          size="small"
-          :disabled="transcribing || !refReady"
-          :loading="transcribing"
-          @click="transcribeRefAudio"
-        />
-      </div>
-      <textarea
-        v-model="refText"
-        class="text-area"
-        rows="3"
-        placeholder="选择样本后自动填充；也可手动编辑"
-      />
-      <span class="form-hint">
-        拆分合并用的单行字数上限：约 {{ maxChars }} 字（15 秒安全时长；由样本语速推算）
-      </span>
-    </div>
-
     <!-- ④ 待克隆整体文案 -->
     <div class="form-field">
       <label class="form-label">待克隆整体文案</label>
@@ -281,25 +287,34 @@ onMounted(loadCatalog)
           title="拆分流程：优先 AI 智能断句（不可用退回本地规则）；按样本语速合并短句（单行≤15秒）；AI 疑似漏字自动退回本地拆分，编号一字不丢"
         >拆分策略说明</span>
       </div>
-      <span v-if="wholeTask.isProcessing && wholeProgress > 0 && wholeProgress < 100" class="upload-progress">
-        上传中 {{ wholeProgress }}%
-      </span>
-      <span v-if="wholeTask.errorMsg" class="form-error">{{ wholeTask.errorMsg }}</span>
+      <!-- 合成进度（服务端同步等待无真实进度：缓动假进度，完成置 100） -->
+      <div v-if="wholeIsProcessing" class="synth-progress">
+        <div class="synth-progress__track">
+          <div class="synth-progress__bar" :style="{ width: Math.round(wholeSynthProgress) + '%' }" />
+        </div>
+        <span class="synth-progress__text">正在合成克隆人声… {{ Math.round(wholeSynthProgress) }}%{{ wholeSynthProgress >= 92 ? '（长文案合成需稍等）' : '' }}</span>
+      </div>
+      <span v-if="wholeErrorMsg" class="form-error">{{ wholeErrorMsg }}</span>
       <audio
-        v-if="wholeTask.status === 'done' && (wholeTask.resultUrl || wholeTask.resultPath)"
+        v-if="wholeStatus === 'done' && (wholeResultUrl || wholeResultPath)"
         class="audio-player"
-        :src="resolveSrc(wholeTask.resultUrl) || resolveSrc(wholeTask.resultPath)"
+        :src="resolveSrc(wholeResultUrl) || resolveSrc(wholeResultPath)"
         controls
       />
-      <!-- 成功提示 + 播放 + 打开目录 -->
-      <div v-if="wholeTask.status === 'done'" class="success-info">
+      <!-- 成功提示 + 上传配音库 + 下载 + 打开目录（内嵌 audio 播放器即播放控制，不另设播放按钮） -->
+      <div v-if="wholeStatus === 'done'" class="success-info">
         <span class="success-icon">✓</span>
         <span class="success-text">克隆成功</span>
+        <span class="success-engine">IndexTTS</span>
         <span v-if="wholeFileName" class="success-file">{{ wholeFileName }}</span>
         <div class="success-actions">
-          <button class="action-btn" @click="playWholeAudio" title="播放音频">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M5 3l14 9-14 9V3z"/></svg>
-            播放
+          <button class="action-btn" :disabled="uploadingToLib" @click="uploadWholeToLibrary" title="上传到素材库（音频库·配音分类）">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg>
+            {{ uploadingToLib ? '上传中…' : '上传配音到素材库' }}
+          </button>
+          <button class="action-btn" @click="saveWholeAudioAs" title="另存为到指定位置">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+            下载
           </button>
           <button class="action-btn" @click="openOutputFolder" title="打开文件所在目录">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -350,7 +365,7 @@ onMounted(loadCatalog)
           controls
         />
         <span class="row__status" :class="rowStatusClass(row.status)">
-          {{ ROW_STATUS_TEXT[row.status] }}<template v-if="row.error">：{{ row.error }}</template>
+          {{ ROW_STATUS_TEXT[row.status] }}<template v-if="row.engine && row.status === 'done'"> · IndexTTS</template><template v-if="row.error">：{{ row.error }}</template>
         </span>
         <div class="row__actions">
           <button
@@ -460,6 +475,15 @@ onMounted(loadCatalog)
 .form-success { font-size: var(--font-size-caption); color: var(--success); }
 .field-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 
+/* 样本试听：播放按钮 + 内嵌 audio 播放器 */
+.sample-preview { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); }
+.sample-audio {
+  height: 32px;
+  max-width: 320px;
+  flex: 1;
+}
+.sample-audio::-webkit-media-controls-panel { background: var(--muted); }
+
 /* 分段切换 */
 .segmented {
   display: inline-flex; padding: 2px; background: var(--surface-container);
@@ -472,7 +496,7 @@ onMounted(loadCatalog)
   transition: background var(--duration-fast), color var(--duration-fast);
 }
 .segmented__btn.is-active { background: var(--primary); color: var(--primary-foreground); }
-.segmented__btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.segmented__btn:disabled { opacity: 0.45; cursor: not-allowed; text-decoration: line-through; }
 
 /* 拖拽上传区 */
 .dropzone {
@@ -531,6 +555,17 @@ onMounted(loadCatalog)
   cursor: help; text-decoration: underline dotted;
 }
 .upload-progress { font-size: var(--font-size-caption); color: var(--muted-foreground); }
+/* 整体克隆合成进度条（缓动假进度：无真实进度可拉，前快后慢逼近 92%，完成置 100） */
+.synth-progress { display: flex; align-items: center; gap: var(--space-3); }
+.synth-progress__track {
+  flex: 1; max-width: 320px; height: 6px; border-radius: 3px;
+  background: var(--surface-container); overflow: hidden;
+}
+.synth-progress__bar {
+  height: 100%; border-radius: 3px; background: var(--primary);
+  transition: width 150ms linear;
+}
+.synth-progress__text { font-size: var(--font-size-caption); color: var(--muted-foreground); white-space: nowrap; }
 .audio-player { width: 100%; }
 .stage-line { font-size: var(--font-size-caption); color: var(--foreground-muted); }
 
@@ -577,6 +612,11 @@ onMounted(loadCatalog)
   background: var(--success); color: white; font-size: 12px; font-weight: bold;
 }
 .success-text { font-size: var(--font-size-caption); color: var(--success); font-weight: var(--font-weight-medium); }
+.success-engine {
+  font-size: var(--font-size-caption); padding: 1px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary);
+  white-space: nowrap;
+}
 .success-file {
   font-size: var(--font-size-caption); color: var(--foreground-muted);
   font-family: var(--font-mono); max-width: 200px;

@@ -56,13 +56,30 @@ const statusMeta = computed(() => {
   }
 })
 
-// 系统资源占位（V3 暂用静态展示，后续接入 systeminformation 桥接）
-// 多 GPU 结构：gpus 数组每项含 name / usage(%) / vram(%) / vramUsed(MB) / vramTotal(MB)
-interface GpuStat { name: string; usage: number; vram: number; vramUsed: number; vramTotal: number }
-const systemStats = ref<{ cpu: number; mem: number; gpus: GpuStat[] }>({
-  cpu: 12,
-  mem: 34,
-  gpus: [{ name: 'GPU 0', usage: 8, vram: 23, vramUsed: 1843, vramTotal: 8192 }],
+// 服务端硬件监控（2026-09-05 接入 /metrics/history）：在线时读逐卡 GPU + 网络/CPU/内存，
+// 离线或尚无数据时回退静态占位（避免布局跳动）。多 GPU 结构 = gpus 数组逐卡展示。
+interface GpuStat { name: string; usage: number; vram: number; vramUsed: number; vramTotal: number; temp: number }
+const PLACEHOLDER_STATS = {
+  cpu: 12, mem: 34, memoryUsed: 5440, memoryTotal: 16384,
+  netRecv: 27.7, netSent: 198.5,
+  gpus: [{ name: 'GPU 0', usage: 8, vram: 23, vramUsed: 1843, vramTotal: 8192, temp: 52 }],
+}
+const systemStats = computed(() => {
+  const m = serverStore.serverMetrics
+  const hasLive = serverStore.status === 'online' && m.gpus.length > 0
+  if (!hasLive) return PLACEHOLDER_STATS
+  return {
+    cpu: m.cpu,
+    mem: m.mem,
+    memoryUsed: m.memoryUsedMB,
+    memoryTotal: m.memoryTotalMB,
+    netRecv: m.netRecvKBps,
+    netSent: m.netSentKBps,
+    // 服务端 gpu_per 给已用 vram_mb + 单卡总容量 vram_total_mb；total 缺为 0 时模板只显占用
+    gpus: m.gpus.map((g) => ({
+      name: `GPU ${g.idx}`, usage: g.util, vram: 0, vramUsed: g.vramMB, vramTotal: g.vramTotalMB, temp: g.temp,
+    })),
+  }
 })
 
 /** 格式化百分比：固定 3 字符宽度（含 %），不足左补空格，防止位数变化引起布局抖动 */
@@ -76,6 +93,12 @@ function fmtPct(v: number): string {
 function fmtVram(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`
   return `${Math.round(mb)} MB`
+}
+
+/** 格式化网络速率：KB/s → "xxx KB/s" 或 "x.x MB/s" */
+function fmtKbps(kb: number): string {
+  if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MB/s`
+  return `${Math.round(kb)} KB/s`
 }
 
 /** 点击 Tab：同步 store 并跳转 + C6 切 Tab 防泄露（切非 browser Tab 先 detachAll） */
@@ -214,6 +237,7 @@ onMounted(async () => {
   // 启动服务端能力轮询
   await serverStore.checkCapabilities()
   serverStore.startPolling()
+  void serverStore.fetchMetrics()
 })
 
 onBeforeUnmount(() => {
@@ -271,12 +295,14 @@ onBeforeUnmount(() => {
         </div>
         <div class="system-stats">
           <span class="stat-item"><span class="stat-label">CPU</span><span class="stat-num">{{ fmtPct(systemStats.cpu) }}</span></span>
-          <span class="stat-item"><span class="stat-label">内存</span><span class="stat-num">{{ fmtPct(systemStats.mem) }}</span></span>
+          <span class="stat-item"><span class="stat-label">内存</span><span class="stat-num">{{ fmtPct(systemStats.mem) }}</span><span class="stat-vram">{{ fmtVram(systemStats.memoryUsed) }}/{{ fmtVram(systemStats.memoryTotal) }}</span></span>
+          <span class="stat-item" :title="`下行 ${fmtKbps(systemStats.netRecv)} · 上行 ${fmtKbps(systemStats.netSent)}`"><span class="stat-label">网速</span><span class="stat-num">{{ fmtKbps(systemStats.netRecv) }}</span></span>
           <template v-for="(g, gi) in systemStats.gpus" :key="gi">
             <span class="stat-item">
               <span class="stat-label">{{ g.name }}</span>
               <span class="stat-num">{{ fmtPct(g.usage) }}</span>
-              <span class="stat-vram">{{ fmtVram(g.vramUsed) }}/{{ fmtVram(g.vramTotal) }}</span>
+              <span class="stat-vram">{{ g.vramTotal > 0 ? `${fmtVram(g.vramUsed)}/${fmtVram(g.vramTotal)}` : fmtVram(g.vramUsed) }}</span>
+              <span v-if="g.temp > 0" class="stat-temp" :title="`温度 ${Math.round(g.temp)}°C`">{{ Math.round(g.temp) }}℃</span>
             </span>
           </template>
         </div>
@@ -592,6 +618,11 @@ onBeforeUnmount(() => {
 .stat-vram {
   font-variant-numeric: tabular-nums;
   color: var(--foreground-muted);
+  font-size: 11px;
+}
+.stat-temp {
+  font-variant-numeric: tabular-nums;
+  color: var(--warning);
   font-size: 11px;
   margin-left: 2px;
 }

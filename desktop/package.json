@@ -30,6 +30,7 @@
     "adm-zip": "^0.6.0",
     "better-sqlite3": "^11.3.0",
     "docx": "^9.7.1",
+    "electron-log": "^5.4.4",
     "electron-updater": "^6.3.4",
     "exceljs": "^4.4.0",
     "mammoth": "^1.12.2",

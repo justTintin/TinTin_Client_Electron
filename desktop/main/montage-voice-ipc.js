@@ -8,10 +8,12 @@
 //   · video_montage_page.py     _do_scan_voice_video_dir L1621-1695 → voice:scanDir
 //   · _refresh_server_fonts     GET /config/fonts → voice:fonts
 //   · _on_btn_export_clicked    shutil.copy2 → voice:exportAudio
-// 契约（禁止臆造）：POST /voxcpm/tts
-//   {"text": 预处理后, "prompt_audio": base64|null, "speaker": "default"}，超时 180s，
-//   3 次重试（503/连接中断 → /health 轮询恢复，max_wait 20s/15s）。
-//   api 模式下 inference_timesteps/cfg_value 存而不用（不发送服务端，原版同口径）。
+// 契约（禁止臆造）：POST /indextts/tts（2026-09-05 用户告知：服务端将删除全部 /voxcpm/* 接口，
+//   口播配音通道随声音克隆裁决统一切 IndexTTS）
+//   IndexTTSRequest = {"text": 预处理后, "prompt_audio": base64|null}（无 speaker 字段；
+//   lang/duration_factor/emo_text/emo_alpha 不传用服务端默认），响应 WAV 二进制，超时 180s，
+//   3 次重试（503/连接中断 → /indextts/health 轮询恢复，max_wait 20s/15s）。
+//   原版 inference_timesteps/cfg_value 存而不用（不发送服务端，原版同口径）。
 // 纯函数在 voice-tts-logic.js（本文件仅编排与进程/文件 IO）。
 // ═══════════════════════════════════════════════════════════════
 
@@ -153,12 +155,12 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── TTS 单次请求（对照 _post_tts L140-188：180s 超时、3 次重试、/health 恢复轮询）──
+  // ── TTS 单次请求（对照 _post_tts L140-188：180s 超时、3 次重试、恢复轮询）──
+  // IndexTTSRequest 口径：无 speaker 字段（voxcpm 遗留），lang/情感参数不传用服务端默认
   async function postTts(apiUrl, text, refAudioB64) {
     const payload = {
       text: L.preprocessTtsText(text),
       prompt_audio: refAudioB64 || null,
-      speaker: 'default',
     }
     const maxAttempts = 3
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -281,7 +283,8 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const p = payload || {}
       const tasks = Array.isArray(p.tasks) ? p.tasks : []
       if (!tasks.length) throw new Error('voice:cloneBatch requires tasks[]')
-      const apiUrl = String(p.apiUrl || '').trim() || (getServerUrl().replace(/\/$/, '') + '/voxcpm/tts')
+      // 2026-09-05：服务端将删除 /voxcpm/*，口播配音恒走 /indextts/tts（与声音克隆同通道）
+      const apiUrl = String(p.apiUrl || '').trim() || (getServerUrl().replace(/\/$/, '') + '/indextts/tts')
       const speedMin = Number(p.speedMin ?? 0.9)
       const speedMax = Number(p.speedMax ?? 1.2)
       const channel = p.progressChannel || ''

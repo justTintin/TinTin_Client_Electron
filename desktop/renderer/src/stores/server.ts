@@ -65,6 +65,22 @@ export interface WorkbenchStats {
   materials:    number
 }
 
+/** 服务端硬件指标（GET /metrics/history；逐卡 GPU + 网络 + CPU/内存 + 磁盘）。
+ *  2026-09-05 实测响应：gpu_per=每卡 {idx, util, vram_mb, temp}，字段可能为 300 点时间序列数组，
+ *  取最后一个（最新）采样值即可。契约类型在生成快照里为 unknown，故此处防御式解析。 */
+export interface GpuMetric { idx: number; util: number; vramMB: number; vramTotalMB: number; temp: number }
+export interface ServerMetrics {
+  cpu:          number
+  mem:          number          // 内存百分比（0-100）
+  memoryUsedMB: number
+  memoryTotalMB: number
+  diskReadKBps: number
+  diskWriteKBps: number
+  netRecvKBps:  number
+  netSentKBps:  number
+  gpus:         GpuMetric[]
+}
+
 const DEFAULT_CAP_BOOL: ServerCapabilities = {
   rembg: false, vsr: false, vsr_remove: false,
   whisper: false, voice_clone: false, stock_search: false,
@@ -89,6 +105,36 @@ const DEFAULT_CAP_DETAIL: ServerCapabilityDetail = {
 /** 轮询间隔（毫秒） */
 const POLL_INTERVAL = 60_000
 
+/** 从时间序列或标量取“最新值”（防御：字段可能是 300 点数组 / 单值 / 对象） */
+function _latest(v: unknown): number {
+  if (Array.isArray(v)) {
+    const last = v.length ? v[v.length - 1] : 0
+    return _latest(last)
+  }
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    const num = o.value ?? o.v ?? o.vram_mb ?? o.util ?? o.temp ?? 0
+    return _latest(num)
+  }
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+/** 从候选键中取首个非空数值（磁盘/网络字段名不固定，防御式兜底） */
+function _pick(obj: Record<string, unknown> | undefined, ...keys: string[]): number {
+  for (const k of keys) {
+    const val = obj?.[k]
+    if (val !== undefined && val !== null) return _latest(val)
+  }
+  return 0
+}
+/** 换算为 MB：显存/内存总量可能以 GB 整数返回（如 8/16），也可能直接是 MB。
+ *  若值 <=64 视为 GB 整数 ×1024（8 → 8192），否则视为已是 MB（16000 → 16000）。 */
+function _mb(v: unknown): number {
+  const n = _latest(v)
+  if (n > 0 && n <= 64) return Math.round(n * 1024)
+  return Math.round(n)
+}
+
 export const useServerStore = defineStore('server', () => {
   // ── 状态 ────────────────────────────────────────────────────────
   const status = ref<ServerStatus>('checking')
@@ -99,6 +145,9 @@ export const useServerStore = defineStore('server', () => {
   const registry = ref<CapabilityRegistryItem[]>([])
   const workbenchStats = reactive<WorkbenchStats>({
     recentTasks: 0, runningTasks: 0, scripts: 0, materials: 0,
+  })
+  const serverMetrics = ref<ServerMetrics>({
+    cpu: 0, mem: 0, memoryUsedMB: 0, memoryTotalMB: 0, diskReadKBps: 0, diskWriteKBps: 0, netRecvKBps: 0, netSentKBps: 0, gpus: [],
   })
 
   let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -203,15 +252,58 @@ export const useServerStore = defineStore('server', () => {
     }
   }
 
+  /** 拉取服务端硬件指标（/metrics/history；逐卡 GPU + 网络；在线时才有意义） */
+  async function fetchMetrics(): Promise<ServerMetrics> {
+    try {
+      if (!window.tintin?.server?.get) return { ...serverMetrics.value }
+      const raw = (await window.tintin.server.get('/metrics/history', {})) as Record<string, unknown> | null | undefined
+      if (!raw || typeof raw !== 'object') return { ...serverMetrics.value }
+      const gpus = Array.isArray(raw.gpu_per)
+        ? raw.gpu_per.map((g: any, i: number) => ({
+            idx: Number(g?.idx ?? i) || 0,
+            util: _latest(g?.util),
+            vramMB: _latest(g?.vram_mb ?? g?.vram ?? g?.vram_used),
+            vramTotalMB: _mb(g?.vram_total ?? g?.vram_total_mb ?? g?.vramTotal ?? g?.total_mb ?? g?.total ?? g?.memory_total),
+            temp: _latest(g?.temp),
+          }))
+        : []
+      // 内存：或为对象 {used,total,percent}，_mb 统一换算为 MB；无对象则仅取百分比
+      const memRaw = raw.memory ?? raw.mem
+      let memPct = 0, memUsed = 0, memTotal = 0
+      if (memRaw && typeof memRaw === 'object') {
+        const m = memRaw as Record<string, unknown>
+        memPct = _latest(m.percent ?? m.pct ?? m.usage ?? m.util)
+        memUsed = _mb(m.used_mb ?? m.usedMB ?? m.used ?? m.used_gb)
+        memTotal = _mb(m.total_mb ?? m.totalMB ?? m.total ?? m.total_gb)
+      } else {
+        memPct = _latest(memRaw)
+      }
+      serverMetrics.value = {
+        cpu: _latest(raw.cpu),
+        mem: memPct,
+        memoryUsedMB: memUsed,
+        memoryTotalMB: memTotal,
+        diskReadKBps: _pick(raw, 'disk_read_kbs', 'disk_read_kb', 'disk_read'),
+        diskWriteKBps: _pick(raw, 'disk_write_kbs', 'disk_write_kb', 'disk_write'),
+        netRecvKBps: _pick(raw, 'net_recv_kbs', 'net_recv_kb', 'net_recv'),
+        netSentKBps: _pick(raw, 'net_sent_kbs', 'net_sent_kb', 'net_sent'),
+        gpus,
+      }
+      return { ...serverMetrics.value }
+    } catch (_err) {
+      return { ...serverMetrics.value }
+    }
+  }
+
   /** 强制置为离线（心跳超时 / 用户主动断开等场景） */
   function setOffline(): void {
     status.value = 'offline'
   }
 
-  /** 启动 60s 能力轮询 */
+  /** 启动 60s 能力轮询（顺带刷新硬件指标） */
   function startPolling(): void {
     if (pollTimer) return
-    pollTimer = setInterval(() => { checkCapabilities() }, POLL_INTERVAL)
+    pollTimer = setInterval(() => { checkCapabilities(); void fetchMetrics() }, POLL_INTERVAL)
   }
 
   /** 停止轮询 */
@@ -231,10 +323,12 @@ export const useServerStore = defineStore('server', () => {
     queueLoad,
     registry,
     workbenchStats,
+    serverMetrics,
     // actions
     checkCapabilities,
     fetchRegistry,
     fetchStatsWorkbench,
+    fetchMetrics,
     setOffline,
     startPolling,
     stopPolling,

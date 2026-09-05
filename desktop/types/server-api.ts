@@ -157,7 +157,8 @@ export const API_PATHS = {
     transcribe: '/whisper/transcribe',
   },
   tts: {
-    generate: '/voxcpm/tts',
+    // 2026-09-05 服务端将删 /voxcpm/*：原 generate:'/voxcpm/tts' 已移除，TTS 恒走 /indextts/tts
+    generate: '/indextts/tts',
     voicesSamples: '/voice/samples',
   },
   workflow: {
@@ -381,14 +382,20 @@ export namespace ASRAPI {
 }
 
 export namespace TTSAPI {
-  // API-GUIDE 契约（/voxcpm/tts）：text(必填) + sample_id(推荐) + engine + speaker
-  // 服务端返回 WAV 二进制（Content-Type: audio/wav），客户端接 base64 或 audio_url
+  // 契约（2026-09-05 服务端 openapi.json 实测；同日用户裁决：声音克隆固定 IndexTTS，
+  // voxcpm 调用已删除，本类型即 IndexTTSRequest 口径）：
+  //   POST /indextts/tts → text + sample_id/prompt_audio/lang/duration_factor/
+  //   emo_text/emo_alpha/resp（无 engine 字段）；内部任务队列异步执行，HTTP 等完成后响应：
+  //   默认 WAV 二进制（+X-Audio-Url 头），resp=json 返 {audio_url, task_id, ...}
   export interface GenerateRequest {
     text:        string
     sample_id?:  number            // 推荐：/voice/samples 样本库 id
     prompt_audio?: string          // 旧方式：base64 内联音频（保留兼容）
-    speaker?:    string            // 音色标识
-    engine?:     'voxcpm2' | 'indextts'  // 双引擎（2026-09-02 起）
+    lang?:            string       // 默认服务端 'ZH'
+    duration_factor?: number       // 语速因子，默认 1
+    emo_text?:        string       // 情感描述
+    emo_alpha?:       number       // 情感强度，默认 0.6
+    resp?:            'json' | ''  // 'json' 返 {audio_url, task_id}
   }
   export interface GenerateResponse {
     // WAV 二进制响应（主进程转 base64 透传）

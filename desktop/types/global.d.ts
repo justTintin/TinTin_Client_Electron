@@ -206,8 +206,8 @@ declare interface TintinBridgeServer {
   ttsGenerate(
     payload: TTSAPI.GenerateRequest
   ): Promise<IpcError<TTSAPI.GenerateResponse>>
-  /** 将 base64 音频数据写入本地文件（TTS 响应 audio_base64 → 本地落盘） */
-  ttsSaveAudio(payload: { base64: string; savePath: string }): Promise<string | { error: string }>
+  /** 将 base64 音频写入本地文件（或 fromPath 复制模式）；相对路径统一解析到 userData 下，返回绝对路径 */
+  ttsSaveAudio(payload: { base64?: string; fromPath?: string; savePath: string }): Promise<string | { error: string }>
   ttsVoicesSamples(params?: {
     speaker?: string
     cloned_only?: boolean
@@ -218,6 +218,8 @@ declare interface TintinBridgeServer {
     payload: TTSAPI.UploadSampleRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<TTSAPI.UploadSampleResponse>>
+  /** 取回样本音频（audio_url 为相对路径，主进程拼 baseUrl 取回），返回 base64 供试听 */
+  ttsFetchSampleAudio(payload: { url: string }): Promise<{ audio_base64: string; content_type?: string } | { error: string } | null>
 
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   /** 扫描视频输入目录（对照 _do_scan_voice_video_dir：无 .flv，自动检测 voices/voice_N.wav 与伴随 .txt） */

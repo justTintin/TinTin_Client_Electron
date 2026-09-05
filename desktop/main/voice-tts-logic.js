@@ -11,8 +11,9 @@
 //     （改写 system prompt 四档 + markdown/引号清洗）
 //   · gui/video_montage_page.py              _get_out_montage_dir L3969-3981 /
 //     fancy_words 解析 L3726-3730
-// 契约（API 口径，禁止臆造）：POST /voxcpm/tts
-//   body = {"text": 预处理后, "prompt_audio": base64|null, "speaker": "default"}
+// 契约（API 口径，禁止臆造）：POST /indextts/tts（2026-09-05 服务端将删 /voxcpm/*，随声音克隆
+//   裁决统一切 IndexTTS）：body = {"text": 预处理后, "prompt_audio": base64|null}（无 speaker），
+//   响应 WAV 二进制。
 //   api 模式下 inference_timesteps/cfg_value 存而不用（原版同口径，不发送服务端）。
 // 架构差异注明：
 //   · 原版 wave 模块 → 此处手写 WAV PCM 帧解析/拼接（同假设：段间参数一致帧拼接）

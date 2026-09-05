@@ -3,6 +3,14 @@ const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
 const { logError: _logErr } = require('./logger')
+// 2026-09-05 日志框架切 electron-log 5.x：主进程顶层即初始化（早于一切业务 require），
+// spyRendererConsole 自动桥接渲染层 console.* 落盘；未捕获异常落盘、不弹窗。
+// 文件路径/滚动/清理由 logger.js initLogger 统一接管（userData/logs/main.log）
+try {
+  const _elog = require('electron-log')
+  _elog.initialize({ spyRendererConsole: true })
+  _elog.errorHandler.startCatching({ showDialog: false })
+} catch (_) { /* 日志初始化失败绝不阻塞启动 */ }
 const { createTray } = require('./tray')
 const { initUpdater } = require('./updater')
 const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore, getMachineId } = require('./server-proxy')

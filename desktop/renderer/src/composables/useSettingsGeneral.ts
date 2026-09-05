@@ -242,7 +242,7 @@ export function useSettingsGeneral() {
      · LLM  GET  /llm/models      模型列表服务（业务级 llm:models）
      · OCR  POST /material/ocr    无健康端点：发最小空请求，以服务端校验响应(4xx)判定端点可达
      · 向量 GET  /clip/health     CLIP 图文向量服务
-     · TTS  GET  /voxcpm/health   VoxCPM 语音合成服务
+     · TTS  GET  /indextts/health IndexTTS 语音合成服务（2026-09-05 服务端将删 /voxcpm/*）
      · ASR  GET  /whisper/health  Whisper 语音识别服务
      离线判定：主进程对 ECONNREFUSED 等网络错误静默返回 null。 */
 
@@ -304,7 +304,7 @@ export function useSettingsGeneral() {
     if (name === 'LLM · 模型列表') return _probeLlm()
     if (name === 'OCR · 文字识别') return _probeOcr()
     if (name === '向量 · 图文检索') return _probeHealth('向量 · 图文检索', '/clip/health')
-    if (name === 'TTS · 语音合成') return _probeHealth('TTS · 语音合成', '/voxcpm/health')
+    if (name === 'TTS · 语音合成') return _probeHealth('TTS · 语音合成', '/indextts/health')
     if (name === 'ASR · 语音识别') return _probeHealth('ASR · 语音识别', '/whisper/health')
   }
 
@@ -317,7 +317,7 @@ export function useSettingsGeneral() {
         _probeLlm(),
         _probeOcr(),
         _probeHealth('向量 · 图文检索', '/clip/health'),
-        _probeHealth('TTS · 语音合成', '/voxcpm/health'),
+        _probeHealth('TTS · 语音合成', '/indextts/health'),
         _probeHealth('ASR · 语音识别', '/whisper/health'),
       ])
     } finally { testingFuncs.value = false }

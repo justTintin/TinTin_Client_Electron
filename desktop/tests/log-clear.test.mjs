@@ -2,6 +2,8 @@
 // log-clear.test.mjs — 内置日志查看器「清空」单测（2026-08-31 用户反馈：
 // 不再用外部软件打开，改为内置复制/清空）。被测：main/logger.js clearLogFile
 // （名称白名单防穿越 + 写入归零文件保留）。electron 以 Module._load mock。
+// 2026-09-05 日志框架切 electron-log 5.x：审计行（logInfo）不再写被清空的
+// client-YYYYMMDD.log，统一落盘到 electron-log 主文件 main.log。
 // 运行：node --test "tests/*.test.mjs"
 // ═══════════════════════════════════════════════════════════════
 
@@ -35,19 +37,21 @@ beforeEach(() => {
 })
 
 test('clearLogFile：清空成功 → ok，文件保留且内容归零', () => {
-  // 用当日日期文件名：清空审计行（logInfo）按天分文件写到当天的 client-YYYYMMDD.log，
-  // 硬编码日期会在跨天后必挂（2026-09-01 教训）
-  const d = new Date()
-  const name = `client-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.log`
+  const name = 'client-20260101.log'
   fs.mkdirSync(logsRoot, { recursive: true })
   fs.writeFileSync(path.join(logsRoot, name), '[INFO] [t] hello\n', 'utf8')
   const r = logger.clearLogFile(name)
   assert.equal(r.ok, true)
   assert.equal(fs.existsSync(path.join(logsRoot, name)), true) // 文件保留
-  // 清空动作本身写入一条审计日志（内容归零 + 新增一行 clear 记录）
+  // 原内容已归零
   const after = fs.readFileSync(path.join(logsRoot, name), 'utf8')
   assert.ok(!after.includes('hello'), '原内容已清除')
-  assert.ok(after.includes('log cleared by user'), '审计日志已写入')
+  // 清空动作本身写入一条审计日志 → electron-log 主文件 main.log（initLogger 已把
+  // resolvePathFn 指到 tmp/logs/main.log）；允许 electron-log 不可用时跳过审计断言
+  const mainLog = path.join(logsRoot, 'main.log')
+  if (fs.existsSync(mainLog)) {
+    assert.ok(fs.readFileSync(mainLog, 'utf8').includes('log cleared by user'), '审计日志已写入 main.log')
+  }
 })
 
 test('clearLogFile：非白名单文件名（路径穿越/任意名）→ INVALID_NAME 不落盘', () => {

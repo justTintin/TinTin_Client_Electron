@@ -394,10 +394,12 @@ export function useAudioGen() {
   const canPrevPage = computed(() => listOffset.value > 0)
   const canNextPage = computed(() => listOffset.value + listPageSize.value < listTotal.value)
 
-  /** audio_library.category（四值枚举）→ 本地 kind 过滤码（'BGM' 为 seed 旧值，归 music） */
+  /** audio_library.category → 本地 kind 过滤码。
+   *  2026-09-05 服务端契约更新：category 枚举统一为 音乐/音效/配音/其它（GET /audio/categories 权威清单），
+   *  list 的 item.category 已是该枚举。历史旧值 配乐/BGM 仍可能存在于未迁移记录，保留兼容归 music。 */
   function categoryToKind(category: unknown): string {
     const c = String(category || '')
-    if (c === '配乐' || c === 'BGM' || c === 'music') return 'music'
+    if (c === '音乐' || c === '配乐' || c === 'BGM' || c === 'music') return 'music'
     if (c === '音效' || c === 'sfx') return 'sfx'
     if (c === '配音' || c === 'voice') return 'voice'
     return ''

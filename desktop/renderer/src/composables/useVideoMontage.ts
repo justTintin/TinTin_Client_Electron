@@ -1207,7 +1207,8 @@ export function useVideoMontage() {
   }
 
   // ── Step3 口播配音（对照 step3_voice_view.py 逐控件 + VoiceCloneWorker api 模式 +
-  // VideoDubbingWorker；TTS 直连用户可改 apiUrl，初值跟随 server_url + /voxcpm/tts）──
+  // VideoDubbingWorker；TTS 直连用户可改 apiUrl，初值跟随 server_url + /indextts/tts；
+  // 2026-09-05 服务端将删 /voxcpm/*，随声音克隆裁决统一切 IndexTTS）──
   const voiceDirInput = ref('')
   const selectedVoiceFiles = ref<string[]>([])
   const voicesDir = ref('')
@@ -1268,7 +1269,7 @@ export function useVideoMontage() {
   async function ensureTtsApiUrl(): Promise<void> {
     if (ttsApiUrl.value) return
     const url = await ensureServerUrl()
-    if (url) ttsApiUrl.value = url.replace(/\/$/, '') + '/voxcpm/tts'
+    if (url) ttsApiUrl.value = url.replace(/\/$/, '') + '/indextts/tts'
   }
 
   /** 选择视频（对照 _select_voice_video_dir：pick_files 多选 → dir=dirname(首文件)） */

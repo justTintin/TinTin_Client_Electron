@@ -5,7 +5,9 @@
 //   · 内置操作（2026-08-31 用户反馈：不再用外部软件打开）：
 //     「复制」＝当前查看内容写剪贴板（env:copyText）；
 //     「清空」＝当前文件写入归零（文件保留，env:logClear）
-// 数据源：env:logList / env:logRead（主进程 %APPDATA%/logs/client-YYYYMMDD.log）；
+// 数据源：env:logList / env:logRead（主进程 %APPDATA%/<userData>/logs/；
+// 2026-09-05 日志框架切 electron-log 5.x：主文件 main.log（5MB 旋转 main.old.log），
+// 历史 client-YYYYMMDD.log 只读兼容、随 30 天清理自然淘汰）；
 // 过滤编组纯函数在 logViewLogic.ts（可单测）。
 // ═══════════════════════════════════════════════════════════════
 

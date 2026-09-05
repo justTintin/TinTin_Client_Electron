@@ -96,6 +96,8 @@ test('concatWavBuffers: 拼接 + 0.15s 静音（8000Hz ×2 段 → 2.15s）', ()
 // ── deriveHealthUrl（_health_url L41-55 口径）──
 test('deriveHealthUrl: /tts 结尾 → 去后缀换 /health（原版 u[:-len]+/health）', () => {
   assert.equal(L.deriveHealthUrl('http://x:8000/voxcpm/tts'), 'http://x:8000/voxcpm/health')
+  // 2026-09-05 口播配音切 IndexTTS：/indextts/tts → /indextts/health（同规则命中）
+  assert.equal(L.deriveHealthUrl('http://x:8000/indextts/tts'), 'http://x:8000/indextts/health')
 })
 test('deriveHealthUrl: /v1/tts 结尾 → 整段去除换 /health', () => {
   assert.equal(L.deriveHealthUrl('http://x/v1/tts'), 'http://x/health')

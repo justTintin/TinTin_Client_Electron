@@ -1,0 +1,58 @@
+{
+  "appId": "com.tintin.electron.v3",
+  "productName": "螺丝钉-电商智能体矩阵",
+  "directories": {
+    "output": "../dist-20260905-1520",
+    "buildResources": "build"
+  },
+  "npmRebuild": true,
+  "asarUnpack": [
+    "node_modules/onnxruntime-node/**",
+    "node_modules/better-sqlite3/**",
+    "node_modules/sharp/**"
+  ],
+  "extraResources": [
+    {
+      "from": "../resources/bin",
+      "to": "bin",
+      "filter": [
+        "ffmpeg.exe",
+        "ffprobe.exe",
+        "yt-dlp.exe"
+      ]
+    },
+    {
+      "from": "../resources/icons",
+      "to": "icons"
+    },
+    {
+      "from": "../assets/bilibili-helper",
+      "to": "assets/bilibili-helper"
+    },
+    {
+      "from": "../resources/skills",
+      "to": "skills"
+    },
+    {
+      "from": "../assets/chrom-douyin",
+      "to": "assets/chrom-douyin"
+    }
+  ],
+  "files": [
+    "main/**/*",
+    "preload/**/*",
+    "config/**/*",
+    "renderer/dist/**/*"
+  ],
+  "win": {
+    "icon": "../resources/icons/icon.ico"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": true,
+    "perMachine": false,
+    "include": "build/uninstall.nsh"
+  },
+  "electronDist": "D:/Project/TinTin_Client_Electron/desktop/node_modules/electron/dist"
+}

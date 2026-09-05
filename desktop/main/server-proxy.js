@@ -98,7 +98,8 @@ const API_ENDPOINTS = {
   stats:  { workbench: '/stats/workbench' },
   llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list', models: '/llm/models' },
   asr:    { transcribe: '/whisper/transcribe' },
-  tts:    { generate: '/voxcpm/tts', voicesList: '/voice/samples', voicesSamples: '/voice/samples' },
+  // 2026-09-05：声音克隆与智能混剪口播配音均恒走 /indextts/tts（服务端将删全部 /voxcpm/*）
+  tts:    { indextts: '/indextts/tts', voicesList: '/voice/samples', voicesSamples: '/voice/samples' },
   workflow:{ run: '/workflow/run' },
   material: {
     list: '/material/list', search: '/material/search', serve: '/material/serve',
@@ -800,7 +801,7 @@ function createServerProxy(ipcMain, ctx) {
 
   // --- 智能混剪 Step3 口播配音域（voice:scanDir/cloneBatch/dubVideos/fonts/exportAudio）
   //     外迁 montage-voice-ipc.js（同上铁律）；TTS 直连用户可改 apiUrl（初值跟随
-  //     server_url + /voxcpm/tts，原版 ai_config.vox_api_url 同源等价）------
+  //     server_url + /indextts/tts；2026-09-05 服务端将删 /voxcpm/* 后统一切换）------
   createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl })
 
   // --- 智能混剪 Step4「特效包装」域（final:mix 本地 ffmpeg FinalMixWorker 一比一 /

@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7405801186286259466",
+  "name": "科技感朋克发光立体标题花字",
+  "style": "fontcolor=0x40E0FF:borderw=4:bordercolor=0x8B008B:shadowx=3:shadowy=3:shadowcolor=0xFF00FF@0.5",
+  "jy_effect_id": "7405801186286259466",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "heycan_search_text",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "slide"
+}

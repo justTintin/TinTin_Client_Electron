@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7405124477803171124",
+  "name": "紫色立体文字",
+  "style": "fontcolor=0xC060FF:borderw=4:bordercolor=0x300060:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7405124477803171124",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "热门",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "rise"
+}

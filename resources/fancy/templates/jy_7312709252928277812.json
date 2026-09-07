@@ -1,0 +1,12 @@
+{
+  "template_id": "jy_7312709252928277812",
+  "name": "薄荷冰花字",
+  "style": "fontcolor=0x40FF80:borderw=3:bordercolor=0x004020:shadowx=3:shadowy=3:shadowcolor=0x00FF80@0.5",
+  "jy_effect_id": "7312709252928277812",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "热门",
+  "is_vip": true,
+  "source": "jy_key_value"
+}

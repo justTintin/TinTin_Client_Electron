@@ -91,6 +91,29 @@ function getServerUrl() {
   return 'http://127.0.0.1:8766'
 }
 
+// PR#4 条目15：/output 媒体 URL 改写（对照 audio_library_client.py _fix_output_url L159-173：
+// 服务端 /audio/gen/* 返回的 url 曾硬编码旧服务器地址，而生成文件实际落在当前服务端磁盘、
+// 旧服务器上并不存在（404）。客户端统一按当前 server_url 重建 /output/ 路径，
+// 服务端修复后此改写自动变为幂等无害）
+function fixOutputUrl(u) {
+  const s = String(u || '')
+  if (!s) return s
+  const base = getServerUrl().replace(/\/$/, '')
+  const idx = s.indexOf('/output/')
+  if (base && idx !== -1 && !s.startsWith(base)) return base + s.slice(idx)
+  return s
+}
+
+/** 对生成接口响应里的 url/audio_url/file_url 字段应用 fixOutputUrl（对照 _fix_gen_urls L176-182） */
+function fixGenUrls(data) {
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    for (const k of ['url', 'audio_url', 'file_url']) {
+      if (data[k]) data[k] = fixOutputUrl(data[k])
+    }
+  }
+  return data
+}
+
 // ══════════════════════════════════════════════════════════════════
 // API_ENDPOINTS — 服务端 HTTP 路径常量（与 types/server-api.ts 的 API_PATHS 保持同步）
 // 新增/改路径时：先改 server-api.ts 的类型声明，再把这里改成同值；避免 IPC 层字符串硬编码。
@@ -113,7 +136,7 @@ const API_ENDPOINTS = {
   audio:   { genBgm: '/audio/gen/bgm', genSfx: '/audio/gen/sfx', bgmUpload: '/audio/bgm/upload', libraryUpload: '/audio/library/upload', sfxAnalyze: '/sfx/analyze' },
   prompt:  { video: '/prompt/video' },
   vsr:     { enhance: '/vsr/enhance', remove: '/vsr/remove' },
-  rembg:   { matting: '/rembg/matting' },
+  rembg:   { matting: '/matting', models: '/matting/models' },  // 2026-09-07 服务端实装口径（openapi /matting：file+model 同步回 PNG 二进制）
   vision:  { reversePrompt: '/vision/reverse-prompt' },
   digitalHuman: { generate: '/digital-human/generate', listModels: '/digital-human/models' },
   storyboard: { scripts: '/api/storyboard/scripts', scriptItem: (id) => `/api/storyboard/scripts/${id}` },
@@ -381,39 +404,25 @@ function multipartUpload(urlPath, fields, onProgress) {
 
     // 发送 body
     if (onProgress) {
+      // 分块写入（带进度）：单一驱动 + once('drain') 标准背压。
+      // 旧实现三处（write 回调/同步分支/drain 分支）同时推进 offset 且重复调度 writeChunk，
+      // 驱动数指数增殖 + drain 监听器持续堆积，大文件时上传流被打乱，
+      // 服务端 multipart 解析不出 file 字段（2026-09-07 /vsr/remove 400 "需要上传 file" 根因，已复现 ECONNRESET）
       const total = bodyBuf.length
-      let sent = 0
       const chunkSize = 64 * 1024
       let offset = 0
       const writeChunk = () => {
-        if (offset >= total) {
-          req.end()
-          return
-        }
-        const end = Math.min(offset + chunkSize, total)
-        const chunk = bodyBuf.subarray(offset, end)
-        const ok = req.write(chunk, () => {
-          sent = end
-          onProgress(Math.round((sent / total) * 100))
+        while (offset < total) {
+          const end = Math.min(offset + chunkSize, total)
+          const ok = req.write(bodyBuf.subarray(offset, end))
           offset = end
-          if (offset < total) {
-            setImmediate(writeChunk)
-          } else {
-            req.end()
+          onProgress(Math.round((offset / total) * 100))
+          if (!ok) {
+            req.once('drain', writeChunk)
+            return
           }
-        })
-        if (!ok) {
-          req.once('drain', () => {
-            sent = end
-            onProgress(Math.round((sent / total) * 100))
-            offset = end
-            setImmediate(writeChunk)
-          })
-        } else {
-          sent = end
-          onProgress(Math.round((sent / total) * 100))
-          offset = end
         }
+        req.end()
       }
       writeChunk()
     } else {
@@ -868,7 +877,8 @@ function createServerProxy(ipcMain, ctx) {
       if (p.duration !== undefined && p.duration !== null && Number.isFinite(d)) body.duration = Math.round(d)
       // MusicGen 生成耗时较长（30-60s，原客户端 _on_gen_bgm 提示同口径），放宽超时
       const res = await httpRequest('POST', API_ENDPOINTS.audio.genBgm, { body, timeout: 300000 })
-      return res.data
+      // PR#4 条目15：/output URL 改写到当前 server_url（对照 _fix_gen_urls）
+      return fixGenUrls(res.data)
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -885,7 +895,8 @@ function createServerProxy(ipcMain, ctx) {
       if (p.duration !== undefined && p.duration !== null && Number.isFinite(d)) body.duration = Math.round(d)
       // 原客户端 timeout=60s；提示口径 15-30s，放宽至 120s 防慢机超时
       const res = await httpRequest('POST', API_ENDPOINTS.audio.genSfx, { body, timeout: 120000 })
-      return res.data
+      // PR#4 条目15：/output URL 改写到当前 server_url（对照 _fix_gen_urls）
+      return fixGenUrls(res.data)
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -955,6 +966,38 @@ function createServerProxy(ipcMain, ctx) {
       const dest = path.join(tmpDir, `${String(p.prefix || 'ai_audio_')}${process.pid}${ext}`)
       fs.writeFileSync(dest, Buffer.from(res.raw || ''))
       return { path: dest, contentType: ct }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // audio:archiveGen — PR#4 条目14：AI 生成音频归档到客户端本地（对照 _GenSaveWorker
+  // audio_material_page.py L162-186 + _ext_from_content_type L110-117：下载 url →
+  // 按 Content-Type 定扩展名 → 落盘 basePath + ext（basePath 不含扩展名，归档目录
+  // outputs/ai_audio 由渲染层拼好）；生成即可离线播放/取用，不依赖服务端 URL）
+  ipcMain.handle('audio:archiveGen', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      let u = String(p.url || '')
+      if (!u) throw new Error('audio:archiveGen requires url')
+      if (!/^https?:/i.test(u)) {
+        u = getServerUrl().replace(/\/$/, '') + (u.startsWith('/') ? u : '/' + u)
+      }
+      const base = String(p.basePath || '')
+      if (!base) throw new Error('audio:archiveGen requires basePath')
+      const res = await httpRequest('GET', u, { timeout: 60000 })
+      const ct = String(res.headers?.['content-type'] || '')
+      const raw = Buffer.from(res.raw || '')
+      if (!raw.length) throw new Error('服务端返回空内容')
+      const ext = ct.includes('audio/mpeg') || ct.includes('audio/mp3') ? '.mp3'
+        : ct.includes('audio/wav') || ct.includes('audio/x-wav') ? '.wav'
+        : ct.includes('audio/ogg') ? '.ogg'
+        : ct.includes('audio/mp4') ? '.m4a'
+        : ct.includes('audio/aac') ? '.aac'
+        : ct.includes('audio/flac') ? '.flac'
+        : String(p.defaultExt || '.mp3')
+      const dest = base + ext
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, raw)
+      return { path: dest }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 

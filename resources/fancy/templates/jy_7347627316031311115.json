@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7347627316031311115",
+  "name": "赛博朋克故障字",
+  "style": "fontcolor=0x40E0FF:borderw=4:bordercolor=0x8B008B:shadowx=3:shadowy=3:shadowcolor=0xFF00FF@0.5",
+  "jy_effect_id": "7347627316031311115",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "热门",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "slide"
+}

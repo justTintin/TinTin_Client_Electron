@@ -33,9 +33,23 @@ const {
   mode, purpose, watermarkText, setMode, setPurpose,
   boxes, activeIndex, allowRotation, isSmart, isSelectMode,
   addBox, deleteActiveBox, setActiveIndex, updateActiveQuad, resetBoxes, boxLabel,
-  canStart, cancelled, status, progress, errorMsg, resultUrl, isProcessing, uploadPercent,
+  canStart, cancelled, status, progress, errorMsg, resultUrl, resultFullUrl, resultPath, isProcessing, uploadPercent,
   submit, cancel, resetResult, setFrameSize, setFile,
+  // 2026-09-07 用户裁决：完成后自动保存到原视频同目录（对齐原客户端），
+  // 按钮变「打开目录」；自动保存失败时回退手动「下载视频」
+  downloadResult, downloading, openResultDir, autoSaving,
 } = vm
+
+/** 复制结果地址（不点下载也可自行取用；仿 AudioGen BGM 的 URL 展示口径） */
+const urlCopied = ref(false)
+async function copyResultUrl(): Promise<void> {
+  if (!resultFullUrl.value) return
+  try {
+    await navigator.clipboard.writeText(resultFullUrl.value)
+    urlCopied.value = true
+    setTimeout(() => { urlCopied.value = false }, 1500)
+  } catch (_) { /* 副本失败静默 */ }
+}
 
 // ── 模式/用途选项 ──
 const modeOptions: SelectOption[] = [
@@ -105,7 +119,8 @@ async function captureFrameFromVideo(v: HTMLVideoElement): Promise<void> {
 
 // ── 时间轴把手：拖拽把手 → 逐帧 seek 预览视频（框选随帧更新）──
 const scrubEl = ref<HTMLElement | null>(null)
-let scrubbing = false
+// 拖拽态用 ref：模板需要它切换把手 grabbing 光标
+const scrubbing = ref(false)
 function seekToTime(t: number): void {
   const v = previewVideo.value
   if (!v || !Number.isFinite(t)) return
@@ -124,15 +139,15 @@ function scrubRatio(clientX: number): number {
 }
 function scrubDown(e: PointerEvent): void {
   if (!durationS.value) return
-  scrubbing = true
+  scrubbing.value = true
   seekToTime(scrubRatio(e.clientX) * durationS.value)
 }
 function scrubMove(e: PointerEvent): void {
-  if (!scrubbing) return
+  if (!scrubbing.value) return
   seekToTime(scrubRatio(e.clientX) * durationS.value)
 }
 function scrubUp(): void {
-  scrubbing = false
+  scrubbing.value = false
 }
 const scrubPct = computed(() =>
   durationS.value ? `${(currentT.value / durationS.value) * 100}%` : '0%')
@@ -365,83 +380,14 @@ const statusText = computed(() => {
   }
 })
 
-function downloadResult(): void {
-  if (resultUrl.value) {
-    const a = document.createElement('a')
-    a.href = resultUrl.value
-    a.download = fileName.value
-      ? fileName.value.replace(/\.[^.]+$/, '') + '_no_sub.mp4'
-      : 'result.mp4'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-  }
-}
 </script>
 
 <template>
   <div class="tool-form">
-    <!-- 视频选择 -->
-    <div
-      class="dropzone"
-      :class="{ 'is-active': isDragging, 'has-file': !!fileName }"
-      @click="pickFile"
-      @drop.prevent="onDrop"
-      @dragover.prevent="onDragOver"
-      @dragleave.prevent="onDragLeave"
-    >
-      <svg v-if="!fileName" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-      </svg>
-      <div class="dropzone__text">
-        <template v-if="!fileName">
-          <span class="dropzone__main">点击选择视频或拖拽到此处</span>
-          <span class="dropzone__hint">支持 MP4 / MOV / WEBM / MKV / AVI</span>
-        </template>
-        <template v-else>
-          <span class="dropzone__main">{{ fileName }}</span>
-          <span class="dropzone__hint">点击重新选择</span>
-        </template>
-      </div>
-    </div>
-
-    <!-- 模式 / 用途 -->
-    <div class="options-row">
-      <div class="form-field">
-        <label class="form-label">去除模式</label>
-        <TSelect
-          :model-value="mode"
-          :options="modeOptions"
-          :disabled="isProcessing"
-          @update:model-value="onModeChange"
-        />
-      </div>
-      <div class="form-field">
-        <label class="form-label">用途（决定服务端 inpaint 策略）</label>
-        <TSelect
-          :model-value="purpose"
-          :options="purposeOptions"
-          :disabled="isProcessing"
-          @update:model-value="onPurposeChange"
-        />
-      </div>
-    </div>
-
-    <!-- 水印文字（仅去水印显示，对照 watermark_container L1040） -->
-    <div v-if="purpose === 'watermark'" class="form-field">
-      <label class="form-label">水印文字（可选，辅助服务端精准定位）</label>
-      <input
-        v-model="watermarkText"
-        type="text"
-        class="text-input"
-        placeholder="如：片头 LOGO 文字，留空则仅按框选区域移除"
-        :disabled="isProcessing"
-      />
-    </div>
-
-    <!-- 预览 + 选区管理：左栏预览（视频播放控制 + 框选图层），右栏选区 -->
-    <div v-if="fileName" class="vsr-split" :class="{ single: !isSelectMode }">
-      <!-- 左栏：预览区（缩小一半；视频可播放 + 抽帧框选） -->
+    <!-- 2026-09-07 用户裁决：整体 1:1 左右分栏——左栏全部为预览区（画面居中），
+         右栏集中原来的上传/设置/选区/操作/进度/结果 -->
+    <div class="vsr-split">
+      <!-- 左栏：预览区（视频抓帧 + 框选图层 + 逐帧时间轴，画面在预览区内居中） -->
       <div class="vsr-preview">
         <div class="frame-stage">
           <!-- 隐藏抓帧源（仅逐帧 seek 用，界面不显示；用户要求只保留一个拖拽控制） -->
@@ -473,12 +419,12 @@ function downloadResult(): void {
               @mouseleave="onUp"
             />
           </div>
-          <div v-else class="frame-loading">等待视频就绪；拖动手柄到目标帧后，可在此帧上框选</div>
+          <div v-else class="frame-loading">{{ srcPath ? '等待视频就绪；拖动下方把手到目标帧后，可在此帧上框选' : '先在右侧选择视频，此处将显示预览帧' }}</div>
           <!-- 时间轴把手：拖拽到目标帧（逐帧），当前帧同步到上方预览 -->
           <div
             ref="scrubEl"
             class="frame-scrub"
-            :class="{ 'is-disabled': !srcPath }"
+            :class="{ 'is-disabled': !srcPath, 'is-scrubbing': scrubbing }"
             @pointerdown.prevent="scrubDown"
             @pointermove="scrubMove"
             @pointerup="scrubUp"
@@ -508,22 +454,85 @@ function downloadResult(): void {
         </div>
       </div>
 
-      <!-- 右栏：选区管理（添加选区 + 选区列表） -->
-      <div v-if="isSelectMode" class="vsr-regions">
-        <div class="regions">
-          <div class="regions__head">
-            <span class="form-label">已选区域（{{ boxes.length }}）· 可拖拽移动 / 拖顶点调整<template v-if="allowRotation"> / 拖右下角把手旋转</template></span>
-            <span class="regions__actions">
-              <button class="link-btn" :disabled="isProcessing || !framePath" @click="addBox">添加选区</button>
+      <!-- 右栏：控制区（上传 / 模式用途 / 水印文字 / 选区管理 / 操作 / 进度 / 结果） -->
+      <div class="vsr-panel">
+        <!-- 视频选择 -->
+        <div
+          class="dropzone"
+          :class="{ 'is-active': isDragging, 'has-file': !!fileName }"
+          @click="pickFile"
+          @drop.prevent="onDrop"
+          @dragover.prevent="onDragOver"
+          @dragleave.prevent="onDragLeave"
+        >
+          <svg v-if="!fileName" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+          </svg>
+          <div class="dropzone__text">
+            <template v-if="!fileName">
+              <span class="dropzone__main">点击选择视频或拖拽到此处</span>
+              <span class="dropzone__hint">支持 MP4 / MOV / WEBM / MKV / AVI</span>
+            </template>
+            <template v-else>
+              <span class="dropzone__main">{{ fileName }}</span>
+              <span class="dropzone__hint">点击重新选择</span>
+            </template>
+          </div>
+        </div>
+
+        <!-- 模式 / 用途 -->
+        <div class="options-row">
+          <div class="form-field">
+            <label class="form-label">去除模式</label>
+            <TSelect
+              :model-value="mode"
+              :options="modeOptions"
+              :disabled="isProcessing"
+              @update:model-value="onModeChange"
+            />
+          </div>
+          <div class="form-field">
+            <label class="form-label">用途（决定服务端 inpaint 策略）</label>
+            <TSelect
+              :model-value="purpose"
+              :options="purposeOptions"
+              :disabled="isProcessing"
+              @update:model-value="onPurposeChange"
+            />
+          </div>
+        </div>
+
+        <!-- 水印文字（仅去水印显示，对照 watermark_container L1040） -->
+        <div v-if="purpose === 'watermark'" class="form-field">
+          <label class="form-label">水印文字（可选，辅助服务端精准定位）</label>
+          <input
+            v-model="watermarkText"
+            type="text"
+            class="text-input"
+            placeholder="如：片头 LOGO 文字，留空则仅按框选区域移除"
+            :disabled="isProcessing"
+          />
+        </div>
+
+        <!-- 选区管理（标注选区模式；2026-09-07 用户裁决：卡片化统一风格） -->
+        <div v-if="fileName && isSelectMode" class="regions-card">
+          <div class="regions-card__head">
+            <span class="regions-card__title">
+              选区管理
+              <span class="regions-card__count">{{ boxes.length }}</span>
+              <span class="regions-card__hint">可拖拽移动 / 拖顶点调整<template v-if="allowRotation"> / 拖右下角把手旋转</template></span>
+            </span>
+            <span class="regions-card__actions">
+              <button class="mini-btn mini-btn--primary" :disabled="isProcessing || !framePath" @click="addBox">＋ 添加选区</button>
               <button
-                class="link-btn danger"
+                class="mini-btn mini-btn--danger"
                 :disabled="isProcessing || boxes.length <= 1 || activeIndex < 0"
                 @click="deleteActiveBox"
               >删除激活</button>
-              <button class="link-btn danger" :disabled="isProcessing" @click="resetBoxes">清空</button>
+              <button class="mini-btn mini-btn--ghost" :disabled="isProcessing" @click="resetBoxes">清空</button>
             </span>
           </div>
-          <div v-if="boxes.length" class="regions__list">
+          <div v-if="boxes.length" class="regions-card__list">
             <span
               v-for="(q, i) in boxes"
               :key="i"
@@ -531,59 +540,71 @@ function downloadResult(): void {
               :class="{ 'is-active': i === activeIndex }"
               @click="setActiveIndex(i)"
             >
-              #{{ i + 1 }} {{ boxLabel(q) }}
+              <span class="region-chip__idx">{{ i + 1 }}</span>
+              <span class="region-chip__coord">{{ boxLabel(q) }}</span>
               <button
                 class="region-chip__close"
                 :disabled="isProcessing || boxes.length <= 1"
+                title="删除该选区"
                 @click.stop="removeBoxAt(i)"
               >×</button>
             </span>
           </div>
+          <div v-else class="regions-card__empty">暂无选区，点击右上角「添加选区」开始标注</div>
+        </div>
+
+        <!-- 操作区 -->
+        <div class="action-row">
+          <TButton
+            label="开始移除"
+            icon="play"
+            :disabled="!canStart"
+            :loading="isProcessing"
+            @click="submit"
+          />
+          <TButton
+            v-if="isProcessing"
+            label="终止"
+            icon="close"
+            variant="danger"
+            @click="cancel"
+          />
+          <span v-if="statusText" class="status-badge" :class="`status-${status}`">{{ statusText }}</span>
+        </div>
+
+        <!-- 进度条（处理阶段） -->
+        <div v-if="isProcessing" class="progress-bar">
+          <div class="progress-bar__fill" :style="{ width: progress + '%' }" />
+        </div>
+
+        <!-- 错误提示 -->
+        <div v-if="errorMsg" class="error-msg">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <span>{{ errorMsg }}</span>
+        </div>
+
+        <!-- 结果 -->
+        <div v-if="status === 'done'" class="result">
+          <div class="result__head">
+            <span class="result__title">移除完成</span>
+            <!-- 自动落盘后 → 打开目录；未落盘（含自动保存失败回退）→ 手动下载 -->
+            <TButton v-if="resultPath" label="打开目录" icon="folder" size="small" @click="openResultDir" />
+            <TButton v-else :label="downloading || autoSaving ? '保存中…' : '下载视频'" icon="download" size="small" :loading="downloading || autoSaving" @click="downloadResult" />
+          </div>
+          <video v-if="resultUrl" class="result-video" :src="resultFullUrl" controls />
+          <!-- 本地保存位置（自动落盘后展示；仿 AudioGen BGM 结果文案口径） -->
+          <p v-if="resultPath" class="result__save" :title="resultPath">已保存：{{ resultPath }}</p>
+          <!-- 结果地址（2026-09-07 用户裁决：像 BGM 一样展示文件 URL，不点下载也可自行下载） -->
+          <div v-if="resultFullUrl" class="result__url">
+            <span class="result__url-text" :title="resultFullUrl">{{ resultFullUrl }}</span>
+            <TButton :label="urlCopied ? '已复制' : '复制'" variant="ghost" size="small" @click="copyResultUrl" />
+          </div>
         </div>
       </div>
-    </div>
-
-    <!-- 操作区 -->
-    <div class="action-row">
-      <TButton
-        label="开始移除"
-        icon="play"
-        :disabled="!canStart"
-        :loading="isProcessing"
-        @click="submit"
-      />
-      <TButton
-        v-if="isProcessing"
-        label="终止"
-        icon="close"
-        variant="danger"
-        @click="cancel"
-      />
-      <span v-if="statusText" class="status-badge" :class="`status-${status}`">{{ statusText }}</span>
-    </div>
-
-    <!-- 进度条（处理阶段） -->
-    <div v-if="isProcessing" class="progress-bar">
-      <div class="progress-bar__fill" :style="{ width: progress + '%' }" />
-    </div>
-
-    <!-- 错误提示 -->
-    <div v-if="errorMsg" class="error-msg">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10" />
-        <line x1="12" y1="8" x2="12" y2="12" />
-        <line x1="12" y1="16" x2="12.01" y2="16" />
-      </svg>
-      <span>{{ errorMsg }}</span>
-    </div>
-
-    <!-- 结果 -->
-    <div v-if="status === 'done'" class="result">
-      <div class="result__head">
-        <span class="result__title">移除完成</span>
-        <TButton label="下载 MP4" icon="download" size="small" @click="downloadResult" />
-      </div>
-      <video v-if="resultUrl" class="result-video" :src="resolveSrc(resultUrl)" controls />
     </div>
   </div>
 </template>
@@ -595,12 +616,14 @@ function downloadResult(): void {
   gap: var(--space-5);
 }
 
-/* 拖拽上传区 */
+/* 拖拽上传区（2026-09-07 用户裁决：全程序拖拽上传区高度统一 min-height 120px，
+   以智能混剪选择素材原高 ≈80px 基准 +1/2） */
 .dropzone {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-6);
+  min-height: 120px;
+  padding: var(--space-5);
   background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
   border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border));
   border-radius: var(--radius-lg);
@@ -674,22 +697,31 @@ function downloadResult(): void {
   cursor: not-allowed;
 }
 
-/* 预览 + 选区：左右两栏（2026-09-06 用户要求预览缩小一半、选区靠右） */
+/* 预览 + 控制：左右两栏（2026-09-07 用户裁决：左栏全部为预览区，右栏集中控制，1:1 均分） */
 .vsr-split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 300px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--space-4);
+  /* 2026-09-07 用户裁决：预览区定高 800px（不再随右栏拉伸）——
+     视频加载后整体可见，时间轴不用滚动即可拖拽 */
   align-items: start;
-}
-/* 智能识别模式无选区管理，预览占满 */
-.vsr-split.single {
-  grid-template-columns: minmax(0, 1fr);
 }
 .vsr-preview {
   min-width: 0;
+  min-height: 0;
+  /* 2026-09-07 用户裁决：自适应上限——默认 800px；窗口不够高时收缩到可视区，
+     保证视频 + 时间轴不用滚动即可完整拖拽（
+     顶部固定占用 ≈ title-bar 36 + app-header 64 + 页面 padding 48 + 工具栏 66 ≈ 214px，留 6px 余量） */
+  --vsr-h: min(800px, calc(100vh - 220px));
+  height: var(--vsr-h);
+  display: flex;
+  flex-direction: column;
 }
-.vsr-regions {
+.vsr-panel {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 /* 隐藏抓帧源视频（须参与渲染否则 drawImage 取帧会空白：不可 display:none，用移出视口方式） */
 .preview-src {
@@ -701,12 +733,18 @@ function downloadResult(): void {
   opacity: 0;
   pointer-events: none;
 }
-/* 时间轴把手（逐帧拖拽，2026-09-06 新增） */
+/* 时间轴把手（逐帧拖拽；2026-09-07 用户裁决：做成明显把手形态，加大热区好拖） */
 .frame-scrub {
-  padding: var(--space-1) var(--space-2) var(--space-2);
-  cursor: pointer;
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  cursor: grab;
   user-select: none;
   touch-action: none;
+}
+.frame-scrub.is-scrubbing {
+  cursor: grabbing;
+}
+.frame-scrub.is-scrubbing .frame-scrub__handle {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .frame-scrub.is-disabled {
   opacity: 0.5;
@@ -714,14 +752,15 @@ function downloadResult(): void {
 }
 .frame-scrub__track {
   position: relative;
-  height: 14px;
-  border-radius: var(--radius-full);
-  background: var(--border);
+  height: 22px;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--foreground) 8%, var(--surface-container-high));
+  border: 1px solid var(--border-subtle);
 }
 .frame-scrub__tick {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
+  top: 5px;
+  bottom: 5px;
   width: 1px;
   background: color-mix(in srgb, var(--foreground) 22%, transparent);
   pointer-events: none;
@@ -731,20 +770,30 @@ function downloadResult(): void {
   left: 0;
   top: 0;
   bottom: 0;
-  border-radius: var(--radius-full);
-  background: var(--primary);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--primary) 30%, transparent);
 }
 .frame-scrub__handle {
   position: absolute;
   top: 50%;
-  width: 14px;
-  height: 14px;
-  margin-left: -7px;
+  width: 18px;
+  height: 28px;
+  margin-left: -9px;
   transform: translateY(-50%);
-  border-radius: 50%;
+  border-radius: 6px;
   background: var(--surface);
   border: 2px solid var(--primary);
   box-sizing: border-box;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  /* 抓握纹理：竖向棱纹，看起来可拖 */
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0 3px,
+    color-mix(in srgb, var(--primary) 45%, transparent) 3px 5px
+  );
+  background-position: center;
+  background-size: 9px 12px;
+  background-repeat: no-repeat;
 }
 .frame-scrub__meta {
   display: flex;
@@ -761,6 +810,13 @@ function downloadResult(): void {
 
 /* 帧预览与框选画布 */
 .frame-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 2026-09-07 用户裁决：帧 + 时间轴整组在预览区内垂直居中；
+     帧本身由 .frame-wrap 的 align-self 水平居中 */
+  justify-content: center;
   background: var(--surface-container);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
@@ -774,12 +830,16 @@ function downloadResult(): void {
 }
 .frame-wrap {
   position: relative;
-  display: inline-block;
+  /* 画面尺寸规则（2026-09-07 用户裁决）：等比缩放，横屏不超预览区宽度、
+     竖屏不超预览区高度，边距由 .frame-stage 的 padding 提供 */
   max-width: 100%;
+  align-self: center;
   line-height: 0;
 }
 .frame-img {
+  /* 竖屏时高度上限 = 预览区定高 − 时间轴与内边距（约 96px），宽度随等比自动收 */
   max-width: 100%;
+  max-height: calc(var(--vsr-h) - 96px);
   border-radius: var(--radius-md);
   display: block;
 }
@@ -790,69 +850,173 @@ function downloadResult(): void {
   height: 100%;
 }
 
-/* 选区列表 */
-.regions__head {
+/* 选区管理卡片（2026-09-07 用户裁决：与整体卡片风格统一） */
+.regions-card {
+  padding: var(--space-3) var(--space-4);
+  background: var(--card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.regions-card__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
-  margin-bottom: var(--space-2);
+  padding-bottom: var(--space-2);
 }
-.regions__actions {
+.regions-card__title {
   display: inline-flex;
-  gap: var(--space-3);
-}
-.link-btn {
+  align-items: center;
+  gap: var(--space-2);
   font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  color: var(--foreground);
+}
+.regions-card__count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
   color: var(--primary);
-  transition: color var(--duration-fast) var(--easing-default);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
 }
-.link-btn:hover {
-  color: var(--primary-hover);
+.regions-card__hint {
+  font-weight: var(--font-weight-regular);
+  color: var(--muted-foreground);
 }
-.link-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.regions-card__actions {
+  display: inline-flex;
+  gap: var(--space-2);
 }
-.link-btn.danger {
-  color: var(--error);
-}
-.regions__list {
+.regions-card__list {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border-subtle);
+}
+.regions-card__empty {
+  padding: var(--space-3) 0 var(--space-2);
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  text-align: center;
+}
+/* 区块内小按钮（添加/删除/清空统一形态） */
+.mini-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-container);
+  color: var(--foreground);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--easing-default),
+    background var(--duration-fast) var(--easing-default),
+    color var(--duration-fast) var(--easing-default);
+}
+.mini-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.mini-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.mini-btn--primary {
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface-container));
+  color: var(--primary);
+}
+.mini-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 18%, var(--surface-container));
+}
+.mini-btn--danger {
+  color: var(--error);
+}
+.mini-btn--danger:hover:not(:disabled) {
+  border-color: var(--error);
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 8%, var(--surface-container));
+}
+.mini-btn--ghost {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.mini-btn--ghost:hover:not(:disabled) {
+  color: var(--foreground);
+  border-color: var(--foreground-muted);
 }
 .region-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 2px var(--space-2) 2px var(--space-3);
-  background: var(--surface-container-high);
+  gap: var(--space-2);
+  padding: 3px 6px 3px 4px;
+  background: var(--surface-container);
   border: 1px solid var(--border);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   font-size: var(--font-size-caption);
   color: var(--foreground);
   cursor: pointer;
+  transition: border-color var(--duration-fast) var(--easing-default),
+    background var(--duration-fast) var(--easing-default),
+    box-shadow var(--duration-fast) var(--easing-default);
+}
+.region-chip:hover {
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
 }
 .region-chip.is-active {
   border-color: var(--primary);
-  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface-container));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+.region-chip__idx {
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-container-high);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.region-chip.is-active .region-chip__idx {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.region-chip__coord {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .region-chip__close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   color: var(--muted-foreground);
   border-radius: var(--radius-full);
   font-size: 14px;
   line-height: 1;
+  transition: color var(--duration-fast) var(--easing-default),
+    background var(--duration-fast) var(--easing-default);
 }
 .region-chip__close:hover:not(:disabled) {
   color: var(--error);
-  background: var(--surface-container-highest);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
 }
 .region-chip__close:disabled {
   opacity: 0.4;
@@ -933,6 +1097,34 @@ function downloadResult(): void {
   font-size: var(--font-size-lead);
   font-weight: var(--font-weight-semibold);
   color: var(--foreground);
+}
+.result__save {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: var(--font-size-caption);
+  color: var(--foreground-muted);
+}
+.result__url {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.result__url-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;             /* 长路径尾部省略，保留文件名可读 */
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--foreground-muted);
 }
 .result-video {
   width: 100%;

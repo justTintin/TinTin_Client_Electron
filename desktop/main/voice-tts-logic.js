@@ -53,6 +53,12 @@ function intToCn(n) {
 
 function preprocessTtsText(text) {
   let t = String(text ?? '')
+  // 0. 读音标注（voice_workers.py 2026-09-07 新增第 0 步，PR#4 条目9）：
+  //    数字/字母串(中文读音) → 整体替换为读法，在数字转中文之前。
+  //    例：「555(三五)电池」→ TTS 读「三五电池」；字幕/花字侧由
+  //    stripPronAnnotation 剥括号显示原文「555电池」。
+  //    仅当括号前紧贴字母/数字串时才识别，避免误伤普通括号注释。
+  t = t.replace(/([0-9A-Za-z][0-9A-Za-z.]*)\(([\u4e00-\u9fa5A-Za-z0-9]{1,12})\)/g, '$2')
   // Python \b 为 Unicode 词边界（中文属 \w）：中文紧贴数字时边界不成立、不转换。
   // JS \b 是 ASCII 口径，需用 lookaround + \p{L}\p{N}_ 等价模拟（u flag）。
   const PY_B_L = '(?<![\\p{L}\\p{N}_])'
@@ -302,12 +308,292 @@ const FANCY_STYLES = {
 }
 
 /** drawtext 文本转义（对照 L915 逐字：\\ → \\\\ 、' 、: 、, ） */
+/** 剥读音标注括号（concat_workers.py _strip_pron_annotation 逐行移植）：
+ * 555(三五)电池 → 555电池；仅括号前紧贴字母/数字时识别。字幕/花字显示原文。 */
+const SUB_PRON_RE = /(?<=[0-9A-Za-z])\([^()]{1,12}\)/g
+function stripPronAnnotation(text) {
+  return String(text || '').replace(SUB_PRON_RE, '')
+}
+
 function escapeDrawText(s) {
   return String(s)
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "'\\''")
-    .replace(/:/g, '\\:')
-    .replace(/,/g, '\\,')
+    .replace(/:/g, '\:')
+    .replace(/,/g, '\,')
+}
+
+// ── 剪映安全框与花字（concat_workers.py 2026-09-07 PR#4 新口径逐行移植）──────
+// 所有花字/字幕必须落在剪映竖屏(9:16)默认安全框内，避免被平台 UI 遮挡：
+// 左右各约 8% 宽、顶部约 8% 高、底部约 10% 高（底部更大，避开抖音交互区）。
+const SAFE_X = 0.08
+const SAFE_TOP = 0.08
+const SAFE_BOTTOM = 0.10
+// 字幕：字号相对高度 + 底边距安全框下沿 2%（整体上移）
+const SUB_FONT_SCALE = 0.035
+const SUB_BOTTOM_GAP = 0.02
+// 字幕自动折行：单行超 SUB_MAX_LINE_WEIGHT 等效字（中文=1、ASCII≈0.55）
+// 按配音时间窗切段依次显示（均衡断点，优先在空格/标点处断开）
+const SUB_MAX_LINE_WEIGHT = 13.0
+const SUB_ASCII_WEIGHT = 0.55
+const SUB_BREAK_CHARS = new Set('，。！？、；：,.!?;: \t')
+const SAFE_X_EXPR = `w*${SAFE_X}`
+const SAFE_TOP_EXPR = `h*${SAFE_TOP}`
+const SAFE_BOTTOM_EDGE = `h*(1-${SAFE_BOTTOM})`
+const SAFE_BOTTOM_ANCHOR = `${SAFE_BOTTOM_EDGE}-text_h-h*${SUB_BOTTOM_GAP}`
+
+// 花字出现位置 → drawtext x/y 表达式（fontsize=h*0.08）。
+// 全部落在剪映安全框内（对照 concat_workers.py FANCY_POSITIONS L54-63 逐字）。
+const FANCY_POSITIONS = {
+  upper_middle: { label: '中上', x: '(w-text_w)/2', y: 'h*0.3' },
+  top: { label: '顶部居中', x: '(w-text_w)/2', y: SAFE_TOP_EXPR },
+  center: { label: '画面正中', x: '(w-text_w)/2', y: '(h-text_h)/2' },
+  bottom: { label: '底部居中', x: '(w-text_w)/2', y: SAFE_BOTTOM_ANCHOR },
+  top_left: { label: '左上角', x: SAFE_X_EXPR, y: SAFE_TOP_EXPR },
+  top_right: { label: '右上角', x: `w-text_w-${SAFE_X_EXPR}`, y: SAFE_TOP_EXPR },
+  bottom_left: { label: '左下角', x: SAFE_X_EXPR, y: SAFE_BOTTOM_ANCHOR },
+  bottom_right: { label: '右下角', x: `w-text_w-${SAFE_X_EXPR}`, y: SAFE_BOTTOM_ANCHOR },
+}
+
+// 花字出现时机：跟随对应字幕行，提前 FANCY_LEAD_SEC 秒出现、该行字幕结束消失
+const FANCY_LEAD_SEC = 0.3
+const FANCY_MAX_LEN = 10
+const FANCY_MIN_GAP_SEC = 0.05
+const FANCY_MIN_DISPLAY_SEC = 0.4
+const FANCY_MAX_PER_VIDEO = 3
+
+// ── 卖点提取（花字内容自动取自口播文案，不再手动输入）──
+// 优先级：价格 > 数字参数 > 关键词（对照 L79-92 正则/词表逐字）
+const FANCY_PRICE_RE = /(?:仅|只要|低至|到手|券后)?\d+(?:\.\d+)?元/g
+const FANCY_UNIT = ('小时|分钟|秒钟|毫安时|毫安|mAh|千克|公斤|kg|KG|Kg|千瓦|kW|毫伏|mV|'
+  + '毫米|厘米|分米|英寸|千米|公里|km|cm|mm|克|瓦|伏|升|毫升|ml|mL|'
+  + '赫兹|Hz|kHz|分贝|dB|℃|°C|%|％|DPI|dpi|天|周|月|年|米|寸|度|W|V|G|g|L|倍|核|轴|键|帧|级|档|声')
+const FANCY_NUM_RE = new RegExp(`[\u4e00-\u9fa5A-Za-z]{0,4}\\d+(?:\\.\\d+)?(?:${FANCY_UNIT})`, 'g')
+const FANCY_KEYWORDS = (
+  '超轻,超薄,超长续航,超静音,大容量,快充,闪充,无线充电,'
+  + '防水,防尘,降噪,折叠,便携,旗舰,爆款,新款,限量,'
+  + '免打孔,免安装,持久续航,高清,巨幕,一机多用,'
+  + '电量持久,电量充足,放电均衡,不易漏液,输出稳定,经久耐用,密封性,'
+  + '平价').split(',')
+
+/** 单行内提取多个卖点（按出现位置排序）：价格×n + 数字参数×n + 关键词。
+ *  口播文案常为一整行（无换行），每行只取 1 个会漏掉大部分卖点；
+ *  按正则 matchAll 收集行内全部命中（非重叠），区间重叠去重（价格优先），
+ *  按位置排序后取前 limit 个（对照 extract_fancy_words_in_line L104-140）。 */
+function extractFancyWordsInLine(lineText, limit = FANCY_MAX_PER_VIDEO) {
+  const t = String(lineText || '')
+  if (!t.trim()) return []
+  const hits = [] // [start, end, word]
+  for (const m of t.matchAll(FANCY_PRICE_RE)) {
+    hits.push([m.index, m.index + m[0].length, m[0].slice(0, FANCY_MAX_LEN)])
+  }
+  for (const m of t.matchAll(FANCY_NUM_RE)) {
+    // 与价格区间重叠（如「只要199元」同时命中参数）
+    if (hits.some(([s, e]) => (s <= m.index && m.index < e) || (s < m.index + m[0].length && m.index + m[0].length <= e))) continue
+    hits.push([m.index, m.index + m[0].length, m[0].slice(0, FANCY_MAX_LEN)])
+  }
+  const occupied = (pos) => hits.some(([s, e]) => s <= pos && pos < e)
+  for (const kw of FANCY_KEYWORDS) {
+    if (hits.length >= limit) break // 已凑够上限，无需再扫关键词
+    let pos = t.indexOf(kw)
+    while (pos !== -1) {
+      if (!occupied(pos)) {
+        hits.push([pos, pos + kw.length, kw])
+        break
+      }
+      pos = t.indexOf(kw, pos + 1)
+    }
+  }
+  hits.sort((a, b) => a[0] - b[0])
+  const words = []
+  for (const [, , w] of hits) {
+    if (w && (words.length === 0 || words[words.length - 1] !== w)) words.push(w)
+    if (words.length >= limit) break
+  }
+  return words
+}
+
+/** 整段文案提取卖点花字：逐行（行内多卖点），保持行序，跨行累计到 maxWords
+ *  （对照 extract_fancy_words_from_text L143-156；供烧制花字事件 + 花字预览两处） */
+function extractFancyWordsFromText(text, maxWords = FANCY_MAX_PER_VIDEO) {
+  const words = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    for (const w of extractFancyWordsInLine(line, maxWords - words.length)) {
+      if (w && (words.length === 0 || words[words.length - 1] !== w)) words.push(w)
+      if (words.length >= maxWords) return words
+    }
+  }
+  return words
+}
+
+/** 消解花字时间窗重叠（对照 resolve_fancy_overlaps L159-183 逐行）：
+ *  按开始时间排序后，优先压缩前一花字结束时间，压不动（低于最短显示时长）丢弃后一个。
+ *  仅严格交叠（s < pe）才算重叠：背靠背（s == pe）是行内多卖点依次出现的正常形态。 */
+function resolveFancyOverlaps(events, minGap = FANCY_MIN_GAP_SEC, minDisplay = FANCY_MIN_DISPLAY_SEC) {
+  const out = []
+  for (const [word, s, e] of [...events].sort((a, b) => a[1] - b[1] || a[2] - b[2])) {
+    if (out.length && s < out[out.length - 1][2]) {
+      const [prevWord, ps] = out[out.length - 1]
+      const newPe = Math.max(s - minGap, ps + minDisplay)
+      if (newPe < out[out.length - 1][2]) out[out.length - 1] = [prevWord, ps, newPe]
+      if (s < out[out.length - 1][2] + minGap) continue // 压不动（或压完仍重叠）→ 丢弃后一个，保先到的
+    }
+    out.push([word, s, e])
+  }
+  return out
+}
+
+// ── 字幕自动折行（对照 L198-309 逐行）────────────────────────────────
+
+/** 字幕行等效宽度：中文/全角=1，ASCII/半角≈0.55 */
+function subLineWeight(text) {
+  let w = 0
+  for (const ch of text) w += ch.codePointAt(0) < 0x2E80 ? SUB_ASCII_WEIGHT : 1.0
+  return w
+}
+
+const isAsciiAlnum = (ch) => /[0-9A-Za-z]/.test(ch)
+// 量词/单位字：数字后紧跟这些字时不可作为字幕分段断点（如 199|元，拆开观感割裂）
+const SUB_UNIT_CHARS = new Set('元角分厘克千克吨斤两米寸升瓦伏安时天年月日号度倍颗粒枚张片支盒包瓶罐箱袋页行站次趟遍')
+
+/** 字幕分段禁断边界：英数连续串中间、数字后紧跟量词单位 */
+function badSubBoundary(chars, i) {
+  const a = chars[i - 1]
+  const b = chars[i]
+  if (isAsciiAlnum(a) && isAsciiAlnum(b)) return true
+  if (/[0-9]/.test(a) && SUB_UNIT_CHARS.has(b)) return true
+  return false
+}
+
+/** 断点选择（对照 _snap_break L222-253）：
+ *  1. prefer±2 内空格/标点（吸附，断点跳过分隔符）；
+ *  2. prefer±3 内非英数连续串中间/不拆数字+量词的边界；
+ *  3. 全行范围最近可用边界；纯英数长串（无可用边界）返回 null 由调用方硬切。 */
+function snapBreak(chars, prefer, lo) {
+  let best = null
+  for (let i = Math.max(lo + 1, prefer - 2); i <= Math.min(chars.length - 1, prefer + 2); i++) {
+    if (SUB_BREAK_CHARS.has(chars[i]) || SUB_BREAK_CHARS.has(chars[i - 1])) {
+      const dist = Math.abs(i - prefer)
+      if (best === null || dist < best[0]) best = [dist, i]
+    }
+  }
+  if (best !== null) {
+    let i = best[1]
+    if (SUB_BREAK_CHARS.has(chars[i])) i += 1 // 断点跳过分隔符
+    return i
+  }
+  for (let i = Math.max(lo + 1, prefer - 3); i <= Math.min(chars.length - 1, prefer + 3); i++) {
+    if (!badSubBoundary(chars, i)) return i
+  }
+  best = null
+  for (let i = lo + 1; i < chars.length; i++) {
+    if (!badSubBoundary(chars, i)) {
+      const dist = Math.abs(i - prefer)
+      if (best === null || dist < best[0]) best = [dist, i]
+    }
+  }
+  return best ? best[1] : null
+}
+
+/** 超长字幕行自动折行（剪映竖屏安全框内单行约容 13 个等效字）。
+ *  超宽按等效宽度均衡拆多行，断点优先吸附空格/标点，不在英数串中间硬断；
+ *  不超宽返回 [原行]；空行返回 []（对照 wrap_subtitle_line L256-309）。 */
+function wrapSubtitleLine(lineText) {
+  const text = String(lineText || '').trim()
+  if (!text) return []
+  const total = subLineWeight(text)
+  if (total <= SUB_MAX_LINE_WEIGHT) return [text]
+  // 按上限-1 计算段数：断点离散性会让某段超出均值，留 1 字余量保证吸附后仍 ≤ 上限
+  const nParts = Math.max(2, Math.ceil(total / Math.max(1.0, SUB_MAX_LINE_WEIGHT - 1.0)))
+  const chars = Array.from(text)
+  const weights = chars.map((c) => (c.codePointAt(0) < 0x2E80 ? SUB_ASCII_WEIGHT : 1.0))
+  // 每个字符之前的累计宽度（断点候选基准）
+  const cumBefore = []
+  let acc = 0.0
+  for (const w of weights) { cumBefore.push(acc); acc += w }
+
+  const bounds = [0]
+  for (let part = 1; part < nParts; part++) {
+    const target = total * part / nParts
+    const lo = bounds[bounds.length - 1] + 1
+    if (lo >= chars.length) break
+    // 兑底：任意字符边界里离 target 最近的
+    let boundary = lo
+    for (let i = lo; i < chars.length; i++) {
+      if (Math.abs(cumBefore[i] - target) < Math.abs(cumBefore[boundary] - target)) boundary = i
+    }
+    let b = boundary
+    // 优先：±2 范围内的空格/标点/非英数内部断点（snapBreak）
+    const snapped = snapBreak(chars, boundary, bounds[bounds.length - 1])
+    if (snapped !== null && bounds[bounds.length - 1] < snapped && snapped < chars.length) b = snapped
+    // 段宽约束：吸附/回退候选不得让前段超过单行上限（均衡边界天然最接近）
+    const loW = cumBefore[bounds[bounds.length - 1]]
+    if (cumBefore[b] - loW > SUB_MAX_LINE_WEIGHT + 1e-9 && cumBefore[boundary] - loW <= SUB_MAX_LINE_WEIGHT + 1e-9) {
+      b = boundary
+    }
+    b = Math.min(b, chars.length - 1)
+    bounds.push(b)
+  }
+  bounds.push(chars.length)
+
+  const parts = []
+  for (let k = 0; k < bounds.length - 1; k++) {
+    const seg = chars.slice(bounds[k], bounds[k + 1]).join('').replace(/^[ ，,、]+|[ ，,、]+$/g, '')
+    if (seg) parts.push(seg)
+  }
+  return parts.length ? parts : [text]
+}
+
+// ── 花字模板动画映射（fancy_templates.py get_fancy_anim 逐行移植）────────
+// 剪映入场动画（jy_intro_anim）→ 本地通用动画：drawtext 只支持 alpha/x/y 的
+// t 表达式，按语义归 4 类；未识别/空 → fade（淡入，最安全）。
+const FANCY_ANIM_KEYWORDS = [
+  ['滑', 'slide'], ['弹', 'pop'], ['跳', 'pop'], ['晃', 'pop'], ['摆', 'pop'],
+  ['放大', 'fade'], ['吸入', 'fade'], ['折叠', 'fade'], ['打字机', 'fade'],
+]
+const VALID_ANIMS = new Set(['fade', 'rise', 'slide', 'pop', 'none'])
+
+/** 模板本地入场动画类型：anim 显式优先，否则按 jy_intro_anim 语义映射。
+ *  返回 fade/rise/slide/pop/none 之一；无效值回退 fade。 */
+function getFancyAnim(template) {
+  const t = template || {}
+  const anim = String(t.anim || '').trim().toLowerCase()
+  if (VALID_ANIMS.has(anim)) return anim
+  const jy = String(t.jy_intro_anim || '').trim()
+  if (!jy) return 'fade'
+  for (const [kw, a] of FANCY_ANIM_KEYWORDS) {
+    if (jy.includes(kw)) return a
+  }
+  return 'fade'
+}
+
+/** 花字事件构建（对照 VideoDubbingWorker.run L1263-1289 逐行）：
+ *  逐字幕行提取卖点（quota 递减），跟随该行时间窗提前 FANCY_LEAD_SEC 出现；
+ *  行内多卖点均分时间窗（首段保提前量）；最后统一重叠消解。 */
+function buildFancyEvents({ subLines, subStarts, subEnds, displayDur, quotaMax = FANCY_MAX_PER_VIDEO }) {
+  const events = []
+  let quota = quotaMax
+  for (let li = 0; li < subLines.length; li++) {
+    if (quota <= 0) break
+    const words = extractFancyWordsInLine(subLines[li], quota)
+    if (!words.length) continue
+    const ws = Math.max(0.0, subStarts[li] - FANCY_LEAD_SEC)
+    const we = Math.max(ws + 0.2, Math.min(subEnds[li], displayDur))
+    if (words.length === 1) {
+      events.push([words[0], ws, we])
+    } else {
+      // 行内多卖点：时间窗均分依次出现（首段保持提前量）
+      const seg = (we - ws) / words.length
+      words.forEach((w, wi) => {
+        const s = wi === 0 ? ws : ws + wi * seg
+        const e = wi < words.length - 1 ? ws + (wi + 1) * seg : we
+        events.push([w, s, Math.max(s + 0.2, e)])
+      })
+    }
+    quota -= words.length
+  }
+  if (!events.length) return []
+  return resolveFancyOverlaps(events)
 }
 
 // ── 输出目录推导（controller _get_out_montage_dir L3969-3981 逐行移植）──────
@@ -346,7 +632,8 @@ function resolveSubtitleFontPath(family, fileExists) {
   return 'msyh'
 }
 
-/** 字幕行时间轴（对照 L876-908：优先 .timing.json 真实句级，回退按字数比例估算） */
+/** 字幕行时间轴（对照 L876-908/L1178-1210：优先 .timing.json 真实句级，回退按字数比例估算；
+ *  返回行文本已剠读音标注括号——字幕/花字显示原文，读法仅供 TTS） */
 function buildSubtitleLines({ timing, text, displayDur, needAudioSpeed, videoDur, audioDur }) {
   let rawLines, lineStarts, lineEnds
   if (Array.isArray(timing) && timing.length && timing.every((t) => t && t.text)) {
@@ -375,14 +662,19 @@ function buildSubtitleLines({ timing, text, displayDur, needAudioSpeed, videoDur
       cumT = t1
     }
   }
-  return { rawLines, lineStarts, lineEnds }
+  return { rawLines: rawLines.map(stripPronAnnotation), lineStarts, lineEnds }
 }
 
 /**
- * 构建配音替换完整 ffmpeg 参数（对照 run L843-1019；不含 ffmpeg 可执行路径前缀）。
+ * 构建配音替换完整 ffmpeg 参数（对照 VideoDubbingWorker.run L1137-1456，
+ * 2026-09-07 PR#4 新口径逐行移植；不含 ffmpeg 可执行路径前缀）。
  * opts: { videoPath, voiceWavPath, outputVideoPath, text, addSubtitles, lengthMode,
- *         videoDur, audioDur, timing, fancyText, fancyStyle, fancyWords,
- *         subtitleFontPath(已转义), }
+ *         videoDur, audioDur, timing,
+ *         fancyText, fancyStyle, fancyPosition, fancyFontPath(已转义),
+ *         subtitleFontPath(已转义), subtitleBoxOpacity,
+ *         fancyTemplate(模板 dict 或 null), fancySoundPath(主进程已解析绝对路径或''),
+ *         fancySoundGainDb,
+ *         fancyWords(兼容保留：花字内容已改为自动提取卖点，不再参与渲染) }
  * 编码：对齐 ffmpeg-gate.js 先例（原版 get_video_encode_args 硬件探测 → libx264）
  */
 function buildDubFFmpegArgs(opts) {
@@ -398,55 +690,136 @@ function buildDubFFmpegArgs(opts) {
   const videoFilters = []
   let videoLabel = '0:v'
   let audioLabel = '1:a:0'
+  const soundInputPaths = []
 
   if (useAudioLength) {
     videoFilters.push(`[${videoLabel}]tpad=stop_mode=clone:stop_duration=${extraDur.toFixed(3)}[v_padded]`)
     videoLabel = 'v_padded'
   }
 
-  if (o.addSubtitles && o.text) {
-    const fontPath = o.subtitleFontPath || 'msyh'
-    const { rawLines, lineStarts, lineEnds } = buildSubtitleLines({
+  // 逐句时间轴（字幕烧制与花字跟字幕时机共用，run L1178-1210）：
+  // 优先 .timing.json 真实句级时间轴；无时间轴按字数比例估算（旧行为）
+  let subLines = []
+  let subStarts = []
+  let subEnds = []
+  if ((o.addSubtitles || o.fancyText) && o.text) {
+    const built = buildSubtitleLines({
       timing: o.timing, text: o.text, displayDur, needAudioSpeed, videoDur, audioDur,
     })
-    const drawtexts = rawLines.map((lineText, i) => {
-      const escaped = escapeDrawText(lineText)
-      return (
-        `drawtext=fontfile='${fontPath}':`
-        + `text='${escaped}':`
-        + 'fontsize=h*0.025:fontcolor=white:'
-        + 'box=1:boxcolor=black@0.5:boxborderw=6:'
-        + 'x=(w-text_w)/2:y=h-text_h-h*0.06:'
-        + `enable='between(t,${lineStarts[i].toFixed(3)},${lineEnds[i].toFixed(3)})'`
-      )
-    })
-    videoFilters.push(`[${videoLabel}]${drawtexts.join(',')}[v]`)
-    videoLabel = 'v'
+    subLines = built.rawLines
+    subStarts = built.lineStarts
+    subEnds = built.lineEnds
   }
 
-  const fancyWords = Array.isArray(o.fancyWords) ? o.fancyWords : []
-  if (o.fancyText && fancyWords.length && displayDur > 0) {
-    const styleStr = FANCY_STYLES[o.fancyStyle] || FANCY_STYLES.gold
-    const segDur = displayDur / fancyWords.length
+  if (o.addSubtitles && o.text && subLines.length) {
+    const fontPath = o.subtitleFontPath || 'msyh'
+    // 背景不透明度可配（run L1057-1060：异常回退 0.5；0=无背景框）
+    let boxOpacity = 0.5
+    try { boxOpacity = Math.min(1.0, Math.max(0.0, Number(o.subtitleBoxOpacity))) } catch (_) { /* NaN 等 → 默认 */ }
+    if (!Number.isFinite(boxOpacity)) boxOpacity = 0.5
+    const boxStr = boxOpacity > 0
+      ? `box=1:boxcolor=black@${boxOpacity.toFixed(2)}:boxborderw=6:`
+      : ''
+    // 底边贴安全框下沿再抬 2%（run L1225）
+    const yExpr = `${SAFE_BOTTOM_EDGE}-text_h-h*${SUB_BOTTOM_GAP}`
+    const drawtexts = []
+    for (let i = 0; i < subLines.length; i++) {
+      const startT = subStarts[i]
+      const endT = Math.max(startT + 0.2, subEnds[i])
+      // 超长行不再多行堆叠：按配音时间窗把长句切多个短段依次显示（run L1218-1242）
+      const parts = wrapSubtitleLine(subLines[i])
+      let segs
+      if (parts.length === 1) {
+        segs = [[parts[0], startT, endT]]
+      } else {
+        // 段时长按等效字数占比切分行时间窗
+        const weights = parts.map((p) => subLineWeight(p))
+        const totalW = weights.reduce((a, b) => a + b, 0) || parts.length
+        let cum = startT
+        segs = parts.map((part, k) => {
+          const segEnd = k === parts.length - 1 ? endT : cum + (endT - startT) * weights[k] / totalW
+          const seg = [part, cum, segEnd]
+          cum = segEnd
+          return seg
+        })
+      }
+      for (const [part, segStart, segEnd] of segs) {
+        drawtexts.push(
+          `drawtext=fontfile='${fontPath}':`
+          + `text='${escapeDrawText(part)}':`
+          + `fontsize=h*${SUB_FONT_SCALE}:fontcolor=white:`
+          + boxStr
+          + 'x=(w-text_w)/2:'
+          + `y=${yExpr}:`
+          + `enable='between(t,${segStart.toFixed(3)},${segEnd.toFixed(3)})'`,
+        )
+      }
+    }
+    if (drawtexts.length) {
+      videoFilters.push(`[${videoLabel}]${drawtexts.join(',')}[v]`)
+      videoLabel = 'v'
+    }
+  }
+
+  // 花字叠加（run L1258-1383）：内容自动从口播文案提取卖点（价格>数字参数>关键词，
+  // 每条视频最多 FANCY_MAX_PER_VIDEO 个）；时机跟随对应字幕行——提前 FANCY_LEAD_SEC
+  // 秒出现、该行字幕结束即消失；无卖点的行不出现。
+  let fancyEvents = []
+  if (o.fancyText && subLines.length && displayDur > 0) {
+    fancyEvents = buildFancyEvents({ subLines, subStarts, subEnds, displayDur })
+  }
+  if (o.fancyText && fancyEvents.length) {
+    const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
+    let styleStr = FANCY_STYLES[o.fancyStyle] || FANCY_STYLES.gold
+    const tpl = o.fancyTemplate && typeof o.fancyTemplate === 'object' ? o.fancyTemplate : null
+    // 模板优先：选了花字模板时，样式以模板的 drawtext 串为准（run L1309-1311）
+    if (tpl && tpl.style) styleStr = String(tpl.style)
+    // 花字位置（run L1328）：未知值回退默认中上
+    const pos = FANCY_POSITIONS[o.fancyPosition] || FANCY_POSITIONS.upper_middle
+    // 入场动画：模板 jy_intro_anim 映射本地动画；未选模板时默认淡入（run L1332-1341）
+    const anim = getFancyAnim(tpl)
+    const animDur = 0.4
     const fancyDrawtexts = []
-    fancyWords.forEach((word, wi) => {
-      const w = String(word).trim()
-      if (!w) return
-      const ftStart = wi * segDur
-      const ftEnd = Math.min((wi + 1) * segDur, displayDur)
-      const escaped = escapeDrawText(w)
+    const soundSpecs = [] // [音效绝对路径, 延迟ms]
+    for (const [word, ftStart, ftEnd] of fancyEvents) {
+      const escaped = escapeDrawText(word)
+      // 动画选项：alpha 淡入 + 按类型的 x/y 位移；s=出现时刻。
+      // x/y 必须成对提供（drawtext 默认 x/y=0，缺一个就跑位）
+      const s = ftStart.toFixed(3)
+      const animParts = []
+      let xExpr = ''
+      let yExpr = ''
+      if (anim === 'fade') {
+        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+      } else if (anim === 'rise') {
+        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+        yExpr = `(${pos.y})-(1-min((t-${s})/${animDur},1))*h*0.04`
+      } else if (anim === 'slide') {
+        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+        xExpr = `(${pos.x})+(1-min((t-${s})/${animDur},1))*w*0.10`
+      } else if (anim === 'pop') {
+        animParts.push(`alpha='if(lt(t,${s}+0.15),(t-${s})/0.15,1)'`)
+        yExpr = `(${pos.y})-abs(sin((t-${s})*14))*h*0.012*(1-min((t-${s})/0.7,1))`
+      }
+      const animStr = animParts.length ? ':' + animParts.join(':') : ''
+      const xStr = xExpr ? `x='${xExpr}'` : `x=${pos.x}`
+      const yStr = yExpr ? `y='${yExpr}'` : `y=${pos.y}`
       fancyDrawtexts.push(
-        `drawtext=fontfile='${o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'}':`
+        `drawtext=fontfile='${fontPath}':`
         + `text='${escaped}':`
         + `fontsize=h*0.08:${styleStr}:`
-        + 'x=(w-text_w)/2:y=h*0.3:'
-        + `enable='between(t,${ftStart.toFixed(3)},${ftEnd.toFixed(3)})'`,
+        + `${xStr}:${yStr}:`
+        + `enable='between(t,${ftStart.toFixed(3)},${ftEnd.toFixed(3)})'`
+        + animStr,
       )
-    })
+      // 模板音效：每个花字出现时刻混入（路径由主进程预解析，缺失时为空 → 不混）
+      if (o.fancySoundPath) soundSpecs.push([o.fancySoundPath, Math.trunc(ftStart * 1000)])
+    }
     if (fancyDrawtexts.length) {
       videoFilters.push(`[${videoLabel}]${fancyDrawtexts.join(',')}[vf]`)
       videoLabel = 'vf'
     }
+    if (soundSpecs.length) o.__soundSpecs = soundSpecs
   }
 
   if (needAudioSpeed) {
@@ -462,17 +835,41 @@ function buildDubFFmpegArgs(opts) {
     }
   }
 
+  // 花字模板音效混入（run L1409-1426）：adelay 对齐时间轴 + amix 混入配音，
+  // normalize=0 防止人声被拉低。必须在 atempo 之后追加，保证延迟基于最终时间轴。
+  const soundSpecs = Array.isArray(o.__soundSpecs) ? o.__soundSpecs : []
+  delete o.__soundSpecs
+  let soundGain = -6.0
+  try { soundGain = Number(o.fancySoundGainDb) } catch (_) { /* 缺省 -6 */ }
+  if (!Number.isFinite(soundGain)) soundGain = -6.0
+  if (soundSpecs.length) {
+    let nextIdx = 2 // 输入流：0=video, 1=voice，音效从 2 开始
+    let amixIn = `[${audioLabel}]`
+    soundSpecs.forEach(([sfxPath, delayMs], si) => {
+      videoFilters.push(`[${nextIdx}:a]adelay=${delayMs}:all=1,volume=${soundGain.toFixed(1)}dB[s${si}]`)
+      amixIn += `[s${si}]`
+      soundInputPaths.push(sfxPath)
+      nextIdx += 1
+    })
+    videoFilters.push(`${amixIn}amix=inputs=${soundSpecs.length + 1}:normalize=0:duration=longest[a_mix]`)
+    audioLabel = 'a_mix'
+  }
+
   if (videoFilters.length) {
     const filterComplex = videoFilters.join(';')
-    const audioMap = audioLabel === 'a' ? '[a]' : audioLabel
+    // 滤镜输出标签（无冒号）需要 [] 包裹；裸输入流（如 1:a:0）不加（L1430-1432）
+    const audioMap = audioLabel.includes(':') ? audioLabel : `[${audioLabel}]`
     const cmd = [
       '-y', '-i', o.videoPath,
       '-i', o.voiceWavPath,
+    ]
+    for (const sp of soundInputPaths) cmd.push('-i', sp)
+    cmd.push(
       '-filter_complex', filterComplex,
       '-map', `[${videoLabel}]`, '-map', audioMap,
       '-c:v', 'libx264', '-crf', '23', '-preset', 'superfast', '-c:a', 'aac',
-    ]
-    // 「以声音为准」严格裁剪到音频时长（L1007-1011）
+    )
+    // 「以声音为准」严格裁剪到音频时长（L1444-1448）
     if (lengthMode === 'audio' && audioDur > 0) cmd.push('-t', audioDur.toFixed(3))
     cmd.push(o.outputVideoPath)
     return cmd
@@ -504,6 +901,28 @@ module.exports = {
   parseFancyWords,
   FANCY_STYLES,
   escapeDrawText,
+  stripPronAnnotation,
+  SAFE_X,
+  SAFE_TOP,
+  SAFE_BOTTOM,
+  SUB_FONT_SCALE,
+  SUB_BOTTOM_GAP,
+  SUB_MAX_LINE_WEIGHT,
+  SUB_ASCII_WEIGHT,
+  FANCY_POSITIONS,
+  FANCY_LEAD_SEC,
+  FANCY_MAX_LEN,
+  FANCY_MIN_GAP_SEC,
+  FANCY_MIN_DISPLAY_SEC,
+  FANCY_MAX_PER_VIDEO,
+  extractFancyWordsInLine,
+  extractFancyWordsFromText,
+  resolveFancyOverlaps,
+  subLineWeight,
+  badSubBoundary,
+  wrapSubtitleLine,
+  getFancyAnim,
+  buildFancyEvents,
   resolveOutMontageDir,
   buildAtempoChain,
   resolveSubtitleFontPath,

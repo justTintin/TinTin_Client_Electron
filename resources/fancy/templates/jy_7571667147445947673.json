@@ -1,0 +1,12 @@
+{
+  "template_id": "jy_7571667147445947673",
+  "name": "双层描边蓝色图案花字",
+  "style": "fontcolor=0x40A0FF:borderw=4:bordercolor=0x003080:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7571667147445947673",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "纹理",
+  "is_vip": true,
+  "source": "jy_key_value"
+}

@@ -7,12 +7,19 @@
 //   _apply_edits）→ LLM 洗稿对话框（_show_rewrite_dialog，改写后保留时间轴
 //   回写 _plain_to_srt）→ 四格式导出（_show_save_dialog/_convert_format：
 //   srt/vtt/txt/plain）→ 行级失败重试（_retry_transcribe）
+// 2026-09-07 用户裁决（参考 tingwu.aliyun.com）：字幕区升级为听悟式检验工作台——
+//   视频播放器 + 逐段原文；点击段落跳转视频对应时间，播放高亮当前段，
+//   逐段编辑实时回写字幕（边听边校、与视频声音对齐）；全文编辑模式保留
 // 业务逻辑在 useTranscribeQueue.ts（编排）+ srtUtils.ts / voiceCloneLogic.ts（纯函数）
 // ═══════════════════════════════════════════════════════════════
-import { computed, ref } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import TButton from '@/components/common/TButton.vue'
+import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
+import VideoPlayer from '@/components/common/VideoPlayer.vue'
 import { useTranscribeQueue, STATUS_TEXT } from '@/composables/useTranscribeQueue'
 import type { QueueStatus } from '@/composables/useTranscribeQueue'
+import type { SrtSegment } from '@/composables/srtUtils'
+import { caretToTime } from '@/composables/srtUtils'
 import { useOfficeExport } from '@/composables/useOfficeExport'
 import { buildTranscriptDocxStructure, formatDateTime } from '@/composables/officeDocLogic'
 
@@ -21,8 +28,72 @@ const {
   files, lang, busy, stageText, uploadPercent,
   selectedIndex, selected, editMode, editedText,
   pickFiles, onDrop, remove, retry, select, startBatch,
+  updateSegmentText,
   enterEdit, exitEdit, rewriteSelected, applyRewriteResult, exportSrt,
 } = q
+
+/* ── 听悟式转写检验工作台（2026-09-07 用户裁决，参考 tingwu.aliyun.com）：
+   视频播放器 + 逐段原文；点击段落跳转视频对应时间，播放中高亮当前段，
+   逐段编辑实时回写字幕（边听边校，和视频里的声音对齐） ── */
+const playerRef = ref<InstanceType<typeof VideoPlayer> | null>(null)
+const currentTime = ref(0)
+const segEls = ref<HTMLElement[]>([])
+
+function setSegEl(el: unknown, i: number): void {
+  if (el) segEls.value[i] = el as HTMLElement
+}
+
+/** 当前播放中的段索引（用于高亮） */
+const activeSegIdx = computed(() => {
+  const segs = selected.value?.segments
+  if (!segs?.length) return -1
+  const t = currentTime.value
+  return segs.findIndex((s) => t >= s.start && t < Math.max(s.end, s.start + 0.01))
+})
+
+// 播放中高亮段自动滚入可视区
+watch(activeSegIdx, async (i) => {
+  if (i < 0) return
+  await nextTick()
+  segEls.value[i]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+})
+
+// 切换选中文件时重置播放进度
+watch(selectedIndex, () => { currentTime.value = 0 })
+
+/** 点击段落 → 视频跳到该段起点并播放 */
+function seekSeg(seg: SrtSegment): void {
+  playerRef.value?.seek(Math.max(0, seg.start))
+  playerRef.value?.play()
+}
+
+/* 2026-09-07 用户裁决（听悟式校对）：字幕内移动光标时视频按时间戳定位到对应帧。
+   字级 words（fmt=json）精确对齐；无 words 段内比例降级。打字不触发（避免编辑时画面乱跳）。 */
+const NAV_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'])
+
+function seekToCaret(seg: SrtSegment, caret: number): void {
+  playerRef.value?.seek(Math.max(0, caretToTime(seg, caret)))
+}
+
+function onCaretClick(e: MouseEvent, seg: SrtSegment): void {
+  const el = e.target as HTMLTextAreaElement
+  seekToCaret(seg, el.selectionStart ?? 0)
+}
+
+function onCaretKey(e: KeyboardEvent, seg: SrtSegment): void {
+  if (!NAV_KEYS.has(e.key)) return
+  const el = e.target as HTMLTextAreaElement
+  seekToCaret(seg, el.selectionStart ?? 0)
+}
+
+/** 秒 → mm:ss（超 1h 显示 h:mm:ss） */
+function fmtTime(sec: number): string {
+  const s = Math.max(0, Math.floor(sec))
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const ss = String(s % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
 
 /* ── 办公能力导出 Word（PRD §3.2④：SRT 时间轴 → docx；E1 无字幕禁用 / E6 导出中禁用）── */
 const officeExport = useOfficeExport()
@@ -44,6 +115,16 @@ async function onExportWord(): Promise<void> {
 }
 
 const isDragging = ref(false)
+
+// 2026-09-07 用户裁决：语言改下拉选择（服务端 /whisper/transcribe 契约 language=ISO 代码，默认 zh；
+// 原文本框易填错），选项与服务端对齐：空=自动识别
+const langOptions: SelectOption[] = [
+  { label: '自动识别', value: '' },
+  { label: '中文', value: 'zh' },
+  { label: '英文', value: 'en' },
+  { label: '日语', value: 'ja' },
+  { label: '韩语', value: 'ko' },
+]
 
 // ── 洗稿对话框（对照 _show_rewrite_dialog：改写要求 + 生成 + 预览应用）──
 const rewriteOpen = ref(false)
@@ -92,33 +173,7 @@ function applyRewrite(): void {
 
 <template>
   <div class="tool-form">
-    <!-- 顶部操作：添加文件 + 语言 + 开始处理（对照 _add_paths / _start_batch） -->
-    <div class="action-row">
-      <TButton
-        label="添加文件"
-        icon="upload"
-        :disabled="busy"
-        @click="pickFiles"
-      />
-      <input
-        v-model="lang"
-        class="lang-input"
-        placeholder="语言（留空=自动识别）"
-        :disabled="busy"
-      />
-      <TButton
-        label="开始处理"
-        icon="play"
-        :disabled="!files.length && !busy"
-        :loading="busy"
-        @click="startBatch"
-      />
-      <span v-if="busy && uploadPercent > 0 && uploadPercent < 100" class="upload-progress">
-        上传中 {{ uploadPercent }}%
-      </span>
-    </div>
-
-    <!-- 拖拽区 -->
+    <!-- 拖拽区（2026-09-07 用户裁决：移至顶部；「添加文件」按钮与拖拽区功能重复，删除） -->
     <div
       class="dropzone"
       :class="{ 'is-active': isDragging }"
@@ -131,6 +186,27 @@ function applyRewrite(): void {
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
       </svg>
       <span class="dropzone__text">点击选择或拖入媒体文件（可多选）· MP4 / MOV / MP3 / WAV 等</span>
+    </div>
+
+    <!-- 语言 + 开始处理（对照 _start_batch；在拖拽框下方） -->
+    <div class="action-row">
+      <TSelect
+        v-model="lang"
+        :options="langOptions"
+        placeholder="语言"
+        :disabled="busy"
+        class="lang-select"
+      />
+      <TButton
+        label="开始处理"
+        icon="play"
+        :disabled="!files.length && !busy"
+        :loading="busy"
+        @click="startBatch"
+      />
+      <span v-if="busy && uploadPercent > 0 && uploadPercent < 100" class="upload-progress">
+        上传中 {{ uploadPercent }}%
+      </span>
     </div>
 
     <!-- 阶段提示 -->
@@ -204,14 +280,51 @@ function applyRewrite(): void {
         </div>
       </div>
 
+      <!-- 听悟式检验工作台（2026-09-07 用户裁决，参考 tingwu.aliyun.com）：播放器 + 逐段原文，
+           点击段落跳转视频对应时间，播放高亮当前段，逐段编辑实时回写字幕（边听边校） -->
+      <template v-if="!editMode">
+        <!-- 2026-09-07 用户裁决：播放器限高对齐视频去字幕预览口径——竖屏限制高度、横屏不溢出宽度 -->
+        <div class="player-wrap">
+          <VideoPlayer
+            ref="playerRef"
+            :src="selected.path"
+            @timeupdate="currentTime = $event"
+          />
+        </div>
+        <div v-if="selected.segments.length" class="transcript">
+          <div
+            v-for="(seg, si) in selected.segments"
+            :key="si"
+            :ref="(el) => setSegEl(el, si)"
+            class="transcript__row"
+            :class="{ 'is-active': si === activeSegIdx }"
+          >
+            <div class="transcript__meta" title="点击跳转视频对应位置" @click="seekSeg(seg)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20" /></svg>
+              <span class="transcript__speaker">发言人</span>
+              <span class="transcript__time">{{ fmtTime(seg.start) }}</span>
+            </div>
+            <textarea
+              class="transcript__text"
+              :value="seg.text"
+              rows="1"
+              spellcheck="false"
+              title="移动光标可定位视频到对应位置"
+              @click="onCaretClick($event, seg)"
+              @keyup="onCaretKey($event, seg)"
+              @change="updateSegmentText(selectedIndex, si, ($event.target as HTMLTextAreaElement).value)"
+            />
+          </div>
+        </div>
+        <pre v-else class="srt-view">{{ selected.srtText || '暂无字幕，请先处理该文件。' }}</pre>
+      </template>
       <textarea
-        v-if="editMode"
+        v-else
         v-model="editedText"
         class="srt-editor"
         rows="12"
         spellcheck="false"
       />
-      <pre v-else class="srt-view">{{ selected.srtText || '暂无字幕，请先处理该文件。' }}</pre>
 
       <!-- 导出（对照 _show_save_dialog/_convert_format 四格式） -->
       <div v-if="!editMode && selected.srtText" class="export-row">
@@ -264,20 +377,14 @@ function applyRewrite(): void {
 .tool-form { display: flex; flex-direction: column; gap: var(--space-5); }
 
 .action-row { display: flex; align-items: center; gap: var(--space-3); }
-.lang-input {
-  width: 200px; height: var(--size-input-height); padding: 0 var(--space-3);
-  background: var(--surface-container); border: 1px solid var(--border);
-  border-radius: var(--radius-md); color: var(--foreground); font-size: var(--font-size-body);
-  outline: none; transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
-}
-.lang-input::placeholder { color: var(--muted-foreground); }
-.lang-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
-.lang-input:disabled { opacity: 0.5; }
+/* 2026-09-07 用户裁决：语言改下拉（选项与服务端对齐） */
+.lang-select { width: 200px; }
 .upload-progress { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 
+/* 2026-09-07 用户裁决：全程序拖拽上传区高度统一 min-height 120px（以智能混剪选择素材原高 ≈80px 基准 +1/2） */
 .dropzone {
   display: flex; align-items: center; justify-content: center; gap: var(--space-3);
-  padding: var(--space-4); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
+  min-height: 120px; padding: var(--space-4); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
   border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg);
   color: var(--muted-foreground); cursor: pointer;
   transition: border-color var(--duration-fast), background var(--duration-fast);
@@ -335,6 +442,70 @@ function applyRewrite(): void {
   box-sizing: border-box; resize: vertical; outline: none;
 }
 .srt-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
+
+/* 听悟式播放器限高（对齐 SubtitleRemoval 纯 max 口径 2026-09-07）：视频按原始比例自缩、
+   永不放大裁切——竖屏限制高度、左右留黑；横屏宽度贴容器上限 */
+.player-wrap {
+  --vt-h: min(480px, calc(100vh - 560px));
+  display: flex;
+  justify-content: center;
+  background: #000;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.player-wrap :deep(.video-player),
+.player-wrap :deep(.plyr),
+.player-wrap :deep(.plyr__video-wrapper) {
+  width: 100%;
+  height: auto;
+}
+/* plyr 会按视频比例给 wrapper 设内联 aspect-ratio，宽度 100% 时竖屏高度爆掉被裁切
+   → 掐掉，让 video 自身用 max 限高限宽（对齐去字幕口径） */
+.player-wrap :deep(.plyr__video-wrapper) {
+  aspect-ratio: auto !important;
+}
+.player-wrap :deep(video) {
+  display: block;
+  width: auto;
+  height: auto;
+  max-height: var(--vt-h);
+  max-width: 100%;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+/* 听悟式逐段原文（对照 tingwu.aliyun.com：段卡片 + 发言人/时间戳 + 文本框，当前段主色高亮） */
+.transcript {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  max-height: 420px; overflow: auto; padding: 2px;
+}
+.transcript__row {
+  display: flex; flex-direction: column; gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
+}
+.transcript__row.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+.transcript__meta {
+  display: flex; align-items: center; gap: var(--space-2);
+  color: var(--muted-foreground); cursor: pointer; user-select: none; width: fit-content;
+}
+.transcript__meta:hover { color: var(--primary); }
+.transcript__speaker { font-size: var(--font-size-caption); color: var(--foreground-muted); }
+.transcript__time { font-family: var(--font-mono); font-size: var(--font-size-caption); }
+.transcript__text {
+  width: 100%; box-sizing: border-box; resize: none; overflow: hidden;
+  padding: 2px 0; background: transparent; border: none; outline: none;
+  font-size: var(--font-size-body); line-height: var(--line-height-relaxed); color: var(--foreground);
+  font-family: inherit;
+  /* Chromium 123+：随内容自动长高（Electron 31 = Chromium 126 可用） */
+  field-sizing: content;
+  min-height: 1.6em;
+}
+.transcript__text:focus { box-shadow: 0 1px 0 0 var(--primary); }
 
 .export-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .export-label { font-size: var(--font-size-caption); color: var(--muted-foreground); }

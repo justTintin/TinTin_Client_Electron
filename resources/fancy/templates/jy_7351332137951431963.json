@@ -1,0 +1,14 @@
+{
+  "template_id": "jy_7351332137951431963",
+  "name": "赛博科技-精准操控系统",
+  "style": "fontcolor=0x40E0FF:borderw=4:bordercolor=0x8B008B:shadowx=3:shadowy=3:shadowcolor=0xFF00FF@0.5",
+  "jy_effect_id": "7351332137951431963",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "kind": "text_template",
+  "category": "",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "slide"
+}

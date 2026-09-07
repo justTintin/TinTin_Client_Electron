@@ -15,20 +15,40 @@ const logger = require('./logger')
 
 function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError }) {
   // --- V3 新接口 S1~S3（rembg / vsr / reverse-prompt）————————————————
+  // 2026-09-07 契约对齐：服务端实装 POST /matting（multipart：file+model，同步回 PNG 二进制），
+  // 旧 /rembg/matting 异步任务模式从未实装；旧实现把 image 裸字符串路径当文本字段发，
+  // 服务端根本收不到图片（buildMultipartBody 的文本分支），一并修正为 { path } 包装。
+  // 返回：PNG 落盘到原图同目录 `{原名}_matting.png`（对齐 vsr 自动保存口径），返 { path, bytes }
   ipcMain.handle('rembg:submit', async (event, payload, onProgressChannel) => {
     try {
       const p = payload || {}
-      if (!p.image) throw new Error('rembg:submit missing `image` Blob')
+      if (!p.image || typeof p.image !== 'string') throw new Error('rembg:submit missing `image` 本地路径')
       const fields = {}
-      fields.image = p.image
-      if (p.model)         fields.model = p.model
-      if (p.alpha_matting !== undefined) fields.alpha_matting = String(!!p.alpha_matting)
-      if (p.return_mask !== undefined)   fields.return_mask   = String(!!p.return_mask)
-      if (p.bg_color)      fields.bg_color = p.bg_color
+      fields.file = { path: p.image }
+      if (p.model) fields.model = p.model
       const onProgress = onProgressChannel
         ? (percent) => event.sender.send(onProgressChannel, percent)
         : undefined
-      return await multipartUpload(API_ENDPOINTS.rembg.matting, fields, onProgress)
+      const buf = await multipartUpload(API_ENDPOINTS.rembg.matting, fields, onProgress)
+      if (!Buffer.isBuffer(buf)) {
+        // 服务端错误响应（JSON）会被 multipartUpload 解析后原样返回
+        const detail = buf && typeof buf === 'object' ? JSON.stringify(buf).slice(0, 200) : String(buf).slice(0, 200)
+        throw new Error(detail || '服务端未返回图片数据')
+      }
+      const outPath = p.image.replace(/\.[^.\\/]+$/, '') + '_matting.png'
+      fs.writeFileSync(outPath, buf)
+      // logger.js 是 electron-log 5.x 兼容层：导出 logInfo/logWarn/logError 函数集，无 .info 方法
+      logger.logInfo('rembg', `matting saved: ${outPath} (${buf.length}B)`)
+      return { path: outPath, bytes: buf.length }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // GET /matting/models — 服务端可用抠图模型清单
+  ipcMain.handle('rembg:models', async () => {
+    try {
+      const res = await httpRequest('GET', API_ENDPOINTS.rembg.models)
+      const list = Array.isArray(res) ? res : (res && Array.isArray(res.models) ? res.models : [])
+      return { models: list }
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 

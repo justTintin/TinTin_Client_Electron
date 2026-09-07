@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7495216846946274584",
+  "name": "蓝色渐变阴影立体花字",
+  "style": "fontcolor=0x40A0FF:borderw=4:bordercolor=0x003080:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7495216846946274584",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "蓝色",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "rise"
+}

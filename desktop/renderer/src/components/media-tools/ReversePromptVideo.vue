@@ -281,6 +281,8 @@ export default {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  /* 2026-09-07 用户裁决：全程序拖拽上传区高度统一 min-height 120px（以智能混剪选择素材原高 ≈80px 基准 +1/2） */
+  min-height: 120px;
   padding: var(--space-6);
   background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
   border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border));

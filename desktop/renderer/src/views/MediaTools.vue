@@ -37,7 +37,8 @@ const router = useRouter()
    2026-09-04 二次裁决：「创作」组改名「文案脚本」（分镜脚本创作）；提示词组 2 卡划归运营工具
    2026-09-05 用户裁决：删除「产品知识」卡——其文案生成能力已迁入运营工具·产品资料页
    （OtCopywritingPanel.vue），本组仅保留分镜脚本创作 */
-const GROUPS = ['文案脚本', '图形', '视频', '音频'] as const
+   /* 2026-09-07 用户裁决：音频组提到视频组上方 */
+const GROUPS = ['文案脚本', '图形', '音频', '视频'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
   文案脚本: [
@@ -56,6 +57,7 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     { id: 'video-repair',      title: '视频修复',     desc: '画质修复 / 工作流处理', group: '视频', emoji: '🛠️', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', wip: true, comp: defineAsyncComponent(() => import('@/components/media-tools/VideoRepair.vue')) },
     { id: 'video-transcribe',  title: '视频转文字',   desc: '视频语音自动转写',       group: '视频', emoji: '📄', accent: 'linear-gradient(135deg,#6366F1 0%,#A855F7 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoTranscribe.vue')) },
     { id: 'subtitle-removal',  title: '视频去水印字幕', desc: '去除字幕 / 台标水印',  group: '视频', emoji: '🔤', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/SubtitleRemoval.vue')) },
+    { id: 'video-download',   title: '参考视频下载', desc: '粘贴 YouTube/B站 链接选档位下载', group: '视频', emoji: '⬇️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#6366F1 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoDownload.vue')) },
   ],
   音频: [
     { id: 'audio-gen',   title: '音频生成', desc: 'AI 生成 BGM / 音效，一键入库', group: '音频', emoji: '🔊', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/AudioGen.vue')) },

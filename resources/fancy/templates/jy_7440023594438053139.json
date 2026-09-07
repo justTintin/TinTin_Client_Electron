@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7440023594438053139",
+  "name": "购物节喇叭喊话文本-薅羊毛啦",
+  "style": "fontcolor=0xF0C040:borderw=4:bordercolor=0x6B3000:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7440023594438053139",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "kind": "text_template",
+  "category": "",
+  "is_vip": true,
+  "source": "jy_key_value"
+}

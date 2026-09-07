@@ -16,8 +16,10 @@ import { useAudioGen } from '@/composables/useAudioGen'
 const s = useAudioGen()
 const {
   bgmStyle, bgmStyleOptions, bgmDuration, bgmBusy, bgmResultLabel, bgmUrl, bgmSaving,
+  bgmLocal, openBgmLocation,
   generateBgm, saveBgmToLib,
   sfxPrompt, sfxDuration, sfxBusy, sfxResultLabel, sfxUrl, sfxSaving,
+  sfxLocal, openSfxLocation,
   generateSfx, saveSfxToLib,
   toAbsolute,
   // 音频列表（原「全部」tab）
@@ -50,14 +52,28 @@ const sfxAudioEl = ref<HTMLAudioElement | null>(null)
 
 function playBgm(): void {
   const el = bgmAudioEl.value
-  if (!el || !bgmUrl.value) return
+  if (!el) return
+  // 本地优先（对照 _on_play_ai_bgm L1821-1830：已归档本地文件直接播放，未就绪回退在线 URL）
+  if (bgmLocal.value) {
+    el.src = 'file:///' + encodeURI(bgmLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
+    void el.play().catch(() => { /* 加载失败静默 */ })
+    return
+  }
+  if (!bgmUrl.value) return
   el.src = toAbsolute(bgmUrl.value)
   void el.play().catch(() => { /* 加载失败静默（服务端不可达时结果标签已有错误态） */ })
 }
 
 function playSfx(): void {
   const el = sfxAudioEl.value
-  if (!el || !sfxUrl.value) return
+  if (!el) return
+  // 本地优先（对照 _on_play_ai_sfx 同口径）
+  if (sfxLocal.value) {
+    el.src = 'file:///' + encodeURI(sfxLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
+    void el.play().catch(() => { /* 加载失败静默 */ })
+    return
+  }
+  if (!sfxUrl.value) return
   el.src = toAbsolute(sfxUrl.value)
   void el.play().catch(() => { /* 同上 */ })
 }
@@ -203,6 +219,8 @@ onMounted(() => { doSearch(); void loadBgmTags() })
         <div class="action-row">
           <TButton label="播放生成的 BGM" variant="ghost" size="small" class="action-btn" :disabled="!bgmUrl" @click="playBgm" />
           <TButton label="保存到 BGM 库" variant="secondary" size="small" class="action-btn" :loading="bgmSaving" :disabled="!bgmUrl || bgmSaving" @click="saveBgmToLib" />
+          <!-- 打开位置（条目14，对照 btn_ai_bgm_open L1692-1695：归档成功后可用） -->
+          <TButton label="打开位置" variant="secondary" size="small" class="action-btn" :disabled="!bgmLocal" title="在资源管理器中打开生成的 BGM 本地文件（outputs/ai_audio）" @click="openBgmLocation" />
           <audio v-if="bgmUrl" ref="bgmAudioEl" controls class="inline-audio" />
         </div>
       </div>
@@ -241,6 +259,8 @@ onMounted(() => { doSearch(); void loadBgmTags() })
         <div class="action-row">
           <TButton label="播放生成的音效" variant="ghost" size="small" class="action-btn" :disabled="!sfxUrl" @click="playSfx" />
           <TButton label="保存到音效库" variant="secondary" size="small" class="action-btn" :loading="sfxSaving" :disabled="!sfxUrl || sfxSaving" @click="saveSfxToLib" />
+          <!-- 打开位置（对照 btn_ai_sfx_open L1748-1751） -->
+          <TButton label="打开位置" variant="secondary" size="small" class="action-btn" :disabled="!sfxLocal" title="在资源管理器中打开生成的音效本地文件（outputs/ai_audio）" @click="openSfxLocation" />
           <audio v-if="sfxUrl" ref="sfxAudioEl" controls class="inline-audio" />
         </div>
       </div>

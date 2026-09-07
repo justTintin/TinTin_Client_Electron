@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7604155458005503257",
+  "name": "春节复古火焰",
+  "style": "fontcolor=0xF0C040:borderw=4:bordercolor=0x6B3000:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7604155458005503257",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "热门",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "pop"
+}

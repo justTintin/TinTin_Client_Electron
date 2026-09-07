@@ -91,6 +91,10 @@
         "to": "skills"
       },
       {
+        "from": "../resources/fancy",
+        "to": "fancy"
+      },
+      {
         "from": "../assets/chrom-douyin",
         "to": "assets/chrom-douyin"
       }

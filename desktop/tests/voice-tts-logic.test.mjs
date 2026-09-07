@@ -157,7 +157,7 @@ test('buildDubFFmpegArgs: 无字幕/花字/变速 → 直通 copy + shortest', (
   assert.ok(args.includes('-shortest'))
   assert.ok(!args.includes('-filter_complex'))
 })
-test('buildDubFFmpegArgs: 字幕 drawtext（timing 对轴 + 白字 50% 黑底）', () => {
+test('buildDubFFmpegArgs: 字幕 drawtext（新口径：字号 0.035 + 底边贴安全框 + 可配背景）', () => {
   const args = L.buildDubFFmpegArgs({
     ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true,
     subtitleFontPath: 'C\\:/Windows/Fonts/msyh.ttc',
@@ -165,9 +165,29 @@ test('buildDubFFmpegArgs: 字幕 drawtext（timing 对轴 + 白字 50% 黑底）
   })
   const fc = args[args.indexOf('-filter_complex') + 1]
   assert.ok(fc.includes('drawtext=fontfile='))
-  assert.ok(fc.includes('fontsize=h*0.025'))
-  assert.ok(fc.includes('boxcolor=black@0.5'))
+  assert.ok(fc.includes('fontsize=h*0.035'))
+  assert.ok(fc.includes('boxcolor=black@0.50'))
+  assert.ok(fc.includes('y=h*(1-0.1)-text_h-h*0.02'))
   assert.ok(fc.includes("enable='between(t,0.000,2.000)'"))
+})
+test('buildDubFFmpegArgs: 字幕背景不透明度 0 → 无背景框；65% → black@0.65', () => {
+  const mk = (op) => L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true, subtitleBoxOpacity: op,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  assert.ok(!mk(0)[mk(0).indexOf('-filter_complex') + 1].includes('boxcolor'))
+  assert.ok(mk(0.65)[mk(0.65).indexOf('-filter_complex') + 1].includes('boxcolor=black@0.65'))
+})
+test('buildDubFFmpegArgs: 超长字幕按时间窗切段依次显示（折行 + 占比切分）', () => {
+  const long = '一'.repeat(22)
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true,
+    text: long, timing: [{ text: long, start: 0, end: 4 }],
+  })
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  // 22 等效字 → 2 段（8/22 与 14/22 占比切 0..4 秒窗）
+  assert.ok(fc.includes("enable='between(t,0.000,1.455)'"))
+  assert.ok(fc.includes("enable='between(t,1.455,4.000)'"))
 })
 test('buildDubFFmpegArgs: 以声音为准 → tpad 补帧 + -t 裁剪', () => {
   const args = L.buildDubFFmpegArgs({
@@ -187,15 +207,50 @@ test('buildDubFFmpegArgs: 仅变速时插入视频直通占位（L993-995）', (
   const fc = args[args.indexOf('-filter_complex') + 1]
   assert.ok(fc.startsWith('[0:v]null[v0];'))
 })
-test('buildDubFFmpegArgs: 花字（h*0.08 大号 + 居中偏上）', () => {
+test('buildDubFFmpegArgs: 花字自动提取卖点（h*0.08 + 中上位置 + 提前量 + 默认淡入）', () => {
   const args = L.buildDubFFmpegArgs({
     ...DUB_BASE, videoDur: 10, audioDur: 10,
-    fancyText: true, fancyStyle: 'yellow_red', fancyWords: ['8000DPI'],
+    fancyText: true, fancyStyle: 'yellow_red',
+    text: '只要199元超值好听',
+    timing: [{ text: '只要199元超值好听', start: 1, end: 5 }],
   })
   const fc = args[args.indexOf('-filter_complex') + 1]
   assert.ok(fc.includes('fontsize=h*0.08'))
   assert.ok(fc.includes('y=h*0.3'))
   assert.ok(fc.includes('fontcolor=0xFFFF00'))
+  assert.ok(fc.includes("text='只要199元'"))
+  // 提前 0.3s：字幕行 1..5 → 花字 0.7..5
+  assert.ok(fc.includes("enable='between(t,0.700,5.000)'"))
+  assert.ok(fc.includes("alpha='if(lt(t,0.700+0.4),(t-0.700)/0.4,1)'"))
+})
+test('buildDubFFmpegArgs: 花字模板 → style 覆盖 + jy 动画映射 slide 位移', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10,
+    fancyText: true, text: '只要199元超值好听',
+    timing: [{ text: '只要199元超值好听', start: 1, end: 5 }],
+    fancyTemplate: { template_id: 'jy_x', style: 'fontcolor=0xFF0000:borderw=6', jy_intro_anim: '向左滑动' },
+  })
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('fontcolor=0xFF0000:borderw=6'))
+  assert.ok(fc.includes("x='((w-text_w)/2)+(1-min((t-0.700)/0.4,1))*w*0.10'"))
+  assert.ok(fc.includes('y=h*0.3'))
+})
+test('buildDubFFmpegArgs: 模板音效 → 追加输入 + adelay/amix + a_mix 映射', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10,
+    fancyText: true, text: '只要199元超值好听',
+    timing: [{ text: '只要199元超值好听', start: 1, end: 5 }],
+    fancyTemplate: { template_id: 'gold_pop', style: 'fontcolor=0xF0C040', anim: 'pop' },
+    fancySoundPath: 'D:\\f\\sfx\\pop.mp3', fancySoundGainDb: -8,
+  })
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('[2:a]adelay=700:all=1,volume=-8.0dB[s0]'))
+  assert.ok(fc.includes('amix=inputs=2:normalize=0:duration=longest[a_mix]'))
+  assert.ok(args.includes('D:\\f\\sfx\\pop.mp3'))
+  assert.ok(args.includes('[a_mix]'))
+  // pop 弹跳动画
+  assert.ok(fc.includes("alpha='if(lt(t,0.700+0.15),(t-0.700)/0.15,1)'"))
+  assert.ok(fc.includes('abs(sin((t-0.700)*14))'))
 })
 test('buildSubtitleLines: 无时间轴按字数比例估算', () => {
   const r = L.buildSubtitleLines({ text: '12345\n123', displayDur: 8 })
@@ -213,4 +268,100 @@ test('resolveSubtitleFontPath: 族名命中 → 盘符冒号转义；未命中�
     'C\\:/Windows/Fonts/msyh.ttc',
   )
   assert.equal(L.resolveSubtitleFontPath('', { familyPath: '', path: () => false }), 'msyh')
+})
+
+// ── PR#4 新口径（2026-09-07）：读音标注 / 卖点提取 / 折行 / 花字事件 / 动画映射 ──
+test('preprocessTtsText: 读音标注 → TTS 读括号内读法（第 0 步，数字转中文之前）', () => {
+  assert.equal(L.preprocessTtsText('555(三五)电池'), '三五电池')
+  assert.equal(L.preprocessTtsText('型号A1(亿一)上门'), '型号亿一上门')
+  // 非紧贴字母/数字的普通括号注释不替换
+  assert.equal(L.preprocessTtsText('好(真的)东西'), '好(真的)东西')
+})
+test('stripPronAnnotation: 字幕侧剠括号显示原文，普通括号不误伤', () => {
+  assert.equal(L.stripPronAnnotation('555(三五)电池'), '555电池')
+  assert.equal(L.stripPronAnnotation('好(真的)东西'), '好(真的)东西')
+  assert.equal(L.stripPronAnnotation(''), '')
+})
+test('extractFancyWordsInLine: 价格 > 数字参数 > 关键词，位置排序 + 去重', () => {
+  assert.deepEqual(
+    L.extractFancyWordsInLine('只要199元，续航70小时，超轻便携', 3),
+    ['只要199元', '续航70小时', '超轻'],
+  )
+  // 「只要199元」同时命中参数正则 → 区间重叠去重只保价格
+  assert.deepEqual(L.extractFancyWordsInLine('只要199元', 3), ['只要199元'])
+  // 无卖点 → 空数组
+  assert.deepEqual(L.extractFancyWordsInLine('普通日常文案'), [])
+  // limit 上限
+  assert.deepEqual(L.extractFancyWordsInLine('超轻超薄', 1), ['超轻'])
+})
+test('extractFancyWordsFromText: 跨行累计到 maxWords', () => {
+  assert.deepEqual(
+    L.extractFancyWordsFromText('第一行超轻\n第二行大容量\n第三行防水', 2),
+    ['超轻', '大容量'],
+  )
+})
+test('resolveFancyOverlaps: 压缩前段 / 丢弃后段 / 背靠背不视为重叠', () => {
+  // 可压缩：前段结束提前到 next.start - gap
+  assert.deepEqual(
+    L.resolveFancyOverlaps([['A', 0, 5], ['B', 4.8, 8]]),
+    [['A', 0, 4.75], ['B', 4.8, 8]],
+  )
+  // 压不动（低于最短显示）→ 丢弃后一个
+  assert.deepEqual(
+    L.resolveFancyOverlaps([['A', 4, 5], ['B', 4.2, 8]]),
+    [['A', 4, 4.4]],
+  )
+  // 背靠背（s == pe）保留
+  assert.deepEqual(
+    L.resolveFancyOverlaps([['A', 0, 2], ['B', 2, 4]]),
+    [['A', 0, 2], ['B', 2, 4]],
+  )
+})
+test('buildFancyEvents: 提前量 + quota 递减 + 行内多卖点均分 + 重叠消解', () => {
+  const ev = L.buildFancyEvents({
+    subLines: ['只要199元超值', '续航70小时很给力', '没有卖点的一行'],
+    subStarts: [0, 3, 6], subEnds: [2.5, 5, 9], displayDur: 10,
+  })
+  assert.equal(ev.length, 2)
+  assert.deepEqual([ev[0][0], ev[0][1], ev[0][2]], ['只要199元', 0, 2.5])
+  assert.equal(ev[1][0], '续航70小时')
+  assert.ok(Math.abs(ev[1][1] - 2.7) < 1e-9)
+  assert.ok(Math.abs(ev[1][2] - 5) < 1e-9)
+  // 行内多卖点：时间窗均分（首段保提前量）
+  const ev2 = L.buildFancyEvents({
+    subLines: ['超轻超薄'], subStarts: [1], subEnds: [5], displayDur: 6,
+  })
+  assert.equal(ev2.length, 2)
+  assert.equal(ev2[0][0], '超轻')
+  assert.ok(Math.abs(ev2[0][1] - 0.7) < 1e-9)
+  assert.ok(Math.abs(ev2[0][2] - 2.85) < 1e-9)
+  assert.equal(ev2[1][0], '超薄')
+  assert.ok(Math.abs(ev2[1][1] - 2.85) < 1e-9)
+  assert.ok(Math.abs(ev2[1][2] - 5) < 1e-9)
+})
+test('wrapSubtitleLine: 短行原样 / 空行 / 长行均衡分段不在英数串中间硬断', () => {
+  assert.deepEqual(L.wrapSubtitleLine('短句'), ['短句'])
+  assert.deepEqual(L.wrapSubtitleLine(''), [])
+  const parts = L.wrapSubtitleLine('中中中中中中中中中中中中8000DPI速')
+  assert.equal(parts.length, 2)
+  assert.ok(parts[1].includes('8000DPI')) // 英数连续串不被拆开
+  // 数字+量词不作断点
+  assert.equal(L.badSubBoundary(['9', '元'], 1), true)
+  assert.equal(L.badSubBoundary(['0', 'D'], 1), true)
+  assert.equal(L.badSubBoundary(['中', '文'], 1), false)
+})
+test('FANCY_POSITIONS: 8 项全落安全框内', () => {
+  assert.equal(Object.keys(L.FANCY_POSITIONS).length, 8)
+  assert.equal(L.FANCY_POSITIONS.top.y, 'h*0.08')
+  assert.equal(L.FANCY_POSITIONS.bottom_left.y, 'h*(1-0.1)-text_h-h*0.02')
+  assert.equal(L.FANCY_POSITIONS.top_right.x, 'w-text_w-w*0.08')
+})
+test('getFancyAnim: anim 显式优先 → jy 语义映射 → 回退 fade', () => {
+  assert.equal(L.getFancyAnim({ anim: 'pop' }), 'pop')
+  assert.equal(L.getFancyAnim({ jy_intro_anim: '向左滑动' }), 'slide')
+  assert.equal(L.getFancyAnim({ jy_intro_anim: '波浪弹入' }), 'pop')
+  assert.equal(L.getFancyAnim({ jy_intro_anim: '复古打字机' }), 'fade')
+  assert.equal(L.getFancyAnim({ jy_intro_anim: '未知动画' }), 'fade')
+  assert.equal(L.getFancyAnim({}), 'fade')
+  assert.equal(L.getFancyAnim(null), 'fade')
 })

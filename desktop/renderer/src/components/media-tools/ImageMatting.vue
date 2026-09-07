@@ -1,28 +1,39 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
 // ImageMatting.vue — 图像抠图
-// 上传图片 → 选择模型与参数 → POST /rembg/matting（上传）
-// 轮询 GET /tasks/{task_id} → 预览/下载 PNG 结果
+// 上传图片 → 选择模型 → POST /matting（同步，服务端直接回 PNG 二进制）
+// 主进程落盘到原图同目录 `{原名}_matting.png` → 预览/打开目录
+// （2026-09-07 契约对齐：服务端实装 /matting，旧 /rembg/matting 异步任务模式从未实装）
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
 import { useServerTask } from '@/composables/useServerTask'
 import type { RembgAPI } from '../../../../types/server-api'
 
-/** 抠图模型选项 */
-const modelOptions: SelectOption[] = [
+/** 抠图模型选项（静态兑底；onMounted 尝试拉 GET /matting/models 对齐服务端） */
+const modelOptions = ref<SelectOption[]>([
   { label: 'U2Net（通用）', value: 'u2net' },
   { label: 'ISNet General Use（高精度）', value: 'isnet-general-use' },
-  { label: 'BiRefNet Portrait（人像）', value: 'birefnet-portrait' }
-]
+  { label: 'BiRefNet Portrait（人像）', value: 'birefnet-portrait' },
+])
 
 // ── 表单状态 ──
 const model = ref('u2net')      // 抠图模型
-const alphaMatting = ref(false) // Alpha matting 开关
-const bgColor = ref('#ffffff')  // 背景颜色
-const bgTransparent = ref(true) // 背景透明（默认透明）
+
+onMounted(async () => {
+  try {
+    const res = await window.tintin.server.mattingModels()
+    const list = (res && !('error' in res) && Array.isArray(res.models) ? res.models : []) as unknown[]
+    // 归一化：字符串 或 {name/id, ...} 对象
+    const opts = list
+      .map((it) => (typeof it === 'string' ? it : String((it as any)?.name ?? (it as any)?.id ?? '')))
+      .filter(Boolean)
+      .map((v) => ({ label: v, value: v }))
+    if (opts.length) modelOptions.value = opts
+  } catch { /* 离线/失败静默，用静态兑底 */ }
+})
 
 // ── 文件选择 + 拖拽（共享 composable，选中后清结果区） ──
 const { filePath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
@@ -38,44 +49,29 @@ const task = useServerTask({
   failTitle: '图像抠图失败',
   getSuccessBody: () => fileName.value,
 })
-const { status, progress, errorMsg, resultUrl, resultPath, isProcessing, uploadPercent } = task
+const { status, progress, errorMsg, resultPath, isProcessing, uploadPercent } = task
 
 const canStart = computed(() => !!filePath.value && !isProcessing.value)
 
-/** 提交抠图任务 */
+/** 提交抠图（同步接口：服务端直接回 PNG，主进程落盘后返路径） */
 async function startMatting() {
   if (!filePath.value) return
   task.begin()
   try {
-    const payload = {
-      image: filePath.value as unknown as Blob, // 路径占位：server-proxy 在 Node 侧按字段名读本地路径
-      model: model.value,
-      alpha_matting: alphaMatting.value,
-      bg_color: bgTransparent.value ? null : bgColor.value,
-    }
-    const res = await window.tintin.server.rembgSubmit(payload, task.setUpload)
-    if (!res) throw new Error('服务端离线或未返回任务ID')
-    if (typeof res === 'object' && 'error' in res && res.error) throw new Error(String(res.error))
-    task.startPolling((res as RembgAPI.MattingResponse).task_id)
+    const res = await window.tintin.server.rembgSubmit({ image: filePath.value, model: model.value }, task.setUpload)
+    if (!res) throw new Error('服务端离线或未返回结果')
+    if ('error' in res && res.error) throw new Error(String(res.error))
+    const out = res as RembgAPI.MattingResponse
+    resultPath.value = out.path
+    task.completeSync('')
   } catch (err) {
     task.failWith(err)
   }
 }
 
-/** 下载结果 PNG */
-function downloadResult() {
-  if (resultUrl.value) {
-    const a = document.createElement('a')
-    a.href = resultUrl.value
-    a.download = fileName.value
-      ? fileName.value.replace(/\.[^.]+$/, '') + '_matting.png'
-      : 'result.png'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-  } else if (resultPath.value) {
-    window.tintin.shell.revealInFolder(resultPath.value)
-  }
+/** 打开结果所在目录（对齐 vsr 裁决：完成后自动保存本地，按钮改为打开目录） */
+function openResultDir() {
+  if (resultPath.value) window.tintin.shell.revealInFolder(resultPath.value)
 }
 
 /** 状态文案 */
@@ -121,60 +117,25 @@ const statusText = computed(() => {
       </div>
     </div>
 
-    <!-- 参数表单 -->
+    <!-- 参数表单（2026-09-07 契约对齐：新接口 /matting 仅 file+model，删旧契约的 Alpha matting / 背景色） -->
     <div class="form-grid">
       <div class="form-field">
         <label class="form-label">抠图模型</label>
         <TSelect v-model="model" :options="modelOptions" :disabled="isProcessing" />
       </div>
-
-      <div class="form-field">
-        <label class="form-label">Alpha matting</label>
-        <div class="switch-row">
-          <button
-            type="button"
-            class="switch"
-            :class="{ 'is-on': alphaMatting }"
-            :disabled="isProcessing"
-            role="switch"
-            :aria-checked="alphaMatting"
-            @click="alphaMatting = !alphaMatting"
-          >
-            <span class="switch__thumb" />
-          </button>
-          <span class="form-hint">开启后边缘更精细，速度较慢</span>
-        </div>
-      </div>
-
-      <div class="form-field">
-        <label class="form-label">背景颜色</label>
-        <div class="color-row">
-          <button
-            type="button"
-            class="switch switch--sm"
-            :class="{ 'is-on': !bgTransparent }"
-            :disabled="isProcessing"
-            role="switch"
-            :aria-checked="!bgTransparent"
-            @click="bgTransparent = !bgTransparent"
-          >
-            <span class="switch__thumb" />
-          </button>
-          <span class="form-hint">{{ bgTransparent ? '透明背景' : '自定义颜色' }}</span>
-          <input
-            v-if="!bgTransparent"
-            v-model="bgColor"
-            type="color"
-            class="color-input"
-            :disabled="isProcessing"
-          />
-        </div>
-      </div>
     </div>
 
     <!-- 操作区 -->
     <div class="action-row">
+      <!-- 对齐 vsr 裁决：完成后自动保存本地，按钮改两态（打开目录 / 开始抠图） -->
       <TButton
+        v-if="resultPath"
+        label="打开目录"
+        icon="folder"
+        @click="openResultDir"
+      />
+      <TButton
+        v-else
         label="开始抠图"
         icon="play"
         :disabled="!canStart"
@@ -206,8 +167,9 @@ const statusText = computed(() => {
     <div v-if="status === 'done'" class="result">
       <div class="result__head">
         <span class="result__title">抠图结果</span>
-        <TButton label="下载 PNG" icon="download" size="small" @click="downloadResult" />
+        <TButton label="打开目录" icon="folder" size="small" @click="openResultDir" />
       </div>
+      <p v-if="resultPath" class="result__save">已保存：{{ resultPath }}</p>
       <div class="preview-grid">
         <div class="preview-cell">
           <span class="preview-label">原图</span>
@@ -215,7 +177,7 @@ const statusText = computed(() => {
         </div>
         <div class="preview-cell">
           <span class="preview-label">结果</span>
-          <img class="preview-img preview-img--checker" :src="resolveSrc(resultUrl) || resolveSrc(resultPath)" alt="结果" />
+          <img class="preview-img preview-img--checker" :src="resolveSrc(resultPath)" alt="结果" />
         </div>
       </div>
     </div>
@@ -229,11 +191,13 @@ const statusText = computed(() => {
   gap: var(--space-5);
 }
 
-/* ── 拖拽上传区 ── */
+/* ── 拖拽上传区（2026-09-07 用户裁决：全程序拖拽上传区高度统一 min-height 120px，
+   以智能混剪选择素材原高 ≈80px 基准 +1/2）── */
 .dropzone {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  min-height: 120px;
   padding: var(--space-6);
   background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
   border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border));
@@ -296,83 +260,7 @@ const statusText = computed(() => {
   color: var(--muted-foreground);
 }
 
-/* ── 开关 ── */
-.switch-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  height: var(--size-input-height);
-}
-
-.switch {
-  position: relative;
-  width: 38px;
-  height: 22px;
-  flex-shrink: 0;
-  background: var(--surface-container-high);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  transition: background var(--duration-fast) var(--easing-default);
-}
-
-.switch.is-on {
-  background: var(--primary);
-  border-color: var(--primary);
-}
-
-.switch--sm {
-  width: 32px;
-  height: 18px;
-}
-
-.switch__thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  background: var(--foreground);
-  border-radius: var(--radius-full);
-  transition: transform var(--duration-fast) var(--easing-default);
-}
-
-.switch--sm .switch__thumb {
-  width: 12px;
-  height: 12px;
-}
-
-.switch.is-on .switch__thumb {
-  transform: translateX(16px);
-  background: var(--primary-foreground);
-}
-
-.switch--sm.is-on .switch__thumb {
-  transform: translateX(14px);
-}
-
-.switch:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* ── 颜色选择 ── */
-.color-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  height: var(--size-input-height);
-}
-
-.color-input {
-  width: 40px;
-  height: var(--size-input-height);
-  padding: 2px;
-  background: var(--surface-container);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-}
+/* ── 开关/颜色选择已随旧契约参数删除（2026-09-07 /matting 仅 file+model） ── */
 
 /* ── 操作区 ── */
 .action-row {
@@ -460,6 +348,18 @@ const statusText = computed(() => {
   font-size: var(--font-size-lead);
   font-weight: var(--font-weight-semibold);
   color: var(--foreground);
+}
+
+/* 已保存路径（对齐 SubtitleRemoval 的 .result__save 口径：尾部省略保留文件名） */
+.result__save {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--muted-foreground);
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .preview-grid {

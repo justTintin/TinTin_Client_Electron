@@ -5,11 +5,16 @@
 //   · 生成音效→ audio:genSfx（gen_sfx L179-196）
 //   · 保存到 BGM 库 → 临时落盘 + audio:bgmUpload（bgm_upload L71-94，tag="AI生成"）
 //   · 保存到音效库 → 临时落盘 + audio:sfxAnalyze（sfx_analyze L127-147）
+// PR#4 条目14/15（2026-09-06）：生成成功自动归档本地 outputs/ai_audio +「打开位置」
+//   （_GenSaveWorker L162-186 / _on_gen_*_done L1780-1814/L1896-1929）、/output URL 改写
+//   由主进程 server-proxy.js fixGenUrls 承担（_fix_output_url L159-183）
 // UI 文案铁律：按钮/标签/提示逐字对照原版 view 源码（前导空格为原版 icon 占位，不移植）
 // ═══════════════════════════════════════════════════════════════
 import { ref, computed, nextTick } from 'vue'
+import type { Ref } from 'vue'
 import type { AudioAPI } from '../../../types/server-api-audio'
 import { clientError } from '../utils/clientLog'
+import { readCacheDir } from './useSettingsConfig'
 
 function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) { /* 预览环境无桥 */ }
@@ -28,6 +33,38 @@ function unwrapIpc<T>(res: T | null | { error: string }, label: string): T {
 
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+// ── 本地归档（PR#4 条目14，对照 _GenSaveWorker audio_material_page.py L162-186：
+//    下载 url → Content-Type 定 ext → 落盘 outputs/ai_audio/{prefix}_{yyyyMMdd_HHmmss}{ext}。
+//    架构差异：原版 OUTPUTS_DIR=工程根/outputs，V3 归到用户配置 cacheDir 下）──
+/** Windows 路径拼接（渲染层无 node path，与 useVideoMontage 同口径） */
+function joinPath(...parts: string[]): string {
+  return parts
+    .filter(Boolean)
+    .map((s, i) => (i === 0 ? s.replace(/[\\/]+$/, '') : s.replace(/^[\\/]+|[\\/]+$/g, '')))
+    .join('\\')
+}
+
+/** 归档时间戳（对照 QDateTime.currentDateTime().toString("yyyyMMdd_HHmmss")） */
+function archiveTs(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+}
+
+/** 生成成功后自动归档到本地（结果区回写成功/失败，文案逐字对照 _on_bgm_saved_local L1805-1814） */
+async function archiveAiAudio(url: string, prefix: string, localRef: Ref<string>, labelRef: Ref<string>): Promise<void> {
+  try {
+    const ts = archiveTs(new Date())
+    const base = joinPath(await readCacheDir(), 'outputs', 'ai_audio', `${prefix}_${ts}`)
+    const r = await window.tintin.server.audioArchiveGen({ url, basePath: base })
+    if (r === null || r === undefined) throw new Error('服务端不可达（OFFLINE），请检查服务端地址与网络')
+    if (typeof r === 'object' && 'error' in r) throw new Error(String(r.error))
+    localRef.value = (r as { path: string }).path
+    labelRef.value = `生成成功！已保存到本地（点击「打开位置」查看）：\n${localRef.value}`
+  } catch (e) {
+    labelRef.value = `本地保存失败（${errText(e)}）。\n仍可在线播放：${url}`
+  }
 }
 
 // ═══ 音频列表域（原「全部」tab 一比一：_AudioListWorker L156-192 + _fill_list L626-686
@@ -93,6 +130,7 @@ export function useAudioGen() {
   const bgmResultLabel = ref('')       // 原 ai_bgm_result_label（muted 多行）
   const bgmUrl = ref('')               // 原 _ai_bgm_url
   const bgmName = ref('')              // 原 _ai_bgm_name
+  const bgmLocal = ref('')             // 原 _ai_bgm_local（条目14：本地归档路径，空=未就绪）
   const bgmSaving = ref(false)         // 保存中（原按钮文案→"保存中..."）
 
   // ── BGM 标签体系：服务端端点 GET /audio/bgm/tags（openapi 未收录；2026-09-05 实测
@@ -176,7 +214,12 @@ export function useAudioGen() {
       const name = 'AI 生成 BGM'           // 契约响应无 name/filename 字段，展示固定名
       bgmUrl.value = url
       bgmName.value = name
-      bgmResultLabel.value = `生成成功！${name}\n时长: ${data.duration ?? '—'} 秒\nURL: ${url}`
+      bgmLocal.value = ''                  // 归档未就绪先清空（对照 _on_gen_bgm_done L1791）
+      if (!url) { bgmResultLabel.value = `生成成功！${name}`; return }
+      // 生成结果立即归档到客户端本地，播放/打开位置均用本地文件（对照 L1795-1803：
+      // 结果区先提示，归档在后台完成，不阻塞 busy）
+      bgmResultLabel.value = `生成成功！${name}\n时长: ${data.duration ?? '—'} 秒\n正在保存到本地…`
+      void archiveAiAudio(url, 'ai_bgm', bgmLocal, bgmResultLabel)
     } catch (e) {
       bgmResultLabel.value = `BGM 生成失败：${errText(e)}`
     } finally {
@@ -191,6 +234,7 @@ export function useAudioGen() {
   const sfxResultLabel = ref('')
   const sfxUrl = ref('')
   const sfxName = ref('')
+  const sfxLocal = ref('')             // 原 _ai_sfx_local（条目14）
   const sfxSaving = ref(false)
 
   /** 生成音效（原 _on_gen_sfx L1769-1782 + _on_gen_sfx_done/_error；name 候选顺序与 BGM 相反：name|filename） */
@@ -208,7 +252,11 @@ export function useAudioGen() {
       const name = 'AI 生成音效'           // 契约响应无 name/filename 字段，展示固定名
       sfxUrl.value = url
       sfxName.value = name
-      sfxResultLabel.value = `生成成功！${name}\n时长: ${data.duration ?? '—'} 秒\nURL: ${url}`
+      sfxLocal.value = ''                  // 对照 _on_gen_sfx_done L1907
+      if (!url) { sfxResultLabel.value = `生成成功！${name}`; return }
+      // 同 BGM：立即归档到本地（对照 L1910-1918）
+      sfxResultLabel.value = `生成成功！${name}\n时长: ${data.duration ?? '—'} 秒\n正在保存到本地…`
+      void archiveAiAudio(url, 'ai_sfx', sfxLocal, sfxResultLabel)
     } catch (e) {
       sfxResultLabel.value = `音效生成失败：${errText(e)}`
     } finally {
@@ -228,15 +276,22 @@ export function useAudioGen() {
     if (!bgmUrl.value || bgmSaving.value) return
     bgmSaving.value = true
     try {
-      const dl = unwrapIpc<{ path: string }>(
-        await window.tintin.server.audioDownloadTemp({ url: bgmUrl.value, prefix: 'ai_bgm_', defaultExt: '.mp3' }),
-        '保存到 BGM 库')
+      let filePath: string
+      if (bgmLocal.value) {
+        // 本地已归档，直接上传，不再重复下载（对照 _on_save_bgm_to_lib L1841-1847）
+        filePath = bgmLocal.value
+      } else {
+        const dl = unwrapIpc<{ path: string }>(
+          await window.tintin.server.audioDownloadTemp({ url: bgmUrl.value, prefix: 'ai_bgm_', defaultExt: '.mp3' }),
+          '保存到 BGM 库')
+        filePath = dl.path
+      }
       const data = unwrapIpc<Record<string, unknown>>(
         // 2026-09-04 契约：style=剪映风格标签；2026-09-05 用户裁决：风格/标签合并——
         // 入库 style 沿用「风格」选择（'auto' 无具体风格 → 传空让服务端自定），
         // mood/scene 随情绪/场景下拉上传（「不指定」传空串）
         await window.tintin.server.audioBgmUpload({
-          filePath: dl.path,
+          filePath,
           style: bgmStyle.value !== 'auto' ? bgmStyle.value : '',
           mood: bgmMood.value,
           scene: bgmScene.value,
@@ -260,11 +315,18 @@ export function useAudioGen() {
     if (!sfxUrl.value || sfxSaving.value) return
     sfxSaving.value = true
     try {
-      const dl = unwrapIpc<{ path: string }>(
-        await window.tintin.server.audioDownloadTemp({ url: sfxUrl.value, prefix: 'ai_sfx_', defaultExt: '.wav' }),
-        '保存到音效库')
+      let filePath: string
+      if (sfxLocal.value) {
+        // 本地已归档，直接上传，不再重复下载（对照 _on_save_sfx_to_lib 同口径）
+        filePath = sfxLocal.value
+      } else {
+        const dl = unwrapIpc<{ path: string }>(
+          await window.tintin.server.audioDownloadTemp({ url: sfxUrl.value, prefix: 'ai_sfx_', defaultExt: '.wav' }),
+          '保存到音效库')
+        filePath = dl.path
+      }
       const data = unwrapIpc<Record<string, unknown>>(
-        await window.tintin.server.audioLibraryUpload({ filePath: dl.path, category: '音效' }),
+        await window.tintin.server.audioLibraryUpload({ filePath, category: '音效' }),
         '保存到音效库')
       // 触发 PANNs 分析补全标签（后台性质，失败不阻断；服务端 analyze_all 亦可补全）
       const newId = Number((data as Record<string, unknown>).id)
@@ -281,6 +343,15 @@ export function useAudioGen() {
       sfxSaving.value = false
     }
   }
+
+  // ── 打开位置（条目14，原 _open_ai_audio_location L1340-1350：explorer /select, 选中文件；
+  //    V3 用 shell.revealInFolder 同语义，架构差异注明）──
+  function openAiAudioLocation(local: string): void {
+    if (!local) { notify('提示', '本地文件不存在（可能尚未保存完成）。'); return }
+    try { window.tintin.shell.revealInFolder(local) } catch (_) { /* 无壳环境静默 */ }
+  }
+  const openBgmLocation = (): void => openAiAudioLocation(bgmLocal.value)
+  const openSfxLocation = (): void => openAiAudioLocation(sfxLocal.value)
 
   // ── 列表试听（原 _play_by_mid L752-770 + _on_cell_double_clicked L716-732：
   //    双击切歌，同曲再击暂停/继续；V3 内联 audio 流式，URL= /material/serve）──
@@ -513,9 +584,11 @@ export function useAudioGen() {
   return {
     // BGM
     bgmStyle, bgmStyleOptions, bgmDuration, bgmBusy, bgmResultLabel, bgmUrl, bgmName, bgmSaving,
+    bgmLocal, openBgmLocation,
     generateBgm, saveBgmToLib,
     // SFX
     sfxPrompt, sfxDuration, sfxBusy, sfxResultLabel, sfxUrl, sfxName, sfxSaving,
+    sfxLocal, openSfxLocation,
     generateSfx, saveSfxToLib,
     // 播放辅助
     toAbsolute,

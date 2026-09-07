@@ -23,6 +23,7 @@ const { spawn, execSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const L = require('./voice-tts-logic')
+const FT = require('./fancy-templates')
 
 // ── ffmpeg/ffprobe 路径（同 ffmpeg-gate.js getBinDir 口径，未导出故本地等价实现）──
 function getBinDir() {
@@ -356,7 +357,56 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── voice:dubVideos — 批量替换原声（VideoDubbingWorker.run L843-1035 口径）──
+  // ── fancy:listTemplates — 花字模板列表 + 已缓存预览图（dataURL）──
+  // 对照 step3_voice_view.py fancy_template_combo 填充 + _start_fancy_preview_loader。
+  // 预览图主进程 ffmpeg 现场生成（ensureTemplatePreview 缓存），渲染层 <img> 直用。
+  ipcMain.handle('fancy:listTemplates', async () => {
+    try {
+      const templates = FT.listFancyTemplates(true).map((tpl) => {
+        // 全业务字段回传（渲染层选模板后原样回传给 dubVideos，音效/动画信息不丢）
+        const { _path, ...rest } = tpl
+        return { ...rest, anim: L.getFancyAnim(tpl), hasSound: !!FT.getFancySoundPath(tpl) }
+      })
+      const previews = {}
+      for (const tpl of templates) {
+        const p = FT.templatePreviewPath(tpl.template_id)
+        if (fs.existsSync(p) && fs.statSync(p).size > 0) {
+          previews[tpl.template_id] = `data:image/png;base64,${fs.readFileSync(p).toString('base64')}`
+        }
+      }
+      return { templates, previews }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // ── fancy:ensurePreviews — 补齐缺失的模板预览图（逐个 ffmpeg 生成，后台调用）──
+  ipcMain.handle('fancy:ensurePreviews', async (event) => {
+    try {
+      const ffmpeg = getFfmpegPath()
+      const fontPath = fs.existsSync('C:/Windows/Fonts/msyhbd.ttc')
+        ? 'C:/Windows/Fonts/msyhbd.ttc'
+        : (fs.existsSync('C:/Windows/Fonts/msyh.ttc') ? 'C:/Windows/Fonts/msyh.ttc' : '')
+      const previews = {}
+      let generated = 0
+      const templates = FT.listFancyTemplates(true)
+      for (let i = 0; i < templates.length; i++) {
+        const tpl = templates[i]
+        const out = FT.ensureTemplatePreview(tpl, ffmpeg, fontPath)
+        if (out) {
+          previews[tpl.template_id] = `data:image/png;base64,${fs.readFileSync(out).toString('base64')}`
+          generated++
+          // 逐个回传进度（对照原版 _FancyPreviewWorker 串行后台生成）
+          event.sender.send('fancy:previewProgress', { idx: i + 1, total: templates.length })
+        }
+      }
+      return { previews, generated }
+    } catch (err) {
+      return { error: err.message }
+    }
+  })
+
+  // ── voice:dubVideos — 批量替换原声（VideoDubbingWorker.run L843-1456 口径）──
   ipcMain.handle('voice:dubVideos', async (event, payload) => {
     try {
       const p = payload || {}
@@ -378,6 +428,17 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         ? 'C\\:/Windows/Fonts/msyhbd.ttc'
         : (fs.existsSync('C:/Windows/Fonts/msyh.ttc') ? 'C\\:/Windows/Fonts/msyh.ttc' : 'msyh')
 
+      // 花字模板（L1054-1055：非 dict → None=自定义样式）+ 模板音效（缺失静默跳过）
+      let fancyTemplate = null
+      if (p.fancyTemplate) {
+        try {
+          const parsed = typeof p.fancyTemplate === 'string' ? JSON.parse(p.fancyTemplate) : p.fancyTemplate
+          if (parsed && typeof parsed === 'object' && parsed.template_id) fancyTemplate = parsed
+        } catch (_) { fancyTemplate = null }
+      }
+      const fancySoundPath = fancyTemplate ? FT.getFancySoundPath(fancyTemplate) : ''
+      const fancySoundGainDb = fancyTemplate ? FT.getFancySoundGainDb(fancyTemplate) : -6.0
+
       const results = {}
       const total = tasks.length
       for (let index = 0; index < total; index++) {
@@ -388,6 +449,13 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           const lengthMode = (p.lengthModes || {})[t.videoPath] || 'video'
           const videoDur = getMediaDuration(t.videoPath)
           const audioDur = getMediaDuration(t.voiceWavPath)
+          // 输入视频预检（run L1155-1161）：ffprobe 读不出时长 = 文件不完整/损坏
+          //（如服务端成片下载中断导致 moov 缺失）。立即报明确错误，不带坏文件进 ffmpeg。
+          if (videoDur <= 0) {
+            throw new Error(
+              `输入视频无法读取（文件可能不完整或损坏，常见原因为服务端`
+              + `成片下载中断）：${t.videoPath}\n请重新执行镜头合成后再配音。`)
+          }
           // .timing.json 句级时间轴（对照 _load_timing_sidecar L826-841：句 text 均非空才有效）
           let timing = null
           try {
@@ -410,7 +478,13 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             timing,
             fancyText: !!p.fancyText,
             fancyStyle: p.fancyStyle || 'gold',
+            // 花字内容已改为自动提取卖点（PR#4），fancyWords 仅兼容保留不再参与渲染
             fancyWords: Array.isArray(p.fancyWords) ? p.fancyWords : [],
+            fancyPosition: p.fancyPosition || 'upper_middle',
+            subtitleBoxOpacity: p.subtitleBoxOpacity ?? 0.5,
+            fancyTemplate,
+            fancySoundPath,
+            fancySoundGainDb,
             subtitleFontPath: fontPathEsc,
             fancyFontPath,
           })

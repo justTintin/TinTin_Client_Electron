@@ -140,6 +140,8 @@ export interface SplitSceneRow {
   clipLocalPath?: string
   checked: boolean
   shotType?: string  // 景别分类（服务端 shot_type 优先，否则路径推断：入场/出场/中景/特写/''）
+  /** PR#4 条目10：本地已裁剪替换（concat 需改走本地 files 上传，服务端 clip 指向未裁剪原件） */
+  trimmed?: boolean
   product?: string   // 产品列（服务端逐镜分析，空则 UI 显 —）
   model?: string     // 型号列（同上）
   resolution?: string // 画幅列（服务端返回，空则 UI 用 ffprobe 探测源片结果兜底）
@@ -272,6 +274,29 @@ export function extractSubmitTaskId(resp: unknown): string {
 
 // ── Step1 splits 本地缓存目录（对齐 utils/montage_cache.py + utils_media.safe_source_name）──
 
+/** 出入场片段时长上限（秒；对照 utils_media.py EDGE_CLIP_MAX_SEC L63） */
+export const EDGE_CLIP_MAX_SEC = 4.0
+
+/** 收集出入场超长片段裁剪任务（对照 _maybe_trim_edge_clips L1729-1747 扫描口径：
+ *  景别 entrance/exit 且时长 > 阈值；本端景别取行 shotType（服务端逐镜分析优先，
+ *  路径推断兑底），起止秒取行 startSec/endSec（原版从文件名解析） */
+export function collectEdgeTrimJobs(rows: SplitSceneRow[]): Array<{
+  path: string; startSec: number; endSec: number; idx: number; desc: string; shotType: string
+}> {
+  return (rows || [])
+    .filter((r) => r.clipLocalPath
+      && (r.shotType === 'entrance' || r.shotType === 'exit')
+      && r.duration > EDGE_CLIP_MAX_SEC + 0.01)
+    .map((r) => ({
+      path: r.clipLocalPath as string,
+      startSec: r.startSec,
+      endSec: r.endSec,
+      idx: r.idx,
+      desc: r.description || '',
+      shotType: r.shotType || '',
+    }))
+}
+
 /**
  * 视频文件名 → 统一短源名（splits 目录名/片段文件名共用）。
  * 对照原客户端 gui/montage/utils_media.py safe_source_name(max_len=40)：
@@ -346,6 +371,8 @@ export function newPrecomposePlan(clips: SplitSceneRow[], mode = 'random'): Prec
  * - 时长预算 max_total = duration_limit_sec × 1.1（0 = 无上限）；非首个片段放不下
  *   跳过继续找更短的（不整批中断）；候选扫描上限 max(deck×3, target×3, 1)
  * - cursor 跨批连续轮转（批间镜头错开）
+ * - 跨成片镜头使用计数 usage_count：每批开始按使用次数升序稳定排序，
+ *   未用过的镜头优先上场；无上限补足时也优先取使用次数最少的镜头
  * - 景别编排 apply_shot_layout_order：入场头/出场尾/其余居中
  * 架构差异（注明）：原版对镜头做感知 hash 相似去重 + 质量择优替换，
  * 本端片段在服务端无法本地计算 hash，去重退化为「同一镜头引用不重复入列」。
@@ -380,6 +407,9 @@ export function buildPrecomposePlans(opts: {
   const shotTypeOf = opts.shotTypeOf || ((r: SplitSceneRow) => r.shotType || '')
   const plans: PrecomposePlan[] = []
   let cursor = 0
+  // 跨成片镜头使用计数（对照 usage_count L5786）：让全部镜头轮流上场，
+  // 修复「不同成片用的镜头都一样」「出入场镜头大部分一样」的问题。
+  const usageCount = new Map<number, number>()
   for (let b = 0; b < opts.batchCount; b++) {
     if (opts.randomness === 'high') {
       for (let i = deck.length - 1; i > 0; i--) {
@@ -387,6 +417,9 @@ export function buildPrecomposePlans(opts: {
         ;[deck[i], deck[j]] = [deck[j], deck[i]]
       }
     }
+    // 均衡排序：按使用次数升序稳定排序（同频保持当前 deck 相对序），
+    // 未用过的镜头自然排在最前被优先扫描；出入场镜头也随 seq 均衡轮换（L5820）
+    deck.sort((a, b) => (usageCount.get(a.idx) || 0) - (usageCount.get(b.idx) || 0))
     const seq: SplitSceneRow[] = []
     let totalDur = 0
     let scanned = 0
@@ -401,13 +434,24 @@ export function buildPrecomposePlans(opts: {
       // 时长预算：非首个片段且放不下 → 继续试更短的（不 break 整批）
       if (maxTotal > 0 && seq.length && totalDur + clipDur > maxTotal) continue
       seq.push(clip)
+      usageCount.set(clip.idx, (usageCount.get(clip.idx) || 0) + 1)
       totalDur += clipDur
     }
     cursor = ci % deck.length
-    // 无时长上限时：补足到目标镜头数（循环取用，对照原版）
+    // 无时长上限时：补足到目标镜头数（优先用使用次数最少的镜头，保持均衡，L5877-5879；
+    // key=(使用次数, 随机数) 字典序元组比较）
     if (maxTotal <= 0) {
       while (seq.length < target) {
-        seq.push(unique[Math.floor(rnd() * unique.length)] || unique[0])
+        let pick = unique[0]
+        let pickCnt = usageCount.get(pick.idx) || 0
+        let pickRnd = rnd()
+        for (const c of unique) {
+          const cnt = usageCount.get(c.idx) || 0
+          const rr = rnd()
+          if (cnt < pickCnt || (cnt === pickCnt && rr < pickRnd)) { pick = c; pickCnt = cnt; pickRnd = rr }
+        }
+        seq.push(pick)
+        usageCount.set(pick.idx, pickCnt + 1)
       }
     }
     // 兑底：极端情况至少保证 1 个镜头
@@ -862,9 +906,92 @@ export function fmtBgmTime(ms: number): string {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
-/** 源视频目录名（_start_final_mix L4133：basename(folder_path.rstrip("/\"))） */
+/** 源视频目录名（_start_final_mix L4133：basename(folder_path.rstrip("/\\"))） */
 export function srcDirName(dirPath: string): string {
   const s = String(dirPath || '').replace(/[\\/]+$/, '')
   if (!s) return ''
   return pathBasename(s)
+}
+
+// ══ Step3 读音/花字/字幕下拉选项（对照 step3_voice_view.py 逐字）════
+
+/** 花字位置 8 项（对照 fancy_position_combo L335-339） */
+export const FANCY_POSITION_OPTIONS = [
+  { label: '中上 (默认)', value: 'upper_middle' },
+  { label: '顶部居中', value: 'top' },
+  { label: '画面正中', value: 'center' },
+  { label: '底部居中', value: 'bottom' },
+  { label: '左上角', value: 'top_left' },
+  { label: '右上角', value: 'top_right' },
+  { label: '左下角', value: 'bottom_left' },
+  { label: '右下角', value: 'bottom_right' },
+]
+
+/** 字幕背景 6 项（对照 subtitle_bg_combo L226-228，value 为黑框不透明度） */
+export const SUBTITLE_BG_OPTIONS = [
+  { label: '无背景', value: 0 },
+  { label: '20% 透明黑', value: 0.2 },
+  { label: '35% 透明黑', value: 0.35 },
+  { label: '50% 透明黑 (默认)', value: 0.5 },
+  { label: '65% 透明黑', value: 0.65 },
+  { label: '80% 透明黑', value: 0.8 },
+]
+
+// ── 渲染层花字卖点提取（与 main/voice-tts-logic.js 同逻辑，供花字预览弹窗；
+//    实际烧制以主进程提取结果为准）──
+
+const FANCY_PRICE_RE = /(?:仅|只要|低至|到手|券后)?\d+(?:\.\d+)?元/g
+const FANCY_UNIT = ('小时|分钟|秒钟|毫安时|毫安|mAh|千克|公斤|kg|KG|Kg|千瓦|kW|毫伏|mV|'
+  + '毫米|厘米|分米|英寸|千米|公里|km|cm|mm|克|瓦|伏|升|毫升|ml|mL|'
+  + '赫兹|Hz|kHz|分贝|dB|℃|°C|%|％|DPI|dpi|天|周|月|年|米|寸|度|W|V|G|g|L|倍|核|轴|键|帧|级|档|声')
+const FANCY_NUM_RE = new RegExp(`[\u4e00-\u9fa5A-Za-z]{0,4}\\d+(?:\\.\\d+)?(?:${FANCY_UNIT})`, 'g')
+const FANCY_KEYWORDS = (
+  '超轻,超薄,超长续航,超静音,大容量,快充,闪充,无线充电,'
+  + '防水,防尘,降噪,折叠,便携,旗舰,爆款,新款,限量,'
+  + '免打孔,免安装,持久续航,高清,巨幕,一机多用,'
+  + '电量持久,电量充足,放电均衡,不易漏液,输出稳定,经久耐用,密封性,'
+  + '平价').split(',')
+const FANCY_MAX_LEN = 10
+const FANCY_MAX_PER_VIDEO = 3
+
+/** 单行内提取多个卖点（优先级：价格 > 数字参数 > 关键词，对照 extract_fancy_words_in_line L104-140） */
+export function extractFancyWordsInLine(lineText: string, limit = FANCY_MAX_PER_VIDEO): string[] {
+  const t = String(lineText || '')
+  if (!t.trim()) return []
+  const hits: Array<[number, number, string]> = []
+  for (const m of t.matchAll(FANCY_PRICE_RE)) {
+    hits.push([m.index, m.index + m[0].length, m[0].slice(0, FANCY_MAX_LEN)])
+  }
+  for (const m of t.matchAll(FANCY_NUM_RE)) {
+    if (hits.some(([s, e]) => (s <= m.index && m.index < e) || (s < m.index + m[0].length && m.index + m[0].length <= e))) continue
+    hits.push([m.index, m.index + m[0].length, m[0].slice(0, FANCY_MAX_LEN)])
+  }
+  const occupied = (pos: number) => hits.some(([s, e]) => s <= pos && pos < e)
+  for (const kw of FANCY_KEYWORDS) {
+    if (hits.length >= limit) break
+    let pos = t.indexOf(kw)
+    while (pos !== -1) {
+      if (!occupied(pos)) { hits.push([pos, pos + kw.length, kw]); break }
+      pos = t.indexOf(kw, pos + 1)
+    }
+  }
+  hits.sort((a, b) => a[0] - b[0])
+  const words: string[] = []
+  for (const [, , w] of hits) {
+    if (w && (words.length === 0 || words[words.length - 1] !== w)) words.push(w)
+    if (words.length >= limit) break
+  }
+  return words
+}
+
+/** 全文提取卖点（逐行扫描，跨行去重，上限 maxWords） */
+export function extractFancyWordsFromText(text: string, maxWords = FANCY_MAX_PER_VIDEO): string[] {
+  const words: string[] = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    for (const w of extractFancyWordsInLine(line, maxWords - words.length)) {
+      if (w && (words.length === 0 || words[words.length - 1] !== w)) words.push(w)
+      if (words.length >= maxWords) return words
+    }
+  }
+  return words
 }

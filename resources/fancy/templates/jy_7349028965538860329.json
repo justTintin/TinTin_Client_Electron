@@ -1,0 +1,14 @@
+{
+  "template_id": "jy_7349028965538860329",
+  "name": "赛博朋克故障风推荐图标",
+  "style": "fontcolor=0x40E0FF:borderw=4:bordercolor=0x8B008B:shadowx=3:shadowy=3:shadowcolor=0xFF00FF@0.5",
+  "jy_effect_id": "7349028965538860329",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "kind": "text_template",
+  "category": "",
+  "is_vip": true,
+  "source": "jy_key_value",
+  "anim": "slide"
+}

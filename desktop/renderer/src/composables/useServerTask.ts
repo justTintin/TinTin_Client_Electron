@@ -18,6 +18,10 @@ export interface TaskProgressData {
   progress?: number
   result_url?: string
   error_message?: string
+  /** 2026-09-07 实测契约：/tasks/{id} 的错误字段是 error（如「模型资源不可用: vsr」），非 error_message */
+  error?: string
+  /** 结构化结果（如 /vsr/remove 返回 result.output_path，服务端本地路径） */
+  result?: { output_path?: string } | null
 }
 
 export interface UseServerTaskOptions {
@@ -29,6 +33,12 @@ export interface UseServerTaskOptions {
   getSuccessBody?: () => string
   /** 轮询间隔 ms，默认 2000 */
   intervalMs?: number
+  /**
+   * 完成时从轮询响应提取结果 URL 的钩子（2026-09-07）：
+   * 服务端契约不统一——部分域回 result_url，部分域（如 vsr）只回 result.output_path；
+   * 提供此钩子的调用方在 result_url 缺失时走自己的提取逻辑。
+   */
+  extractResultUrl?: (data: TaskProgressData) => string
 }
 
 export function useServerTask(opts: UseServerTaskOptions) {
@@ -116,13 +126,15 @@ export function useServerTask(opts: UseServerTaskOptions) {
         data.status === 'completed' ||
         (data.progress === 100 && st !== 'failed')
       ) {
-        resultUrl.value = data.result_url || ''
+        resultUrl.value = data.result_url || opts.extractResultUrl?.(data) || ''
         status.value = 'done'
         isProcessing.value = false
         stopPolling()
         notify(opts.successTitle, opts.getSuccessBody?.() ?? '')
       } else if (data.status === 'failed') {
-        failWith(data.error_message || '处理失败')
+        // 2026-09-07：服务端 /tasks/{id} 错误字段为 error（error_message 不存在，
+        // 旧代码只读后者致真实原因被「处理失败」吞掉，如「模型资源不可用: vsr」）
+        failWith(data.error_message || data.error || '处理失败')
       }
     } catch (err) {
       failWith(err)

@@ -56,6 +56,18 @@ function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
 }
 
+/** 主进程同步接口错误形态「HTTP 500：{"error":"模型资源不可用: whisper"}」→ 提取干净信息（2026-09-07 实测服务端资源忙形态） */
+function friendlyServerError(msg: string): string {
+  const m = /^HTTP \d+：([\s\S]*)$/.exec(msg)
+  if (!m) return msg
+  try {
+    const j = JSON.parse(m[1])
+    return String(j.error || j.detail || m[1])
+  } catch {
+    return m[1] || msg
+  }
+}
+
 export function useTranscribeQueue() {
   const files = ref<QueueItem[]>([])
   const lang = ref('')                 // 语言（原 lang_input 文本框，空=自动）
@@ -127,6 +139,19 @@ export function useTranscribeQueue() {
     selectedIndex.value = idx
   }
 
+  /** 逐段编辑回写（听悟式边听边校：改单段文本并同步 srtText/preview；首次编辑快照基准，对照 _apply_edits 语义） */
+  function updateSegmentText(idx: number, segIdx: number, text: string): void {
+    const f = files.value[idx]
+    const seg = f?.segments[segIdx]
+    if (!f || !seg) return
+    const t = text.trim()
+    if (t === seg.text) return
+    if (!f.origSegments) f.origSegments = f.segments.map((s) => ({ ...s }))
+    seg.text = t
+    f.srtText = segmentsToSrt(f.segments)
+    f.preview = buildSrtPreview(f.srtText)
+  }
+
   // ── 批量处理（对照 _start_batch L1006-1038 + _process_next 逐个排队）──
   async function startBatch(): Promise<void> {
     if (busy.value) {
@@ -159,12 +184,25 @@ export function useTranscribeQueue() {
             audio: { path: f.path } as unknown as Blob,
             language,
             word_timestamps: true,
+            // 2026-09-07：显式 fmt=json（实测服务端支持）→ 返回 {segments:[{words:[{word,start,end}]}]}
+            // 字级时间戳，供听悟式「光标移动→视频定位帧」精确对齐；SRT 导出由 segmentsToSrt 本地生成不受影响
+            fmt: 'json',
           },
           (p: number) => { uploadPercent.value = Math.round(p) },
         )
-        if (res && (res as any).error) throw new Error((res as any).error)
+        if (res && (res as any).error) throw new Error(friendlyServerError(String((res as any).error)))
+        // 2026-09-07：服务端 JSON 软错误（如模型加载中）形如 {detail}，原被吞成「未返回转写内容」
+        if (res && typeof res === 'object' && (res as any).detail) {
+          throw new Error(String((res as any).detail))
+        }
         const segments = parseTranscriptionResponse(res)
-        if (!segments.length) throw new Error('未返回转写内容')
+        if (!segments.length) {
+          // 2026-09-07：区分「服务端返回了内容但识别为空」（常见于视频无人声/纯 BGM）与「完全无内容」
+          const raw = typeof res === 'string'
+            ? res
+            : res instanceof Uint8Array ? new TextDecoder('utf-8').decode(res) : ''
+          throw new Error(raw && raw.trim() ? '未识别到语音内容（视频可能没有人声/旁白）' : '服务端未返回转写内容')
+        }
         f.segments = segments
         f.srtText = segmentsToSrt(segments)
         f.preview = buildSrtPreview(f.srtText)
@@ -265,6 +303,7 @@ export function useTranscribeQueue() {
     selectedIndex, selected, editMode, editedText,
     // methods
     addPaths, pickFiles, onDrop, remove, retry, select, startBatch,
+    updateSegmentText,
     enterEdit, exitEdit, rewriteSelected, applyRewriteResult, exportSrt,
   }
 }

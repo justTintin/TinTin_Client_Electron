@@ -1,0 +1,12 @@
+{
+  "template_id": "jy_7405902936175381787",
+  "name": "蓝色纹理花字",
+  "style": "fontcolor=0x40A0FF:borderw=4:bordercolor=0x003080:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7405902936175381787",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "category": "综艺感",
+  "is_vip": true,
+  "source": "jy_key_value"
+}

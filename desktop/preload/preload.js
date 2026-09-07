@@ -167,6 +167,7 @@ const server = {
 
   // ---------- V3 S1~S3 媒体工具（上传类，支持 onProgress）----------
   rembgSubmit:          (p, onProgress) => _withUploadProgress(onProgress, 'rembg:submit', p),
+  mattingModels:        () => ipcRenderer.invoke('rembg:models'),
   vsrSubmit:            (p, onProgress) => _withUploadProgress(onProgress, 'vsr:submit', p),
   vsrRemove:            (p, onProgress) => _withUploadProgress(onProgress, 'vsr:remove', p),
   visionReversePrompt:  (p, onProgress) => _withUploadProgress(onProgress, 'vision:reversePrompt', p),
@@ -185,6 +186,14 @@ const server = {
   voiceDubVideos:       (p) => ipcRenderer.invoke('voice:dubVideos', p),
   voiceFonts:           () => ipcRenderer.invoke('voice:fonts'),
   voiceExportAudio:     (p) => ipcRenderer.invoke('voice:exportAudio', p),
+  // 花字模板（PR#4）：列表+已缓存预览图（dataURL）/ 后台补齐缺失预览图
+  fancyListTemplates:   () => ipcRenderer.invoke('fancy:listTemplates'),
+  fancyEnsurePreviews:  () => ipcRenderer.invoke('fancy:ensurePreviews'),
+  fancyOnPreviewProgress: (cb) => {
+    const listener = (_e, d) => cb(d)
+    ipcRenderer.on('fancy:previewProgress', listener)
+    return () => ipcRenderer.removeListener('fancy:previewProgress', listener)
+  },
 
   // ---------- 智能混剪 Step4 特效包装（FinalMixWorker 主进程化 + 剪映草稿导出）----------
   finalMix:             (p) => ipcRenderer.invoke('final:mix', p),
@@ -219,6 +228,10 @@ const server = {
   montageBgm:      (p, onProgress) => _withUploadProgress(onProgress, 'montage:bgm', p),
   // 清空混剪任务缓存（对照原版 _clear_montage_cache：删 montage_cache 下任务目录，不动原始素材）
   clearMontageCache: (dir) => ipcRenderer.invoke('montage:clearCache', { dir }),
+  // 出入场超长片段裁剪（PR#4 条目10：本地 ffmpeg 取中间段替换+改名，对照 EdgeClipTrimWorker）
+  trimEdgeClips: (payload) => ipcRenderer.invoke('montage:trimEdgeClips', payload),
+  // 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读，对照 _probe_video_ok）
+  montageValidateFinal: (p) => ipcRenderer.invoke('montage:validateFinal', { path: p }),
   // 智能混剪 Step4 AI 生成 BGM（/audio/gen/bgm，原客户端 gen_bgm 同口径）
   audioGenBgm:     (payload) => ipcRenderer.invoke('audio:genBgm', payload),
   // 音频生成 tab（原客户端 audio_material_page.py AI 生成 tab 一比一移植）
@@ -228,6 +241,8 @@ const server = {
     audioLibraryUpload: (payload) => ipcRenderer.invoke('audio:libraryUpload', payload),
   audioSfxAnalyze:   (payload) => ipcRenderer.invoke('audio:sfxAnalyze', payload),   // deprecated：音频已分流，保留待清理
   audioDownloadTemp: (payload) => ipcRenderer.invoke('audio:downloadTemp', payload),
+    // AI 生成音频本地归档（PR#4 条目14：下载→Content-Type 定 ext→basePath+ext 落盘，对照 _GenSaveWorker）
+    audioArchiveGen: (payload) => ipcRenderer.invoke('audio:archiveGen', payload),
   promptVideo:     (p, onProgress) => _withUploadProgress(onProgress, 'prompt:video', p),
 
   // ---------- 仿爆款（Viral Clone）—— 均走通用 server:get/post/upload IPC ----------
@@ -289,6 +304,20 @@ const prediction = {
   list: () => ipcRenderer.invoke('prediction:list'),
   add: (payload) => ipcRenderer.invoke('prediction:add', payload),
   setFeedback: (payload) => ipcRenderer.invoke('prediction:setFeedback', payload)
+}
+
+// ── 参考视频下载·yt-dlp 门（OpenCreator download 架构，策略在主进程 ytdlp-logic.js）──
+const ytdlp = {
+  status: () => ipcRenderer.invoke('ytdlp:status'),
+  probe: (payload) => ipcRenderer.invoke('ytdlp:probe', payload),
+  download: (payload) => ipcRenderer.invoke('ytdlp:download', payload),
+  saveAs: (payload) => ipcRenderer.invoke('ytdlp:saveAs', payload),
+  // 下载进度事件（主进程 event.sender.send('ytdlp:progress', {phase, pct})），返回取消函数
+  onProgress: (cb) => {
+    const listener = (_e, p) => cb(p)
+    ipcRenderer.on('ytdlp:progress', listener)
+    return () => ipcRenderer.removeListener('ytdlp:progress', listener)
+  },
 }
 
 // ── shell ──
@@ -647,6 +676,8 @@ contextBridge.exposeInMainWorld('tintin', {
   // P2 本地定时任务（schtasks；漏暴露导致「浏览器预览模式」误判，2026-08-31 补）
   scheduled,
   ffmpeg,
+  // 参考视频下载（yt-dlp 单引擎：YouTube/Bilibili）
+  ytdlp,
   // M9 直播切片（封面/导出字幕/临时烧字幕 SRT）
   liveclip,
   shell,

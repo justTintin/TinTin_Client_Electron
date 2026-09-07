@@ -20,6 +20,36 @@ export interface SrtSegment {
   edited?: boolean
 }
 
+/**
+ * 光标位置 → 时间（秒）。2026-09-07 用户裁决（听悟式校对）：字幕内移动光标时视频定位到对应帧。
+ * 有字级 words（fmt=json 返回，whisper words 不含空格）时跳过空白逐字对齐；
+ * 光标落在字前半用字 start、后半用字 end；无 words 降级为段内线性比例。
+ */
+export function caretToTime(seg: SrtSegment, caret: number): number {
+  const start = seg.start || 0
+  const dur = Math.max(0, (seg.end || 0) - start)
+  if (dur <= 0) return start
+  const text = seg.text || ''
+  const words = seg.words
+  if (words && words.length) {
+    let consumed = 0
+    for (const w of words) {
+      while (consumed < text.length && /\s/.test(text[consumed])) consumed++
+      const len = Math.max(1, String(w.word || '').length)
+      const wStart = consumed
+      const wEnd = consumed + len
+      if (caret <= wStart) return w.start ?? start
+      if (caret <= wEnd) {
+        return caret - wStart <= len / 2 ? (w.start ?? start) : (w.end ?? w.start ?? start)
+      }
+      consumed = wEnd
+    }
+    return words[words.length - 1]?.end ?? (start + dur)
+  }
+  const ratio = Math.min(1, Math.max(0, caret / Math.max(1, text.length)))
+  return start + dur * ratio
+}
+
 /** 支持的媒体扩展名（对照 transcription_page.py SUPPORTED_EXTS L59-62） */
 export const SUPPORTED_EXTS = new Set([
   '.mp4', '.mov', '.avi', '.mkv', '.flv', '.webm', '.m4v',
@@ -246,9 +276,19 @@ export function parseTranscriptionResponse(data: unknown): SrtSegment[] {
       }))
       .filter((s) => s.text)
 
+  // 2026-09-07：服务端回 ct=text/plain 时 multipartUpload 原样透传 Buffer，经 IPC 结构化克隆
+  // 到渲染层是 Uint8Array，原实现无此分支 → 恒走「未返回转写内容」（即使服务端正常返回 SRT）。
+  // 先解码再复用 string 分支。
+  if (data instanceof Uint8Array) {
+    return parseTranscriptionResponse(new TextDecoder('utf-8').decode(data))
+  }
   if (typeof data === 'string') {
     const t = data.trim()
-    return t ? [{ start: 0, end: 0, text: t }] : []
+    if (!t) return []
+    // 2026-09-07 实测：/whisper/transcribe 200 恒回 SRT 纯文本（ct=text/plain，wav/mp4 均验证）；
+    // 含时间轴 → parseSrt 保留分段与时间（原实现整篇塞单段致时间轴全坏）
+    if (TIME_RE.test(t)) return parseSrt(t)
+    return [{ start: 0, end: 0, text: t }]
   }
   if (!data || typeof data !== 'object') return []
   const obj = data as Record<string, any>

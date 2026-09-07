@@ -659,7 +659,8 @@ function fmt(sec: number): string {
 .step-arrow { color: var(--muted-foreground); opacity: .4; }
 
 .card { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
-.dropzone { display: flex; flex-direction: column; gap: 4px; padding: var(--space-5); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast), background var(--duration-fast); }
+/* 2026-09-07 用户裁决：全程序拖拽上传区高度统一 min-height 120px（以智能混剪选择素材原高 ≈80px 基准 +1/2），内容垂直居中 */
+.dropzone { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; min-height: 120px; padding: var(--space-5); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast), background var(--duration-fast); }
 .dropzone:hover { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
 .dz-main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); }
 .dz-hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }

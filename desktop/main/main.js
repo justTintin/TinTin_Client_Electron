@@ -368,9 +368,15 @@ function createMainWindow(store) {
 
   // 崩溃恢复
   mainWindow.webContents.on('render-process-gone', (event, details) => {
+    // 2026-09-07：崩溃原因必须落盘 electron-log（console.error 不进 main.log，
+    // 此前智能混剪上传素材后首次崩溃无任何 reason 留痕，只能盲查）
+    try {
+      _logErr('crash', `render-process-gone reason=${details.reason} exitCode=${details.exitCode} scale=${details.scale ?? '-'}`)
+    } catch (_) {}
     console.error('[Main] Renderer process gone:', details.reason)
     if (crashRecoveryCount < MAX_CRASH_RECOVERY) {
       crashRecoveryCount++
+      try { _logInfo('crash', `auto recovering renderer (${crashRecoveryCount}/${MAX_CRASH_RECOVERY}) → reload`) } catch (_) {}
       console.log(`[Main] Auto recovering renderer (${crashRecoveryCount}/${MAX_CRASH_RECOVERY})...`)
       setTimeout(() => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -655,6 +661,18 @@ app.whenReady().then(() => {
     sharedCtx.EventBus = (dm && typeof dm.getEventBus === 'function') ? dm.getEventBus() : null
 
     createFfmpegGate(ipcMain, getStudioRoot())
+        // ── 参考视频下载·yt-dlp 门（OpenCreator download 架构移植，2026-09-07）──
+        // cacheDir 相对路径在此解析为绝对（主进程权威，对齐 tts:saveAudio 相对路径教训）
+        const { createYtdlpGate } = require('./ytdlp-gate')
+        createYtdlpGate(ipcMain, {
+          getStudioRoot,
+          configStore: store,
+          getCacheDir: () => {
+            const raw = String(store.get('local.cacheDir', '') || '')
+            if (!raw) return app.getPath('downloads')
+            return path.isAbsolute(raw) ? raw : path.join(app.getPath('userData'), raw)
+          },
+        })
     // 注入主窗口 getter：托盘「显示主窗口」/左键点击固定指向 mainWindow（非 getAllWindows[0]）
     createTray(() => mainWindow)
     initUpdater()

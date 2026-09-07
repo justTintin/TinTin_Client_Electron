@@ -1,0 +1,13 @@
+{
+  "template_id": "jy_7645254021095247129",
+  "name": "电商-热销爆款",
+  "style": "fontcolor=0xF0C040:borderw=4:bordercolor=0x6B3000:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "7645254021095247129",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "subtitle_sync",
+  "kind": "text_template",
+  "category": "",
+  "is_vip": true,
+  "source": "jy_key_value"
+}

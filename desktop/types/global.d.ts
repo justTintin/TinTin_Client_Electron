@@ -186,6 +186,8 @@ declare interface TintinBridgeServer {
     payload: RembgAPI.MattingRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<RembgAPI.MattingResponse>>
+  /** GET /matting/models（服务端可用抠图模型清单；离线/失败返 null，组件用静态兜底） */
+  mattingModels(): Promise<IpcError<{ models?: unknown[] } | null>>
   vsrSubmit(
     payload: VSRAPI.EnhanceRequest,
     onProgress?: (percent: number) => void
@@ -272,17 +274,33 @@ declare interface TintinBridgeServer {
     speedMax: number
     progressChannel?: string
   }): Promise<{ results: Record<string, string>; durations: Record<string, number>; failures: Array<{ rowIdx: number; msg: string }> } | { error: string }>
-  /** 批量替换原声（ffmpeg 字幕/花字/atempo；对照 VideoDubbingWorker） */
+  /** 批量替换原声（ffmpeg 字幕/花字/atempo；对照 VideoDubbingWorker；2026-09-07 PR#4 新口径） */
   voiceDubVideos(payload: {
     tasks: Array<{ videoPath: string; voiceWavPath: string; outVideoPath: string; text: string }>
     addSubtitles: boolean
     lengthModes: Record<string, string>
     fancyText: boolean
     fancyStyle: string
-    fancyWords: string[]
+    /** 兼容保留：花字内容已改为自动提取卖点，不再参与渲染 */
+    fancyWords?: string[]
+    /** 花字出现位置（FANCY_POSITIONS 键，默认 upper_middle） */
+    fancyPosition?: string
+    /** 字幕背景不透明度（0=无背景框，默认 0.5） */
+    subtitleBoxOpacity?: number
+    /** 花字模板 dict（样式+动画+音效；null=自定义样式） */
+    fancyTemplate?: Record<string, unknown> | null
     subtitleFont: string
     progressChannel?: string
   }): Promise<{ results: Record<string, string> } | { error: string; results?: Record<string, string> }>
+  /** 花字模板列表（全业务字段）+ 已缓存预览图（PR#4：对照 utils/fancy_templates.py） */
+  fancyListTemplates(): Promise<{
+    templates: Array<Record<string, unknown> & { template_id: string; name: string; style: string; anim: string; hasSound: boolean }>
+    previews: Record<string, string>
+  } | { error: string }>
+  /** 后台补齐缺失模板预览图（ffmpeg 逐个生成；对照 _FancyPreviewWorker） */
+  fancyEnsurePreviews(): Promise<{ previews: Record<string, string>; generated: number } | { error: string }>
+  /** 订阅模板预览图生成进度 */
+  fancyOnPreviewProgress(cb: (d: { idx: number; total: number }) => void): () => void
   /** 服务端字体列表（GET /config/fonts） */
   voiceFonts(): Promise<{ fonts: Array<{ id: string; family: string; filename?: string }> } | { error: string } | null>
   /** 导出克隆声音（copy2 到用户选的保存路径） */
@@ -362,6 +380,13 @@ declare interface TintinBridgeServer {
   ): Promise<IpcError<MontageAPI.BgmResponse>>
   /** 清空混剪任务缓存（对照原版 _clear_montage_cache：删 montage_cache 下任务目录，不动原始素材） */
   clearMontageCache(dir: string): Promise<{ ok: boolean } | { error: string }>
+  /** 出入场超长片段裁剪（PR#4 条目10：对照 EdgeClipTrimWorker；本地 ffmpeg 取中间段替换+改名） */
+  trimEdgeClips(payload: {
+    jobs: Array<{ path: string; startSec: number; endSec: number; idx: number; desc?: string; shotType?: string }>
+    maxSec?: number
+  }): Promise<{ renamed: Array<[string, string, number]>; skipped: number } | { error: string }>
+  /** 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读；对照 _probe_video_ok；hasFile 区分未取到/损坏） */
+  montageValidateFinal(path: string): Promise<{ ok: boolean; hasFile: boolean; duration?: number; error?: string }>
   /** POST /audio/gen/bgm — 生成 BGM（MusicGen-small；2026-09-05 服务端 GUIDE 新口径 {style,mood?,duration}，无 prompt），生成即出 {url, duration, engine} */
   audioGenBgm(payload: AudioAPI.GenBgmRequest): Promise<IpcError<AudioAPI.GenBgmResponse>>
   /** POST /audio/gen/sfx — AI 生成音效（AudioLDM2，原客户端 gen_sfx 同口径 {prompt,duration}） */
@@ -375,6 +400,9 @@ declare interface TintinBridgeServer {
   audioSfxAnalyze(payload: AudioAPI.SfxAnalyzeRequest): Promise<IpcError<AudioAPI.SfxAnalyzeResponse>>
   /** 生成结果 URL 下载临时目录（本端扩展：入库需本地文件，ext 按 Content-Type 判定） */
   audioDownloadTemp(payload: AudioAPI.DownloadTempRequest): Promise<AudioAPI.DownloadTempResponse>
+  /** AI 生成音频归档到本地（PR#4 条目14：下载→Content-Type 定 ext→basePath+ext 落盘；
+   *  basePath 不含扩展名，归档目录 outputs/ai_audio 由渲染层拼好；对照 _GenSaveWorker） */
+  audioArchiveGen(payload: { url: string; basePath: string; defaultExt?: string }): Promise<{ path: string } | { error: string } | null>
   promptVideo(
     payload: MontageAPI.PromptVideoRequest,
     onProgress?: (percent: number) => void
@@ -744,6 +772,8 @@ declare interface TintinBridge {
   downloads: TintinBridgeDownloads
   server: TintinBridgeServer
   ffmpeg: TintinBridgeFfmpeg
+    // 参考视频下载（yt-dlp 单引擎：YouTube/Bilibili，OpenCreator download 架构）
+    ytdlp: TintinBridgeYtdlp
   // M9 直播切片（封面/导出字幕/临时烧字幕 SRT）
   liveclip: TintinBridgeLiveclip
   shell: TintinBridgeShell
@@ -771,6 +801,37 @@ declare interface TintinBridge {
 }
 declare interface TintinBridgeClientTasks {
   /** 订阅客户端任务活动事件（返回取消函数） */ onActivity(cb: (payload: { type?: string; task_id?: string; ok?: boolean; status?: string }) => void): () => void
+}
+
+/** 参考视频下载（yt-dlp）桥类型 */
+declare interface TintinYtdlpOption {
+  id: string
+  mediaType: 'video' | 'audio'
+  label: string
+  detail: string
+  videoFormatId?: string
+  audioFormatId?: string
+  kbps?: number
+  estimatedSize?: number
+}
+declare interface TintinYtdlpProbe {
+  id: string
+  title: string
+  uploader: string
+  duration: number
+  thumbnail: string
+  extractorKey: string
+  platform: 'bilibili' | 'youtube'
+  webpageUrl: string
+  resolution: string
+}
+declare interface TintinBridgeYtdlp {
+  status(): Promise<{ available: boolean; path: string; external: boolean }>
+  probe(payload: { url: string; proxy?: string }): Promise<{ probe?: TintinYtdlpProbe; options?: TintinYtdlpOption[]; error?: string; code?: string }>
+  download(payload: { url: string; option: TintinYtdlpOption; proxy?: string }): Promise<{ path?: string; fileName?: string; normalized?: boolean; meta?: { width?: number; height?: number; duration?: number } | null; error?: string; code?: string }>
+  saveAs(payload: { src: string; dst: string }): Promise<{ ok?: boolean; error?: string }>
+  /** 下载进度事件，返回取消函数 */
+  onProgress(cb: (p: { phase: string; pct: number }) => void): () => void
 }
 
 // --------------------------------------------------------------------

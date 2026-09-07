@@ -35,6 +35,7 @@ const emit = defineEmits<{
   (e: 'pause'): void
   (e: 'ended'): void
   (e: 'error', error: Event): void
+  (e: 'timeupdate', time: number): void
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
@@ -117,7 +118,21 @@ function initPlayer() {
   player.on('pause', () => emit('pause'))
   player.on('ended', () => emit('ended'))
   player.on('error', (event: Event) => emit('error', event))
+  // 转写校对联动：播放进度外抛（听悟式逐段高亮）
+  player.on('timeupdate', () => emit('timeupdate', player?.currentTime ?? 0))
 }
+
+/** 跳转到指定秒（逐段点击回跳） */
+function seek(t: number): void {
+  if (player) player.currentTime = Math.max(0, t)
+}
+
+/** 播放（兜底 Promise） */
+function play(): void {
+  if (player) Promise.resolve(player.play()).catch(() => {})
+}
+
+defineExpose({ seek, play })
 
 // 销毁 plyr
 function destroyPlayer() {

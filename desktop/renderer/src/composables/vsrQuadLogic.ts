@@ -348,3 +348,17 @@ export function toSubmitError(res: unknown): Error {
 export function shouldCancelServerTask(taskId: string | null | undefined): boolean {
   return !!taskId
 }
+
+/**
+ * 服务端 output_path → 相对下载 URL（2026-09-07 /vsr/remove 400 后续修复）。
+ * 契约：GET /tasks/{id} 的 result 不含 result_url/download_url，仅 result.output_path
+ * （服务端本地路径，如 /home/.../output/vsr/xxx.mp4）。
+ * 对照原客户端 RemoteVSRWorkerV14（L208-222）：优先 download_url，缺省拼
+ * {base_url}/vsr/download/{filename}（vsr 域专用端点，实测 200 video/mp4）；
+ * 文件名含中文需编码（Node http path 不接受非 ASCII）。
+ */
+export function outputPathToUrl(outputPath: string): string {
+  const p = String(outputPath || '').replace(/\\/g, '/')
+  const name = p.split('/').pop() || ''
+  return name ? `/vsr/download/${encodeURIComponent(name)}` : ''
+}

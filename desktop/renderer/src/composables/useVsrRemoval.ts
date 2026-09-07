@@ -11,8 +11,15 @@
 // 组件层只做绘制与事件转发（IRON-06 分层）。
 // ═══════════════════════════════════════════════════════════════
 
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useServerTask } from './useServerTask'
+import { readCacheDir } from './useSettingsConfig'
+import { joinDefaultPath } from './settingsIntegrationLogic'
+import { clientError } from '../utils/clientLog'
+
+function notify(title: string, body: string): void {
+  try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
+}
 import {
   type Quad,
   type VsrFrameSize,
@@ -25,6 +32,7 @@ import {
   quadAabb,
   shouldCancelServerTask,
   toSubmitError,
+  outputPathToUrl,
 } from './vsrQuadLogic'
 
 /** 使用模式：智能识别（服务端自动检测）/ 标注选区（对照 mode_switch L1025-1031） */
@@ -46,6 +54,8 @@ export function useVsrRemoval() {
   const isSmart = computed(() => mode.value === 'smart')
 
   // ── 任务状态机（上传进度 + 2s 轮询 + 终态通知；getter 对象使标题随用途切换）──
+  // extractResultUrl（2026-09-07）：/vsr/remove 契约不回 result_url，仅回 result.output_path
+  // （服务端本地路径）；output 目录静态挂载在 /output/ 下，映射为 /output/vsr/xxx.mp4 下载。
   const task = useServerTask({
     get successTitle() {
       return purpose.value === 'watermark' ? '去水印完成' : '去字幕完成'
@@ -54,6 +64,7 @@ export function useVsrRemoval() {
       return purpose.value === 'watermark' ? '去水印失败' : '去字幕失败'
     },
     getSuccessBody: () => fileName.value || '',
+    extractResultUrl: (data) => outputPathToUrl(String(data.result?.output_path || '')),
   })
   const { status, progress, errorMsg, resultUrl, resultPath, isProcessing, uploadPercent } = task
 
@@ -63,6 +74,26 @@ export function useVsrRemoval() {
   const fileName = ref('')
 
   const isSelectMode = computed(() => !isSmart.value)
+
+  // ── 服务端地址（结果相对路径拼绝对 URL 供展示/下载/复制；对齐 useAudioGen 口径）──
+  const serverUrl = ref('')
+  async function ensureServerUrl(): Promise<string> {
+    if (serverUrl.value) return serverUrl.value
+    try {
+      const ping = await (window as any).tintin?.env?.serverPing?.()
+      serverUrl.value = String(ping?.url || '')
+    } catch (_) { /* 预览环境无 env 桥 → 空串 */ }
+    return serverUrl.value
+  }
+  /** 相对路径 → 绝对 URL（http 原样；无 serverUrl 时保持相对） */
+  function toAbsolute(url: string): string {
+    const u = String(url || '')
+    if (!u || /^https?:\/\//i.test(u)) return u
+    return serverUrl.value ? serverUrl.value.replace(/\/$/, '') + u : u
+  }
+  /** 结果可访问 URL（组件展示/复制用；resultUrl 本身保持服务端返回形态） */
+  const resultFullUrl = computed(() => toAbsolute(resultUrl.value))
+
   /** 标注模式须至少一个选区；智能模式仅要求文件（对照 canStart 语义 L1258-1262） */
   const canStart = computed(() => {
     if (!filePath.value || isProcessing.value) return false
@@ -179,6 +210,72 @@ export function useVsrRemoval() {
     }
   }
 
+  // ── 结果自动落盘（2026-09-07 用户裁决：对齐原客户端 RemoteVSRWorkerV14 L208-251——
+  //     轮询完成即自动下载，不问用户；保存到原视频同目录 {原名}_no_sub.mp4（L1316-1322）；
+  //     失败降级为手动通道（按钮回退「下载视频」））──
+  const autoSaving = ref(false)
+  async function autoDownload(): Promise<void> {
+    const url = resultUrl.value
+    if (!url || autoSaving.value || resultPath.value) return
+    autoSaving.value = true
+    try {
+      await ensureServerUrl()
+      const dir = filePath.value.replace(/[\\/][^\\/]+$/, '')
+      const base = fileName.value.replace(/\.[^.]+$/, '')
+      const savePath = `${dir}/${base}_no_sub.mp4`
+      const saved = await window.tintin.server.downloadResult(toAbsolute(url), savePath)
+      if (!saved) throw new Error('下载失败（服务端离线或网络异常）')
+      resultPath.value = String(saved)
+      notify('已保存', String(saved))
+    } catch (err) {
+      clientError('subtitle-removal', '自动保存失败', err)
+      notify('自动保存失败', '可点击「下载视频」手动选择位置保存')
+    } finally {
+      autoSaving.value = false
+    }
+  }
+  watch(
+    () => status.value === 'done' && !!resultUrl.value && !resultPath.value,
+    (need) => { if (need) void autoDownload() },
+  )
+
+  /** 打开结果所在目录（2026-09-07 用户裁决：自动落盘后按钮改为「打开目录」） */
+  function openResultDir(): void {
+    if (!resultPath.value) return
+    try { window.tintin.shell.revealInFolder(resultPath.value) } catch (_) { /* 无壳环境静默 */ }
+  }
+
+  // ── 结果下载（手动通道，自动保存失败时按钮回退到此；2026-09-07 修复跨域 <a download> 无效）──
+  const downloading = ref(false)
+  async function downloadResult(): Promise<void> {
+    const url = resultUrl.value
+    if (!url || downloading.value) return
+    downloading.value = true
+    try {
+      const defaultName = fileName.value
+        ? fileName.value.replace(/\.[^.]+$/, '') + '_no_sub.mp4'
+        : 'result.mp4'
+      await ensureServerUrl()
+      // 默认保存到缓存目录（local.cacheDir；未配置则系统默认位置，对齐原 aigen L1044）
+      const cacheDir = await readCacheDir()
+      const savePath = await window.tintin.dialog.saveFile({
+        title: '下载视频',
+        defaultPath: joinDefaultPath(cacheDir, defaultName),
+        filters: [{ name: '视频文件', extensions: ['mp4', 'mov', 'webm'] }],
+      })
+      if (!savePath) return // 用户取消
+      const saved = await window.tintin.server.downloadResult(toAbsolute(url), savePath)
+      if (!saved) throw new Error('下载失败（服务端离线或网络异常）')
+      notify('下载完成', String(saved))
+      try { window.tintin.shell.revealInFolder(String(saved)) } catch (_) {}
+    } catch (err) {
+      clientError('subtitle-removal', '下载失败', err)
+      notify('下载失败', err instanceof Error ? err.message : String(err))
+    } finally {
+      downloading.value = false
+    }
+  }
+
   return {
     // 模式/用途/表单
     mode, purpose, watermarkText, setMode, setPurpose,
@@ -189,7 +286,8 @@ export function useVsrRemoval() {
     addBox, deleteActiveBox, setActiveIndex, updateActiveQuad, resetBoxes, boxLabel,
     // 任务
     canStart, cancelled,
-    status, progress, errorMsg, resultUrl, resultPath, isProcessing, uploadPercent,
+    status, progress, errorMsg, resultUrl, resultFullUrl, resultPath, isProcessing, uploadPercent,
+    downloadResult, downloading, openResultDir, autoSaving,
     taskId: task.taskId,
     submit, cancel, resetResult: task.resetResult,
     CANCELLED_STATUS_TEXT,

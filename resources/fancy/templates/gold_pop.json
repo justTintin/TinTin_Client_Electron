@@ -1,0 +1,10 @@
+{
+  "template_id": "gold_pop",
+  "name": "鎏金弹出",
+  "style": "fontcolor=0xF0C040:borderw=4:bordercolor=0x6B3000:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8",
+  "jy_effect_id": "",
+  "jy_intro_anim": "",
+  "sound": null,
+  "timing": "uniform",
+  "anim": "pop"
+}

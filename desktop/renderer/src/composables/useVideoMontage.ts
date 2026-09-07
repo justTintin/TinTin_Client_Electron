@@ -28,6 +28,8 @@ import {
   // Step1 splits 本地缓存（原版 montage_cache 口径）
   safeSourceName,
   normalizeSourceResolution,
+  collectEdgeTrimJobs,
+  EDGE_CLIP_MAX_SEC,
   // Step2 镜头重组·预合成方案
   buildPrecomposePlans,
   type PrecomposePlan,
@@ -59,7 +61,9 @@ import {
   rewriteTemperature,
   buildRewriteSystemPrompt,
   cleanRewriteContent,
-  parseFancyWords,
+  FANCY_POSITION_OPTIONS,
+  SUBTITLE_BG_OPTIONS,
+  extractFancyWordsFromText,
   resolveOutMontageDir,
   voiceStatusText,
   voiceStatusClass,
@@ -275,6 +279,10 @@ export function useVideoMontage() {
   /** 混剪任务缓存索引（原版 _montage_job_id = uuid4hex；本轮分割生成一次） */
   const splitsJobId = ref('')
   const splitsDownloading = ref(false)
+  /** 解析进度 0-100（对照原版 step1_split_controller _progress：按素材数推进，每素材开始前更新） */
+  const splitProgress = ref(0)
+  /** 确认合成进度 0-100（对照原版 montage_concat_server_worker：提交 30/轮询钳 48/完成 100） */
+  const concatProgress = ref(0)
 
   /** 逐个素材调 /montage/split（同步返回 shots[]）；ECONNRESET/ETIMEDOUT 等瞬时断线自动重试 1 次 */
   async function runSplit(): Promise<void> {
@@ -284,8 +292,15 @@ export function useVideoMontage() {
     splitMsg.value = '正在解析素材…'
     try {
       const rows: SplitSceneRow[] = []
-      for (const v of srcVideos.value) {
+      // 逐素材阶段文案 + 进度（对照原版 _process_next_merged_video L202-203：
+      // `_stage("智能镜头分割 ({idx}/{total})：{fname}")` + `_progress(done*100/total)`）
+      const total = srcVideos.value.length
+      splitProgress.value = 0
+      for (let vi = 0; vi < total; vi++) {
+        const v = srcVideos.value[vi]
         const name = v.split(/[\\/]/).pop() || v
+        splitMsg.value = `智能镜头分割 (${vi + 1}/${total})：${name}`
+        splitProgress.value = Math.round((vi * 100) / total)
         // 瞬时断线（ECONNRESET/ETIMEDOUT）自动重试 1 次，避免误报 OFFLINE
         // 注意：server-proxy 的 isExpectedOfflineError 会把 ECONNRESET 吞为 null，
         // 所以重试条件需检查 null / {error}，不能只靠 catch
@@ -317,14 +332,16 @@ export function useVideoMontage() {
         const shots = parseSplitResponse(res)
         console.log(`[split] ${name}: ${shots.length} shots, 首个 clipUrl=${shots[0]?.downloadUrl || '(空)'}`)
         rows.push(...shotsToRows(shots, name, v))
+        // 逐素材增量上表（对照原版 _on_split_analysis_ready L309-316：每素材分割完成
+        // 即刷新 split_result_table；行号连续重编号，未落盘行预览回退服务端 clipUrl 内嵌）
+        scenes.value = rows.slice()
+        rows.forEach((r, i) => { r.idx = i + 1 })
         // 原片分辨率：优先服务端 split 响应 source_resolution（对照原版 step1_split_controller
         // L326-328 逐素材覆盖 _source_resolution 的同口径），无则后置本地探测兑底
         const sr = normalizeSourceResolution((res as { source_resolution?: unknown }).source_resolution)
         if (sr) splitResolution.value = sr
       }
-      // 全局重编号（多素材时 shotsToRows 每批从 1 起，需统一为连续序号）
-      rows.forEach((r, i) => { r.idx = i + 1 })
-      scenes.value = rows
+      // 行已随各素材完成逐批增量上表（scenes 与 rows 同引用集），此处仅收尾文案
       splitMsg.value = rows.length
         ? `解析完成：共 ${rows.length} 个镜头片段`
         : '未解析出镜头片段（可调低分割阈值后重试）'
@@ -334,6 +351,9 @@ export function useVideoMontage() {
         splitsJobId.value = (crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')
         await downloadClipsToSplits()
       }
+      // PR#4 条目10：出入场超长片段自动裁剪（后台，对照 _maybe_trim_edge_clips L1706
+      // 挂在 _check_split_clips_exist 尾部的同口径：分割完成即扫描）
+      void maybeTrimEdgeClips()
       // 探测兑底（原版 _detect_and_show_source_resolution L4783-4793：服务端未返回时
       // probe 第一个镜头文件；本端片段已落盘 splits，优先探测片段，源视频兑底）
       if (!splitResolution.value) {
@@ -353,6 +373,53 @@ export function useVideoMontage() {
       notify('素材解析失败', splitError.value)
     } finally {
       splitBusy.value = false
+    }
+  }
+
+  // ── 出入场超长片段自动裁剪（PR#4 条目10，对照 _maybe_trim_edge_clips L1708-1779：
+  //  识别为入场/出场的分割片段超过 EDGE_CLIP_MAX_SEC 时裁剪（取中间时间段——产品
+  //  通常在镜头中间段），主进程重编码替换本地文件并同步改写文件名时间戳；幂等：
+  //  已裁片段时长 ≤ 阈值不会再次入选；防死循环：连续 2 轮无产出停止自动重试。
+  //  裁剪后行回写新路径/新时长/trimmed 标记，concat 对含被裁片段的方案改走本地 files）──
+  let edgeTrimRunning = false
+  let edgeTrimFailCount = 0
+  async function maybeTrimEdgeClips(): Promise<void> {
+    if (edgeTrimRunning || edgeTrimFailCount >= 2) return
+    const jobs = collectEdgeTrimJobs(scenes.value)
+    if (!jobs.length) return
+    edgeTrimRunning = true
+    statusText.value = `正在裁剪 ${jobs.length} 个超长出入场镜头（取中间时间段）…`
+    console.log(`[出入场裁剪] 启动：${jobs.length} 个片段待裁剪`)
+    try {
+      const res = await window.tintin.server.trimEdgeClips({ jobs })
+      if (!res) throw new Error('主进程不可达')
+      if ('error' in res) throw new Error(res.error)
+      if (res.renamed.length) {
+        edgeTrimFailCount = 0
+        // 回写行：新本地路径/新文件名/新时长 + trimmed 标记（原版迁移 split_descriptions
+        // 缓存键的同口径；本端描述在行对象上，随行保留不动）
+        for (const [oldP, newP, keep] of res.renamed) {
+          const row = scenes.value.find((r) => r.clipLocalPath === oldP)
+          if (row) {
+            row.clipLocalPath = newP
+            row.name = pathBasename(newP)
+            row.duration = keep
+            row.trimmed = true
+          }
+        }
+        console.log(`[出入场裁剪] 完成：${res.renamed.length} 个片段已裁剪替换，skipped=${res.skipped}`)
+        statusText.value = `完成：已裁剪 ${res.renamed.length} 个超长出入场镜头。`
+      } else {
+        edgeTrimFailCount++
+        console.warn(`[出入场裁剪] 本轮无产出（连续第 ${edgeTrimFailCount} 次），skipped=${res.skipped}`)
+        statusText.value = '出入场镜头时长均正常，无需裁剪。'
+      }
+    } catch (e) {
+      edgeTrimFailCount++
+      clientError('video-montage', '出入场裁剪失败', e)
+      statusText.value = ''
+    } finally {
+      edgeTrimRunning = false
     }
   }
 
@@ -652,7 +719,7 @@ export function useVideoMontage() {
   /** 提交单条 /montage/concat 并轮询至完成，返回成片 URL（原版 MontageConcatServerWorker 同口径）
    *  clip_urls 使用服务端绝对路径（split 返回的 path 字段），文件已在服务端无需上传
    *  clipShotTypes：镜头文件名→景别键（对照原版 L3004-3015 clip_shot_types，仅非空景别收进） */
-  async function submitConcatTask(clipUrls: string[], clipShotTypes?: Record<string, string>): Promise<string> {
+  async function submitConcatTask(clipUrls: string[], clipShotTypes?: Record<string, string>, localFiles?: string[]): Promise<{ url: string; id: string; newContract: boolean }> {
     await ensureServerUrl()
     // 「与原片一致」分辨率优先级（对照原版 _submit_concat_to_server L2963-2979：
     // ① 服务端 split 响应的原片分辨率 → ② 本地探测第一个镜头 → ③ 兑底 1080x1920）
@@ -690,8 +757,12 @@ export function useVideoMontage() {
     for (const [k, v] of Object.entries(clipShotTypes || {})) {
       if (v) stPayload[k] = v
     }
+    // PR#4 条目10：方案内含本地已裁剪片段时改走本地 files 上传（契约 files/clip_urls
+    // 至少一项；全量 files 保序，与原客户端上传本地镜头同一口径——clip_urls 指向的
+    // 服务端片段未经裁剪，直接混用会产出未裁剪成片）
+    const useLocalFiles = !!(localFiles && localFiles.length && localFiles.length === clipUrls.length)
     const concatReq: Record<string, unknown> = {
-      clip_urls: payload.clip_urls,
+      ...(useLocalFiles ? { files: localFiles } : { clip_urls: payload.clip_urls }),
       transition: payload.transition,
       transition_duration: payload.transition_duration,
       width: payload.width,
@@ -705,20 +776,79 @@ export function useVideoMontage() {
     console.log('[concat] 提交载荷:', JSON.stringify({ ...concatReq, clip_urls: payload.clip_urls?.slice(0, 200) }))
     const res = unwrapIpc(await window.tintin.server.montageConcat(concatReq), '确认合成')
     const id = extractSubmitTaskId(res)
+    // PR#4 条目13：新契约判别（对照 worker L138-142：响应含 queue_position → 任务不注册任务表，
+    // 任务表端点查不到或命中历史撞名任务，只能走结果端点直出）
+    const newContract = !!res && typeof res === 'object' && 'queue_position' in (res as Record<string, unknown>)
     statusText.value = `确认合成任务已提交：${id}`
-    return await new Promise<string>((resolve, reject) => {
+    if (newContract) {
+      // 新契约：不走任务表轮询，直接回结果端点 URL（未产出 404，由下载/轮询兑底取片）
+      return { url: toAbsolute(`/montage/concat/result/${encodeURIComponent(id)}`), id, newContract }
+    }
+    return await new Promise<{ url: string; id: string; newContract: boolean }>((resolve, reject) => {
       startPolling({
         id,
         channel: 'scheduled',
         onDone: (result) => {
           // result.video_url|url|output_url，缺失回退契约下载端点（worker L134-136/L165）
-          resolve(toAbsolute(extractConcatResultUrl(result) || `/montage/concat/result/${id}`))
+          resolve({ url: toAbsolute(extractConcatResultUrl(result) || `/montage/concat/result/${id}`), id, newContract })
         },
         onFail: (msg) => reject(new Error(msg)),
       })
     })
   }
   
+  // ── 成片下载 + 完整性校验（PR#4 条目12/13，对照 _download/_validate_downloaded_file/
+  // _poll_result_endpoint L224-304）──
+
+  /** 下载成片并做完整性校验（>1KB 且 ffprobe 可读），未通过自动重下 1 次再验（L280-304）：
+   *  返回 'ok' | 'no-file'（从未取到文件：HTTP 非 200/空响应）| 'invalid'（取到但损坏，如 moov 缺失） */
+  async function downloadFinalChecked(srcUrl: string, localPath: string): Promise<'ok' | 'no-file' | 'invalid'> {
+    let hasFile = false
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try { await window.tintin.server.downloadResult(srcUrl, localPath) } catch (_) { /* 非 200/网络异常：按未取到处理 */ }
+      try {
+        const v = await window.tintin.server.montageValidateFinal(localPath)
+        if (v && !('error' in v)) {
+          hasFile = !!v.hasFile
+          if (v.ok) return 'ok'
+        }
+      } catch (_) { /* 校验失败按未通过处理 */ }
+      console.warn(`[montage_concat] 成片完整性校验未通过（第 ${attempt}/2 次）: ${localPath}`)
+    }
+    return hasFile ? 'invalid' : 'no-file'
+  }
+
+  /** PR#4 条目13：结果端点直取轮询（对照 _poll_result_endpoint L224-239：
+   *  GET /montage/concat/result/{id} 未完成 404 → 继续轮，完成 200 直出 mp4 →
+   *  落盘 + 完整性校验；总超时兑底（原版 _RESULT_POLL_TIMEOUT 60 分钟，本端兑底路径取 30 分钟）。
+   *  偏差修正：原版新契约不注册任务表故不查；本端服务端实测新契约任务也注册任务表
+   *  （failed 带 error_msg，结果端点永远 404）→ 每拍穿插查一次任务表，failed 立即终止，
+   *  查无任务（404）时回退纯结果端点轮询（对齐原版假设）；轮询期更新状态文案 */
+  async function pollResultEndpoint(id: string, localPath: string, timeoutMs = 30 * 60 * 1000): Promise<'ok' | 'no-file' | 'invalid'> {
+    const url = toAbsolute(`/montage/concat/result/${encodeURIComponent(id)}`)
+    const startedAt = Date.now()
+    for (;;) {
+      const r = await downloadFinalChecked(url, localPath)
+      if (r !== 'no-file') return r
+      if (Date.now() - startedAt > timeoutMs) return 'no-file'
+      // 穿插任务表状态（新契约本端服务端也注册表）：failed 立即终止报服务端错误
+      try {
+        const resp = await window.tintin.server.get<Record<string, unknown>>(`/scheduled/tasks/${encodeURIComponent(id)}`)
+        const task = extractTaskObj(resp) as Record<string, any>
+        const errCarrier = { error_msg: task.error_message || task.error_msg || task.error || task.message || '' }
+        const info = mapTaskStatus(task.status ?? task.state, errCarrier)
+        if (info.phase === 'failed') throw new Error(`服务端合成失败：${info.error}`)
+        if (info.phase === 'running') {
+          statusText.value = `已提交服务端合成，任务 ID=${id}，正在轮询...（${pollPhaseText(task.progress, (Date.now() - startedAt) / 1000)}）`
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('服务端合成失败')) throw e
+        // 查无此任务（404）/离线：对齐原版新契约假设，纯结果端点轮询继续
+      }
+      await new Promise((res) => setTimeout(res, POLL_INTERVAL_MS))
+    }
+  }
+
   /** 单条确认合成（不含队列推进）：成片下载落盘 outputs 目录（原版 download_result 口径） */
   async function confirmPlanOne(index: number): Promise<void> {
     const p = assemblePlans.value[index]
@@ -731,23 +861,50 @@ export function useVideoMontage() {
     console.log(`[concat] 预合成 ${index + 1}，${clipUrls.length} 个镜头（服务端绝对路径）`)
     if (clipUrls.length) console.log('[concat] 示例 clipUrls:', clipUrls.slice(0, 3))
     statusText.value = ` 正在确认合成预合成 ${index + 1}... (剩余 ${planConfirmQueue.value.length} 条待确认)`
+    // 确认合成进度（对照原版 montage_concat_server_worker：提交前 30 / 轮询中钳 48 / 完成 100；
+    // 本端提交前置 10 以区分上传阶段）
+    concatProgress.value = 10
     try {
-      // 景别标注：key = 服务端片段文件名（= clip_url basename，对照原版 os.path.basename(clip)）
+      // 景别标注：key = 片段文件名（对照原版 os.path.basename(clip)；裁剪后行名已同步改写）
       const activeClips = p.clips.filter((_, i) => !p.deletedFlags[i])
       const shotTypes = Object.fromEntries(activeClips.map((c) => [c.name, c.shotType || '']))
-      const url = await submitConcatTask(clipUrls, shotTypes)
+      // PR#4 条目10：有被裁剪片段且全部活动片段均已本地落盘 → 改走本地 files 上传
+      // （顺序与 clipUrls 一致；有片段未落盘时回退 clip_urls，注：该方案内被裁片段
+      // 将以服务端未裁剪原件参与合成，属下载失败兑底场景）
+      const hasTrimmed = activeClips.some((c) => c.trimmed && c.clipLocalPath)
+      const localFiles = hasTrimmed && activeClips.every((c) => c.clipLocalPath)
+        ? activeClips.map((c) => c.clipLocalPath as string)
+        : undefined
+      const { url, id } = await submitConcatTask(clipUrls, shotTypes, localFiles)
+      concatProgress.value = 30
+      statusText.value = `已提交服务端合成，任务 ID=${id}，正在轮询...`
       const name = `montage_concat_server_${Math.floor(Math.random() * 9000 + 1000)}_1.mp4`
-      let localPath = ''
-      try {
-        localPath = joinPath(await readCacheDir(), 'montage_cache',
-          splitsJobId.value || 'session', 'outputs', name)
-        await window.tintin.server.downloadResult(url, localPath)
-      } catch (_) { /* 落盘失败保留服务端 URL，不影响状态推进 */ }
+      const localPath = joinPath(await readCacheDir(), 'montage_cache',
+        splitsJobId.value || 'session', 'outputs', name)
+      // PR#4 条目12：下载 + 完整性校验（>1KB 且 ffprobe 可读，失败自动重下 1 次）
+      let final = await downloadFinalChecked(url, localPath)
+      if (final === 'no-file') {
+        // PR#4 条目13：任务表 completed 但成片下载不到 → 极可能历史任务撞名（同类型旧任务
+        // 恰好同 ID，其 video_url 指向别的产物或已失效），不据此报错终止；改走 concat
+        // 结果端点继续轮询（对照 _consume_unified_task L196-202，原版此降级仅记日志不上 UI），
+        // 轮询期进度钳在 48（对照原版 max(30,min(90,30+30*0.6))）
+        concatProgress.value = 48
+        final = await pollResultEndpoint(id, localPath)
+      }
+      // 两种失败根因不同，报错文案可区分（对照 _validate_downloaded_file L297-304 逐字）
+      if (final === 'no-file') {
+        throw new Error('成片下载失败：服务端未返回有效文件（HTTP 非 200 或空响应），通常为任务尚未完成或结果链接失效。请重新执行合成；若反复出现请检查网络/服务端。')
+      }
+      if (final === 'invalid') {
+        throw new Error('下载后的成片无效：文件不完整或损坏（如 moov 缺失，常见于下载中断或服务端产物异常）。请重新执行合成；若反复出现请检查网络/服务端。')
+      }
       p.confirmed = true
       p.outputUrl = url
       p.outputPath = localPath
-      p.outputName = localPath ? name : (url.split('/').pop() || name)
+      p.outputName = name
+      concatProgress.value = 100
     } catch (e) {
+      concatProgress.value = 0
       concatError.value = errText(e)
       clientError('video-montage', `确认合成失败 预合成${index + 1}`, e)
       notify('确认合成失败', `预合成 ${index + 1}：${concatError.value}`)
@@ -1241,7 +1398,14 @@ export function useVideoMontage() {
   const fontsLoading = ref(false)
   const fancyEnabled = ref(false)
   const fancyStyle = ref('gold')
-  const fancyWordsInput = ref('')
+  // 花字位置/字幕背景/模板（L224-352；模板首项「自定义 (下方样式)」value=''）
+  const fancyPosition = ref('upper_middle')
+  const subtitleBgOpacity = ref(0.5)
+  const fancyTemplateId = ref('')
+  const fancyTemplates = ref<FancyTemplateItem[]>([])
+  const fancyPreviews = ref<Record<string, string>>({})
+  const fancyTemplatesLoading = ref(false)
+  const fancyPreviewDlg = ref({ show: false, head: '', body: '' })
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
   const rewriteTemp = ref(0.5)
   const aiRewriteDlg = ref({ show: false, pct: 50 })
@@ -1530,7 +1694,9 @@ export function useVideoMontage() {
         lengthModes: Object.fromEntries(voiceRows.value.map((r) => [r.path, r.lengthMode])),
         fancyText: fancyEnabled.value,
         fancyStyle: fancyStyle.value,
-        fancyWords: fancyEnabled.value ? parseFancyWords(fancyWordsInput.value) : [],
+        fancyPosition: fancyPosition.value,
+        subtitleBoxOpacity: subtitleBgOpacity.value,
+        fancyTemplate: selectedFancyTemplate.value,
         subtitleFont: addSubtitles.value ? selectedFontFamily() : '',
         progressChannel: channel,
       })
@@ -1594,6 +1760,65 @@ export function useVideoMontage() {
     } finally {
       fontsLoading.value = false
     }
+  }
+
+  /** 花字模板列表 + 预览图（对照 _start_fancy_preview_loader / _update_fancy_template_preview：
+   *  已缓存直接回填，缺失的后台 ffmpeg 渲染后刷新；失败不阻断页面） */
+  async function loadFancyTemplates(): Promise<void> {
+    if (fancyTemplatesLoading.value) return
+    fancyTemplatesLoading.value = true
+    try {
+      const res = await window.tintin?.server?.fancyListTemplates?.()
+      if (res && !('error' in res)) {
+        fancyTemplates.value = res.templates
+        fancyPreviews.value = { ...res.previews }
+        const r2 = await window.tintin?.server?.fancyEnsurePreviews?.()
+        if (r2 && !('error' in r2) && r2.generated > 0) {
+          fancyPreviews.value = { ...fancyPreviews.value, ...r2.previews }
+        }
+      }
+    } catch (_) { /* 模板加载失败不阻断页面 */ } finally {
+      fancyTemplatesLoading.value = false
+    }
+  }
+
+  /** 选定模板 dict（模板优先：样式/动画/音效以模板为准；未选/未勾选返回 null=自定义样式） */
+  const selectedFancyTemplate = computed(() => {
+    if (!fancyEnabled.value || !fancyTemplateId.value) return null
+    return fancyTemplates.value.find((t) => t.template_id === fancyTemplateId.value) || null
+  })
+
+  /** 花字预览弹窗（对照 _preview_fancy_words L4139-4178：按每个视频当前文案预览将生成的花字） */
+  function previewFancyWords(): void {
+    const rows: Array<{ name: string; text: string; words: string[] }> = []
+    for (const [i, r] of voiceRows.value.entries()) {
+      if (!r.path && !r.text.trim()) continue
+      rows.push({
+        name: r.path ? pathBasename(r.path) : `第 ${i + 1} 行`,
+        text: r.text.trim(),
+        words: extractFancyWordsFromText(r.text),
+      })
+    }
+    if (!rows.length) {
+      notify('花字预览', '当前没有视频/文案。请先在上方导入素材并填写文案。')
+      return
+    }
+    const lines: string[] = []
+    let nWord = 0
+    for (const { name, text, words } of rows) {
+      if (!text) { lines.push(` ${name}：（无文案，不克隆声音、不烧花字）`); continue }
+      let ws: string
+      if (words.length) { nWord += words.length; ws = words.join('、') }
+      else ws = '（未提取到卖点，不叠加花字）'
+      const suffix = fancyEnabled.value ? '' : '   [未勾选「添加花字」，仅预览不生效]'
+      lines.push(` ${name}\n    花字：${ws}${suffix}`)
+    }
+    let head = `共 ${rows.length} 个视频，预计烧制 ${nWord} 个花字`
+    if (!fancyEnabled.value) head += '（未勾选「添加花字」）'
+    fancyPreviewDlg.value = { show: true, head, body: lines.join('\n') }
+  }
+  function closeFancyPreviewDlg(): void {
+    fancyPreviewDlg.value.show = false
   }
 
   /** 双击文案 → 弹窗编辑（对照 _on_edit_double_clicked → TextEditDialog） */
@@ -1690,7 +1915,7 @@ export function useVideoMontage() {
     // Step1 素材解析
     srcVideos, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes, checkedCount,
-    splitBusy, splitError, splitMsg, splitResolution,
+    splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
     addVideos, selectFolder, onDrop, removeVideo, runSplit,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
     previewUrl, openSplitsDir, splitsDownloading,
@@ -1713,7 +1938,11 @@ export function useVideoMontage() {
     refSamples, selectedRefSample, refAudioPath, refText, selectRefAudio,
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
     addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
-    fancyEnabled, fancyStyle, fancyWordsInput, FANCY_STYLE_OPTIONS, AI_REWRITE_DESC,
+    fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
+    fancyTemplateId, fancyTemplates, fancyPreviews, fancyTemplatesLoading,
+    selectedFancyTemplate, loadFancyTemplates,
+    previewFancyWords, fancyPreviewDlg, closeFancyPreviewDlg,
+    FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
     aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
     editDlg, openEditDlg, saveEditDlg,
     dubbedDlg,
@@ -1738,6 +1967,15 @@ export function useVideoMontage() {
     // 景别分类（UI 展示用）
     SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
   }
+}
+
+/** 花字模板项（fancyListTemplates 返回字段；PR#4 对照 utils/fancy_templates.py） */
+export type FancyTemplateItem = Record<string, unknown> & {
+  template_id: string
+  name: string
+  style: string
+  anim: string
+  hasSound: boolean
 }
 
 /** TSelect 选项最小结构（避免组件层依赖方向反转） */

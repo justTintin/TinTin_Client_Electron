@@ -199,7 +199,10 @@ export const API_PATHS = {
     pipeline: '/viral/clone/pipeline',  // 替换管道串联（后台任务 + poll）
   },
   rembg: {
-    matting: '/rembg/matting',    // V3 S1
+    // 2026-09-07 契约对齐：服务端实装 POST /matting（file+model，同步回 PNG 二进制）+ GET /matting/models；
+    // 旧 /rembg/matting 异步任务模式从未实装（openapi 无此路径）
+    matting: '/matting',
+    models:  '/matting/models',
   },
   vision: {
     reversePrompt: '/vision/reverse-prompt',  // V3 S3
@@ -381,11 +384,12 @@ export namespace ASRAPI {
     language?:   string
     task?:       'transcribe' | 'translate'
     word_timestamps?: boolean
+    fmt?:        'srt' | 'json' | 'txt'  // 2026-09-07：json 返回 {segments:[{words 字级时间戳}]}，供光标定位帧
   }
   export interface TranscribeResponse {
     task_id?:    string
     text:        string
-    segments?:   Array<{ start: number; end: number; text: string }>
+    segments?:   Array<{ start: number; end: number; text: string; words?: Array<{ word: string; start: number; end: number }> }>
     language?:   string
     duration_s?: number
   }
@@ -613,17 +617,15 @@ export namespace ViralCloneAPI {
 }
 
 export namespace RembgAPI {
-  // V3 S1 POST /rembg/matting
+  // 2026-09-07 契约对齐 POST /matting：同步接口（非任务模式），multipart file+model，
+  // 响应为 PNG 二进制，主进程落盘到原图同目录后返 { path, bytes }
   export interface MattingRequest {
-    image:         Blob
-    model?:        'u2net' | 'isnet-general-use' | 'birefnet-portrait' | 'sam' | string
-    alpha_matting?: boolean
-    return_mask?:  boolean
-    bg_color?:     string | null   // "#RRGGBB" or null=透明
+    image: string   // 本地图片路径（主进程按 multipart file 字段读取上传）
+    model?: string  // 抠图模型（GET /matting/models 清单，默认 u2net）
   }
   export interface MattingResponse {
-    task_id: string
-    status:  TaskStatus
+    path:  string   // 抠图结果 PNG 本地路径
+    bytes: number
   }
 }
 

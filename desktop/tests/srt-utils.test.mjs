@@ -188,3 +188,51 @@ test('parseTranscriptionResponse：空/无效输入 → 空数组', () => {
   assert.deepEqual(S.parseTranscriptionResponse({}), [])
   assert.deepEqual(S.parseTranscriptionResponse(''), [])
 })
+
+test('parseTranscriptionResponse：Uint8Array（multipartUpload 透传 Buffer 经 IPC 克隆的形态，2026-09-07）', () => {
+  const enc = new TextEncoder()
+  // SRT 文本 → 走 parseSrt 保留时间轴
+  const srt = enc.encode('1\n00:00:01,000 --> 00:00:02,000\n字节流SRT\n')
+  const segs = S.parseTranscriptionResponse(srt)
+  assert.equal(segs.length, 1)
+  assert.equal(segs[0].text, '字节流SRT')
+  assert.equal(segs[0].start, 1)
+  // 无时间轴纯文本 → 单段兑底
+  const plain = S.parseTranscriptionResponse(enc.encode('纯文本字节流'))
+  assert.deepEqual(plain, [{ start: 0, end: 0, text: '纯文本字节流' }])
+  // 空白字节流 → 空数组
+  assert.deepEqual(S.parseTranscriptionResponse(enc.encode('  \n')), [])
+})
+
+test('caretToTime：字级 words 精确对齐（跳空白；字前半 start/后半 end；末尾取最后字 end）', () => {
+  const seg = {
+    start: 10, end: 14, text: '字幕由 Amara.org 社群提供',
+    words: [
+      { word: '字', start: 10.0, end: 10.1 },
+      { word: '幕', start: 10.1, end: 10.2 },
+      { word: '由', start: 10.2, end: 10.3 },
+      { word: 'A', start: 10.3, end: 10.4 },
+      { word: 'm', start: 10.4, end: 10.5 },
+      { word: '供', start: 10.5, end: 10.6 },
+    ],
+  }
+  // caret=0 → 首字 start
+  assert.equal(S.caretToTime(seg, 0), 10.0)
+  // caret=1（“字”后）→ 字幕 start（前半）
+  assert.equal(S.caretToTime(seg, 1), 10.1)
+  // caret=4 落在空格后“A”前 → A.start；caret=5 落在“A”后半 → A.end
+  assert.equal(S.caretToTime(seg, 4), 10.3)
+  assert.equal(S.caretToTime(seg, 5), 10.4)
+  // 超出末尾 → 最后字 end
+  assert.equal(S.caretToTime(seg, 99), 10.6)
+})
+
+test('caretToTime：无 words 段内线性比例降级', () => {
+  const seg = { start: 10, end: 20, text: '五字文本' }
+  assert.equal(S.caretToTime(seg, 0), 10)
+  // 4 字符，caret=2 → ratio 0.5 → 中点
+  assert.equal(S.caretToTime(seg, 2), 15)
+  assert.equal(S.caretToTime(seg, 99), 20)
+  // 时长为 0 → 恒返回 start
+  assert.equal(S.caretToTime({ start: 5, end: 5, text: 'x' }, 3), 5)
+})

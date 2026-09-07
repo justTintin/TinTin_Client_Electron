@@ -10,13 +10,16 @@
 // （纯函数 videoMontageLogic.ts，IRON-06/07 分层）。
 // 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（重按按钮即重试）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VideoPreview from '@/components/common/VideoPreview.vue'
 import VideoPlayer from '@/components/common/VideoPlayer.vue'
 import { useVideoMontage } from '@/composables/useVideoMontage'
 import { BGM_STYLE_OPTIONS } from '@/composables/videoMontageLogic'
+import WbPickProductDialog from '@/components/workbench/WbPickProductDialog.vue'
+import { markdownListLines } from '@/composables/opsProductLibraryLogic'
+import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
 // 步骤条文案对照原客户端 gui/video_montage_page.py steps_text L257，严格一致
 const STEPS = ['1. 镜头智能分割', '2. 镜头重组', '3. 口播配音', '4. 特效包装']
@@ -29,11 +32,11 @@ function go(i: number) {
 
 const {
   // 共享
-  polling, activeTaskId, statusText, cancelPolling,
+  polling, activeTaskId, statusText, cancelPolling, concatProgress,
   // Step1 素材解析（镜头智能分割）
   srcVideos, threshold, minSceneLen, imageDuration,
   scenes, scoreFilter, filteredScenes, checkedCount,
-  splitBusy, splitError, splitMsg, splitResolution,
+  splitBusy, splitError, splitMsg, splitProgress, splitResolution,
   selectFolder, onDrop, removeVideo, runSplit,
   updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
   previewUrl, openSplitsDir, splitsDownloading,
@@ -56,7 +59,10 @@ const {
   refSamples, selectedRefSample, refAudioPath, refText,
   ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
   addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
-  fancyEnabled, fancyStyle, fancyWordsInput, FANCY_STYLE_OPTIONS, AI_REWRITE_DESC,
+  fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
+  fancyTemplateId, fancyTemplates, fancyPreviews,
+  loadFancyTemplates, previewFancyWords, fancyPreviewDlg, closeFancyPreviewDlg,
+  FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
   aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
   editDlg, openEditDlg, saveEditDlg,
   dubbedDlg,
@@ -83,6 +89,35 @@ const {
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
 
+// 2026-09-07 缩略图改主进程 ffmpeg 抽帧（dataURL <img>）：
+// ① 根治多路 <video> 解码器并发初始化崩溃（前版限 8 行挂载导致“缩略图只有一部分”）；
+// ② 全部素材行均有缩略图，抽帧失败行回退占位图标。
+// 注：原客户端素材列表本无缩略图（_decorate_video_item_widget 仅设景别色），此为本端增强；
+// 素材库条目缩略图走服务端 /material/thumbnail（WbPickMaterialDialog 同源），待 Step1
+// 补素材库入口后接入——用户裁决 2026-09-07：优先服务端，无则本地抽帧。
+const thumbs = reactive(new Map<string, string>())
+let thumbSeq = 0
+let thumbToken = 0
+watch(() => [...srcVideos.value], (list) => {
+  const token = ++thumbToken
+  void (async () => {
+    for (const v of list) {
+      if (token !== thumbToken) return
+      if (thumbs.has(v)) continue
+      // 每素材独立 tag（extractFrames 输出目录按 tag 清空重建，避免互踩）
+      try {
+        const r = await window.tintin.ffmpeg.extractFrames({
+          videoPath: v, times: [1.0], tag: `montagethumb${++thumbSeq}`, width: 160, quality: 3,
+        })
+        if (token !== thumbToken) return
+        const b64 = r?.frames?.[0]?.base64
+        if (b64) thumbs.set(v, `data:image/jpeg;base64,${b64}`)
+      } catch { /* 抽帧失败 → 该行显示占位图标 */ }
+    }
+  })()
+}, { immediate: true })
+onUnmounted(() => { thumbToken++ })
+
 // 参考声音下拉（用户裁决 2026-09-03：声音样本从服务端取，GET /voice/samples 与 VoiceClone 页同源；
 // 尾项保留本地上传；选中样本自动带出参考文案（selectSample 口径））
 const refAudioOptions = computed(() => [
@@ -93,6 +128,19 @@ const refAudioOptions = computed(() => [
 function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) }
 /** 花字样式下拉（原版 fancy_style_combo 7 项） */
 const fancyStyleOptions = FANCY_STYLE_OPTIONS
+/** 花字位置下拉（原版 fancy_position_combo 8 项，L335-339） */
+const fancyPositionOptions = FANCY_POSITION_OPTIONS
+/** 字幕背景下拉（原版 subtitle_bg_combo 6 项，L226-228） */
+const subtitleBgOptions = SUBTITLE_BG_OPTIONS
+/** 花字模板下拉（原版 fancy_template_combo：首项「自定义 (下方样式)」value=''，L269-274） */
+const fancyTemplateOptions = computed(() => [
+  { label: '自定义 (下方样式)', value: '' },
+  ...fancyTemplates.value.map((t) => ({ label: t.name, value: t.template_id })),
+])
+/** 当前模板预览图（dataURL；对照 fancy_template_preview_lbl） */
+const fancyTemplatePreview = computed(() =>
+  fancyTemplateId.value ? fancyPreviews.value[fancyTemplateId.value] || '' : '')
+onMounted(() => { void loadFancyTemplates() })
 
 /** 配音结果弹窗行动作（DubbedVideosDialog） */
 function playDubbed(path: string): void { try { window.tintin?.shell?.openItem?.(path) } catch (_) {} }
@@ -133,6 +181,17 @@ function planMenuConfirm(): void { const i = planMenu.value.index; closePlanMenu
 function planMenuGen(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) openProductDlg(i) }
 function planMenuView(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) viewPlanCopy(i) }
 
+// ── 口播弹窗从产品库选产品（复用会话 WbPickProductDialog：左列表右参数/卖点，
+//   点行仅预览、「选择该产品」才选中；选中后自动回填下方四字段，仍可手改）──
+const pickProductVisible = ref(false)
+function onPickProduct(it: PickerItem): void {
+  productDlg.value.brand = String(it.brand || '')
+  productDlg.value.product = String(it.category || '')
+  productDlg.value.model = String(it.model || it.goods_no || '')
+  // 核心卖点逐条拼入补充卖点（多行，可继续手改/留空）
+  productDlg.value.extra = markdownListLines(it.selling_points).join('\n')
+}
+
 function urlTail(u: string) { return String(u || '').split('/').pop() || u }
 
 // ── Step1 素材列表删除（已改为行内按钮，原右键菜单已删除）──
@@ -172,7 +231,12 @@ function scoreClass(score: number | undefined): string {
         <span class="sec-label">已选择的原始视频素材 (双击可播放预览):</span>
         <ul class="file-list src-video-list">
           <li v-for="(v, i) in srcVideos" :key="v" :title="v">
-            <video class="video-thumb" :src="v" preload="metadata" muted playsinline></video>
+            <!-- 2026-09-07 缩略图改主进程 ffmpeg 抽帧 dataURL（根治多路 <video> 并发
+                 初始化崩溃，且全部行有缩略图）；抽帧失败行显示占位图标 -->
+            <img v-if="thumbs.get(v)" class="video-thumb" :src="thumbs.get(v)" alt="" />
+            <span v-else class="video-thumb video-thumb--ph" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="15" height="14" rx="2" /><polygon points="10 8 16 11 10 14" fill="currentColor" stroke="none" /><path d="M19 8l3-2v12l-3-2" /></svg>
+            </span>
             <span class="video-path" @dblclick="previewSourceVideo(v)">{{ v }}</span>
             <button class="video-play-btn" title="播放" @click="previewSourceVideo(v)">▶</button>
             <button class="video-remove-btn" title="从素材列表移除" @click="removeVideo(i)">×</button>
@@ -193,6 +257,8 @@ function scoreClass(score: number | undefined): string {
           <span class="spacer"></span>
           <TButton label="开始智能镜头分割" icon="cut" :loading="splitBusy" @click="runSplit" />
         </div>
+        <!-- 解析进度（对照原版 step1_split_controller _progress：按素材数 0-100 推进） -->
+        <progress v-if="splitBusy" class="vd-progress split-progress" :value="splitProgress" max="100" />
         <div v-if="splitMsg" class="hint">{{ splitMsg }}</div>
         <div v-if="splitError" class="error-msg">⚠ {{ splitError }}（修正后重按「开始智能镜头分割」重试）</div>
       </section>
@@ -369,6 +435,13 @@ function scoreClass(score: number | undefined): string {
         <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!hasUnconfirmed" @click="confirmAllPrecompose" />
         <TButton label="生成口播文案" variant="secondary" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
       </div>
+      <!-- 确认合成进度（样式对齐 Step1 split-progress，同卡片内按钮行下方呈现；
+        阶段值对照原版 montage_concat_server_worker progress：提交 30/轮询钳 48/完成 100）；
+        状态文案置于进度条上方（用户裁决：文字在进度条上面） -->
+      <template v-if="confirmBusy">
+        <div class="concat-status-line">{{ statusText }}</div>
+        <progress class="vd-progress split-progress" :value="concatProgress" max="100" />
+      </template>
 
       <!-- 导航行（原版 nav_row L288-301：上一步：镜头分割 / 下一步：克隆口播） -->
       <div class="row between">
@@ -481,28 +554,44 @@ function scoreClass(score: number | undefined): string {
         </table>
         <div v-else class="muted">尚未选择视频，在上方输入目录或点击「选择目录」后自动扫描</div>
 
-        <!-- 6. 烧制字幕行（L210-237） -->
+        <!-- 6. 烧制字幕行（L210-251；背景 6 项 + 字体下拉 + 刷新） -->
         <div class="row">
-          <label class="chk" title="字幕字体取自服务端字体库（GET /config/fonts）。&#10;走服务端合成时，会把 font_id / fontname / burn_subtitle 一并提交给服务端烧制；&#10;服务端尚未支持该参数时，回退到本地 ffmpeg 烧制（按同名解析本机已装字体）。">
+          <label class="chk" title="字幕字体取自服务端字体库（GET /config/fonts）。&#10;走服务端合成时，会把 font_id / fontname / burn_subtitle / subtitle_style 一并提交；&#10;服务端尚未支持该参数时，回退到本地 ffmpeg 烧制（按同名解析本机已装字体）。">
             <input v-model="addSubtitles" type="checkbox" />
-            烧制字幕（逐行按时间显示，字号随视频高度自适应，白色 50% 透明背景）
+            烧制字幕（逐行按时间显示，字号随视频高度自适应）
           </label>
+          <label class="param-label">背景:</label>
+          <TSelect v-model="subtitleBgOpacity" :options="subtitleBgOptions" class="w130"
+            title="字幕背景色为黑色，此项调背景不透明度（0=无背景框）。&#10;值越高背景越实；走服务端合成时随 subtitle_style 一并提交。" />
           <label class="param-label">字幕字体:</label>
           <TSelect v-model="subtitleFont" :options="fontOptions" class="w230" title="字体列表来自服务端 /config/fonts，可输入关键字过滤" />
           <TButton label="刷新字体" variant="secondary" size="small" :loading="fontsLoading" title="重新从服务端拉取字体列表" @click="refreshFonts" />
         </div>
 
-        <!-- 7. 花字行（L239-265） -->
+        <!-- 7. 花字行（L253-353；「同步服务端」属条目5 服务端模板库，未部署暂不移植） -->
         <div class="row">
-          <label class="chk" title="在视频画面中央叠加花字特效文字，用于突出关键卖点/价格/型号等信息">
+          <label class="chk" title="在视频画面叠加花字特效文字（可选出现位置），用于突出关键卖点/价格/型号等信息。&#10;花字内容自动从口播文案中逐行提取卖点（价格 > 数字参数 > 关键词），无需手动输入；&#10;每个花字随对应字幕提前 0.3 秒出现、该句字幕结束即消失。">
             <input v-model="fancyEnabled" type="checkbox" />
             添加花字 (关键信息加重提醒)
           </label>
+          <label class="param-label">模板:</label>
+          <TSelect v-model="fancyTemplateId" :options="fancyTemplateOptions" class="w130"
+            title="花字模板 = 样式 + 入场动画 + 出现音效 + 出现时机。&#10;选「自定义」时用下方样式/位置；选模板时以模板样式为准。&#10;模板的剪映入场动画映射为本地动画（滑→滑入、弹/跳/晃/摆→弹跳、其它→淡入）；右侧预览标签展示渲染效果。&#10;模板文件在 resources/fancy/templates/，可把剪映提取的 effect_id 填入新增模板。" />
+          <span class="fancy-preview"
+            title="花字模板预览（按模板样式渲染样本字）；悬停查看动画/音效/时机信息。">
+            <img v-if="fancyTemplatePreview" :src="fancyTemplatePreview" alt="预览" />
+            <template v-else>预览生成中…</template>
+          </span>
+          <TButton label="花字预览" variant="secondary" size="small"
+            title="按每个视频当前的口播文案预览将生成的花字（自动提取卖点）。&#10;文案改动后重新点击即可刷新。"
+            @click="previewFancyWords" />
           <label class="param-label">样式:</label>
           <TSelect v-model="fancyStyle" :options="fancyStyleOptions" class="w110" />
+          <label class="param-label">位置:</label>
+          <TSelect v-model="fancyPosition" :options="fancyPositionOptions" class="w110"
+            title="花字在画面中出现的位置。&#10;底部两个位置与逐行字幕可能重叠，字幕开启时建议选顶部/中上/四角。" />
           <label class="param-label">花字内容:</label>
-          <input v-model="fancyWordsInput" class="input grow" placeholder="输入要叠加的花字内容，多行用逗号分隔（按镜头顺序轮换）"
-            title="多个花字用逗号分隔，会按镜头顺序轮换显示。如：超轻量化,8000DPI,续航70小时" />
+          <span class="fancy-content-hint">自动提取口播文案卖点（价格/数字参数/关键词），随对应字幕提前 0.3 秒出现、字幕结束消失</span>
         </div>
 
         <!-- 8. 动作行（L267-281；配音按钮初始禁用，L279） -->
@@ -654,7 +743,10 @@ function scoreClass(score: number | undefined): string {
       <div v-if="productDlg.show" class="modal-mask" @click.self="closeProductDlg">
         <div class="modal">
           <span class="modal-title"> 生成口播文案</span>
-          <span class="hint">输入产品信息，由大模型生成该组合视频的口播文案：</span>
+          <span class="hint">输入产品信息，由大模型生成该组合视频的口播文案；可从产品库选择自动填充，也可直接手动填写：</span>
+          <div class="modal-field"><label>产品库:</label>
+            <TButton label="从产品库选择产品" size="small" plain @click="pickProductVisible = true" />
+          </div>
           <div class="modal-field"><label>品牌:</label><input v-model="productDlg.brand" class="input grow" placeholder="如 罗技 / Logitech" /></div>
           <div class="modal-field"><label>产品:</label><input v-model="productDlg.product" class="input grow" placeholder="如 鼠标 / 键盘 / 无线耳机" /></div>
           <div class="modal-field"><label>型号:</label><input v-model="productDlg.model" class="input grow" placeholder="如 G502 / MX Master 3S" /></div>
@@ -668,6 +760,14 @@ function scoreClass(score: number | undefined): string {
         </div>
       </div>
     </teleport>
+
+    <!-- 选择产品弹窗（会话同款 WbPickProductDialog：左列表右参数/卖点；
+      TDialog z-index 1300 > 口播弹窗 1002，叠加其上；选中回填四字段，口播弹窗不关） -->
+    <WbPickProductDialog
+      :visible="pickProductVisible"
+      @close="pickProductVisible = false"
+      @pick="onPickProduct"
+    />
 
     <!-- 口播文案查看弹窗（原版 _view_assembled_copy：标题 + 只读全文 + 关闭） -->
     <teleport to="body">
@@ -744,6 +844,19 @@ function scoreClass(score: number | undefined): string {
         </div>
       </div>
     </teleport>
+    <!-- 花字预览弹窗（对照 _preview_fancy_words QMessageBox 文案逐字） -->
+    <teleport to="body">
+      <div v-if="fancyPreviewDlg.show" class="modal-mask" @click.self="closeFancyPreviewDlg">
+        <div class="modal modal-wide">
+          <span class="modal-title">花字预览</span>
+          <span class="hint">{{ fancyPreviewDlg.head }}</span>
+          <div class="fancy-preview-body">{{ fancyPreviewDlg.body }}</div>
+          <div class="modal-actions">
+            <TButton label="确定" @click="closeFancyPreviewDlg" />
+          </div>
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>
 
@@ -795,7 +908,8 @@ function scoreClass(score: number | undefined): string {
 }
 
 .card { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-5); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); }
-.dropzone { display: flex; flex-direction: column; gap: 4px; padding: var(--space-5); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast), background var(--duration-fast); }
+/* 2026-09-07 用户裁决：全程序拖拽上传区高度统一 min-height 120px（以本区原高 ≈80px 基准 +1/2），内容垂直居中 */
+.dropzone { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; min-height: 120px; padding: var(--space-5); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast), background var(--duration-fast); }
 .dropzone:hover { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
 .dz-main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); }
 .dz-hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
@@ -810,12 +924,15 @@ function scoreClass(score: number | undefined): string {
 .src-video-list { max-height: 480px; overflow-y: auto; }
 .src-video-list li { padding: 4px 8px; }
 .video-thumb { width: 60px; height: 40px; object-fit: cover; border-radius: var(--radius-sm); background: #000; flex: none; }
+.video-thumb--ph { display: inline-flex; align-items: center; justify-content: center; color: var(--muted-foreground); background: var(--surface-container-high); }
 .video-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .video-play-btn { width: 24px; height: 24px; padding: 0; font-size: 12px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; margin-right: 4px; }
 .video-play-btn:hover { color: var(--success); border-color: var(--success); }
 .video-remove-btn { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
 .video-remove-btn:hover { color: var(--danger); border-color: var(--danger); }
 .video-count { justify-content: center; color: var(--muted-foreground); font-size: 12px; padding: 4px 10px; background: transparent; border: none; }
+/* Step1 解析进度条（复用 vd-progress 配色） */
+.split-progress { margin: 6px 0 2px; }
 .video-count-footer { text-align: center; color: var(--muted-foreground); font-size: 12px; padding: 4px 0; }
 
 .row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
@@ -943,6 +1060,7 @@ function scoreClass(score: number | undefined): string {
 .icon-btn:disabled { opacity: .4; cursor: not-allowed; }
 .vd-status { font-size: 11px; margin-left: 4px; }
 .vd-progress-text { font-size: 11px; color: var(--primary); }
+.concat-status-line { font-size: 11px; color: var(--primary); margin: 4px 0 2px; }
 .vd-row2, .vd-row3 { display: flex; align-items: center; gap: 6px; }
 .vd-tag { flex: none; font-size: 12px; }
 .muted-tag { width: 48px; color: var(--muted-foreground); }
@@ -974,6 +1092,20 @@ function scoreClass(score: number | undefined): string {
 .chk input { accent-color: var(--primary); }
 .w230 { width: 230px; }
 .w110 { width: 110px; }
+.w130 { width: 130px; }
+/* 花字模板预览标签（fancy_template_preview_lbl 124x34 #202020） */
+.fancy-preview {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 124px; height: 34px; flex: none;
+  background-color: #202020; color: #666; font-size: 10px; border-radius: 3px;
+  overflow: hidden;
+}
+.fancy-preview img { width: 100%; height: 100%; object-fit: cover; }
+.fancy-content-hint { color: #888; font-size: 12px; }
+.fancy-preview-body {
+  white-space: pre-wrap; font-size: 12px; color: var(--foreground);
+  max-height: 50vh; overflow: auto; line-height: 1.7;
+}
 
 /* 文案生成设置弹窗 */
 .rw-title { font-size: 13px; color: var(--foreground); }

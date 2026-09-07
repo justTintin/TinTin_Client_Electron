@@ -26,6 +26,7 @@ import {
 } from './videoRepairLogic'
 import { readCacheDir } from './useSettingsConfig'
 import { joinDefaultPath } from './settingsIntegrationLogic'
+import { clientError } from '../utils/clientLog'
 
 function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
@@ -148,6 +149,7 @@ export function useVideoRepair() {
       startPolling(String(id))
     } catch (err) {
       errorMessage.value = err instanceof Error ? err.message : String(err)
+      clientError('video-repair', '视频修复失败-提交', err)
       notify('视频修复失败', errorMessage.value)
     } finally {
       submitting.value = false
@@ -194,6 +196,7 @@ export function useVideoRepair() {
     statusInfo.value = mapWorkflowStatus('FAILED')
     errorMessage.value = msg
     stopPolling()
+    clientError('video-repair', `视频修复失败 任务 ${id}`, msg)
     notify('视频修复失败', `任务 ${id}：${msg}`)
   }
 
@@ -243,6 +246,7 @@ export function useVideoRepair() {
       notify('下载完成', String(saved))
       try { window.tintin.shell.revealInFolder(String(saved)) } catch (_) {}
     } catch (err) {
+      clientError('video-repair', '下载失败', err)
       notify('下载失败', err instanceof Error ? err.message : String(err))
     } finally {
       downloadingIdx.value = -1

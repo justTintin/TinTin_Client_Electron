@@ -10,6 +10,12 @@ import WbPickerDialog from './WbPickerDialog.vue'
 import { fetchProducts, type PickerItem } from '@/composables/useWorkbenchPickers'
 import { markdownListLines } from '@/composables/opsProductLibraryLogic'
 
+const props = defineProps<{ visible: boolean }>()
+const emit = defineEmits<{
+  (e: 'close'): void
+  (e: 'pick', item: PickerItem): void
+}>()
+
 /** 行主文案：[品类] 品牌 / 型号（原版 L865-866，型号缺省回退货号） */
 function mainText(it: PickerItem): string {
   const cat = String(it.category || '未分类')

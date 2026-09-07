@@ -4,14 +4,20 @@
 // 布局：TTS引擎 → 样本选择(下拉) → 参考文本 → 待克隆文案 → 克隆/拆分
 //       底部：上传新样本（音频+名称+文字 → 服务端 → 自动刷新下拉）
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
 import { useVoiceCloneStudio } from '@/composables/useVoiceCloneStudio'
+import { clientError, clientInfo } from '@/utils/clientLog'
 import type { RowStatus } from '@/composables/useVoiceCloneStudio'
 
 const s = useVoiceCloneStudio()
+
+/** 本地通知（与 useVoiceCloneStudio 内同款；此前组件内未定义导致调用即 ReferenceError，2026-09-06 修复） */
+function notify(title: string, body: string): void {
+  try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
+}
 const {
   refText, transcribing, voiceOptions, samples, voice, selectedSampleId,
   ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
@@ -21,7 +27,7 @@ const {
   wholeStatus, wholeIsProcessing, wholeErrorMsg, wholeResultUrl, wholeResultPath,
   wholeSynthProgress, saveWholeAudioAs, uploadingToLib, uploadWholeToLibrary,
   refReady, canSplit,
-  samplePreviewUrl, samplePreviewLoading, playSample, stopSamplePreview,
+  samplePreviewUrl, samplePreviewLoading, loadSamplePreview,
   loadCatalog, selectSample, uploadNewSample, transcribeRefAudio,
   splitIntoRows, updateRowText, removeRow, addRow, clearRows,
   generateRow, generateAll, generateWhole, downloadRow,
@@ -44,10 +50,43 @@ const isDragging = ref(false)
 
 // ─ 样本试听：音频元素 + 样本切换/建�?URL 后自动播放 ──
 const sampleAudioEl = ref<HTMLAudioElement | null>(null)
-watch(samplePreviewUrl, () => {
+
+/** 媒体元素错误码 → 可读文案（HTMLMediaElement.error.code） */
+const MEDIA_ERR_TEXT: Record<number, string> = {
+  1: '加载被中止', 2: '网络错误', 3: '音频解码失败', 4: '格式或数据源不支持',
+}
+
+/** <audio> 加载/解码错误：此前无 handler 完全静默，用户看到的就是"点击没反应"（2026-09-06 铁律补探针）
+ *  守卫：v-show 常挂载后 URL 为空时 src 为空也会触发 error，不能误报 */
+function onSampleAudioError(e: Event): void {
+  if (!samplePreviewUrl.value) return
+  const el = e.target as HTMLAudioElement
+  const code = el?.error?.code ?? 0
+  const text = MEDIA_ERR_TEXT[code] || `未知媒体错误(code=${code})`
+  clientError('voice-clone', `试听音频元素错误：${text}（blob 长度 ${samplePreviewUrl.value?.length ?? 0} 字符）`, el?.error)
+  notify('提示', `试听失败：${text}`)
+}
+
+/** 播放结束留痕：保留播放条（用户可点播放条重播），不再清 URL（2026-09-07） */
+function onSampleAudioEnded(): void {
+  clientInfo('voice-clone', '试听：播放结束')
+}
+
+/** 载体探针：媒体元数据加载成功（时长可得） */
+function onSampleAudioMeta(): void {
   const el = sampleAudioEl.value
-  if (el) { el.currentTime = 0; el.play().catch(() => {}); }
-}, { flush: 'post' })
+  clientInfo('voice-clone', `试听：媒体元数据已加载，duration=${el?.duration}`)
+}
+
+// 载体看门狗：src 就绪 2.5s 后报告元素真实加载状态——定位“播放条 0:00/0:00 但零错误”（2026-09-07）
+watch(samplePreviewUrl, (u) => {
+  if (!u) return
+  window.setTimeout(() => {
+    const el = sampleAudioEl.value
+    if (!el) return
+    clientInfo('voice-clone', `播放条载体状态：readyState=${el.readyState} networkState=${el.networkState} duration=${el.duration} err=${el.error?.code ?? '无'} src=${el.currentSrc.slice(0, 48)}`)
+  }, 2500)
+})
 
 // ─ 底部上传新样本 ──
 const newSampleFilePath = ref('')
@@ -111,7 +150,8 @@ async function transcribeForNewSample(): Promise<void> {
       format: 'txt',
     } as any)
     if (!res || (res as any).error) throw new Error((res as any)?.error || '识别失败')
-    const text = typeof res === 'string' ? res : (res as any).text || (res as any).content || JSON.stringify(res)
+    // 契约 /whisper/transcribe：fmt=json 返回 {segments,text,language}，fmt=txt 返回纯文本；content 属猜测字段，删除
+    const text = typeof res === 'string' ? res : (res as any).text || JSON.stringify(res)
     newSampleText.value = String(text).trim()
   } catch (err) {
     newSampleError.value = `文字识别失败：${err instanceof Error ? err.message : String(err)}`
@@ -129,7 +169,7 @@ function openOutputFolder(): void {
       return
     }
     const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') > 0 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'))
-    window.tintin?.shell?.openPath?.(dirPath)
+    window.tintin?.shell?.openItem?.(dirPath)
   } catch (_) {
     notify('提示', '无法打开目录')
   }
@@ -161,22 +201,18 @@ onMounted(loadCatalog)
     <!-- ① 声音样本（下拉选择） -->
     <div class="form-field">
       <label class="form-label">声音样本</label>
-      <TSelect
-        :model-value="selectedSampleId"
-        :options="samples.map((s) => ({ label: s.name, value: s.id }))"
-        placeholder="选择声音样本"
-        @update:model-value="(v: string) => selectSample(v)"
-      />
-      <div class="sample-preview">
-        <TButton
-          :label="samplePreviewLoading ? '加载中…' : '试听样本'"
-          icon="play"
-          size="small"
-          :disabled="!selectedSampleId || samplePreviewLoading"
-          @click="playSample(selectedSampleId)"
+      <div class="sample-row">
+        <TSelect
+          :model-value="selectedSampleId"
+          :options="samples.map((s) => ({ label: s.name, value: s.id }))"
+          placeholder="选择声音样本"
+          @update:model-value="(v: string | number) => selectSample(String(v))"
         />
-        <audio v-if="samplePreviewUrl" ref="sampleAudioEl" :src="samplePreviewUrl" controls class="sample-audio" @ended="stopSamplePreview" />
       </div>
+      <!-- 选中样本即自动加载（2026-09-07 用户要求：选择样本时显示播放条，不再单独点试听按钮） -->
+      <span v-if="samplePreviewLoading" class="preview-hint">正在加载样本音频…</span>
+      <!-- 播放条常驻（2026-09-07 用户裁决：不判断显示隐藏，选样本只是换 src 加载） -->
+      <audio ref="sampleAudioEl" :src="samplePreviewUrl || undefined" controls preload="auto" class="sample-audio" @loadedmetadata="onSampleAudioMeta" @ended="onSampleAudioEnded" @error="onSampleAudioError" />
     </div>
 
     <!-- ③ 样本参考文本（选择样本后自动填充） -->
@@ -240,7 +276,7 @@ onMounted(loadCatalog)
           :model-value="ttsEmoText"
           :options="EMO_OPTIONS"
           placeholder="不选择则使用样本默认情感"
-          @update:model-value="(v: string) => ttsEmoText = v"
+          @update:model-value="(v: string | number) => (ttsEmoText = String(v))"
         />
       </div>
       <div class="form-field">
@@ -475,13 +511,16 @@ onMounted(loadCatalog)
 .form-success { font-size: var(--font-size-caption); color: var(--success); }
 .field-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 
-/* 样本试听：播放按钮 + 内嵌 audio 播放器 */
-.sample-preview { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); }
+/* 样本选择行：下拉框 + 试听按钮（同一行，2026-09-06 用户要求） */
+.sample-row { display: flex; align-items: center; gap: var(--space-2); }
+.sample-row > :first-child { flex: 1 1 auto; min-width: 0; }
 .sample-audio {
   height: 32px;
-  max-width: 320px;
-  flex: 1;
+  width: 100%;
+  max-width: 480px;
+  margin-top: var(--space-2);
 }
+.preview-hint { font-size: 12px; color: var(--muted); }
 .sample-audio::-webkit-media-controls-panel { background: var(--muted); }
 
 /* 分段切换 */

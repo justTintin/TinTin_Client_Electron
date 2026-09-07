@@ -19,6 +19,7 @@ import { ref, computed, onBeforeUnmount } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
 import { buildCoverWorkflow, parseAiCopyJson } from './cover-workflow-logic'
+import type { LLMAPI, WorkflowAPI } from '../../../../types/server-api'
 
 type SizeRatio = '1:1' | '9:16' | '16:9'
 
@@ -135,8 +136,9 @@ async function aiSuggestCopy() {
       temperature: 0.6
     })
     if (r === null || r === undefined) throw new Error('服务端离线或未返回内容')
-    if ('error' in r && r.error) throw new Error(String(r.error))
-    const content = String(r?.choices?.[0]?.message?.content || '')
+    if (typeof r === 'object' && 'error' in r && r.error) throw new Error(String(r.error))
+    const chat = r as LLMAPI.ChatCompletionsResponse
+    const content = String(chat?.choices?.[0]?.message?.content || '')
     const parsed = parseAiCopyJson(content)
     if (parsed) {
       aiTitle.value = parsed.title
@@ -166,9 +168,11 @@ async function startRun() {
   try {
     const res = await window.tintin.server.workflowRun(buildWorkflow() as any)
     if (!res) throw new Error('服务端离线或未返回 run_id')
-    runId.value = res.run_id
+    if (typeof res === 'object' && 'error' in res && res.error) throw new Error(String(res.error))
+    const run = res as WorkflowAPI.RunResponse
+    runId.value = run.run_id
     statusText.value = '排队中'
-    subscribeSse(res.run_id)
+    subscribeSse(run.run_id)
   } catch (err) {
     failWith(err)
   }

@@ -27,6 +27,7 @@ import {
   type SrtSegment,
 } from './srtUtils'
 import { buildRewriteMessages, extractLlmContent } from './voiceCloneLogic'
+import { clientError } from '../utils/clientLog'
 
 /** 队列行状态（对照原行状态色 _apply_row_color L695-709） */
 export type QueueStatus = 'wait' | 'running' | 'done' | 'failed'
@@ -172,6 +173,7 @@ export function useTranscribeQueue() {
       } catch (err) {
         f.status = 'failed'
         f.error = err instanceof Error ? err.message : String(err)
+        clientError('transcribe', `处理失败 ${f.name}`, err)
         notify('处理失败', `失败：${f.name}\n错误摘要：${f.error}`)
       }
       uploadPercent.value = 0

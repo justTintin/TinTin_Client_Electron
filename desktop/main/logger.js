@@ -55,11 +55,88 @@ function _cleanOldLogs() {
 
 function getLogsDir() { return _root || '' }
 
+/** 日志级别白名单（设置页下拉 INFO/DEBUG/WARNING → electron-log 枚举） */
+const LEVEL_MAP = { INFO: 'info', DEBUG: 'debug', WARNING: 'warn', WARN: 'warn' }
+
+/** 应用日志输出级别（设置页 env.logLevel → electron-log；无效 level 幂等返回 false） */
+function setLogLevel(level) {
+  const lv = LEVEL_MAP[String(level || '').toUpperCase()]
+  if (!lv) return false
+  try {
+    electronLog.level = lv                        // 全局默认（console/file 未覆盖时继承）
+    electronLog.transports.file.level = lv        // 文件 transport 明确阈值
+    if (electronLog.transports.console) electronLog.transports.console.level = lv
+    return true
+  } catch (_) { return false }
+}
+
 function _append(level, tag, msg) {
   try {
     if (_root && !fs.existsSync(_root)) fs.mkdirSync(_root, { recursive: true })
     electronLog[level](`[${tag}] ${String(msg)}`)
   } catch (_) { /* 日志失败静默 */ }
+}
+
+// ── C-6 客户端错误自动上报（2026-09-06）：任一 error 级日志落杆 → 回调 reporter（POST /api/logs/upload）──
+// 绑定方式：env-ipc 注册时传入 reportClientFailure（server-proxy），logger 保持零依赖。
+let _errorReporter = null
+let _hookInstalled = false
+
+function setErrorReporter(reporter) {
+  _errorReporter = typeof reporter === 'function' ? reporter : null
+  _installErrorReporterHook()
+}
+
+/**
+ * 经 electron-log hooks 统一拦截 error 级日志（含主进程 logError、未捕获异常
+ * errorHandler、渲染进程 console.error 桥接），仅在落盘 transport 上报一次。
+ * 上报异常静默——日志绝不阻塞业务。
+ */
+function _installErrorReporterHook() {
+  if (_hookInstalled) return
+  _hookInstalled = true
+  try {
+    electronLog.hooks.push((message, transport, transName) => {
+      try {
+        if (transName !== 'file') return message
+        if (!_errorReporter) return message
+        if (String(message?.level) !== 'error') return message
+        const entry = _messageToErrorEntry(message)
+        if (entry) _errorReporter(entry)
+      } catch (_) { /* 上报异常静默 */ }
+      return message
+    })
+  } catch (_) { _hookInstalled = false }
+}
+
+/** 从 electron-log 消息提取 C-6 上报条目：data 首项 '[tag] msg' → event/message；含 Error 取 stack */
+function _messageToErrorEntry(message) {
+  const data = Array.isArray(message?.data) ? message.data : []
+  if (!data.length) return null
+  const firstText = _describe(data[0])
+  const m = String(firstText).match(/^\[([^\]]+)\]\s*([\s\S]*)$/)
+  const event = m ? m[1] : 'client_error'
+  const text = m ? m[2] : firstText
+  const rest = data.slice(1).map(_describe).join(' ').trim()
+  let stack = ''
+  for (const d of data) {
+    if (d instanceof Error && d.stack) { stack = d.stack; break }
+    if (d && typeof d === 'object' && typeof d.stack === 'string') { stack = d.stack; break }
+  }
+  return {
+    level: 'error',
+    event: String(event).slice(0, 120) || 'client_error',
+    message: [text, rest].filter(Boolean).join(' ').slice(0, 500),
+    ...(stack ? { stack: stack.slice(0, 20000) } : {}),
+    client_ts: (message?.date ? new Date(message.date).toISOString() : new Date().toISOString()),
+  }
+}
+
+function _describe(v) {
+  if (v === null || v === undefined) return ''
+  if (v instanceof Error) return v.message || String(v)
+  if (typeof v === 'object') { try { return JSON.stringify(v) } catch (_) { return String(v) } }
+  return String(v)
 }
 
 function logInfo(tag, msg)  { _append('info', tag, msg) }
@@ -148,4 +225,4 @@ function _ensureRoot() {
   return false
 }
 
-module.exports = { initLogger, getLogsDir, logInfo, logWarn, logError, listLogFiles, openLogFile, readLogFile, clearLogFile, revealLogsDir }
+module.exports = { initLogger, getLogsDir, logInfo, logWarn, logError, listLogFiles, openLogFile, readLogFile, clearLogFile, revealLogsDir, setLogLevel, setErrorReporter }

@@ -15,6 +15,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { clientError } from '../utils/clientLog'
 import {
   extractTaskObj,
   mapTaskStatus,
@@ -348,6 +349,7 @@ export function useVideoMontage() {
       }
     } catch (e) {
       splitError.value = errText(e)
+      clientError('video-montage', '素材解析失败', e)
       notify('素材解析失败', splitError.value)
     } finally {
       splitBusy.value = false
@@ -747,6 +749,7 @@ export function useVideoMontage() {
       p.outputName = localPath ? name : (url.split('/').pop() || name)
     } catch (e) {
       concatError.value = errText(e)
+      clientError('video-montage', `确认合成失败 预合成${index + 1}`, e)
       notify('确认合成失败', `预合成 ${index + 1}：${concatError.value}`)
       planConfirmQueue.value = []
     }
@@ -881,6 +884,7 @@ export function useVideoMontage() {
     }
     if (failures.length) {
       statusText.value = `注意： 批量文案生成完成：成功 ${ok}，失败 ${failures.length}`
+      clientError('video-montage', `批量文案生成部分失败 成功${ok}失败${failures.length}`, failures.join('\n'))
       notify('部分失败', `批量按画面生成文案完成。\n成功 ${ok} 个，失败 ${failures.length} 个：\n${failures.join('\n')}`)
     } else {
       statusText.value = ` 已为全部 ${ok} 个视频按画面生成口播文案`
@@ -969,6 +973,7 @@ export function useVideoMontage() {
       notify('BGM 生成完成', `${payload.style === 'auto' ? '自动风格' : payload.style}｜已落盘：${bgmName.value || '(下载失败，仅预览可用)'}`)
     } catch (e) {
       bgmGenError.value = errText(e)
+      clientError('video-montage', 'BGM生成失败', e)
       notify('BGM 生成失败', bgmGenError.value)
     } finally {
       bgmGenBusy.value = false
@@ -1020,6 +1025,7 @@ export function useVideoMontage() {
         bgmPlaying.value = true
       }
     } catch (e) {
+      clientError('video-montage', '播放背景音乐失败', e)
       notify('播放错误', `播放背景音乐失败: ${errText(e)}`)
     }
   }
@@ -1126,6 +1132,7 @@ export function useVideoMontage() {
   function onMixError(err: string): void {
     finalProgress.value = 0
     statusText.value = '失败： 合成失败'
+    clientError('video-montage', '混音合成失败', err)
     notify('合成错误', `处理过程中发生错误：\n${err}`)
   }
 
@@ -1133,7 +1140,7 @@ export function useVideoMontage() {
   function openFinalDir(): void {
     if (!finalVideoPath.value) return
     const dir = finalVideoPath.value.slice(0, Math.max(finalVideoPath.value.lastIndexOf('\\'), finalVideoPath.value.lastIndexOf('/')))
-    try { window.tintin.shell.openItem(dir) } catch (e) { notify('打开失败', errText(e)) }
+    try { window.tintin.shell.openItem(dir) } catch (e) { clientError('video-montage', '打开输出目录失败', e); notify('打开失败', errText(e)) }
   }
 
   /** 一键导出到剪映草稿（_export_to_jianying_draft：选中项默认第一个；单段无转场） */
@@ -1194,6 +1201,7 @@ export function useVideoMontage() {
       notify('草稿导出成功', base.successBody(base.draftName))
       try { window.tintin.shell.openItem(res.message) } catch (_) {}
     } else {
+      clientError('video-montage', '导出剪映草稿失败', res ? res.message : '主进程不可达')
       notify('导出失败', `导出剪映草稿时发生错误：\n${res ? res.message : '主进程不可达'}`)
     }
   }
@@ -1325,7 +1333,7 @@ export function useVideoMontage() {
       refSamples.value = list.map((s: any) => ({
         id: String(s.id ?? ''),
         name: String(s.name ?? `样本${s.id ?? ''}`),
-        url: String(s.audio_url || s.url || ''),
+        url: String(s.audio_url || ''),   // 契约 /voice/samples 音频字段为 audio_url；url 属猜测兜底，删除
         text: String(s.text || ''),
       }))
     } catch (_) { refSamples.value = [] /* 服务端离线时呈无样本态 */ }
@@ -1544,6 +1552,7 @@ export function useVideoMontage() {
       }
     } catch (e) {
       statusText.value = '失败： 配音替换失败'
+      clientError('video-montage', '配音替换失败', e)
       notify('配音替换错误', `替换配音过程中发生错误：\n${errText(e)}`)
     } finally {
       dubBusy.value = false
@@ -1620,6 +1629,7 @@ export function useVideoMontage() {
       if (r && 'error' in r) throw new Error(r.error)
       notify('导出成功', `人声音频成功导出至：\n${savePath}`)
     } catch (e) {
+      clientError('video-montage', '导出人声音频失败', e)
       notify('导出失败', errText(e))
     }
   }
@@ -1724,6 +1734,7 @@ export function useVideoMontage() {
     pickBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
     enterStep4, startFinalMix, openFinalDir,
     exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo,
+    fmtBgmTime,
     // 景别分类（UI 展示用）
     SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
   }

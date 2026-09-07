@@ -11,10 +11,16 @@
 /** 级别过滤选项（原客户端口径：全部 + 具体级别） */
 export const LOG_LEVEL_FILTERS = ['全部', 'INFO', 'WARN', 'ERROR'] as const
 
-/** 从日志行提取级别（`[ts] [LEVEL] [tag] msg`；无级别前缀返回 ''） */
+/** 从日志行提取级别（`[ts] [LEVEL] [tag] msg`）；electron-log 5.x 输出为小写 info/warn/error，
+ *  兼容大写 INFO/WARN（历史 client-YYYYMMDD.log）与 information/warning/verbose/silly 别名；无级别前缀返回 '' */
 export function parseLogLevel(line: string): string {
-  const m = /\]\s*\[(INFO|WARN|WARNING|ERROR|DEBUG)\]\s*/.exec(String(line || ''))
-  return m ? m[1] : ''
+  const m = /\]\s*\[(info|information|warn|warning|error|debug|verbose|silly)\]\s*/i.exec(String(line || ''))
+  if (!m) return ''
+  const raw = m[1].toLowerCase()
+  if (raw === 'info' || raw === 'information') return 'INFO'
+  if (raw === 'warn' || raw === 'warning') return 'WARN'
+  if (raw === 'error') return 'ERROR'
+  return 'DEBUG'
 }
 
 /**

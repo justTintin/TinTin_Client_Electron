@@ -22,8 +22,6 @@ import { useAppStore } from '../stores/app'
 import { useSettingsGeneral } from '../composables/useSettingsGeneral'
 import { useSettingsAccounts } from '../composables/useSettingsAccounts'
 import { useSettingsIntegration } from '../composables/useSettingsIntegration'
-import { useLogViewer, } from '../composables/useLogViewer'
-import { LOG_LEVEL_FILTERS } from '../composables/logViewLogic'
 import { useEnvCheck } from '../composables/useEnvCheck'
 import SettingsSidebar, { type SettingsMenuItem } from '../components/settings/SettingsSidebar.vue'
 import CardPlatform from '../components/settings/CardPlatform.vue'
@@ -31,6 +29,7 @@ import CardAccountLogin from '../components/settings/CardAccountLogin.vue'
 import CardLocalConfig from '../components/settings/CardLocalConfig.vue'
 import CardTheme from '../components/settings/CardTheme.vue'
 import CardEnvMaint from '../components/settings/CardEnvMaint.vue'
+import LogViewerDialog from '../components/settings/LogViewerDialog.vue'
 import CardA2Inference from '../components/settings/CardA2Inference.vue'
 import CardAbout from '../components/settings/CardAbout.vue'
 
@@ -116,32 +115,19 @@ const {
   perFunctionTest,
   logLevel,
   cacheClearing,
+  downloadingServerLog,
   actionHint,
   pingServer,
   clearCache,
   saveLogLevel,
+  downloadServerLog,
   loadEnvCfg,
   machineCode,
   licenseInfo,
 } = useSettingsGeneral()
 
-/* ── 日志查看器（对齐原客户端日志查看页；过滤编组在 logViewLogic） ── */
-const {
-  logFiles,
-  logsDir,
-  selectedLog,
-  levelFilter,
-  keyword,
-  filteredLines,
-  loading: logLoading,
-  truncated: logTruncated,
-  loadError: logError,
-  actionMsg: logActionMsg,
-  loadLogList,
-  selectLogFile,
-  copyLog,
-  clearLog,
-} = useLogViewer()
+/* ── 日志查看器：已抽出为独立弹窗（LogViewerDialog），仅在此管理打开态 ── */
+const logViewerOpen = ref(false)
 
 /* ── 账号与登录卡：飞书配置 + 即梦登录态（useSettingsAccounts 单实例） ── */
 const {
@@ -219,8 +205,7 @@ onMounted(() => {
     await loadLlmCfg() // LLM 对接：本地偏好回读 + 服务端模型列表拉取
     await loadFeishuCfg() // 条目⑩：飞书配置回读（Secret 不回显，仅脱敏标记）
     void checkJimeng() // 条目⑩：即梦登录态自动检测（失败静默不阻塞）
-    void loadLogList() // 日志查看器：文件列表加载（默认选中最新一份）
-    void loadIntegrationCfg() // 自启动/缓存目录/LUT/系统信息
+    void loadIntegrationCfg() // 自启动/缓存目录/系统信息
   })()
   pingServer()
   // 跨页定位：浏览器左栏「服务端」入口 → /settings?focus=server（2026-08-31）。
@@ -314,8 +299,8 @@ onBeforeUnmount(() => {
         <!-- 二+、外观主题卡（本地配置分组：亮/暗/跟随系统 3 档） -->
         <CardTheme data-section="theme" />
 
-        <!-- 三、环境与维护卡（日志查看器完整移植 + 自启动迁入；删「本地服务端」区块，
-             闭环整改：缓存清理迁出至本地配置卡） -->
+        <!-- 三、环境与维护卡（日志入口按钮 + 自启动迁入；日志查看器为独立弹窗；
+             删「本地服务端」区块，闭环整改：缓存清理迁出至本地配置卡） -->
         <CardEnvMaint
           data-section="env"
           :auto-start="autoStart"
@@ -323,26 +308,12 @@ onBeforeUnmount(() => {
           :log-level="logLevel"
           :env-rows="envRows"
           :env-checking="envChecking"
-          :log-files="logFiles"
-          :logs-dir="logsDir"
-          :selected-log="selectedLog"
-          :level-filter="levelFilter"
-          :level-filters="LOG_LEVEL_FILTERS"
-          :keyword="keyword"
-          :filtered-lines="filteredLines"
-          :log-loading="logLoading"
-          :log-truncated="logTruncated"
-          :log-error="logError"
+          :downloading-server-log="downloadingServerLog"
           @toggle-autostart="toggleAutoStart"
           @change-loglevel="onLogLevelChange"
           @run-env-check="runEnvCheck"
-          @refresh-logs="loadLogList"
-          @select-log="selectLogFile"
-          @change-level-filter="(v: string) => levelFilter = v"
-          @change-keyword="(v: string) => keyword = v"
-          @copy-log="copyLog"
-          @clear-log="clearLog"
-          :log-action-msg="logActionMsg"
+          @open-log="logViewerOpen = true"
+          @download-server-log="downloadServerLog"
         />
 
         <!-- 三+、扩展插件 · A2 本地推理能力（§1.5.4 规格） -->
@@ -362,6 +333,9 @@ onBeforeUnmount(() => {
         />
       </div>
     </main>
+
+    <!-- 系统日志查看器（独立弹窗；打开/过滤/复制/清空在 LogViewerDialog 内部） -->
+    <LogViewerDialog v-model="logViewerOpen" />
   </section>
 </template>
 

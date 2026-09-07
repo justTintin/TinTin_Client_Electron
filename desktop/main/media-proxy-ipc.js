@@ -2,7 +2,7 @@
 // media-proxy-ipc.js — 服务端代理·媒体域 IPC（server-proxy.js 拆分）
 // 自 server-proxy.js L597-757 原样迁出（IRON-02 行数守恒，行为不变）：
 //   · rembg / vsr / vision（V3 新接口 S1~S3，multipart 上传）
-//   · asr（whisper 转写，multipart 或 URL JSON 双路径）
+//   · asr（whisper 转写，契约 multipart：本地文件直传 / 服务端样本先 GET 取回再上传）
 //   · tts（voxcpm 合成 / 克隆 / 音色列表 / 示例）
 // 依赖（httpRequest/multipartUpload/API_ENDPOINTS/resolveEndpoint/
 // isExpectedOfflineError）由 server-proxy.js 注入，不重复实现。
@@ -11,6 +11,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { app } = require('electron')
+const logger = require('./logger')
 
 function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOINTS, resolveEndpoint, isExpectedOfflineError }) {
   // --- V3 新接口 S1~S3（rembg / vsr / reverse-prompt）————————————————
@@ -103,6 +104,11 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
   })
 
   // --- asr / tts ------------------------------------------------------
+  // asr:transcribe ← POST /whisper/transcribe（契约 Body_transcribe_whisper_transcribe_post：
+  //   multipart/form-data，字段 file(必填) + language/fmt/task_id，**无 JSON {url} 分支**）。
+  // 2026-09-06 修复 422：① multipart 文件字段名 audio → file（契约字段名）；② url 分支原为
+  //   JSON POST {url}，服务端根本不接受 → 422；改为先 GET 取回样本音频字节再 multipart 上传。
+  //   p.format 兼容映射到契约字段 fmt（VoiceClone 上传样本识别传 format:'txt'）。
   ipcMain.handle('asr:transcribe', async (event, payload, onProgressChannel) => {
     try {
       const p = payload || {}
@@ -110,28 +116,35 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
       const hasUrl = !!p.url
       if (!hasAudio && !hasUrl) throw new Error('asr:transcribe missing `audio` Blob 或 `url` 字段（二选一）')
 
+      // 公共表单字段（契约：language/fmt；word_timestamps 非契约字段，服务端忽略，保留透传不动行为）
+      const fields = {}
+      if (p.language) fields.language = String(p.language)
+      const fmt = p.fmt || p.format
+      if (fmt) fields.fmt = String(fmt)
+      if (p.word_timestamps !== undefined) fields.word_timestamps = String(!!p.word_timestamps)
+
       if (hasAudio) {
-        // 本地文件上传 → multipart
-        const fields = {}
-        fields.audio = p.audio
-        if (p.language)        fields.language        = p.language
-        if (p.task)            fields.task            = p.task
-        if (p.format)          fields.format          = p.format
-        if (p.word_timestamps !== undefined) fields.word_timestamps = String(!!p.word_timestamps)
-        const onProgress = onProgressChannel
-          ? (percent) => event.sender.send(onProgressChannel, percent)
-          : undefined
-        return await multipartUpload(API_ENDPOINTS.asr.transcribe, fields, onProgress)
+        // 本地文件 → multipart file（{path} 包装，buildMultipartBody 按路径读文件）
+        fields.file = p.audio
+        try { logger.logInfo('voice-clone', `asr:transcribe 来源=本地文件 ${path.basename(String((p.audio && p.audio.path) || ''))}`) } catch (_) {}
       } else {
-        // URL 远程文件 → 纯 JSON POST
-        const body = { url: p.url }
-        if (p.language)        body.language        = p.language
-        if (p.task)            body.task            = p.task
-        if (p.format)          body.format          = p.format
-        if (p.word_timestamps !== undefined) body.word_timestamps = !!p.word_timestamps
-        const res = await httpRequest('POST', API_ENDPOINTS.asr.transcribe, { body })
-        return res.data
+        // 服务端样本（/voice/samples audio_url 相对路径，httpRequest 自动拼 baseUrl）：
+        // GET 取回音频字节 → multipart file 上传（内存直传不落盘，契约无 url 参数）
+        const res = await httpRequest('GET', String(p.url), { timeout: 60000 })
+        const buf = res.raw || (Buffer.isBuffer(res.data) ? res.data : null)
+        if (!buf || !buf.length) throw new Error('样本音频下载失败：响应非音频数据')
+        const ct = String(res.headers?.['content-type'] || '').split(';')[0].trim()
+        const urlPath = String(p.url).split('?')[0]
+        const ext = path.extname(urlPath) || (ct.includes('mpeg') ? '.mp3' : '.wav')
+        fields.file = { buffer: buf, filename: `sample${ext.toLowerCase()}`, contentType: ct || undefined }
+        // 全程留痕：明确展示"样本音频是从服务端 URL 取回的字节，无本地文件"（2026-09-06）
+        try { logger.logInfo('voice-clone', `asr:transcribe 来源=服务端样本 GET ${p.url} → ${buf.length}B (${ct})，以内存字节 multipart 上传（无本地路径）`) } catch (_) {}
       }
+
+      const onProgress = onProgressChannel
+        ? (percent) => event.sender.send(onProgressChannel, percent)
+        : undefined
+      return await multipartUpload(API_ENDPOINTS.asr.transcribe, fields, onProgress)
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
@@ -185,16 +198,8 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
-  // 样本试听：GET 样本音频（audio_url 为相对路径，httpRequest 自动拼 baseUrl），转 base64 返回
-  ipcMain.handle('tts:fetchSampleAudio', async (_e, payload) => {
-    try {
-      const url = String((payload || {}).url || '').trim()
-      if (!url) throw new Error('tts:fetchSampleAudio missing `url`')
-      const res = await httpRequest('GET', url, { timeout: 60000 })
-      if (!Buffer.isBuffer(res.data)) return { error: '非音频响应' }
-      return { audio_base64: res.data.toString('base64'), content_type: res.headers?.['content-type'] || 'audio/wav' }
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
+  // （样本试听 tts:fetchSampleAudio 已废弃删除：样本试听改渲染层直连服务端音频 URL，
+  //   主进程取回+base64+blob 的中间链路整体下线，2026-09-07）
 
   // API-GUIDE：POST /voice/samples（multipart: file 音频 + name + text）
   ipcMain.handle('tts:uploadSample', async (event, payload, onProgressChannel) => {

@@ -177,7 +177,7 @@ const server = {
   ttsSaveAudio:  (p) => ipcRenderer.invoke('tts:saveAudio', p),
   ttsVoicesSamples: (params)       => ipcRenderer.invoke('tts:voicesSamples', params),
   ttsUploadSample:  (p, onProgress) => _withUploadProgress(onProgress, 'tts:uploadSample', p),
-  ttsFetchSampleAudio: (p) => ipcRenderer.invoke('tts:fetchSampleAudio', p),
+  // （ttsFetchSampleAudio 已废弃删除：样本试听改渲染层直连服务端音频 URL，2026-09-07）
 
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   voiceScanDir:         (p) => ipcRenderer.invoke('voice:scanDir', p),
@@ -229,6 +229,30 @@ const server = {
   audioSfxAnalyze:   (payload) => ipcRenderer.invoke('audio:sfxAnalyze', payload),   // deprecated：音频已分流，保留待清理
   audioDownloadTemp: (payload) => ipcRenderer.invoke('audio:downloadTemp', payload),
   promptVideo:     (p, onProgress) => _withUploadProgress(onProgress, 'prompt:video', p),
+
+  // ---------- 仿爆款（Viral Clone）—— 均走通用 server:get/post/upload IPC ----------
+  // 上传端点 /viral/clone/upload 不在契约中（加入 API_PATHS 会致 verify FAIL），故用字面量；
+  // analyze/plan/flow 为契约真实端点，走通用 post。字段以原客户端 viral_clone_client.py 为准。
+  viralCloneAnalyze:   (payload) => ipcRenderer.invoke('server:post', '/viral/clone/analyze', payload),
+  viralClonePlan:      (payload) => ipcRenderer.invoke('server:post', '/viral/clone/plan', payload),
+  viralCloneFlow:      (payload) => ipcRenderer.invoke('server:post', '/viral/clone/flow', payload),
+  viralCloneGenerate:  (payload) => ipcRenderer.invoke('server:post', '/viral/clone/generate', payload),
+  viralCloneMontage:   (payload) => ipcRenderer.invoke('server:post', '/viral/clone/montage', payload),
+  viralCloneReview:    (payload) => ipcRenderer.invoke('server:post', '/viral/clone/review', payload),
+  // 视频上传（本端唯一输入通道）：upload 到服务端 output/upload 区 → 拿 video_path 回填
+  viralCloneUpload:    (filePath, onProgress) => {
+    const progressChannel = onProgress ? `upload:progress:${Date.now()}` : undefined
+    if (onProgress && progressChannel) ipcRenderer.on(progressChannel, (_e, pct) => onProgress(pct))
+    return ipcRenderer.invoke('server:upload', '/viral/clone/upload', { file: { path: filePath } }, progressChannel)
+  },
+  // 视频编辑工作流（复用 server 通用通道；/workflows 域契约已在 API_PATHS 外，直接字面量）
+  listServerWorkflows:   (scope) => ipcRenderer.invoke('server:get', '/workflows', { scope }),
+  runServerWorkflow:     (workflowId, fields, onProgress) => {
+    const progressChannel = onProgress ? `upload:progress:${Date.now()}` : undefined
+    if (onProgress && progressChannel) ipcRenderer.on(progressChannel, (_e, pct) => onProgress(pct))
+    return ipcRenderer.invoke('server:upload', `/workflows/${encodeURIComponent(workflowId)}/run`, fields, progressChannel)
+  },
+  serverWorkflowStatus:   (taskId) => ipcRenderer.invoke('server:get', `/workflows/task/${encodeURIComponent(taskId)}`),
 
   // ---------- storyboard ----------
   storyboardListScripts: (params)  => ipcRenderer.invoke('storyboard:listScripts', params),
@@ -523,15 +547,23 @@ const env = {
   detectEnv:     ()      => ipcRenderer.invoke('env:detectEnv'),
   // 日志区块（对齐原客户端日志查看页）：文件列表 + 内嵌读取；
   // 2026-08-31 内置操作：清空（env:logClear）+ 复制（env:copyText，通用剪贴板）
+  // 2026-09-06 日志级别设置 → 主进程应用 electron-log 输出级别
+  setLogLevel:   (level) => ipcRenderer.invoke('env:setLogLevel', level),
   logList:       ()      => ipcRenderer.invoke('env:logList'),
   logRead:       (name)  => ipcRenderer.invoke('env:logRead', name),
   logClear:      (name)  => ipcRenderer.invoke('env:logClear', name),
   copyText:      (text)  => ipcRenderer.invoke('env:copyText', text),
+  // C-6 渲染层统一失败上报：env:log → 主进程 logger.logError → hooks 自动上报服务端（2026-09-06）
+  log:           (payload) => ipcRenderer.invoke('env:log', payload),
   openLog:       (name)  => ipcRenderer.invoke('env:openLog', name),
   // 关于卡·本机机器码（原始系统信息，渲染层 SHA256 摘要）
   getMachineInfo:()      => ipcRenderer.invoke('env:getMachineInfo'),
   // 机器码（与 X-Machine-ID 头同值；产品资料等按机器码隔离接口的路径参数）
   getMachineId:  ()      => ipcRenderer.invoke('env:getMachineId'),
+  // C-6 服务端失败日志下载（GET /api/logs/failure?date=&kind=server|merged）
+  downloadServerLog: (opts) => ipcRenderer.invoke('env:downloadServerLog', opts),
+  // ▶ 统一客户端日志上报（渲染层 clientLog.ts 走此通道，error 级自动上报服务端合并，2026-09-06）
+  log:              (p)     => ipcRenderer.invoke('env:log', p),
   // 剪贴板截图 → 本地临时 PNG（截图只提供信息，不入素材池）
   pasteImage:    ()      => ipcRenderer.invoke('env:pasteImage'),
 }

@@ -145,7 +145,9 @@ onMounted(() => { doSearch(); void loadBgmTags() })
           <TButton label="下一页" variant="secondary" size="small" :disabled="!canNextPage || listLoading" @click="goNextPage()" />
           <!-- 试听播放条居中于「下一页」与「每页」之间（2026-09-04 用户裁决） -->
           <div class="list-player">
-            <audio v-if="playingMid" ref="listAudioEl" controls class="inline-audio" />
+            <!-- 用 v-show（而非 v-if）让 audio 常驻：首次双击时 ref 已就绪，避免 v-if 首挂载时
+                 listAudioEl 为 null 导致第一次试听静默失败（只有第二次才有效） -->
+            <audio v-show="playingMid" ref="listAudioEl" controls class="inline-audio" />
           </div>
           <label class="row-label">每页:</label>
           <input

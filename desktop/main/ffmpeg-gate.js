@@ -110,34 +110,6 @@ function parseFps(rateStr) {
 }
 
 /**
- * 提取视频缩略图
- */
-function extractThumb(ffmpegPath, video, atSec, w) {
-  return new Promise((resolve, reject) => {
-    const outPath = path.join(require('node:os').tmpdir(), `thumb_${Date.now()}.png`)
-    const args = [
-      '-y',
-      '-ss', String(atSec),
-      '-i', video,
-      '-frames:v', '1',
-      '-vf', w ? `scale=${w}:-1` : 'scale=320:-1',
-      '-q:v', '2',
-      outPath
-    ]
-    const proc = spawn(ffmpegPath, args, { windowsHide: true })
-    let stderr = ''
-    proc.stderr.on('data', (d) => stderr += d)
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`ffmpeg extractThumb failed: ${stderr}`))
-        return
-      }
-      resolve(outPath)
-    })
-  })
-}
-
-/**
  * 批量抽取关键帧并读回 base64（视觉模型研判类工具共用）。
  *
  * 对照原客户端：
@@ -425,9 +397,7 @@ function createFfmpegGate(ipcMain, studioRoot) {
     return await probe(ffprobePath, file)
   })
 
-  ipcMain.handle('ffmpeg:extractThumb', async (event, video, atSec, w) => {
-    return await extractThumb(ffmpegPath, video, atSec, w)
-  })
+  // （ffmpeg:extractThumb 已废弃删除：预览缩略图改渲染层 canvas 抓帧，2026-09-07）
 
   ipcMain.handle('ffmpeg:extractFrames', async (event, payload) => {
     const p = payload || {}

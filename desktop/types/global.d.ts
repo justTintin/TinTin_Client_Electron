@@ -11,6 +11,7 @@ import type {
   AudioAPI,
   VSRAPI,
   RembgAPI,
+  ViralCloneAPI,
   VisionAPI,
   WorkflowAPI,
   AgentAPI,
@@ -193,6 +194,40 @@ declare interface TintinBridgeServer {
     payload: VSRAPI.RemoveRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<VSRAPI.RemoveResponse>>
+  // ---------- 仿爆款（Viral Clone）----------
+  /** POST /viral/clone/analyze（拆解爆款，同步） */
+  viralCloneAnalyze(
+    payload: ViralCloneAPI.AnalyzeRequest
+  ): Promise<IpcError<unknown>>
+  /** POST /viral/clone/plan（复刻规划，同步；依赖 analyze 返回 structure） */
+  viralClonePlan(
+    payload: ViralCloneAPI.PlanRequest
+  ): Promise<IpcError<unknown>>
+  /** POST /viral/clone/flow（全链一条调用：拆解 + 复刻规划，timeout 900） */
+  viralCloneFlow(
+    payload: ViralCloneAPI.FlowRequest
+  ): Promise<IpcError<ViralCloneAPI.FlowResponse>>
+  /** POST /viral/clone/upload（multipart 本地视频 → 服务端 output/upload 区，返还 video_path；契约正文待服务端确认，走通用 server:upload） */
+  viralCloneUpload(
+    filePath: string,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<{ video_path?: string; [k: string]: unknown }>>
+  /** POST /viral/clone/generate（三替换素材生成 v1，服务端 E-3.0 就绪后开放） */
+  viralCloneGenerate(payload: Record<string, unknown>): Promise<IpcError<ViralCloneAPI.FlowResponse>>
+  /** POST /viral/clone/montage（复刻成片组装 v1） */
+  viralCloneMontage(payload: Record<string, unknown>): Promise<IpcError<ViralCloneAPI.FlowResponse>>
+  /** POST /viral/clone/review（复刻 vs 爆款对比报告） */
+  viralCloneReview(payload: Record<string, unknown>): Promise<IpcError<ViralCloneAPI.FlowResponse>>
+  /** GET /workflows（scope=client；服务端列表，原版 normalize_server_workflow 过滤） */
+  listServerWorkflows(scope?: string): Promise<IpcError<{ workflows?: Array<Record<string, unknown>> }>>
+  /** POST /workflows/{id}/run（multipart，files + values；对照 wfc.run_workflow） */
+  runServerWorkflow(
+    workflowId: string,
+    fields: Record<string, string | Blob>,
+    onProgress?: (percent: number) => void
+  ): Promise<IpcError<{ ok?: boolean; task_id?: string; error?: string; [k: string]: unknown }>>
+  /** GET /workflows/task/{id}（对照 wfc.task_status） */
+  serverWorkflowStatus(taskId: string): Promise<IpcError<unknown>>
   visionReversePrompt(
     payload: VisionAPI.ReversePromptRequest,
     onProgress?: (percent: number) => void
@@ -218,8 +253,7 @@ declare interface TintinBridgeServer {
     payload: TTSAPI.UploadSampleRequest,
     onProgress?: (percent: number) => void
   ): Promise<IpcError<TTSAPI.UploadSampleResponse>>
-  /** 取回样本音频（audio_url 为相对路径，主进程拼 baseUrl 取回），返回 base64 供试听 */
-  ttsFetchSampleAudio(payload: { url: string }): Promise<{ audio_base64: string; content_type?: string } | { error: string } | null>
+  // （ttsFetchSampleAudio 已废弃删除：样本试听改渲染层直连服务端音频 URL，2026-09-07）
 
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   /** 扫描视频输入目录（对照 _do_scan_voice_video_dir：无 .flv，自动检测 voices/voice_N.wav 与伴随 .txt） */
@@ -375,7 +409,7 @@ declare interface TintinBridgeFfprobeResult {
 }
 declare interface TintinBridgeFfmpeg {
   probe(file: string): Promise<TintinBridgeFfprobeResult>
-  extractThumb(video: string, atSec: number, w?: number): Promise<string>
+  // （extractThumb 已废弃删除：预览缩略图改渲染层 canvas 抓帧，分辨率=视频真实分辨率，2026-09-07）
   /**
    * 批量抽帧 + base64（视觉模型研判类工具共用：视频评价预测/视频营销检测）。
    * 对照原客户端 hook_score_page.py / marketing_detect_page.py 抽帧段：
@@ -450,7 +484,7 @@ declare interface TintinBridgeBridge {
 // --------------------------------------------------------------------
 // P1.5 厚壳化：win（自绘标题栏 + 窗口控制，§1.3.1 A3）
 // --------------------------------------------------------------------
-declare interface TintinBridgeWinState {
+export interface TintinBridgeWinState {
   width: number
   height: number
   x: number

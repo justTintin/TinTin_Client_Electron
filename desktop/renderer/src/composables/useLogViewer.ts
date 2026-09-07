@@ -52,7 +52,11 @@ export function useLogViewer() {
       if (r?.ok) {
         logFiles.value = r.files || []
         logsDir.value = r.dir || ''
-        if (!selectedLog.value && logFiles.value.length) {
+        // 「刷新」/重开弹窗必须重读当前选中文件：日志在持续写入，content 只是快照，
+        // 不重读会永远停在旧内容（含清空后的空态），导致“文件有日志、查看器却空”的假象（2026-09-06）
+        if (selectedLog.value) {
+          await selectLogFile(selectedLog.value)
+        } else if (logFiles.value.length) {
           await selectLogFile(logFiles.value[0].name)
         }
       }

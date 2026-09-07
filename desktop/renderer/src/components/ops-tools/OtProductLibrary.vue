@@ -106,10 +106,10 @@ function onDelete() {
                   <div class="tree-brand-label">{{ brand.label }}</div>
                   <button
                     v-for="leaf in brand.children"
-                    :key="leaf.id"
+                    :key="leaf.id ?? leaf.label"
                     class="tree-leaf"
                     :class="{ active: P.editingId.value === leaf.id }"
-                    @click="P.selectNode(leaf.id)"
+                    @click="P.selectNode(leaf.id ?? '')"
                   >{{ leaf.label }}</button>
                 </div>
               </template>

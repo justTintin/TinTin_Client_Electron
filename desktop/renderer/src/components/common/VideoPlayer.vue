@@ -144,7 +144,8 @@ onMounted(() => {
   nextTick(() => {
     initPlayer()
     if (props.autoplay && player) {
-      player.play().catch(() => {})
+      // Plyr 类型将 play() 声明为 void | Promise<void>，统一包 Promise 再挂兜底
+      Promise.resolve(player.play()).catch(() => {})
     }
   })
 })

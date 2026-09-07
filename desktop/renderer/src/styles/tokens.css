@@ -140,6 +140,8 @@
   --foreground-subtle:          var(--luosiding-slate-300);
   --popover:                    var(--surface);
   --popover-foreground:         var(--foreground);
+  /* 卡片背景（多组件用 var(--card)：luo-card / .card / modal；此前未定义致透明，2026-09-06 补齐） */
+  --card:                       var(--surface);
 
   /* 交互态叠加层（亮色更柔和） */
   --interactive-hover: rgba(99, 102, 241, 0.08);
@@ -388,6 +390,8 @@
   --foreground-subtle:          var(--luosiding-slate-400);
   --popover:                    var(--surface);
   --popover-foreground:         var(--foreground);
+  /* 卡片背景（暗色） */
+  --card:                       var(--surface);
 
   /* 交互态（暗色更厚重） */
   --interactive-hover: rgba(99, 102, 241, 0.12);

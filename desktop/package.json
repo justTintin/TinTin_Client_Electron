@@ -19,10 +19,10 @@
     "build:dir:no-native": "npm run build:renderer && electron-builder --win --x64 --dir -c builder-skip.json",
     "contract:gen": "openapi-typescript http://192.168.111.31:8000/openapi.json -o ./renderer/src/types/api-contract.generated.ts",
     "contract:gen-local": "openapi-typescript ../openapi-latest.json -o ./renderer/src/types/api-contract.generated.ts",
-    "contract:typecheck": "tsc --noEmit -p tsconfig.json",
+    "contract:typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "verify": "node scripts/verify-contract.js && node scripts/audit-ipc-consumers.js",
     "audit:ipc": "node scripts/audit-ipc-consumers.js",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "lint": "eslint \"renderer/src/**/*.{ts,vue}\"",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -52,6 +52,7 @@
     "vite": "^5.3.3",
     "vue": "^3.4.31",
     "vue-router": "^4.4.0",
+    "vue-tsc": "^3.3.11",
     "wait-on": "^7.2.0"
   },
   "build": {

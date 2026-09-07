@@ -24,6 +24,8 @@ const { createMontageVoiceIpc } = require('./montage-voice-ipc')
 const { createMontageFinalIpc } = require('./montage-final-ipc')
 // machine_id 稳定派生（W11 口径：config-store 'machineIdV2' 缓存优先 + 原版 license.py 口径派生写回）
 const { resolveMachineIdSync, MACHINE_ID_KEY } = require('./machine-id')
+// 接口调用留痕：所有 httpRequest 请求/响应/失败都落日志，便于观察"何时点了哪个服务端接口"（2026-09-06）
+const { logInfo: _httpLog, logWarn: _httpWarn } = require('./logger')
 
 // 获取 machine_id（稳定口径：config-store 'machineIdV2' 复用 → V2 ai_config 遗留 → 派生写回）
 let cachedMachineId = null
@@ -169,6 +171,7 @@ function httpRequest(method, fullPath, { body, headers = {}, timeout = 30000 } =
   return new Promise((resolve, reject) => {
     const baseUrl = getServerUrl()
     const url = new URL(fullPath.startsWith('http') ? fullPath : baseUrl + fullPath)
+    try { _httpLog('http', `→ ${method} ${fullPath}`) } catch (_) {}
 
     const isHttps = url.protocol === 'https:'
     const lib = isHttps ? https : http
@@ -221,9 +224,13 @@ function httpRequest(method, fullPath, { body, headers = {}, timeout = 30000 } =
           parsed = buf.toString('utf-8')
         }
         if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { _httpLog('http', `← ${method} ${fullPath} ${res.statusCode} ${buf.length}B`) } catch (_) {}
           resolve({ data: parsed, status: res.statusCode, headers: res.headers, raw: buf })
         } else {
-          const err = new Error(`HTTP ${res.statusCode}`)
+          // 响应体详情落日志 + 进错误消息（FastAPI 422 会写明哪个字段校验失败，2026-09-06）
+          const bodySnippet = String(typeof parsed === 'string' ? parsed : (() => { try { return JSON.stringify(parsed) } catch (_) { return '' } })() || '').slice(0, 300)
+          try { _httpWarn('http', `✗ ${method} ${fullPath} ${res.statusCode} body=${bodySnippet}`) } catch (_) {}
+          const err = new Error(`HTTP ${res.statusCode}${bodySnippet ? `：${bodySnippet}` : ''}`)
           err.status = res.statusCode
           err.response = parsed
           err.retryAfter = res.headers['retry-after']
@@ -235,7 +242,10 @@ function httpRequest(method, fullPath, { body, headers = {}, timeout = 30000 } =
     req.on('timeout', () => {
       req.destroy(new Error('Request timeout'))
     })
-    req.on('error', reject)
+    req.on('error', (err) => {
+      try { _httpWarn('http', `✗ ${method} ${fullPath} ${err && (err.code || err.message) || err}`) } catch (_) {}
+      reject(err)
+    })
 
     if (bodyData) req.write(bodyData)
     req.end()
@@ -248,6 +258,8 @@ function httpRequest(method, fullPath, { body, headers = {}, timeout = 30000 } =
  *   · 文件字段：name=key、filename=basename（带扩展名，服务端 FastAPI UploadFile 靠它识别类型）、
  *     Content-Type 按扩展名映射（.mp3→audio/mpeg、.wav→audio/wav，与 requests 推断一致）
  *   · 数组值展开为同名多 part；{ path } 对象同文件字段，可覆写 filename/contentType
+ *   · { buffer, filename?, contentType? } 内存字节同文件字段（asr:transcribe url 分支：
+ *     服务端样本音频先 GET 取回再 multipart 上传，2026-09-06）
  */
 function buildMultipartBody(fields) {
   const boundary = '----TintinBoundary' + Math.random().toString(16).substring(2)
@@ -264,30 +276,42 @@ function buildMultipartBody(fields) {
     }
   }
 
+  // part 间分隔（RFC 7578）：每个 part 载荷后必须跟 CRLF 再接下一个分界符；
+  // 此前缺失 → 多字段请求除第一个外全部被吞进上一字段值，服务端 422 "file: Field required"
+  // （2026-09-06 修复：识别参考文本/样本上传/BGM 上传等所有多字段 multipart 均受影响）
+  const CRLF = Buffer.from('\r\n', 'utf-8')
+
   for (const [key, value] of entries) {
     let header = `--${boundary}\r\n`
+    const pushPart = (payload) => parts.push(Buffer.from(header, 'utf-8'), payload, CRLF)
     if (value instanceof fs.ReadStream || (value && typeof value.pipe === 'function')) {
       // 文件流
       const filePath = value.path
       const filename = path.basename(filePath)
       header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
       header += `Content-Type: ${getMimeType(filename)}\r\n\r\n`
-      parts.push(Buffer.from(header, 'utf-8'), fs.readFileSync(filePath))
+      pushPart(fs.readFileSync(filePath))
+    } else if (value && value.buffer) {
+      // { buffer, filename?, contentType? } 对象（内存字节，不经磁盘落盘）
+      const filename = value.filename || 'file'
+      header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
+      header += `Content-Type: ${value.contentType || getMimeType(filename)}\r\n\r\n`
+      pushPart(value.buffer)
     } else if (value && value.path) {
       // { path: '...' } 对象
       const filePath = value.path
       const filename = value.filename || path.basename(filePath)
       header += `Content-Disposition: form-data; name="${key}"; filename="${filename}"\r\n`
       header += `Content-Type: ${value.contentType || getMimeType(filename)}\r\n\r\n`
-      parts.push(Buffer.from(header, 'utf-8'), fs.readFileSync(filePath))
+      pushPart(fs.readFileSync(filePath))
     } else {
       // 普通文本字段
       header += `Content-Disposition: form-data; name="${key}"\r\n\r\n`
-      parts.push(Buffer.from(header, 'utf-8'), Buffer.from(String(value), 'utf-8'))
+      pushPart(Buffer.from(String(value), 'utf-8'))
     }
   }
 
-  const endBuf = Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8')
+  const endBuf = Buffer.from(`--${boundary}--\r\n`, 'utf-8')
   return { body: Buffer.concat([...parts, endBuf]), boundary }
 }
 
@@ -297,6 +321,17 @@ function buildMultipartBody(fields) {
 function multipartUpload(urlPath, fields, onProgress) {
   return new Promise((resolve, reject) => {
     const { body: bodyBuf, boundary } = buildMultipartBody(fields)
+
+    // 请求详情留痕：字段清单（文件字段带 filename/字节数/类型，文本字段带值），可直观看到"发了什么"（2026-09-06）
+    try {
+      const summary = Object.entries(fields || {}).map(([k, v]) => {
+        if (v instanceof fs.ReadStream || (v && typeof v.pipe === 'function')) return `${k}=file<${path.basename(String(v.path))}>`
+        if (v && v.buffer) return `${k}=bytes<${v.filename || 'file'} ${v.buffer.length}B${v.contentType ? ' ' + v.contentType : ''}>`
+        if (v && v.path) return `${k}=file<${path.basename(v.filename || String(v.path))}>`
+        return `${k}="${String(v).slice(0, 60)}"`
+      }).join(', ')
+      _httpLog('http', `→ POST ${urlPath} multipart fields=[${summary}] ${bodyBuf.length}B`)
+    } catch (_) {}
 
     const baseUrl = getServerUrl()
     const fullUrl = new URL(urlPath.startsWith('http') ? urlPath : baseUrl + urlPath)
@@ -328,9 +363,12 @@ function multipartUpload(urlPath, fields, onProgress) {
           try { parsed = JSON.parse(buf.toString('utf-8')) } catch (e) {}
         }
         if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { _httpLog('http', `← POST ${urlPath} ${res.statusCode} ${buf.length}B`) } catch (_) {}
           resolve(parsed)
         } else {
-          const err = new Error(`HTTP ${res.statusCode}`)
+          const bodySnippet = String(typeof parsed === 'string' ? parsed : (() => { try { return JSON.stringify(parsed) } catch (_) { return '' } })() || '').slice(0, 300)
+          try { _httpWarn('http', `✗ POST ${urlPath} ${res.statusCode} body=${bodySnippet}`) } catch (_) {}
+          const err = new Error(`HTTP ${res.statusCode}${bodySnippet ? `：${bodySnippet}` : ''}`)
           err.status = res.statusCode
           err.response = parsed
           reject(err)
@@ -952,6 +990,36 @@ function createServerProxy(ipcMain, ctx) {
   })
 }
 
+/**
+ * 客户端失败日志上报（C-6）：POST /api/logs/upload，服务端对齐合并（PRD-C-6 §3.2）。
+ * 网络异常/契约错误静默返回 {ok:false}，绝不阻塞业务（日志上报 P1 红线同款约束）。
+ */
+async function reportClientFailure(entry) {
+  const body = Object.assign({ level: 'error', client_ts: new Date().toISOString() }, entry || {})
+  if (!body.event || !body.message) return { ok: false, err: 'event/message required' }
+  try {
+    if (typeof body.stack === 'string') body.stack = body.stack.slice(0, 20000)
+    const res = await httpRequest('POST', '/api/logs/upload', { body, timeout: 8000 })
+    return { ok: true, recordId: res?.data?.record_id || null, traceId: res?.data?.trace_id || null }
+  } catch (e) {
+    return isExpectedOfflineError(e) ? { ok: false, offline: true } : { ok: false, err: String(e?.message || e) }
+  }
+}
+
+/**
+ * 失败日志下载（C-6）：GET /api/logs/failure?date=&kind=server|merged（PRD-C-6 §3.3）。
+ * 缺文件服务端返回 200 {count:0,content:[]}；网络异常静默 null，契约错误返回 {error}。
+ */
+async function fetchFailureLogs(date, kind) {
+  try {
+    const qs = new URLSearchParams({ date: String(date || ''), kind: kind === 'server' ? 'server' : 'merged' })
+    const res = await httpRequest('GET', `/api/logs/failure?${qs.toString()}`, { timeout: 15000 })
+    return res?.data || null
+  } catch (e) {
+    return isExpectedOfflineError(e) ? null : { error: String(e?.message || e), offline: false }
+  }
+}
+
 module.exports = {
   createServerProxy,
   getServerUrl,
@@ -961,5 +1029,8 @@ module.exports = {
   buildMultipartBody,
   // A2 inference-router 需要：直接复用 server-proxy 的 HTTP 请求能力（不经过 IPC）
   httpRequest,
-  multipartUpload
+  multipartUpload,
+  // C-6 全链路日志：客户端错误上报 / 服务端失败日志按天下载（env-ipc 消费）
+  reportClientFailure,
+  fetchFailureLogs
 }

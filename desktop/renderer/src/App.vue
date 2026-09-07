@@ -9,8 +9,7 @@ import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { useAppStore, type TabKey } from '@/stores/app'
 import { useServerStore } from '@/stores/server'
-
-import type { TintinBridgeWinState } from '../../../../types/global'
+import type { TintinBridgeWinState } from '../../types/global'
 
 const appStore = useAppStore()
 const serverStore = useServerStore()
@@ -216,7 +215,7 @@ let _unsubHotspot: (() => void) | null = null
 function _bindHotspotTrigger(): void {
   const t = (window as any).tintin
   if (t?.scheduled?.onScheduledHotspot) {
-    _unsubHotspot = t.scheduled.onScheduledHotspot((payload) => {
+    _unsubHotspot = t.scheduled.onScheduledHotspot((payload: { count?: number } | null | undefined) => {
       // D5 批次2：不再 bump 主应用信号/切 Tab（浏览器 Tab 已迁出主应用）——
       // 打开独立浏览器窗口；浏览器窗口内自含订阅 scheduled:hotspot-trigger
       // → navigateToHotspot 已就位（窗口未开时由主进程 openBrowserWindow 补发信号）

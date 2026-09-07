@@ -31,7 +31,7 @@ const languageOptions: SelectOption[] = [
 // ── 表单状态 ──
 const count = ref<number>(4)        // 生成数量 1-8
 const style = ref('general')
-const language = ref('zh+en')
+const language = ref<'zh' | 'en' | 'zh+en'>('zh+en')
 
 // ── 运行状态 ──
 const isProcessing = ref(false)

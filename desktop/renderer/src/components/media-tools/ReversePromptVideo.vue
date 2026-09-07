@@ -248,12 +248,16 @@ const playheadPct = computed(() =>
 </template>
 
 <script lang="ts">
+import type { PromptSegment } from '@/composables/reversePromptVideoLogic'
+
 export default {
   // 复制全部分段（clipboard 失败 → 系统通知回退；DOM/剪贴板操作留在组件层）
   methods: {
     async copyAll(): Promise<void> {
-      const text = this.$.setupState.V.segments.value
-        .map((s) => (s.label ? `【${s.label}】\n${s.text}` : s.text))
+      const segs = (this.$ as unknown as { setupState: { V: { segments: { value: PromptSegment[] } } } })
+        .setupState.V.segments.value
+      const text = segs
+        .map((s: PromptSegment) => (s.label ? `【${s.label}】\n${s.text}` : s.text))
         .join('\n\n')
       try {
         await navigator.clipboard.writeText(text)

@@ -188,6 +188,16 @@ export const API_PATHS = {
     enhance: '/vsr/enhance',      // V3 S2
     remove:  '/vsr/remove',
   },
+  viral: {
+    // 仿爆款（Viral Clone）后端端点；请求/响应字段以原客户端 viral_clone_client.py 实际调用为准
+    analyze:  '/viral/clone/analyze',   // 拆解爆款（同步）
+    plan:     '/viral/clone/plan',      // 复刻规划（同步，依赖 analyze）
+    flow:     '/viral/clone/flow',      // 全链一条调用（拆解 + 复刻规划）
+    generate: '/viral/clone/generate',  // 三替换素材生成 v1（服务端 E-3.0 就绪后开放）
+    montage:  '/viral/clone/montage',   // 复刻成片组装 v1
+    review:   '/viral/clone/review',    // 复刻 vs 爆款对比报告
+    pipeline: '/viral/clone/pipeline',  // 替换管道串联（后台任务 + poll）
+  },
   rembg: {
     matting: '/rembg/matting',    // V3 S1
   },
@@ -541,6 +551,65 @@ export namespace VSRAPI {
     sttn_max_load_num?:   number        // 1~300
   }
   export type RemoveResponse = { task_id: string; [extra: string]: unknown }
+}
+
+export namespace ViralCloneAPI {
+  // 仿爆款（Viral Clone）—— 端点请求/响应用开放字典（契约正文为 [key:string]: unknown），
+  // 字段以原客户端 utils/viral_clone_client.py 实际调用为准：
+  //   · POST /viral/clone/analyze  {video_path?/material_id?} → {structure?}
+  //   · POST /viral/clone/plan     {structure, product_info} → {script?}
+  //   · POST /viral/clone/flow     {product_info, material_id?/video_path?}
+  //                              → {ok, structure?, script?, need_login?, captcha?, error?}
+  //   · generate/montage/review（服务端 E-3.0 就绪后开放）→ {ok:false, reason}
+  export type CloneBody = Record<string, unknown>
+  export interface FlowRequest {
+    product_info?: string
+    material_id?: number | string
+    video_path?: string
+    [k: string]: unknown
+  }
+  export interface FlowResponse {
+    ok?: boolean
+    structure?: unknown
+    script?: unknown
+    need_login?: boolean
+    captcha?: boolean
+    need_download?: boolean
+    error?: string
+    reason?: string
+    [k: string]: unknown
+  }
+  export interface AnalyzeRequest {
+    video_path?: string
+    material_id?: number | string
+    [k: string]: unknown
+  }
+  export interface PlanRequest {
+    structure: unknown
+    product_info?: string
+    [k: string]: unknown
+  }
+  // 工作流输入组件条目（原客户端 workflow_client normalize_server_workflow inputs）
+  export interface WorkflowInput {
+    key?: string
+    kind?: string
+    label?: string
+    required?: boolean
+    placeholder?: string
+    options?: Array<string | [string, unknown]>
+    [k: string]: unknown
+  }
+  // 视频编辑工作流（output_type="video"）
+  export interface VideoWorkflow {
+    workflow_id: string
+    name?: string
+    backend?: string
+    description?: string
+    instance_type?: string
+    output_type?: string
+    inputs?: WorkflowInput[]
+    [k: string]: unknown
+  }
 }
 
 export namespace RembgAPI {

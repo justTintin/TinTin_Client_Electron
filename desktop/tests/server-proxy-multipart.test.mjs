@@ -96,6 +96,45 @@ test('filename 覆写：{ path, filename } 支持显式指定（Content-Type 随
   assert.match(parts[0].header, /Content-Type: audio\/mpeg/)
 })
 
+test('内存字节字段：{ buffer, filename, contentType } 同文件字段（asr url 分支服务端样本直传）', () => {
+  const bytes = Buffer.from('BINARY\x00\x01DATA')
+  const { body, boundary } = buildMultipartBody({
+    file: { buffer: bytes, filename: 'sample.wav', contentType: 'audio/wav' },
+  })
+  const parts = parseParts(body, boundary)
+  assert.equal(parts.length, 1)
+  assert.match(parts[0].header, /name="file"; filename="sample\.wav"/)
+  assert.match(parts[0].header, /Content-Type: audio\/wav/)
+  // 载荷逐字节比对（binary 转回 Buffer）
+  const idx = body.indexOf('\r\n\r\n')
+  assert.ok(body.subarray(idx + 4, idx + 4 + bytes.length).equals(bytes))
+})
+
+test('内存字节字段：无 contentType 时按 filename 扩展名映射', () => {
+  const { body, boundary } = buildMultipartBody({
+    file: { buffer: Buffer.from('MP3BYTES'), filename: 'sample.mp3' },
+  })
+  const parts = parseParts(body, boundary)
+  assert.match(parts[0].header, /Content-Type: audio\/mpeg/)
+})
+
+test('回归（2026-09-06 422）：文本字段在文件字段之前，每个 part 载荷后必须有 CRLF 分隔，file part 完整', () => {
+  const { body, boundary } = buildMultipartBody({
+    fmt: 'json',
+    file: { buffer: Buffer.from('WAVEBYTES'), filename: 'sample.wav', contentType: 'audio/wav' },
+  })
+  // 逐字节断言：载荷与下一个分界符之间必须有 \r\n（此前缺失 → file 字段被吞 → 服务端 422）
+  const raw = body.toString('binary')
+  assert.ok(raw.includes(`json\r\n--${boundary}`), '文本载荷后必须跟 CRLF 再接分界符')
+  assert.ok(raw.includes(`WAVEBYTES\r\n--${boundary}--`), '文件载荷后必须跟 CRLF 再接结束分界符')
+  // 语义断言：两个字段都能被独立解析
+  const parts = parseParts(body, boundary)
+  assert.equal(parts.length, 2)
+  assert.equal(parts[0].payload, 'json')
+  assert.match(parts[1].header, /name="file"; filename="sample\.wav"/)
+  assert.equal(parts[1].payload, 'WAVEBYTES')
+})
+
 test('body 以结束边界收尾（multipart 规范）', () => {
   const { body, boundary } = buildMultipartBody({ file: { path: wavPath } })
   assert.ok(body.toString('binary').endsWith(`\r\n--${boundary}--\r\n`))

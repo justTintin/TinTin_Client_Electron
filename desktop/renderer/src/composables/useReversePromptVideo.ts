@@ -30,6 +30,7 @@ import {
   type PromptSegment,
 } from './reversePromptVideoLogic'
 import { useFilePicker } from './useFilePicker'
+import { clientError } from '../utils/clientLog'
 
 function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
@@ -178,6 +179,7 @@ export function useReversePromptVideo() {
         } else if (info.phase === 'failed') {
           stopPolling()
           errorMessage.value = info.error
+          clientError('reverse-prompt', `视频反推失败 任务 ${id}`, info.error)
           notify('视频反推失败', `任务 ${id}：${info.error}`)
         } else {
           statusText.value = pollPhaseText(
@@ -187,6 +189,7 @@ export function useReversePromptVideo() {
           if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
             stopPolling()
             errorMessage.value = `轮询超时（${Math.round(POLL_TIMEOUT_MS / 1000)}s）`
+            clientError('reverse-prompt', '视频反推失败-轮询超时', errorMessage.value)
             notify('视频反推失败', errorMessage.value)
           }
         }
@@ -234,6 +237,7 @@ export function useReversePromptVideo() {
       }
     } catch (e) {
       errorMessage.value = e instanceof Error ? e.message : String(e)
+      clientError('reverse-prompt', '视频反推失败', e)
       notify('视频反推失败', errorMessage.value)
     } finally {
       submitting.value = false
@@ -248,6 +252,7 @@ export function useReversePromptVideo() {
     // 时间轴
     duration, currentTime, selStart, selEnd, thumbs, rangeText, MAX_WINDOW_SEC,
     setDuration, setCurrentTime, dragTo, setRange, hitMode, frameTimes, setThumbs,
+    fmtSecLabel: fmtSec,
     // 提交/轮询/结果
     submitting, uploadPercent, taskId, polling, statusText, errorMessage, segments, canSubmit,
     submit, cancelPolling,

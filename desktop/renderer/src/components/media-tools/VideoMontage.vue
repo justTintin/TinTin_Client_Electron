@@ -77,6 +77,8 @@ const {
   enterStep4, startFinalMix, openFinalDir,
   exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo,
   fmtBgmTime,
+  selectRefAudio,
+  fmtDur,
   // 景别分类
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
@@ -88,7 +90,7 @@ const refAudioOptions = computed(() => [
   ...(refSamples.value.length ? [] : [{ label: '未找到预设声音样本', value: '' }]),
   { label: '选择本地文件...', value: '__upload__' },
 ])
-function onRefAudioChange(v: string): void { selectRefAudio(v) }
+function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) }
 /** 花字样式下拉（原版 fancy_style_combo 7 项） */
 const fancyStyleOptions = FANCY_STYLE_OPTIONS
 
@@ -136,7 +138,7 @@ function urlTail(u: string) { return String(u || '').split('/').pop() || u }
 // ── Step1 素材列表删除（已改为行内按钮，原右键菜单已删除）──
 
 /** 评分着色（原版 L1443-1448：≥8 绿 / ≥6 黄 / ≥0 红） */
-function scoreClass(score: number): string {
+function scoreClass(score: number | undefined): string {
   if (!score) return ''
   if (score >= 8) return 'score-high'
   if (score >= 6) return 'score-mid'

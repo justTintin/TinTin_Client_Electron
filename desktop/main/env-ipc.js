@@ -5,6 +5,7 @@
 //   · env:clearCache    清 Electron 会话缓存
 //   · env:detectEnv     条目⑪ 环境检测（口径重定义）：服务端连通 ping +
 //                       本地资源（main/env-detect.js：ffmpeg/磁盘/os/cpu/ram）
+//   · env:setLogLevel   应用日志输出级别（设置页「日志级别」→ electron-log，2026-09-06）
 //   · env:logList       客户端日志文件列表（对齐原客户端日志查看页，2026-08-28）
 //   · env:logRead       日志查看器内嵌读取单个日志文件内容（2026-08-30 对齐原客户端）
 //   · env:logClear      清空单个日志文件内容（内置查看器「清空」，2026-08-31；
@@ -16,7 +17,7 @@
 //       因此「重启」= 清会话缓存后重新探测连通性，非强杀外部进程。
 //       （原 env:detectCdp 随系统设置扩展卡移除一并清理，P3）
 // ═══════════════════════════════════════════════════════════════
-const { session, app } = require('electron')
+const { session, app, dialog, shell } = require('electron')
 const http = require('node:http')
 const https = require('node:https')
 const os = require('node:os')
@@ -43,12 +44,18 @@ function pingServer(url) {
   })
 }
 
-function createEnvIpc(ipcMain, { getServerUrl, studioRoot, getMachineId }) {
-  // 日志初始化（环境与维护卡「日志」区块数据源；写 %APPDATA%/logs/client-YYYYMMDD.log）
+function createEnvIpc(ipcMain, { getServerUrl, studioRoot, getMachineId, getLogLevel, reportClientFailure, fetchFailureLogs }) {
+  // 日志初始化（环境与维护卡「日志」区块数据源；electron-log 写 userData/logs/main.log）
   // 首条启动日志同时记录启动时生效的服务端地址（getServerUrl 读取链路排查锚点）
   try {
     logger.initLogger(app.getPath('userData'))
+    // 2026-09-06 日志框架切 electron-log：启动时按设置页持久化的 env.logLevel 应用输出级别
+    if (typeof getLogLevel === 'function') logger.setLogLevel(getLogLevel())
     logger.logInfo('app', `startup: server url effective = ${getServerUrl()}`)
+    // C-6 客户端错误自动上报：任一 error 级日志落杆 → POST /api/logs/upload（失败静默，绝不阻塞业务）
+    if (typeof reportClientFailure === 'function') {
+      logger.setErrorReporter((entry) => { try { void reportClientFailure(entry) } catch (_) { /* 上报异常静默 */ } })
+    }
   } catch (_) { /* 日志失败静默 */ }
   ipcMain.handle('env:serverPing', async () => {
     try { return await pingServer(getServerUrl()) }
@@ -85,6 +92,27 @@ function createEnvIpc(ipcMain, { getServerUrl, studioRoot, getMachineId }) {
   })
 
   // ── 日志区块（对齐原客户端日志查看页）：列表 + 打开单个文件 ──
+  // 日志级别设置：设置页「日志级别」下拉 → 应用 electron-log 输出级别（2026-09-06 补联动）
+  ipcMain.handle('env:setLogLevel', (_e, level) => {
+    try { return { ok: logger.setLogLevel(level), level: String(level || '').toUpperCase() } }
+    catch (e) { return { ok: false, error: String(e?.message || e) } }
+  })
+
+  // ▶ 统一客户端日志上报入口（渲染层 clientLog.ts 走此通道，2026-09-06 用户要求「统一封装」）：
+  //   level=error 经 logger.logError → electron-log error 级 → hooks 自动上报服务端合并（C-6）
+  ipcMain.handle('env:log', (_e, p) => {
+    try {
+      const level = String((p || {}).level || 'info').toLowerCase()
+      const tag = String((p || {}).tag || 'renderer').slice(0, 120)
+      const message = String((p || {}).message || '').slice(0, 2000)
+      const stack = String((p || {}).stack || '').slice(0, 20000)
+      const text = stack ? `${message}\n${stack}` : message
+      if (level === 'error') logger.logError(tag, text)
+      else if (level === 'warn') logger.logWarn(tag, text)
+      else logger.logInfo(tag, text)
+      return { ok: true, level: level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info' }
+    } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  })
   ipcMain.handle('env:logList', () => {
     try { return { ok: true, dir: logger.getLogsDir(), files: logger.listLogFiles() } }
     catch (e) { return { ok: false, files: [], error: String(e?.message || e) } }
@@ -150,6 +178,34 @@ function createEnvIpc(ipcMain, { getServerUrl, studioRoot, getMachineId }) {
   ipcMain.handle('env:getMachineId', () => {
     try { return { ok: true, machineId: String(getMachineId?.() || '') } }
     catch (e) { return { ok: false, machineId: '', error: String(e?.message || e) } }
+  })
+
+  // ── C-6 服务端失败日志下载：GET /api/logs/failure?date=&kind=server|merged ──
+  // 拉取服务端错误/合并失败日志，弹出保存对话框写本地文件；缺文件返回 {count:0}。
+  ipcMain.handle('env:downloadServerLog', async (_e, opts) => {
+    try {
+      const date = String(opts?.date || '').trim() || new Date().toISOString().slice(0, 10)
+      const kind = opts?.kind === 'server' ? 'server' : 'merged'
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '日期格式应为 YYYY-MM-DD' }
+      const data = await fetchFailureLogs(date, kind)
+      if (!data) return { ok: false, error: '服务端无响应或响应异常' }
+      if (data.error && data.offline === false) return { ok: false, error: String(data.error) }
+      const count = Number(data.count || 0)
+      const items = Array.isArray(data.content) ? data.content : []
+      if (!items.length) return { ok: false, error: `${date} 无 ${kind === 'server' ? '服务端错误' : '客户端合并'}日志`, count: 0 }
+      const defaultName = `server-failure-${date}-${kind}.json`
+      const saved = await dialog.showSaveDialog({
+        title: '保存服务端失败日志',
+        defaultPath: defaultName,
+        filters: [{ name: 'JSON 日志', extensions: ['json'] }],
+      })
+      if (saved.canceled || !saved.filePath) return { ok: false, canceled: true }
+      fs.writeFileSync(saved.filePath, JSON.stringify(items, null, 2), 'utf8')
+      try { shell.showItemInFolder(saved.filePath) } catch (_) { /* 打开目录失败静默 */ }
+      return { ok: true, count, path: saved.filePath }
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) }
+    }
   })
 
   // ── 剪贴板截图 → 附件池：截图只提供信息（不入服务端素材池；素材池是产品素材），

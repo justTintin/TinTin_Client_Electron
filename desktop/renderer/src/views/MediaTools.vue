@@ -51,6 +51,7 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
   ],
   视频: [
     { id: 'video-montage', title: '智能混剪', desc: '4步流水线：镜头切割/重组/口播配音/特效', group: '视频', emoji: '✂️', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoMontage.vue')) },
+    { id: 'viral-clone',     title: '仿爆款',     desc: '拆解爆款→复刻脚本→替换本店产品', group: '视频', emoji: '🔥', accent: 'linear-gradient(135deg,#F43F5E 0%,#F59E0B 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ViralClone.vue')) },
     { id: 'live-slice',    title: '直播切片', desc: '视频分析热点发现→切片与封面生成', group: '视频', emoji: '📡', accent: 'linear-gradient(135deg,#EF4444 0%,#DC2626 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/LiveClip.vue')) },
     { id: 'video-repair',      title: '视频修复',     desc: '画质修复 / 工作流处理', group: '视频', emoji: '🛠️', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', wip: true, comp: defineAsyncComponent(() => import('@/components/media-tools/VideoRepair.vue')) },
     { id: 'video-transcribe',  title: '视频转文字',   desc: '视频语音自动转写',       group: '视频', emoji: '📄', accent: 'linear-gradient(135deg,#6366F1 0%,#A855F7 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoTranscribe.vue')) },

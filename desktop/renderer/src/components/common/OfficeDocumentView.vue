@@ -8,7 +8,7 @@
 import { ref, watch } from 'vue'
 import type { PreviewSheet } from '@/composables/useOfficePreview'
 
-defineProps<{
+const props = defineProps<{
   /** docx 预览 html（mammoth 输出，iframe srcdoc；非空即 docx 渲染） */
   docxHtml?: string
   /** xlsx 预览多 Sheet（undefined=非 xlsx；空数组=无 Sheet 空态） */
@@ -29,7 +29,7 @@ const emit = defineEmits<{
 // 切换 Sheet 时重置滚动位置
 const sheetBodyRef = ref<HTMLDivElement | null>(null)
 watch(
-  () => activeSheet,
+  () => props.activeSheet,
   () => {
     if (sheetBodyRef.value) sheetBodyRef.value.scrollTop = 0
   }

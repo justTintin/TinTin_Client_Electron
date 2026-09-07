@@ -7,8 +7,9 @@
 //   · 保存到音效库 → 临时落盘 + audio:sfxAnalyze（sfx_analyze L127-147）
 // UI 文案铁律：按钮/标签/提示逐字对照原版 view 源码（前导空格为原版 icon 占位，不移植）
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import type { AudioAPI } from '../../../types/server-api-audio'
+import { clientError } from '../utils/clientLog'
 
 function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) { /* 预览环境无桥 */ }
@@ -171,8 +172,8 @@ export function useAudioGen() {
       const data = unwrapIpc<AudioAPI.GenBgmResponse>(
         await window.tintin.server.audioGenBgm({ style: bgmStyle.value, mood: bgmMood.value, duration: bgmDuration.value }),
         '生成 BGM')
-      const url = String(data.url || data.audio_url || (data as Record<string, unknown>).file_url || '')
-      const name = String(data.filename || (data as Record<string, unknown>).name || 'AI 生成 BGM')
+      const url = String(data.url || '')   // 契约 /audio/gen/bgm 音频字段为 url（必返）；audio_url/file_url 属猜测兜底，删除
+      const name = 'AI 生成 BGM'           // 契约响应无 name/filename 字段，展示固定名
       bgmUrl.value = url
       bgmName.value = name
       bgmResultLabel.value = `生成成功！${name}\n时长: ${data.duration ?? '—'} 秒\nURL: ${url}`
@@ -203,8 +204,8 @@ export function useAudioGen() {
       const data = unwrapIpc<AudioAPI.GenSfxResponse>(
         await window.tintin.server.audioGenSfx({ prompt, duration: sfxDuration.value }),
         '生成音效')
-      const url = String(data.url || data.audio_url || data.file_url || '')
-      const name = String(data.name || data.filename || 'AI 生成音效')
+      const url = String(data.url || '')   // 契约 /audio/gen/sfx 音频字段为 url（必返）；audio_url/file_url 属猜测兜底，删除
+      const name = 'AI 生成音效'           // 契约响应无 name/filename 字段，展示固定名
       sfxUrl.value = url
       sfxName.value = name
       sfxResultLabel.value = `生成成功！${name}\n时长: ${data.duration ?? '—'} 秒\nURL: ${url}`
@@ -245,6 +246,7 @@ export function useAudioGen() {
       // 2026-09-04 用户裁决：保存成功后自动刷新左列表（新条目按时间倒序在首页）
       doSearch()
     } catch (e) {
+      clientError('audio-gen', '保存到BGM库失败', e)
       notify('失败', `保存失败：${errText(e)}`)
     } finally {
       bgmSaving.value = false
@@ -273,6 +275,7 @@ export function useAudioGen() {
       // 同上：保存成功后自动刷新左列表
       doSearch()
     } catch (e) {
+      clientError('audio-gen', '保存到音效库失败', e)
       notify('失败', `保存失败：${errText(e)}`)
     } finally {
       sfxSaving.value = false
@@ -296,10 +299,23 @@ export function useAudioGen() {
     if (playingMid.value === item.mid) { toggleListPlay(); return }
     playingMid.value = item.mid
     playingName.value = item.filename
-    const el = listAudioEl.value
-    if (!el) return
-    el.src = buildAudioFileUrl(item.mid)
-    void el.play().catch(() => { /* 加载失败静默（流式 URL 由服务端提供） */ })
+    loadAudio(buildAudioFileUrl(item.mid))
+  }
+
+  /** 设置 src 并播放。audio 在模板用 v-show 常驻（ref 恒可用），直接播放即可；
+   *  nextTick 兜底仅防未来改回 v-if 时首次双击 ref 为 null 的静默失败。 */
+  function loadAudio(url: string): void {
+    if (listAudioEl.value) {
+      listAudioEl.value.src = url
+      void listAudioEl.value.play().catch(() => { /* 加载失败静默 */ })
+      return
+    }
+    void nextTick(() => {
+      const el = listAudioEl.value
+      if (!el) return
+      el.src = url
+      void el.play().catch(() => { /* 加载失败静默 */ })
+    })
   }
 
   function toggleListPlay(): void {
@@ -322,9 +338,10 @@ export function useAudioGen() {
       await ensureServerUrl()
       const url = buildAudioFileUrl(item.mid)
       const res = await window.tintin.server.downloadResult(url, savePath)
-      if (res === null) { notify('失败', `下载失败：${item.filename}（服务端不可达）`); return }
+      if (res === null) { clientError('audio-gen', `下载失败-服务端不可达 ${item.filename}`); notify('失败', `下载失败：${item.filename}（服务端不可达）`); return }
       notify('成功', `已下载：${savePath}`)
     } catch (e) {
+      clientError('audio-gen', '下载失败', e)
       notify('失败', `下载失败：${errText(e)}`)
     }
   }
@@ -336,7 +353,7 @@ export function useAudioGen() {
   //  前身 POST /material/delete 仅删素材库记录——音频已分流 audio_library 表，统一切音频库口径。
   async function deleteRow(item: AudioListItem): Promise<void> {
     const midNum = Number(item.mid)
-    if (!item.mid || !Number.isInteger(midNum)) { notify('失败', `删除失败：无效的音频 ID（${item.mid}）`); return }
+    if (!item.mid || !Number.isInteger(midNum)) { clientError('audio-gen', `删除失败-无效音频ID ${item.mid}`); notify('失败', `删除失败：无效的音频 ID（${item.mid}）`); return }
     if (!window.confirm(`确定删除「${item.filename}」吗？\n将同时删除 NAS 源文件，不可恢复。`)) return
     try {
       const data = await (window as any).tintin?.server?.delete?.(`/audio/library/${midNum}`, { delete_file: true })
@@ -352,6 +369,7 @@ export function useAudioGen() {
       // 成功后刷新列表（条目消失，总数/分页同步更新）
       doSearch()
     } catch (e) {
+      clientError('audio-gen', '删除失败', e)
       notify('失败', `删除失败：${errText(e)}`)
     }
   }

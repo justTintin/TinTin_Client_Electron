@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, session, protocol } = requir
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
-const { logError: _logErr } = require('./logger')
+const { logError: _logErr, logInfo: _logInfo } = require('./logger')
 // 2026-09-05 日志框架切 electron-log 5.x：主进程顶层即初始化（早于一切业务 require），
 // spyRendererConsole 自动桥接渲染层 console.* 落盘；未捕获异常落盘、不弹窗。
 // 文件路径/滚动/清理由 logger.js initLogger 统一接管（userData/logs/main.log）
@@ -13,7 +13,7 @@ try {
 } catch (_) { /* 日志初始化失败绝不阻塞启动 */ }
 const { createTray } = require('./tray')
 const { initUpdater } = require('./updater')
-const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore, getMachineId } = require('./server-proxy')
+const { createServerProxy, httpRequest, multipartUpload, getServerUrl, setConfigStore, getMachineId, reportClientFailure, fetchFailureLogs } = require('./server-proxy')
 const { createDownloadManager } = require('./download-manager')
 const { createFfmpegGate } = require('./ffmpeg-gate')
 const browserWindow = require('./browser-window')
@@ -660,7 +660,7 @@ app.whenReady().then(() => {
     initUpdater()
     // 环境与维护（服务端探测/清缓存/CDP/环境检测）
     const { createEnvIpc } = require('./env-ipc')
-    createEnvIpc(ipcMain, { getServerUrl, studioRoot: getStudioRoot(), getMachineId })
+    createEnvIpc(ipcMain, { getServerUrl, studioRoot: getStudioRoot(), getMachineId, getLogLevel: () => store.get('env.logLevel', 'INFO'), reportClientFailure, fetchFailureLogs })
 
     // 飞书连接测试（条目⑩ S6，对照原 _test_feishu L584-600；getCfg 读 electron-store 补全 Secret）
     const { createFeishuIpc } = require('./feishu-ipc')
@@ -855,6 +855,9 @@ ipcMain.handle('shell:revealInFolder', (event, filePath) => {
 })
 ipcMain.handle('shell:showNotification', (event, title, body, iconPath, onClickCb) => {
   const { Notification } = require('electron')
+  // ▶ 统一通知留痕（2026-09-06）：任何模块的提示/失败通知都经 showNotification 弹出，
+  //   统一写 info 日志，保证「失败但不落日志」可追溯；error 级上报由 clientLog 另负责
+  try { _logInfo('notification', `${title}: ${body}`) } catch (_) {}
   if (!Notification.isSupported()) return
   const notif = new Notification({
     title,

@@ -9,6 +9,7 @@ import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
 import { useServerTask } from '@/composables/useServerTask'
+import type { RembgAPI } from '../../../../types/server-api'
 
 /** 抠图模型选项 */
 const modelOptions: SelectOption[] = [
@@ -54,7 +55,8 @@ async function startMatting() {
     }
     const res = await window.tintin.server.rembgSubmit(payload, task.setUpload)
     if (!res) throw new Error('服务端离线或未返回任务ID')
-    task.startPolling(res.task_id)
+    if (typeof res === 'object' && 'error' in res && res.error) throw new Error(String(res.error))
+    task.startPolling((res as RembgAPI.MattingResponse).task_id)
   } catch (err) {
     task.failWith(err)
   }

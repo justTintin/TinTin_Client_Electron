@@ -10,7 +10,7 @@
 //           入口 → 右侧滑出定时任务抽屉（P1 占位，P2 实装），与通知/任务抽屉同构。
 // ═══════════════════════════════════════════════════════════════
 
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import WbSidebar from '@/components/workbench/WbSidebar.vue'
 import WbMessages from '@/components/workbench/WbMessages.vue'
 import WbComposer from '@/components/workbench/WbComposer.vue'
@@ -481,7 +481,7 @@ async function onExportTasks() {
         :open="panelOpen"
         :assets="panelAssets"
         :file="preview.state"
-        :file-loading="preview.loading"
+        :file-loading="preview.loading.value"
         @close="onClosePanel"
         @open-system="preview.openWithSystem()"
         @switch-sheet="preview.switchSheet"

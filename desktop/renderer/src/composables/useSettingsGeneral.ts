@@ -58,6 +58,7 @@ export function useSettingsGeneral() {
   const serverDesc = ref<string>('http://127.0.0.1:8000 · 检测中…')
   const logLevel = ref<string>('INFO')
   const cacheClearing = ref<boolean>(false)
+  const downloadingServerLog = ref<boolean>(false)
   const actionHint = ref<string>('')
 
   /* ── 关于卡·本机机器码（原始信息主进程采集，SHA256 摘要纯函数在 machineCodeLogic） ── */
@@ -228,7 +229,26 @@ export function useSettingsGeneral() {
     setTimeout(() => { actionHint.value = ''; cacheClearing.value = false }, 1200)
   }
 
-  async function saveLogLevel() { await writeCfg('env.logLevel', logLevel.value) }
+  /** 持久化日志级别 + 通知主进程应用（electron-log 输出级别；2026-09-06 补联动） */
+  async function saveLogLevel(): Promise<void> {
+    await writeCfg('env.logLevel', logLevel.value)
+    const t = getTintin()
+    if (t?.env?.setLogLevel) { try { await t.env.setLogLevel(logLevel.value) } catch (_) { /* IPC 异常静默 */ } }
+  }
+
+  /** C-6 服务端失败日志下载（GET /api/logs/failure?date=&kind=server|merged，2026-09-06） */
+  async function downloadServerLog(opts: { date: string; kind: 'merged' | 'server' }): Promise<void> {
+    const t = getTintin()
+    if (!t?.env?.downloadServerLog) { actionHint.value = '预览环境：无 IPC'; return }
+    if (downloadingServerLog.value) return
+    downloadingServerLog.value = true
+    try {
+      const r = await t.env.downloadServerLog(opts)
+      if (r?.ok) actionHint.value = `已下载 ${r.count ?? ''} 条失败日志`
+      else actionHint.value = r?.canceled ? '已取消' : (r?.error || '下载失败')
+    } catch (_e) { actionHint.value = '下载失败' }
+    finally { setTimeout(() => { actionHint.value = ''; downloadingServerLog.value = false }, 2000) }
+  }
 
   /** onMounted 时读回持久化的日志级别（容器编排调用）；顺带加载机器码 */
   async function loadEnvCfg() {
@@ -351,10 +371,12 @@ export function useSettingsGeneral() {
     serverDesc,
     logLevel,
     cacheClearing,
+    downloadingServerLog,
     actionHint,
     pingServer,
     clearCache,
     saveLogLevel,
+    downloadServerLog,
     loadEnvCfg,
     // 关于卡·本机机器码
     machineCode,

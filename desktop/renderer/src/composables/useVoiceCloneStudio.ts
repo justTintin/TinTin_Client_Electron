@@ -26,6 +26,7 @@ import {
 import { parseTranscriptionResponse, segmentsToPlainText } from './srtUtils'
 import { useServerTask } from './useServerTask'
 import { readCacheDir } from './useSettingsConfig'
+import { clientError, clientInfo } from '../utils/clientLog'
 
 /**
  * 声音克隆文件命名规范（对齐原客户端 voice_clone_page.py _get_named_filename）
@@ -192,14 +193,16 @@ export function useVoiceCloneStudio() {
     try {
       const raw = await window.tintin.server.ttsVoicesSamples()
       const list = extractArray(raw)
+      // 诊断：打印服务端样本字段（JSON 序列化，避免 [object Object]；2026-09-06）
+      clientInfo('voice-clone', `samples raw: ${JSON.stringify(list.map((s: any) => ({ id: s.id, name: s.name, text: s.text, filename: s.filename, size: s.size, audio_url: s.audio_url })))}`)
       if (!list.length) throw new Error((raw as any)?.error || '样本列表为空')
-      // 同时填充音色选项 + 样本列表（两者来自同一端点）
+      // 同时填充音色选项 + 样本列表（两者来自同一端点）；audio_url 为服务端相对路径
       voiceOptions.value = list.map((v: any) => ({ id: String(v.id), name: v.name }))
       samples.value = list.map((s: any) => ({
         id: String(s.id),
         name: s.name,
-        path: s.path,
-        url: s.audio_url || s.url,
+        // 严格对齐服务端 /voice/samples 契约：音频地址字段为 audio_url（相对路径）；无该字段=服务端问题，客户端不兜底猜测（2026-09-06）
+        url: s.audio_url || '',
         text: s.text || '',
       }))
       if (voiceOptions.value.length && !voice.value) voice.value = voiceOptions.value[0].id
@@ -210,11 +213,9 @@ export function useVoiceCloneStudio() {
     }
   }
 
-  /** 参考音频就绪路径（上传=本地路径；样本=服务端 path，缺省空） */
+  /** 参考音频就绪路径（仅用户本地上传文件；服务端样本无本地路径，契约 /voice/samples 列表项不含 path 字段） */
   function getRefAudioPath(): string {
-    if (refAudioPath.value) return refAudioPath.value
-    const s = samples.value.find((x) => x.id === selectedSampleId.value)
-    return s?.path || ''
+    return refAudioPath.value
   }
 
   /** 参考音频就绪 URL（样本无本地路径时用服务端 url 直传 ASR） */
@@ -231,61 +232,74 @@ export function useVoiceCloneStudio() {
     void estimateFromSample()
   }
 
-  // ── 样本试听（GET 样本 audio_url 取回 base64 → blob；audio_url 为相对路径，主进程取回）──
+  // ── 样本试听（2026-09-07 用户裁决·对齐原客户端：给播放器一个直接可播的地址）──
+  //    原客户端 QMediaPlayer 直播本地文件路径（voice_clone_page.py _play_audio），零中间环节；
+  //    服务端化等价 = 播放条 src 直填服务端音频 URL（/voice/samples/{id}/audio 免鉴权，
+  //    CSP media-src 放行 http:，Chromium 媒体栈自行流式加载）。
+  //    整条 IPC→base64→fetch(data:)→blob 链路删除（useVideoMontage.playRefAudio 同款模式）；
+  //    不做缓存；不做程序化 play。──
   const samplePreviewUrl = ref('')
   const samplePreviewLoading = ref(false)
-  let _previewSampleId = ''   // 当前 blob 对应的样本 id（切样本时作废旧 blob）
-  let _previewToken = 0       // 竞态令牌：切样本后旧请求结果丢弃
+  const serverUrl = ref('')
 
-  async function playSample(id: string): Promise<void> {
+  /** 服务端地址（单一地址源 getServerUrl，经 env:serverPing 取回；useVideoMontage 同款） */
+  async function ensureServerUrl(): Promise<string> {
+    if (serverUrl.value) return serverUrl.value
+    try {
+      const ping = await (window as any).tintin?.env?.serverPing?.()
+      serverUrl.value = String(ping?.url || '')
+    } catch (_) { /* 预览环境无 env 桥 → 空串 */ }
+    return serverUrl.value
+  }
+
+  async function loadSamplePreview(id: string): Promise<void> {
     const s = samples.value.find((x) => x.id === id)
-    if (!s?.url) return
-    const token = ++_previewToken
+    // 选择必留痕：任何一次选择都不允许在日志里隐形（2026-09-06 铁律）
+    clientInfo('voice-clone', `选择样本：id=${id}，拼接服务端音频直连地址`)
+    // C-6 失败上报：样本缺失/缺音频地址不再静默 return，给出明确提示（2026-09-06）
+    if (!s) {
+      clientError('voice-clone', `试听样本失败: 未找到样本 ${id}`, new Error('sample not found'))
+      notify('提示', '试听失败：未找到该样本，请刷新样本列表后重试')
+      return
+    }
+    if (!s.url) {
+      // 接口对齐：/voice/samples 契约音频地址字段为 audio_url；缺失即服务端未提供，客户端明确报出而非兑底（2026-09-06）
+      clientError('voice-clone', `试听样本失败: 样本「${s.name}」服务端未返回 audio_url`, new Error('sample audio_url empty'))
+      notify('提示', `试听失败：样本「${s.name}」没有音频地址——服务端 /voice/samples 未返回 audio_url，需服务端补全样本音频`)
+      return
+    }
     samplePreviewLoading.value = true
     try {
-      // 切换了样本 → 先作废旧 blob
-      if (_previewSampleId !== id && samplePreviewUrl.value) {
-        try { URL.revokeObjectURL(samplePreviewUrl.value) } catch (_) {}
-        _previewSampleId = ''
-        samplePreviewUrl.value = ''
-      }
-      if (!samplePreviewUrl.value) {
-        const res = await window.tintin.server.ttsFetchSampleAudio({ url: s.url })
-        if (token !== _previewToken) return
-        const b64 = (res as any)?.audio_base64
-        if (!b64) { notify('提示', (res as any)?.error ? `试听失败：${(res as any).error}` : '试听失败：服务端未返回音频'); return }
-        const ct = (res as any)?.content_type || 'audio/wav'
-        const blob = await (await fetch(`data:${ct};base64,${b64}`)).blob()
-        if (token !== _previewToken) return
-        if (samplePreviewUrl.value) { try { URL.revokeObjectURL(samplePreviewUrl.value) } catch (_) {} }
-        samplePreviewUrl.value = URL.createObjectURL(blob)
-        _previewSampleId = id
-      }
+      const base = await ensureServerUrl()
+      const abs = /^https?:\/\//i.test(s.url)
+        ? s.url
+        : base.replace(/\/$/, '') + (s.url.startsWith('/') ? s.url : '/' + s.url)
+      samplePreviewUrl.value = abs
+      clientInfo('voice-clone', `样本音频 ${s.name}(${id})：播放地址=${abs}（直连服务端 URL，媒体栈自行加载，无 base64/blob 中间环节）`)
     } catch (err) {
-      notify('提示', `试听失败：${(err as any)?.message || err}`)
+      clientError('voice-clone', `试听样本失败: ${err instanceof Error ? err.message : String(err)}`, err)
+      notify('提示', `试听失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      if (token === _previewToken) samplePreviewLoading.value = false
+      samplePreviewLoading.value = false
     }
   }
 
   function stopSamplePreview(): void {
-    _previewToken++
-    if (samplePreviewUrl.value) { try { URL.revokeObjectURL(samplePreviewUrl.value) } catch (_) {} }
     samplePreviewUrl.value = ''
-    _previewSampleId = ''
     samplePreviewLoading.value = false
   }
 
   onBeforeUnmount(() => { stopSamplePreview() })
 
   function selectSample(id: string): void {
-    stopSamplePreview()
     selectedSampleId.value = id
     refAudioPath.value = ''
     // 自动填充样本的参考文字
     const s = samples.value.find((x) => x.id === id)
     if (s?.text) refText.value = s.text
     void estimateFromSample()
+    // 选中样本即加载播放条（2026-09-07 用户要求：选择样本时就显示播放条，不再单独点试听按钮）
+    if (id) void loadSamplePreview(id)
   }
 
   /** 上传音频为样本（API-GUIDE：POST /voice/samples，multipart: file + name + text） */
@@ -361,11 +375,17 @@ export function useVoiceCloneStudio() {
     transcribing.value = true
     stageText.value = '正在识别参考音频文本...'
     try {
-      const localPath = getRefAudioPath()
+      // 仅用户上传的本地参考音频（refAudioPath）走 file 分支；服务端样本走 url 分支。
+      // 不能用 getRefAudioPath()：它 fallback 到样本 s.path，而 s.path 是服务端路径，
+      // 客户端本地无此文件，会被误当 multipart 文件上传导致转写失败（2026-09-06 修复）
+      // 主进程契约：/whisper/transcribe 仅收 multipart file（url 分支由主进程先 GET 取回样本
+      // 音频字节再上传，2026-09-06 修复 422）；fmt=json 返回 {segments,...} 供按段解析
+      const localPath = refAudioPath.value
       const url = getRefAudioUrl()
       const payload: Record<string, unknown> = localPath
         ? { audio: { path: localPath } as unknown as Blob }
         : { url }
+      payload.fmt = 'json'
       const res = await window.tintin.server.asrTranscribe(payload as any)
       if (!res) throw new Error('服务端离线或未返回结果')
       if ((res as any).error) throw new Error((res as any).error)
@@ -392,6 +412,7 @@ export function useVoiceCloneStudio() {
       await estimateFromSample()
     } catch (err) {
       stageText.value = '失败： 识别文本失败'
+      clientError('voice-clone', '识别文本失败', err)
       notify('识别文本失败', `无法从参考音频中提取文本：\n${err instanceof Error ? err.message : String(err)}`)
     } finally {
       transcribing.value = false
@@ -474,7 +495,8 @@ export function useVoiceCloneStudio() {
   /** 从 TTS 响应中提取音频 URL（兼容 audio_base64 / audio_url） */
   function extractAudioUrl(res: any): string {
     if (res?.audio_base64) return base64ToAudioUrl(res.audio_base64, res.content_type)
-    return res?.audio_url || res?.url || ''
+    // 契约 /indextts/tts resp=json 音频字段为 audio_url（/output/tts/...）；url 属猜测兜底，删除
+    return res?.audio_url || ''
   }
 
   /** 单行克隆合成（API-GUIDE：sample_id 引用样本库 + engine 双引擎） */
@@ -534,6 +556,7 @@ export function useVoiceCloneStudio() {
     } catch (err) {
       row.status = 'failed'
       row.error = err instanceof Error ? err.message : String(err)
+      clientError('voice-clone', `行级生成失败 第 ${i + 1} 行`, row.error)
       notify('行级生成失败', `第 ${i + 1} 行：${row.error}`)
     }
   }
@@ -650,6 +673,7 @@ export function useVoiceCloneStudio() {
         filters: [{ name: 'WAV 音频', extensions: ['wav'] }],
       })) || ''
     } catch (e) {
+      clientError('voice-clone', '保存失败-打开保存对话框', e)
       notify('保存失败', '无法打开保存对话框：' + (e instanceof Error ? e.message : String(e)))
       return
     }
@@ -680,6 +704,7 @@ export function useVoiceCloneStudio() {
       }
       notify('下载完成', target)
     } catch (err) {
+      clientError('voice-clone', '下载失败', err)
       notify('下载失败', err instanceof Error ? err.message : String(err))
     }
   }
@@ -715,6 +740,7 @@ export function useVoiceCloneStudio() {
         filePath = saved
         wholeTask.resultPath.value = saved
       } catch (err) {
+        clientError('voice-clone', '上传失败-落盘', err)
         notify('上传失败', err instanceof Error ? err.message : String(err))
         return
       }
@@ -730,6 +756,7 @@ export function useVoiceCloneStudio() {
       const newId = Number((data as any)?.id)
       notify('成功', `配音已上传到素材库（音频库）${Number.isInteger(newId) && newId > 0 ? `，编号 #${newId}` : ''}`)
     } catch (err) {
+      clientError('voice-clone', '上传失败-素材库', err)
       notify('上传失败', err instanceof Error ? err.message : String(err))
     } finally {
       uploadingToLib.value = false
@@ -758,9 +785,10 @@ export function useVoiceCloneStudio() {
     wholeStatus, wholeIsProcessing, wholeErrorMsg, wholeResultUrl, wholeResultPath,
     wholeSynthProgress, saveWholeAudioAs, uploadingToLib, uploadWholeToLibrary,
     refReady, canSplit, hasRefText, uploadingSample,
+    samplePreviewUrl, samplePreviewLoading,
     // methods
     loadCatalog, setRefAudio, selectSample, uploadSample, uploadNewSample, transcribeRefAudio,
-    playSample, stopSamplePreview,
+    loadSamplePreview, stopSamplePreview,
     splitIntoRows, updateRowText, removeRow, addRow, clearRows,
     generateRow, generateAll, generateWhole, downloadRow,
   }

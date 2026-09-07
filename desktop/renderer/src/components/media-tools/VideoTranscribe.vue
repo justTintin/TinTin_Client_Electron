@@ -123,7 +123,7 @@ function applyRewrite(): void {
       class="dropzone"
       :class="{ 'is-active': isDragging }"
       @click="pickFiles"
-      @drop.prevent="onDrop(); isDragging = false"
+      @drop.prevent="onDrop($event); isDragging = false"
       @dragover.prevent="isDragging = true"
       @dragleave.prevent="isDragging = false"
     >

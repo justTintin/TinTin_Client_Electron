@@ -51,25 +51,125 @@ function onPurposeChange(v: string | number) { setPurpose(v as VsrPurpose) }
 
 // ── 文件选择 + 预览帧抽取 ──
 const framePath = ref('')
-const isExtractingFrame = ref(false)
+// 2026-09-06 用户要求：界面仅保留「抓帧预览 + 一个拖拽把手」，删除上方可见播放器。
+// 隐藏 <video> 仅作为逐帧 seek 的抓帧源（无可见播放控件）。
+const previewVideo = ref<HTMLVideoElement | null>(null)
+const durationS = ref(0)
+const currentT = ref(0)
+const fps = ref(0) // 帧率（ffprobe 探测；>0 时把手按帧刻度细分，拖拽对齐到帧）
 
+/** 重置框选预览：探测帧率（把手按帧刻度细分），清空选区与结果，等待预览视频按当前帧抓帧 */
 async function extractPreviewFrame(path: string): Promise<void> {
   resetBoxes()
   framePath.value = ''
+  currentT.value = 0
   resetResult()
-  isExtractingFrame.value = true
+  fps.value = 0
   try {
-    framePath.value = await window.tintin.ffmpeg.extractThumb(path, 1, 640)
-    await nextTick()
-    syncCanvas()
-  } catch (err) {
-    console.warn('[subtitle-removal] 抽取预览帧失败:', err)
-  } finally {
-    isExtractingFrame.value = false
+    const info = await window.tintin.ffmpeg.probe(path)
+    fps.value = Number(info?.fps) || 0
+    if (info?.duration) durationS.value = info.duration
+  } catch (e) {
+    fps.value = 0
   }
 }
 
-const { fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
+// ── 抓帧源视频事件（loadedmetadata → 时长；loadeddata → 首帧；seeked → 当前帧）──
+function onPreviewLoaded(e: Event): void {
+  durationS.value = (e.target as HTMLVideoElement).duration || 0
+}
+function onPreviewLoadedData(e: Event): void {
+  void captureFrameFromVideo(e.target as HTMLVideoElement)
+}
+function onPreviewSeeked(e: Event): void {
+  void captureFrameFromVideo(e.target as HTMLVideoElement)
+}
+
+/** 把预览视频当前帧绘制为 dataURL 作为框选帧（分辨率 = 视频真实分辨率，框坐标跨帧一致） */
+async function captureFrameFromVideo(v: HTMLVideoElement): Promise<void> {
+  if (!v || !v.videoWidth || !v.videoHeight) return
+  try {
+    const c = document.createElement('canvas')
+    c.width = v.videoWidth
+    c.height = v.videoHeight
+    const ctx = c.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(v, 0, 0, c.width, c.height)
+    framePath.value = c.toDataURL('image/jpeg', 0.85)
+    await nextTick()
+    syncCanvas()
+  } catch (err) {
+    console.warn('[subtitle-removal] 抓取当前帧失败:', err)
+  }
+}
+
+// ── 时间轴把手：拖拽把手 → 逐帧 seek 预览视频（框选随帧更新）──
+const scrubEl = ref<HTMLElement | null>(null)
+let scrubbing = false
+function seekToTime(t: number): void {
+  const v = previewVideo.value
+  if (!v || !Number.isFinite(t)) return
+  // 按帧量化：把任意时间对齐到最接近的帧（fps>0 时生效），实现逐帧拖拽
+  let target = t
+  if (fps.value > 0) target = Math.round(t * fps.value) / fps.value
+  const clamped = Math.max(0, Math.min(target, durationS.value || 0))
+  v.currentTime = clamped
+  currentT.value = clamped
+}
+function scrubRatio(clientX: number): number {
+  const el = scrubEl.value
+  if (!el || !durationS.value) return 0
+  const rect = el.getBoundingClientRect()
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+}
+function scrubDown(e: PointerEvent): void {
+  if (!durationS.value) return
+  scrubbing = true
+  seekToTime(scrubRatio(e.clientX) * durationS.value)
+}
+function scrubMove(e: PointerEvent): void {
+  if (!scrubbing) return
+  seekToTime(scrubRatio(e.clientX) * durationS.value)
+}
+function scrubUp(): void {
+  scrubbing = false
+}
+const scrubPct = computed(() =>
+  durationS.value ? `${(currentT.value / durationS.value) * 100}%` : '0%')
+function fmtTime(s: number): string {
+  if (!Number.isFinite(s) || s < 0) s = 0
+  const m = Math.floor(s / 60)
+  const sec = s - m * 60
+  return `${String(m).padStart(2, '0')}:${sec.toFixed(2).padStart(5, '0')}`
+}
+
+// ── 帧刻度细分（fps>0 时把手按帧间隔显示刻度线，拖拽对齐到帧）──
+const totalFrames = computed(() =>
+  fps.value > 0 ? Math.max(0, Math.round(durationS.value * fps.value)) : 0)
+const frameIdx = computed(() =>
+  fps.value > 0 ? Math.max(0, Math.floor(currentT.value * fps.value)) : -1)
+/** 刻度步长（帧）：控制在约 32 条以内，并归整到友好步长（1/2/5×10^k） */
+const tickStep = computed(() => {
+  const total = totalFrames.value
+  if (total <= 0) return 0
+  const step = Math.max(1, Math.ceil(total / 32))
+  const mag = Math.pow(10, Math.floor(Math.log10(step)))
+  const norm = step / mag
+  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10
+  return nice * mag
+})
+const tickList = computed(() => {
+  const step = tickStep.value
+  const total = totalFrames.value
+  if (step <= 0 || total <= 0) return [] as number[]
+  const out: number[] = []
+  for (let f = 0; f <= total; f += step) out.push(f)
+  return out
+})
+const frameTickPct = (f: number) =>
+  totalFrames.value ? `${(f / totalFrames.value) * 100}%` : '0%'
+
+const { filePath: srcPath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
   useFilePicker({
     dialogTitle: '选择视频',
     filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] }],
@@ -339,59 +439,107 @@ function downloadResult(): void {
       />
     </div>
 
-    <!-- 预览帧 + quad 框选画布 -->
-    <div v-if="fileName" class="frame-stage">
-      <div v-if="isExtractingFrame" class="frame-loading">正在抽取预览帧…</div>
-      <div v-else-if="framePath" class="frame-wrap">
-        <img
-          ref="imgRef"
-          class="frame-img"
-          :src="resolveSrc(framePath)"
-          alt="帧预览"
-          @load="onImgLoad"
-        />
-        <canvas
-          ref="canvasRef"
-          class="frame-canvas"
-          :style="{ cursor: cursorStyle }"
-          @mousedown="onDown"
-          @mousemove="onMove"
-          @mouseup="onUp"
-          @mouseleave="onUp"
-        />
+    <!-- 预览 + 选区管理：左栏预览（视频播放控制 + 框选图层），右栏选区 -->
+    <div v-if="fileName" class="vsr-split" :class="{ single: !isSelectMode }">
+      <!-- 左栏：预览区（缩小一半；视频可播放 + 抽帧框选） -->
+      <div class="vsr-preview">
+        <div class="frame-stage">
+          <!-- 隐藏抓帧源（仅逐帧 seek 用，界面不显示；用户要求只保留一个拖拽控制） -->
+          <video
+            v-if="srcPath"
+            ref="previewVideo"
+            class="preview-src"
+            :src="resolveSrc(srcPath)"
+            preload="auto"
+            @loadedmetadata="onPreviewLoaded"
+            @loadeddata="onPreviewLoadedData"
+            @seeked="onPreviewSeeked"
+          />
+          <div v-if="framePath" class="frame-wrap">
+            <img
+              ref="imgRef"
+              class="frame-img"
+              :src="resolveSrc(framePath)"
+              alt="帧预览"
+              @load="onImgLoad"
+            />
+            <canvas
+              ref="canvasRef"
+              class="frame-canvas"
+              :style="{ cursor: cursorStyle }"
+              @mousedown="onDown"
+              @mousemove="onMove"
+              @mouseup="onUp"
+              @mouseleave="onUp"
+            />
+          </div>
+          <div v-else class="frame-loading">等待视频就绪；拖动手柄到目标帧后，可在此帧上框选</div>
+          <!-- 时间轴把手：拖拽到目标帧（逐帧），当前帧同步到上方预览 -->
+          <div
+            ref="scrubEl"
+            class="frame-scrub"
+            :class="{ 'is-disabled': !srcPath }"
+            @pointerdown.prevent="scrubDown"
+            @pointermove="scrubMove"
+            @pointerup="scrubUp"
+            @pointerleave="scrubUp"
+          >
+            <div class="frame-scrub__track">
+              <span
+                v-for="(f, i) in tickList"
+                :key="i"
+                class="frame-scrub__tick"
+                :style="{ left: frameTickPct(f) }"
+              />
+              <div class="frame-scrub__fill" :style="{ width: scrubPct }" />
+              <div class="frame-scrub__handle" :style="{ left: scrubPct }" />
+            </div>
+            <div class="frame-scrub__meta">
+              <template v-if="fps > 0">
+                <span class="frame-scrub__time">F{{ frameIdx }} / {{ totalFrames }}</span>
+                <span class="frame-scrub__dur">{{ fmtTime(currentT) }} · {{ fps.toFixed(0) }}fps</span>
+              </template>
+              <template v-else>
+                <span class="frame-scrub__time">{{ fmtTime(currentT) }}</span>
+                <span class="frame-scrub__dur">/ {{ fmtTime(durationS) }}</span>
+              </template>
+            </div>
+          </div>
+        </div>
       </div>
-      <div v-else class="frame-loading">预览帧抽取失败，可改用智能识别模式提交</div>
-    </div>
 
-    <!-- 选区管理（仅标注模式，对照 box_manage_group L1049-1057） -->
-    <div v-if="isSelectMode && fileName" class="regions">
-      <div class="regions__head">
-        <span class="form-label">已选区域（{{ boxes.length }}）· 可拖拽移动 / 拖顶点调整<template v-if="allowRotation"> / 拖右下角把手旋转</template></span>
-        <span class="regions__actions">
-          <button class="link-btn" :disabled="isProcessing || !framePath" @click="addBox">添加选区</button>
-          <button
-            class="link-btn danger"
-            :disabled="isProcessing || boxes.length <= 1 || activeIndex < 0"
-            @click="deleteActiveBox"
-          >删除激活</button>
-          <button class="link-btn danger" :disabled="isProcessing" @click="resetBoxes">清空</button>
-        </span>
-      </div>
-      <div v-if="boxes.length" class="regions__list">
-        <span
-          v-for="(q, i) in boxes"
-          :key="i"
-          class="region-chip"
-          :class="{ 'is-active': i === activeIndex }"
-          @click="setActiveIndex(i)"
-        >
-          #{{ i + 1 }} {{ boxLabel(q) }}
-          <button
-            class="region-chip__close"
-            :disabled="isProcessing || boxes.length <= 1"
-            @click.stop="removeBoxAt(i)"
-          >×</button>
-        </span>
+      <!-- 右栏：选区管理（添加选区 + 选区列表） -->
+      <div v-if="isSelectMode" class="vsr-regions">
+        <div class="regions">
+          <div class="regions__head">
+            <span class="form-label">已选区域（{{ boxes.length }}）· 可拖拽移动 / 拖顶点调整<template v-if="allowRotation"> / 拖右下角把手旋转</template></span>
+            <span class="regions__actions">
+              <button class="link-btn" :disabled="isProcessing || !framePath" @click="addBox">添加选区</button>
+              <button
+                class="link-btn danger"
+                :disabled="isProcessing || boxes.length <= 1 || activeIndex < 0"
+                @click="deleteActiveBox"
+              >删除激活</button>
+              <button class="link-btn danger" :disabled="isProcessing" @click="resetBoxes">清空</button>
+            </span>
+          </div>
+          <div v-if="boxes.length" class="regions__list">
+            <span
+              v-for="(q, i) in boxes"
+              :key="i"
+              class="region-chip"
+              :class="{ 'is-active': i === activeIndex }"
+              @click="setActiveIndex(i)"
+            >
+              #{{ i + 1 }} {{ boxLabel(q) }}
+              <button
+                class="region-chip__close"
+                :disabled="isProcessing || boxes.length <= 1"
+                @click.stop="removeBoxAt(i)"
+              >×</button>
+            </span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -524,6 +672,91 @@ function downloadResult(): void {
 .text-input:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* 预览 + 选区：左右两栏（2026-09-06 用户要求预览缩小一半、选区靠右） */
+.vsr-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 300px);
+  gap: var(--space-4);
+  align-items: start;
+}
+/* 智能识别模式无选区管理，预览占满 */
+.vsr-split.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.vsr-preview {
+  min-width: 0;
+}
+.vsr-regions {
+  min-width: 0;
+}
+/* 隐藏抓帧源视频（须参与渲染否则 drawImage 取帧会空白：不可 display:none，用移出视口方式） */
+.preview-src {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+/* 时间轴把手（逐帧拖拽，2026-09-06 新增） */
+.frame-scrub {
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+.frame-scrub.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.frame-scrub__track {
+  position: relative;
+  height: 14px;
+  border-radius: var(--radius-full);
+  background: var(--border);
+}
+.frame-scrub__tick {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 1px;
+  background: color-mix(in srgb, var(--foreground) 22%, transparent);
+  pointer-events: none;
+}
+.frame-scrub__fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--radius-full);
+  background: var(--primary);
+}
+.frame-scrub__handle {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  background: var(--surface);
+  border: 2px solid var(--primary);
+  box-sizing: border-box;
+}
+.frame-scrub__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.frame-scrub__time {
+  color: var(--foreground);
 }
 
 /* 帧预览与框选画布 */

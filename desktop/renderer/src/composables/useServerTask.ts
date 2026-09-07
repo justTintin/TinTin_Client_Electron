@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { ref, onBeforeUnmount } from 'vue'
+import { clientError } from '../utils/clientLog'
 
 /** 任务终态机（'' 为初始） */
 export type TaskStatus = '' | 'queued' | 'processing' | 'done' | 'failed'
@@ -85,6 +86,7 @@ export function useServerTask(opts: UseServerTaskOptions) {
     status.value = 'failed'
     isProcessing.value = false
     stopPolling()
+    clientError('server-task', String(opts.failTitle || '任务失败'), err)
     notify(opts.failTitle, errorMsg.value)
   }
 

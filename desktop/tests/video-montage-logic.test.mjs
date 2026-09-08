@@ -383,3 +383,12 @@ test('assembledRowText：[n] 文件名/镜头数  状态  文案预览', () => {
     '[3] 1 个镜头  待确认  未生成口播文案',
   )
 })
+
+test('mapTaskStatus：cancelled 无 error_msg → 服务端重启取消文案（实测任务 705 口径）', () => {
+  const r = R.mapTaskStatus('cancelled', { result: { cancelled: true } })
+  assert.equal(r.phase, 'failed')
+  assert.equal(r.error, '服务端任务被取消（可能因服务端重启中断），请重新提交')
+  // 有 error_msg 时透出原始错误；failed 无 error_msg 仍「未知错误」
+  assert.equal(R.mapTaskStatus('cancelled', { error_msg: 'boom' }).error, 'boom')
+  assert.equal(R.mapTaskStatus('failed', {}).error, '未知错误')
+})

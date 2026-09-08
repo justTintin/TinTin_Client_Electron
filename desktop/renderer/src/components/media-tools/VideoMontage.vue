@@ -17,7 +17,7 @@ import VideoPreview from '@/components/common/VideoPreview.vue'
 import VideoPlayer from '@/components/common/VideoPlayer.vue'
 import { useVideoMontage } from '@/composables/useVideoMontage'
 import { BGM_STYLE_OPTIONS } from '@/composables/videoMontageLogic'
-import WbPickProductDialog from '@/components/workbench/WbPickProductDialog.vue'
+import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import { markdownListLines } from '@/composables/opsProductLibraryLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
@@ -26,6 +26,8 @@ const STEPS = ['1. 镜头智能分割', '2. 镜头重组', '3. 口播配音', '4
 const step = ref(0)
 function go(i: number) {
   step.value = Math.max(0, Math.min(STEPS.length - 1, i))
+  // 第③步：自动带视频（_on_enter_step_3 L636-656 口径：取确认产物目录→清理旧产物→扫描）
+  if (i === 2) void enterStepVoice()
   // 第④步：待混音数量 stage 提示（_go_to_step index==3 L388-395 同口径）
   if (i === 3) void enterStep4()
 }
@@ -56,7 +58,9 @@ const {
   concatResults,
   // Step3 口播配音（对照 step3_voice_view.py 逐控件）
   voiceDirInput, voiceRows,
-  refSamples, selectedRefSample, refAudioPath, refText,
+  refSamples, selectedRefSample, refAudioPath, refText, refPreviewUrl, loadRefSamples,
+  nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
+  pickNewSampleFile, transcribeNewSample, uploadNewSampleRef,
   ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
   addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
@@ -67,7 +71,7 @@ const {
   editDlg, openEditDlg, saveEditDlg,
   dubbedDlg,
   voiceBusy, dubBusy, rewriteBusy, dubbingEnabled,
-  selectVoiceDir, scanVoiceDir, uploadRefAudio, playRefAudio,
+  scanVoiceDir, enterStepVoice,
   batchAiRewrite, startSynthesizeVoice, startDubVideos,
   regenVoice, exportVoice, playVoice, playRowVideo, playDubbedVideo,
   toggleLengthMode, lengthModeTip,
@@ -123,7 +127,6 @@ onUnmounted(() => { thumbToken++ })
 const refAudioOptions = computed(() => [
   ...refSamples.value.map((s) => ({ label: s.name, value: `sample:${s.id}` })),
   ...(refSamples.value.length ? [] : [{ label: '未找到预设声音样本', value: '' }]),
-  { label: '选择本地文件...', value: '__upload__' },
 ])
 function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) }
 /** 花字样式下拉（原版 fancy_style_combo 7 项） */
@@ -141,6 +144,10 @@ const fancyTemplateOptions = computed(() => [
 const fancyTemplatePreview = computed(() =>
   fancyTemplateId.value ? fancyPreviews.value[fancyTemplateId.value] || '' : '')
 onMounted(() => { void loadFancyTemplates() })
+// 声音样本与 VoiceClone 页同口径：每次进入 Step3（及挂载时）重新拉取（原实现仅在
+// composable 创建时拉一次，服务端新增样本/离线恢复后下拉一直为空）
+onMounted(() => { void loadRefSamples() })
+watch(step, (v) => { if (v === 2) void loadRefSamples() })
 
 /** 配音结果弹窗行动作（DubbedVideosDialog） */
 function playDubbed(path: string): void { try { window.tintin?.shell?.openItem?.(path) } catch (_) {} }
@@ -181,9 +188,8 @@ function planMenuConfirm(): void { const i = planMenu.value.index; closePlanMenu
 function planMenuGen(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) openProductDlg(i) }
 function planMenuView(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) viewPlanCopy(i) }
 
-// ── 口播弹窗从产品库选产品（复用会话 WbPickProductDialog：左列表右参数/卖点，
-//   点行仅预览、「选择该产品」才选中；选中后自动回填下方四字段，仍可手改）──
-const pickProductVisible = ref(false)
+// ── 口播弹窗左侧内嵌产品选择区（WbPickProductPanel：左列表右参数/卖点，
+//   点行仅预览、「选择该产品」才选中；选中后自动回填右侧四字段，仍可手改）──
 function onPickProduct(it: PickerItem): void {
   productDlg.value.brand = String(it.brand || '')
   productDlg.value.product = String(it.category || '')
@@ -251,9 +257,9 @@ function scoreClass(score: number | undefined): string {
           <input v-model.number="threshold" type="number" min="10" max="100" class="input w80" />
           <label class="param-label">最小镜头(秒):</label>
           <input v-model.number="minSceneLen" type="number" step="0.1" min="0.1" max="60" class="input w80" />
-          <label class="param-label" title="无法分割的视频，自动挑出多长的精华片段">精华时长:</label>
+          <label class="param-label" title="无法分割的视频，自动挑出多长的片段">分镜头时长(秒):</label>
           <input v-model.number="imageDuration" type="number" min="1" max="30"
-            title="无法分割的视频，自动挑出多长的精华片段" class="input w80" />
+            title="无法分割的视频，自动挑出多长的片段" class="input w80" />
           <span class="spacer"></span>
           <TButton label="开始智能镜头分割" icon="cut" :loading="splitBusy" @click="runSplit" />
         </div>
@@ -453,44 +459,25 @@ function scoreClass(score: number | undefined): string {
     <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一） -->
     <template v-else-if="step === 2">
       <section class="card">
-        <!-- 1. 视频输入目录行（L40-49） -->
-        <div class="row">
-          <label class="label">视频输入目录:</label>
-          <input v-model="voiceDirInput" class="input grow" placeholder="选择包含排列视频的目录..." @change="scanVoiceDir" />
-          <TButton label="选择目录" variant="secondary" @click="selectVoiceDir" />
-        </div>
+        <!-- 1. 视频输入目录行：2026-09-08 用户裁决删除——口播配音无视频输入功能，
+             配音对象自动取 Step2 已确认合成产物所在目录 -->
 
-        <!-- 2a. 参考声音行（L65-93 控件结构；声音样本数据源 = 服务端 GET /voice/samples，用户裁决 2026-09-03） -->
+        <!-- 2. 参考声音（对齐 VoiceClone 页形态：样本下拉 + 常驻播放条换 src；
+             声音样本数据源 = 服务端 GET /voice/samples；选中样本自动带出参考文案） -->
         <div class="row">
           <label class="label">参考声音:</label>
-          <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : refAudioPath" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
-          <button class="icon-btn" title="播放人声样本" :disabled="!refAudioPath && !selectedRefSample?.url" @click="playRefAudio">🔊</button>
-          <TButton label="上传声音" variant="secondary" title="上传本地音频文件作为参考声音 (wav/mp3/m4a)" @click="uploadRefAudio" />
+          <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : ''" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
         </div>
+        <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
 
-        <!-- 2b. 参考文案行（L95-112） -->
+        <!-- 3. 参考文案行 -->
         <div class="row">
           <label class="label">参考文案:</label>
           <input v-model="refText" class="input grow" placeholder="可选，填入样本台词..." />
         </div>
 
-        <!-- 3. TTS API 与推理参数行（L114-175；inference_timesteps/cfg 存而不用，控件保留、值不随请求发送） -->
-        <div class="row">
-          <label class="label">TTS API:</label>
-          <input v-model="ttsApiUrl" class="input grow" placeholder="跟随系统设置 → IndexTTS 地址（形如 http://<服务端>:8000/indextts/tts）" />
-          <label class="param-label">推理步数:</label>
-          <input v-model.number="ttsSteps" type="number" class="input w60" min="4" max="50" step="5"
-            title="推理步数（存而不用，不随请求发送；保留控件兼容原版布局）" />
-          <label class="param-label">CFG:</label>
-          <input v-model.number="ttsCfg" type="number" class="input w60" min="0.5" max="5.0" step="0.5"
-            title="引导强度（存而不用，不随请求发送；保留控件兼容原版布局）" />
-          <label class="param-label">速率:</label>
-          <input v-model.number="ttsSpeedMin" type="number" class="input w60" min="0.5" max="1.0" step="0.05"
-            title="变速下限（默认0.90）&#10;音频比视频长时最多允许拉慢到此倍速&#10;超出范围时不再强制调速，保留自然音质" />
-          <label class="param-label">~</label>
-          <input v-model.number="ttsSpeedMax" type="number" class="input w60" min="1.0" max="2.0" step="0.05"
-            title="变速上限（默认1.20）&#10;音频比视频短时最多允许加速到此倍速&#10;超出范围时不再强制调速，保留自然音质" />
-        </div>
+        <!-- TTS API 与推理参数行：2026-09-08 用户裁决删除（TTS 地址自动跟随系统设置，
+             ttsSteps/ttsCfg 存而不用；ttsSpeedMin/Max 保留默认值 0.9~1.2 随克隆请求发送） -->
 
         <!-- 4. 表格标题行（L177-196） -->
         <div class="row between">
@@ -552,7 +539,7 @@ function scoreClass(score: number | undefined): string {
             </tr>
           </tbody>
         </table>
-        <div v-else class="muted">尚未选择视频，在上方输入目录或点击「选择目录」后自动扫描</div>
+        <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
 
         <!-- 6. 烧制字幕行（L210-251；背景 6 项 + 字体下拉 + 刷新） -->
         <div class="row">
@@ -598,6 +585,23 @@ function scoreClass(score: number | undefined): string {
         <div class="row voice-actions">
           <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
           <TButton label="开始给视频配音 (替换原声)" :loading="dubBusy" :disabled="!dubbingEnabled" @click="startDubVideos" />
+        </div>
+
+        <!-- 9. 页尾上传新样本（对齐 VoiceClone 页同款位置：置于卡片最底部；
+             音频+名称+文字 → 服务端 → 刷新下拉并自动选中；
+             2026-09-08 用户裁决：上传声音放到底部作为新样本上传） -->
+        <div class="ns-section">
+          <div class="ns-title">没有想要的样本？上传音频创建新样本</div>
+          <div class="row">
+            <TButton :label="nsFilePath ? '重新选择音频' : '选择音频文件'" icon="upload" variant="secondary" @click="pickNewSampleFile" />
+            <span v-if="nsFilePath" class="ns-file">{{ pathBasename(nsFilePath) }}</span>
+            <input v-model="nsName" class="input w160" placeholder="样本名称（必填）" />
+            <TButton :label="nsTranscribing ? '正在识别...' : '识别参考文字'" size="small" plain :disabled="!nsFilePath" :loading="nsTranscribing" @click="transcribeNewSample" />
+            <TButton label="上传为样本" icon="upload" :loading="nsBusy" :disabled="!nsFilePath || !nsName.trim()" @click="uploadNewSampleRef" />
+          </div>
+          <input v-model="nsText" class="input grow" placeholder="与参考音频一致的文字（可选）；可点「识别参考文字」自动识别" />
+          <div v-if="nsError" class="ns-msg ns-err">{{ nsError }}</div>
+          <div v-if="nsSuccess" class="ns-msg ns-ok">{{ nsSuccess }}</div>
         </div>
       </section>
 
@@ -704,8 +708,9 @@ function scoreClass(score: number | undefined): string {
       </div>
     </template>
 
-    <!-- 页尾状态区（原版底部共享：stage_label + progress_bar） -->
-    <div v-if="polling || statusText" class="bottom-status">
+    <!-- 页尾状态区（原版底部共享：stage_label + progress_bar；
+      确认合成期间不重复显示——状态文案已置进度条上方，用户裁决：下面的文字提示不需要） -->
+    <div v-if="(polling || statusText) && !confirmBusy" class="bottom-status">
       <div class="bottom-status-row">
         <span class="status-text" :class="{ spinning: polling }">{{ statusText }}</span>
         <span v-if="activeTaskId" class="muted">任务 {{ activeTaskId }}</span>
@@ -738,36 +743,35 @@ function scoreClass(score: number | undefined): string {
       </div>
     </teleport>
 
-    <!-- 产品信息弹窗（原版 ProductCopyInputDialog，dialogs.py L347-388 文案逐字） -->
+    <!-- 产品信息弹窗（原版 ProductCopyInputDialog，dialogs.py L347-388 文案逐字；
+      2026-09-08 用户裁决：产品选择区与填写区合二为一不再二次弹窗——左侧内嵌
+      WbPickProductPanel（占弹窗一半宽），选中自动回填右侧表单，仍可手改；
+      填写区高度加高） -->
     <teleport to="body">
       <div v-if="productDlg.show" class="modal-mask" @click.self="closeProductDlg">
-        <div class="modal">
+        <div class="modal modal-pick">
           <span class="modal-title"> 生成口播文案</span>
           <span class="hint">输入产品信息，由大模型生成该组合视频的口播文案；可从产品库选择自动填充，也可直接手动填写：</span>
-          <div class="modal-field"><label>产品库:</label>
-            <TButton label="从产品库选择产品" size="small" plain @click="pickProductVisible = true" />
-          </div>
-          <div class="modal-field"><label>品牌:</label><input v-model="productDlg.brand" class="input grow" placeholder="如 罗技 / Logitech" /></div>
-          <div class="modal-field"><label>产品:</label><input v-model="productDlg.product" class="input grow" placeholder="如 鼠标 / 键盘 / 无线耳机" /></div>
-          <div class="modal-field"><label>型号:</label><input v-model="productDlg.model" class="input grow" placeholder="如 G502 / MX Master 3S" /></div>
-          <div class="modal-field modal-extra"><label>补充卖点（可选）:</label>
-            <textarea v-model="productDlg.extra" class="modal-textarea" placeholder="如 8K回报率、轻量化、长续航……（可留空）"></textarea>
-          </div>
-          <div class="modal-actions">
-            <TButton label="生成" :loading="copyBusy" @click="productDlgGenerate" />
-            <TButton label="取消" plain @click="closeProductDlg" />
+          <div class="pick-layout">
+            <div class="pick-left">
+              <WbPickProductPanel :active="productDlg.show" @pick="onPickProduct" />
+            </div>
+            <div class="pick-right">
+              <div class="modal-field"><label>品牌:</label><input v-model="productDlg.brand" class="input grow" placeholder="如 罗技 / Logitech" /></div>
+              <div class="modal-field"><label>产品:</label><input v-model="productDlg.product" class="input grow" placeholder="如 鼠标 / 键盘 / 无线耳机" /></div>
+              <div class="modal-field"><label>型号:</label><input v-model="productDlg.model" class="input grow" placeholder="如 G502 / MX Master 3S" /></div>
+              <div class="modal-field modal-extra"><label>补充卖点（可选）:</label>
+                <textarea v-model="productDlg.extra" class="modal-textarea modal-textarea--tall" placeholder="如 8K回报率、轻量化、长续航……（可留空）"></textarea>
+              </div>
+              <div class="modal-actions">
+                <TButton label="生成" :loading="copyBusy" @click="productDlgGenerate" />
+                <TButton label="取消" plain @click="closeProductDlg" />
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </teleport>
-
-    <!-- 选择产品弹窗（会话同款 WbPickProductDialog：左列表右参数/卖点；
-      TDialog z-index 1300 > 口播弹窗 1002，叠加其上；选中回填四字段，口播弹窗不关） -->
-    <WbPickProductDialog
-      :visible="pickProductVisible"
-      @close="pickProductVisible = false"
-      @pick="onPickProduct"
-    />
 
     <!-- 口播文案查看弹窗（原版 _view_assembled_copy：标题 + 只读全文 + 关闭） -->
     <teleport to="body">
@@ -1029,6 +1033,15 @@ function scoreClass(score: number | undefined): string {
   padding: 20px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
 }
 .modal-wide { width: 600px; }
+/* 口播弹窗两栏：左=内嵌产品选择区（宽度≈原独立选择弹窗的一半），右=填写表单 */
+.modal-pick { width: 80vw; max-width: 90vw; height: 80vh; }
+.pick-layout { flex: 1 1 auto; min-height: 0; display: flex; gap: var(--space-4); }
+.pick-left { flex: 1 1 50%; min-width: 0; min-height: 0; }
+.pick-right { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
+.pick-right .modal-field { flex: 0 0 auto; }
+.pick-right .modal-field.modal-extra { flex: 1 1 auto; }
+.pick-right .modal-actions { margin-top: auto; }
+.modal-textarea--tall { min-height: 220px; }
 .modal-title { font-size: 15px; font-weight: 600; }
 .modal-field { display: flex; align-items: center; gap: 8px; }
 .modal-field label { width: 64px; flex: none; font-size: 13px; }
@@ -1043,6 +1056,19 @@ function scoreClass(score: number | undefined): string {
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Step3 口播配音样式（对照 VoiceRowDetailWidget 三行布局；颜色走 V3 design tokens） */
+/* Step3 参考声音播放条（对齐 VoiceClone sample-audio：常驻控件换 src） */
+.ref-audio { height: 32px; width: 100%; max-width: 480px; margin-left: 96px; }
+/* Step3 底部上传新样本区（对齐 VoiceClone upload-section） */
+.ns-section {
+  display: flex; flex-direction: column; gap: 8px;
+  border-top: 1px solid var(--border); padding-top: var(--space-3); margin-top: var(--space-2);
+}
+.ns-title { font-size: 13px; font-weight: var(--font-weight-semibold); color: var(--foreground); }
+.ns-file { font-size: 12px; color: var(--muted-foreground); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-msg { font-size: 12px; }
+.ns-err { color: var(--destructive, #e5484d); }
+.ns-ok { color: var(--success, #2e9e5b); }
+
 .voice-table { margin-top: var(--space-3); }
 .voice-table .w-idx { width: 48px; }
 .vd-detail { display: flex; flex-direction: column; gap: 6px; }

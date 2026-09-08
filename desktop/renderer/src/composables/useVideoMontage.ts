@@ -1384,6 +1384,8 @@ export function useVideoMontage() {
   const selectedRefSample = ref<{ id: string; url: string } | null>(null)
   const refAudioPath = ref('')
   const refAudioLabel = ref('未找到预设声音样本')
+  /** 选中样本播放条地址（对齐 VoiceClone samplePreviewUrl：常驻 audio 控件换 src） */
+  const refPreviewUrl = ref('')
   const refText = ref('')
   // TTS 参数（L114-175；inference_timesteps/cfg_value 存而不用，原版同口径）
   const ttsApiUrl = ref('')
@@ -1444,31 +1446,20 @@ export function useVideoMontage() {
     if (url) ttsApiUrl.value = url.replace(/\/$/, '') + '/indextts/tts'
   }
 
-  /** 选择视频（对照 _select_voice_video_dir：pick_files 多选 → dir=dirname(首文件)） */
-  async function selectVoiceDir(): Promise<void> {
-    try {
-      const res = await window.tintin?.dialog?.openFiles?.({
-        title: '选择需要克隆配音的视频',
-        multi: true,
-        filters: [{ name: '视频文件', extensions: ['mp4', 'mov', 'avi', 'mkv', 'flv', 'webm', 'm4v'] }, { name: '所有文件', extensions: ['*'] }],
-      })
-      const paths = res || []
-      if (!paths.length) return
-      const first = paths[0]
-      voiceDirInput.value = first.slice(0, Math.max(first.lastIndexOf('\\'), first.lastIndexOf('/')))
-      selectedVoiceFiles.value = paths
-      void scanVoiceDir()
-    } catch (_) { /* 对话框取消 */ }
-  }
+  /** 选择视频（原 _select_voice_dir 本地目录选择：2026-09-08 用户裁决口播配音不需要视频输入功能，删除；
+   *  配音对象改为自动取 Step2 已确认合成产物所在目录，见下方 watch） */
 
-  /** 扫描视频目录（对照 _do_scan_voice_video_dir；保留已编辑文案 existing_texts 口径） */
-  async function scanVoiceDir(): Promise<void> {
+  /** 扫描视频目录（对照 _do_scan_voice_dir；保留已编辑文案 existing_texts 口径）。
+   *  keepFiles：本次确认合成产物列表，主进程据此清理 outputs 里的旧 montage_concat_* 产物
+   *  （对照 _cleanup_stale_montage_outputs L597-634；不传则不清理仅扫描） */
+  async function scanVoiceDir(keepFiles?: string[]): Promise<void> {
     if (!voiceDirInput.value) { voiceRows.value = []; return }
     try {
       const prevTexts = new Map(voiceRows.value.map((r) => [r.path, r.text]))
       const res = await window.tintin?.server?.voiceScanDir?.({
         dirPath: voiceDirInput.value,
         selectedFiles: selectedVoiceFiles.value,
+        keepFiles: keepFiles && keepFiles.length ? keepFiles : undefined,
       })
       if (!res || 'error' in res) throw new Error((res as { error?: string })?.error || '扫描失败')
       voicesDir.value = res.voicesDir || ''
@@ -1489,11 +1480,44 @@ export function useVideoMontage() {
     }
   }
 
+  /** 配音视频自动就绪（2026-09-08 用户裁决：口播配音无视频输入功能）：
+   *  Step2 确认合成的产物落盘后自动取其所在目录为配音对象目录并扫描，
+   *  保留已编辑文案（existing_texts 口径）；文案行数随确认产物变化重建 */
+  watch(
+    () => assemblePlans.value.map((p) => (p.confirmed ? p.outputPath || '' : '')).join('|'),
+    (sig) => {
+      const first = sig.split('|').find(Boolean)
+      if (!first) return
+      const dir = first.slice(0, Math.max(first.lastIndexOf('\\'), first.lastIndexOf('/')))
+      if (!dir) return
+      // 确认产物同落一个 outputs 目录：不能以「目录变化/列表为空」为重扫条件，
+      // 否则第 2~N 条确认完成后不会进列表（旧守卫 bug）；签名变化即重扫，
+      // 已编辑文案由 scanVoiceDir 的 prevTexts 按路径保留
+      voiceDirInput.value = dir
+      void scanVoiceDir()
+    },
+  )
+
+  /** 进入 Step3 自动带视频（对照 _on_enter_step_3 L636-656 一比一）：
+   *  取已确认合成产物所在目录 → 清理旧产物 → 回填目录并扫描。
+   *  无确认产物时不动现有列表（保留原版回退语义的空态） */
+  async function enterStepVoice(): Promise<void> {
+    const confirmed = assemblePlans.value
+      .filter((p) => p.confirmed && p.outputPath)
+      .map((p) => p.outputPath as string)
+    if (!confirmed.length) return
+    const first = confirmed[0]
+    const dir = first.slice(0, Math.max(first.lastIndexOf('\\'), first.lastIndexOf('/')))
+    if (!dir) return
+    voiceDirInput.value = dir
+    await scanVoiceDir(confirmed)
+  }
+
   /** 拉取服务端声音样本库（GET /voice/samples，与 VoiceClone 页 loadCatalog 同源） */
   async function loadRefSamples(): Promise<void> {
     try {
       const raw = await window.tintin?.server?.ttsVoicesSamples?.()
-      const list = Array.isArray(raw) ? raw : []
+      const list = Array.isArray(raw) ? raw : (extractArrayLike(raw))
       refSamples.value = list.map((s: any) => ({
         id: String(s.id ?? ''),
         name: String(s.name ?? `样本${s.id ?? ''}`),
@@ -1502,11 +1526,21 @@ export function useVideoMontage() {
       }))
     } catch (_) { refSamples.value = [] /* 服务端离线时呈无样本态 */ }
   }
-  void loadRefSamples()
 
-  /** 下拉选择：服务端样本（sample:{id}）/ 本地上传（__upload__）/ 空态占位 */
+  /** {items|data|samples|...} 包裹响应解包（对齐 useVoiceCloneStudio extractArray 口径） */
+  function extractArrayLike(res: unknown): any[] {
+    if (Array.isArray(res)) return res
+    if (res && typeof res === 'object') {
+      const obj = res as Record<string, unknown>
+      for (const key of ['items', 'data', 'samples', 'voices', 'list', 'results']) {
+        if (Array.isArray(obj[key])) return obj[key] as any[]
+      }
+    }
+    return []
+  }
+
+  /** 下拉选择：服务端样本（sample:{id}）；选中即换播放条 src（对齐 VoiceClone selectSample → loadSamplePreview） */
   function selectRefAudio(value: string): void {
-    if (value === '__upload__') { void uploadRefAudio(); return }
     if (value.startsWith('sample:')) {
       const s = refSamples.value.find((x) => x.id === value.slice(7))
       if (!s) return
@@ -1515,34 +1549,98 @@ export function useVideoMontage() {
       refAudioLabel.value = s.name
       // 对齐 VoiceClone 页 selectSample：自动填充样本参考文字
       if (s.text) refText.value = s.text
-    }
-  }
-
-  /** 上传参考声音（对照 _select_ref_audio：wav/mp3/m4a，选中后优先于服务端样本） */
-  async function uploadRefAudio(): Promise<void> {
-    try {
-      const p = await window.tintin?.dialog?.openFile?.({
-        title: '选择人声克隆样本',
-        filters: [{ name: 'Audio Files', extensions: ['wav', 'mp3', 'm4a'] }, { name: 'All Files', extensions: ['*'] }],
+      // 播放条地址：服务端相对路径拼绝对 URL（直连服务端，媒体栈自行加载，无 base64/blob 中间环节）
+      if (!s.url) { refPreviewUrl.value = ''; return }
+      refPreviewUrl.value = /^https?:/i.test(s.url)
+        ? s.url
+        : serverUrl.value.replace(/\/$/, '') + (s.url.startsWith('/') ? s.url : '/' + s.url)
+      if (!serverUrl.value) void ensureServerUrl().then(() => {
+        const cur = selectedRefSample.value
+        if (cur?.url && !/^https?:/i.test(cur.url)) {
+          refPreviewUrl.value = serverUrl.value.replace(/\/$/, '') + (cur.url.startsWith('/') ? cur.url : '/' + cur.url)
+        }
       })
-      if (!p) return
+    } else {
       selectedRefSample.value = null
-      refAudioPath.value = p
-      refAudioLabel.value = `本地: ${pathBasename(p)}`
-    } catch (_) { /* 取消 */ }
+      refAudioLabel.value = refSamples.value.length ? '请选择声音样本' : '未找到预设声音样本'
+    }
   }
 
-  function playRefAudio(): void {
-    // 服务端样本：用 URL 直接播放（相对路径拼 serverUrl）；本地文件：系统播放器
-    if (selectedRefSample.value?.url) {
+  /** 底部上传新样本（对齐 VoiceClone onUploadNewSample：音频+名称+文字 → 服务端
+   *  POST /voice/samples → 刷新下拉并自动选中；2026-09-08 用户裁决与声音克隆页同口径，
+   *  不再是行内「选择本地文件」仅本地路径的旧交互） */
+  const nsFilePath = ref('')
+  const nsName = ref('')
+  const nsText = ref('')
+  const nsError = ref('')
+  const nsSuccess = ref('')
+  const nsBusy = ref(false)
+  const nsTranscribing = ref(false)
+
+  function pickNewSampleFile(): void {
+    void (async () => {
       try {
-        const u = selectedRefSample.value.url
-        const abs = /^https?:/i.test(u) ? u : (serverUrl.value.replace(/\/$/, '') + (u.startsWith('/') ? u : '/' + u))
-        void new Audio(abs).play()
-      } catch (_) {}
-      return
-    }
-    if (refAudioPath.value) { try { window.tintin?.shell?.openItem?.(refAudioPath.value) } catch (_) {} }
+        const p = await window.tintin?.dialog?.openFile?.({
+          title: '选择音频文件上传为样本',
+          filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a'] }, { name: 'All Files', extensions: ['*'] }],
+        })
+        if (!p) return
+        nsFilePath.value = p
+        const base = pathBasename(p).replace(/\.[^.]+$/, '')
+        if (base && !nsName.value) nsName.value = base
+      } catch (_) { /* 取消 */ }
+    })()
+  }
+
+  /** 上传样本时 ASR 识别音频文字（VoiceClone transcribeForNewSample 同款） */
+  function transcribeNewSample(): void {
+    void (async () => {
+      if (!nsFilePath.value) return
+      nsTranscribing.value = true
+      nsError.value = ''
+      try {
+        const res = await window.tintin.server.asrTranscribe({
+          audio: { path: nsFilePath.value } as unknown as Blob,
+          language: 'zh',
+          format: 'txt',
+        } as any)
+        if (!res || (res as any).error) throw new Error((res as any)?.error || '识别失败')
+        nsText.value = (typeof res === 'string' ? res : (res as any).text || '').trim()
+      } catch (err) {
+        nsError.value = `文字识别失败：${errText(err)}`
+      } finally {
+        nsTranscribing.value = false
+      }
+    })()
+  }
+
+  function uploadNewSampleRef(): void {
+    void (async () => {
+      nsError.value = ''
+      nsSuccess.value = ''
+      if (!nsFilePath.value) { nsError.value = '请先选择音频文件'; return }
+      if (!nsName.value.trim()) { nsError.value = '请输入样本名称'; return }
+      nsBusy.value = true
+      try {
+        const res = await window.tintin.server.ttsUploadSample({
+          file: { path: nsFilePath.value } as unknown as Blob,
+          name: nsName.value.trim(),
+          text: nsText.value.trim() || '',
+        } as any)
+        if (!res || (res as any).error) throw new Error((res as any)?.error || '上传失败')
+        const newId = String((res as any)?.id || '')
+        await loadRefSamples()
+        if (newId) selectRefAudio(`sample:${newId}`)
+        nsSuccess.value = `样本「${nsName.value}」上传成功，已自动选中`
+        nsFilePath.value = ''
+        nsName.value = ''
+        nsText.value = ''
+      } catch (err) {
+        nsError.value = errText(err)
+      } finally {
+        nsBusy.value = false
+      }
+    })()
   }
 
   /** 文案生成设置弹窗（对照 _show_ai_rewrite_settings：slider 初值 = 当前温度换算） */
@@ -1640,8 +1738,8 @@ export function useVideoMontage() {
   async function startSynthesizeVoice(): Promise<void> {
     if (voiceBusy.value) return
     await ensureTtsApiUrl()
-    if (!refAudioPath.value) {
-      notify('未上传声音样本', '请先上传/选择参考声音样本 (wav/mp3)！')
+    if (!refAudioPath.value && !selectedRefSample.value?.url) {
+      notify('未选择声音样本', '请先选择或上传声音样本 (wav/mp3/m4a)！')
       return
     }
     if (!voiceDirInput.value) {
@@ -1948,7 +2046,9 @@ export function useVideoMontage() {
     dubbedDlg,
     rewriteTemp,
     voiceBusy, dubBusy, rewriteBusy, dubbingEnabled,
-    selectVoiceDir, scanVoiceDir, uploadRefAudio, playRefAudio,
+    scanVoiceDir, enterStepVoice, loadRefSamples, refPreviewUrl,
+    nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
+    pickNewSampleFile, transcribeNewSample, uploadNewSampleRef,
     batchAiRewrite, startSynthesizeVoice, startDubVideos,
     regenVoice, exportVoice, playVoice, playRowVideo, playDubbedVideo,
     toggleLengthMode, lengthModeTip,

@@ -259,7 +259,7 @@ declare interface TintinBridgeServer {
 
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   /** 扫描视频输入目录（对照 _do_scan_voice_video_dir：无 .flv，自动检测 voices/voice_N.wav 与伴随 .txt） */
-  voiceScanDir(payload: { dirPath: string; selectedFiles?: string[] }): Promise<{
+  voiceScanDir(payload: { dirPath: string; selectedFiles?: string[]; keepFiles?: string[] }): Promise<{
     files: Array<{ path: string; name: string; wavPath: string; originalText: string; durationSec: number }>
     voicesDir: string
   } | { error: string }>

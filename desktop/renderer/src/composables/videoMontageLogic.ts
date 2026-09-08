@@ -33,7 +33,10 @@ export function mapTaskStatus(status: unknown, task: Record<string, unknown> = {
   const s = String(status || '').toLowerCase()
   if (['completed', 'done', 'success', 'finished'].includes(s)) return { phase: 'done', error: '' }
   if (['failed', 'error', 'cancelled'].includes(s)) {
-    const err = task.error_msg || task.error || task.message || '未知错误'
+    const err = task.error_msg || task.error || task.message
+      // cancelled 且无 error_msg：服务端运行中重启会把任务置 cancelled（实测 705：
+      // result={cancelled:true}）——报「未知错误」误导，改为可行动的文案
+      || (s === 'cancelled' ? '服务端任务被取消（可能因服务端重启中断），请重新提交' : '未知错误')
     return { phase: 'failed', error: String(err) }
   }
   return { phase: 'running', error: '' }

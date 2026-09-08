@@ -115,6 +115,28 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const selected = Array.isArray(p.selectedFiles) ? p.selectedFiles : []
       if (!dirPath || !fs.existsSync(dirPath)) return { files: [], voicesDir: '' }
 
+      // _cleanup_stale_montage_outputs L597-634 一比一：进入第③步时传入本次确认列表，
+      // 删除 outputs 里不属于本次列表的旧 montage_concat_* 产物（含附属同名文件），
+      // 避免配音列表把历次合成的旧视频全扫进来（原版「34个变9个」根因）
+      const keepFiles = Array.isArray(p.keepFiles) ? p.keepFiles : []
+      if (keepFiles.length) {
+        try {
+          const keepStems = new Set()
+          for (const pf of keepFiles) {
+            const stem = path.resolve(pf).replace(/\.[^.]+$/, '')
+            keepStems.add(stem)
+            keepStems.add(stem + '_sources')
+            keepStems.add(stem + '.meta')
+          }
+          for (const f of fs.readdirSync(dirPath)) {
+            if (!f.startsWith('montage_concat_')) continue // 只动混剪专属命名，不碰用户其它视频
+            const full = path.resolve(path.join(dirPath, f))
+            if (keepStems.has(full.replace(/\.[^.]+$/, ''))) continue
+            try { fs.unlinkSync(full) } catch (_) { /* 删除失败按原版仅告警口径忽略 */ }
+          }
+        } catch (_) { /* 清理失败不阻断扫描 */ }
+      }
+
       const exts = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v']
       let files = []
       // 显式选中的文件若仍在当前目录 → 原样使用（L1648-1653 口径）

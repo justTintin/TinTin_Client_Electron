@@ -2,7 +2,8 @@
 // montage-voice-ipc.js — 智能混剪 Step3「口播配音」域 IPC
 // 对照原客户端（studio/gui/montage/）：
 //   · workers/voice_workers.py  VoiceCloneWorker（api 模式）→ voice:cloneBatch
-//     （逐句 TTS + wav 帧拼接 + 变速 atempo + .timing.json 句级时间轴）
+//     （2026-09-09 用户裁决：整句 TTS（原版逐句+句间 0.15s 静音拼接）+ 变速 atempo
+//     + .timing.json 句级时间轴估算）
 //   · workers/concat_workers.py VideoDubbingWorker → voice:dubVideos
 //     （ffmpeg 字幕烧制/花字/tpad/atempo 链/替换原声）
 //   · video_montage_page.py     _do_scan_voice_video_dir L1621-1695 → voice:scanDir
@@ -179,11 +180,24 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   })
 
   // ── TTS 单次请求（对照 _post_tts L140-188：180s 超时、3 次重试、恢复轮询）──
-  // IndexTTSRequest 口径：无 speaker 字段（voxcpm 遗留），lang/情感参数不传用服务端默认
-  async function postTts(apiUrl, text, refAudioB64) {
+  // IndexTTSRequest 口径：无 speaker 字段（voxcpm 遗留）；extra = 克隆参数
+  //  （duration_factor/emo_text/emo_alpha，2026-09-09 用户裁决「设置声音克隆」弹窗配置）
+  // 停顿标记保护（2026-09-08 服务端句间停顿标记）：text 里的 ((pause=N)) 不得进
+  //  preprocessTtsText（数字会被转中文、字母会被拆分），按标记切分逐段预处理后原样拼回。
+  const PAUSE_MARK_RE = /\(\(pause=\d+\)\)/g
+  function preprocessTtsKeepingPause(text) {
+    if (!PAUSE_MARK_RE.test(text)) return L.preprocessTtsText(text)
+    PAUSE_MARK_RE.lastIndex = 0
+    return String(text)
+      .split(/((?:\(\(pause=\d+\)\)))/)
+      .map((p) => (/^\(\(pause=\d+\)\)$/.test(p) ? p : L.preprocessTtsText(p)))
+      .join('')
+  }
+  async function postTts(apiUrl, text, refAudioB64, extra) {
     const payload = {
-      text: L.preprocessTtsText(text),
+      text: preprocessTtsKeepingPause(text),
       prompt_audio: refAudioB64 || null,
+      ...(extra || {}),
     }
     const maxAttempts = 3
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -236,40 +250,27 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   }
 
   /**
-   * 合成一条文案为 wav（对照 _synthesize_item L273-328 逐行）：
-   * 多句 → 逐句合成记句级时间轴（.timing.json）再帧拼接；失败/单句 → 整体合成回退。
+   * 合成一条文案为 wav（2026-09-09 用户裁决：整句合成——原版为逐句合成后拼接，
+   *   句间固定插 0.15s 静音（_concat_wav_bytes gap_sec=0.15，不可配置）；整句化后
+   *   句间停顿由模型按标点自然处理。.timing.json 仍按句估算写入（字幕烧制逐行时间轴依赖）。
+   * 2026-09-08 服务端新增句间停顿标记（仅 indextts，写在 text 里）：((pause=毫秒)) / 连续
+   *   空格 / 换行；服务端按标记拆段逐段推理后插精确静音拼接，无标记走单段路径（零开销）。
+   *   pauseMs>0 时在句界插入显式标记（用户可调，替代原版固定 0.15s），>0 会多段推理、
+   *   长文案耗时线性增加（文档明示）。
    */
-  async function synthesizeItem(text, refAudioB64, outWavPath, apiUrl, emit) {
-    const gap = 0.15
+  async function synthesizeItem(text, refAudioB64, outWavPath, apiUrl, emit, extra, pauseMs) {
     const segs = L.splitSentences(text)
-    if (segs.length >= 2) {
-      try {
-        const wavs = []
-        const timing = []
-        let cursor = 0
-        for (let si = 0; si < segs.length; si++) {
-          emit?.({ stage: `逐句合成 ${si + 1}/${segs.length}...` })
-          const wb = L.repairWavBytes(await postTts(apiUrl, segs[si], refAudioB64))
-          const dur = L.wavBytesDuration(wb)
-          timing.push({ text: segs[si], start: Math.round(cursor * 1000) / 1000, end: Math.round((cursor + dur) * 1000) / 1000 })
-          cursor += dur + gap
-          wavs.push(wb)
-          await sleep(200)
-        }
-        const combined = L.concatWavBuffers(wavs, gap)
-        fs.writeFileSync(outWavPath, combined)
-        writeTimingSidecar(outWavPath, timing)
-        return
-      } catch (_) {
-        emit?.({ stage: '逐句合成失败，回退整体合成...' })
-      }
-    }
-    // 整体合成（单句 / 逐句失败回退）：多行文案用「。」连接
     let mergedText = text.trim()
-    if (mergedText.includes('\n')) {
+    const pause = Math.max(0, Math.round(Number(pauseMs ?? 0) || 0))
+    if (pause > 0 && segs.length > 1) {
+      // 句界插显式停顿标记（splitSentences 保留句尾标点，直接 join）
+      mergedText = segs.join(`((pause=${pause}))`)
+    } else if (mergedText.includes('\n')) {
+      // 整句合成：多行文案用「。」连接为一次 TTS 请求（单句路径零开销）
       mergedText = mergedText.split('\n').map((l) => l.trim()).filter(Boolean).join('。') + '。'
     }
-    const content = L.repairWavBytes(await postTts(apiUrl, mergedText, refAudioB64))
+    emit?.({ stage: '正在合成语音...' })
+    const content = L.repairWavBytes(await postTts(apiUrl, mergedText, refAudioB64, extra))
     fs.writeFileSync(outWavPath, content)
     try {
       const totalDur = L.wavBytesDuration(content)
@@ -310,6 +311,15 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const apiUrl = String(p.apiUrl || '').trim() || (getServerUrl().replace(/\/$/, '') + '/indextts/tts')
       const speedMin = Number(p.speedMin ?? 0.9)
       const speedMax = Number(p.speedMax ?? 1.2)
+      // 克隆参数（渲染层「设置声音克隆」弹窗配置；契约同声音克隆页 /indextts/tts）
+      const tp = p.ttsParams || {}
+      const ttsExtra = {
+        duration_factor: Number(tp.durationFactor ?? 1.0),
+        ...(String(tp.emoText || '').trim() ? { emo_text: String(tp.emoText).trim() } : {}),
+        emo_alpha: Number(tp.emoAlpha ?? 0.5),
+      }
+      // 句间停顿（2026-09-08 服务端停顿标记）：毫秒值写在 text 里，不进请求载荷
+      const pauseMs = Math.max(0, Math.round(Number(tp.pauseMs ?? 0) || 0))
       const channel = p.progressChannel || ''
 
       let refAudioB64 = null
@@ -344,7 +354,7 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         try {
           fs.mkdirSync(path.dirname(t.outWavPath), { recursive: true })
           emitRow(t.rowIdx, 50)
-          await synthesizeItem(text, refAudioB64, t.outWavPath, apiUrl, (msg) => emitRow(t.rowIdx, 50, msg.stage))
+          await synthesizeItem(text, refAudioB64, t.outWavPath, apiUrl, (msg) => emitRow(t.rowIdx, 50, msg.stage), ttsExtra, pauseMs)
           emitRow(t.rowIdx, 90)
 
           // 变速对齐视频时长（L364-380 口径；clamp [speedMin, speedMax]）

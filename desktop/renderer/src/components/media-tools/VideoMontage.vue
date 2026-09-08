@@ -16,9 +16,11 @@ import TSelect from '@/components/common/TSelect.vue'
 import VideoPreview from '@/components/common/VideoPreview.vue'
 import VideoPlayer from '@/components/common/VideoPlayer.vue'
 import { useVideoMontage } from '@/composables/useVideoMontage'
-import { BGM_STYLE_OPTIONS } from '@/composables/videoMontageLogic'
+import { useAudioGen } from '@/composables/useAudioGen'
+import { useFilePicker } from '@/composables/useFilePicker'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import { markdownListLines } from '@/composables/opsProductLibraryLogic'
+import { copyPreviewText } from '@/composables/videoMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
 // 步骤条文案对照原客户端 gui/video_montage_page.py steps_text L257，严格一致
@@ -36,7 +38,7 @@ const {
   // 共享
   polling, activeTaskId, statusText, cancelPolling, concatProgress,
   // Step1 素材解析（镜头智能分割）
-  srcVideos, threshold, minSceneLen, imageDuration,
+  srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
   scenes, scoreFilter, filteredScenes, checkedCount,
   splitBusy, splitError, splitMsg, splitProgress, splitResolution,
   selectFolder, onDrop, removeVideo, runSplit,
@@ -60,14 +62,17 @@ const {
   voiceDirInput, voiceRows,
   refSamples, selectedRefSample, refAudioPath, refText, refPreviewUrl, loadRefSamples,
   nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
-  pickNewSampleFile, transcribeNewSample, uploadNewSampleRef,
+  transcribeNewSample, uploadNewSampleRef,
   ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
   addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
+  voiceProgress,
   fancyTemplateId, fancyTemplates, fancyPreviews,
   loadFancyTemplates, previewFancyWords, fancyPreviewDlg, closeFancyPreviewDlg,
   FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
   aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
+  ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
+  cloneParamsDlg, openCloneParams, closeCloneParams, saveCloneParams,
   editDlg, openEditDlg, saveEditDlg,
   dubbedDlg,
   voiceBusy, dubBusy, rewriteBusy, dubbingEnabled,
@@ -79,11 +84,9 @@ const {
   // Step4 特效包装（对照 step4_final_view.py 逐控件）
   bgmPath, bgmName, bgmVolume, finalBusy, finalDone, finalProgress,
   finalVideoList, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
-  bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration,
-  bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl,
+  bgmSource,
   bgmPlaying, bgmPosMs, bgmDurMs,
-  generateBgm,
-  pickBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
+  pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
   enterStep4, startFinalMix, openFinalDir,
   exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo,
   fmtBgmTime,
@@ -93,6 +96,104 @@ const {
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
 
+/** TTS 引擎下拉选项（2026-09-09 用户裁决：默认 idexttts，对齐声音克隆页裁决；
+ *  QwenTTS 待服务端实现，禁用占位） */
+const TTS_ENGINE_OPTIONS = [
+  { label: 'IndexTTS（快速/情感）', value: 'idexttts' },
+  { label: 'QwenTTS（待服务端实现）', value: 'qwentts', disabled: true },
+]
+/** 情感预设选项（IndexTTS emo_text 常用值，同声音克隆页） */
+const TTS_EMO_OPTIONS = [
+  { label: '开心', value: '开心' },
+  { label: '悲伤', value: '悲伤' },
+  { label: '激动', value: '激动' },
+  { label: '温柔', value: '温柔' },
+  { label: '愤怒', value: '愤怒' },
+  { label: '恐惧', value: '恐惧' },
+  { label: '惊讶', value: '惊讶' },
+  { label: '厌恶', value: '厌恶' },
+  { label: '平静', value: '平静' },
+]
+
+// ── Step4 BGM 选择弹窗 + AI 生成 BGM（2026-09-09 用户裁决：复用音频生成页域，
+//    独立实例与 AudioGen 页互不影响；AI 生成用「生成 BGM」同款结构化布局，
+//    生成/选中后回填 bgmPath 本地混音链路）──
+const ag = useAudioGen()
+const {
+  bgmStyle, bgmStyleOptions, bgmDuration, bgmBusy, bgmResultLabel, bgmUrl, bgmSaving,
+  bgmLocal, generateBgm, saveBgmToLib, openBgmLocation,
+  bgmMood, bgmMoodOptions, bgmScene, bgmSceneOptions,
+  listQuery, listTag, listKind, LIST_KIND_OPTIONS,
+  listRows, listLoading, listError, listStat, listPageSize,
+  pageLabel, canPrevPage, canNextPage,
+  doSearch, goPrevPage, goNextPage, loadBgmTags,
+  playingMid, listAudioEl, playListRow,
+  toAbsolute,
+} = ag
+
+// 生成完成自动归档本地后回填 BGM 路径（混音/剪映导出走同一本地链路）
+watch(bgmLocal, (p) => {
+  if (p) { bgmPath.value = p; bgmName.value = pathBasename(p) }
+})
+
+/** 生成面板内联播放（同 AudioGen playBgm：本地归档优先，未就绪回退在线 URL） */
+const agBgmAudioEl = ref<HTMLAudioElement | null>(null)
+function playAgBgm(): void {
+  const el = agBgmAudioEl.value
+  if (!el) return
+  if (bgmLocal.value) {
+    el.src = 'file:///' + encodeURI(bgmLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
+    void el.play().catch(() => { /* 加载失败静默 */ })
+    return
+  }
+  if (!bgmUrl.value) return
+  el.src = toAbsolute(bgmUrl.value)
+  void el.play().catch(() => { /* 加载失败静默 */ })
+}
+
+/** BGM 选择弹窗（同音频生成页左栏布局：搜索/分类/标签/列表/分页；单击选中，双击或 ▶ 试听） */
+const bgmPickDlg = ref<{ show: boolean; pickedMid: string; busy: boolean; error: string }>({ show: false, pickedMid: '', busy: false, error: '' })
+function openBgmPickDlg(): void {
+  bgmPickDlg.value.show = true
+  bgmPickDlg.value.error = ''
+  if (!listRows.value.length && !listLoading.value) doSearch()
+  void loadBgmTags()
+}
+function confirmBgmPick(): void {
+  const it = listRows.value.find((r) => r.mid === bgmPickDlg.value.pickedMid)
+  if (!it || bgmPickDlg.value.busy) return
+  bgmPickDlg.value.busy = true
+  bgmPickDlg.value.error = ''
+  void applyLibraryBgm(it.mid, it.filename).then((r) => {
+    bgmPickDlg.value.busy = false
+    if (r && r.error) { bgmPickDlg.value.error = r.error; return }
+    bgmPickDlg.value.show = false
+  })
+}
+
+// ─ 页尾上传新样本（VoiceClone 底部上传区同款同处理：dropzone 点击/拖拽选文件，
+//   useFilePicker 统一拖拽；选中后名称自动带出（去扩展名））──
+const nsDragging = ref(false)
+const {
+  fileName: nsFileName,
+  pickFile: pickNsFile,
+  onDrop: onNsDrop,
+  onDragOver: onNsDragOver,
+  onDragLeave: onNsDragLeave,
+} = useFilePicker({
+  dialogTitle: '选择音频文件上传为样本',
+  filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }],
+  onPicked: (p) => {
+    nsFilePath.value = p
+    const base = pathBasename(p).replace(/\.[^.]+$/, '')
+    if (base && !nsName.value) nsName.value = base
+  },
+})
+function onNsDropForward(e: DragEvent): void {
+  onNsDrop(e)
+  nsDragging.value = false
+}
+
 // 2026-09-07 缩略图改主进程 ffmpeg 抽帧（dataURL <img>）：
 // ① 根治多路 <video> 解码器并发初始化崩溃（前版限 8 行挂载导致“缩略图只有一部分”）；
 // ② 全部素材行均有缩略图，抽帧失败行回退占位图标。
@@ -101,6 +202,12 @@ const {
 // 补素材库入口后接入——用户裁决 2026-09-07：优先服务端，无则本地抽帧。
 const thumbs = reactive(new Map<string, string>())
 let thumbSeq = 0
+
+/** 素材行时长文案（ffprobe 探测结果；未就绪/失败显 —） */
+function fmtSrcDur(v: string): string {
+  const d = srcDurations.get(v)
+  return d && d > 0 ? d.toFixed(1) + 's' : '—'
+}
 let thumbToken = 0
 watch(() => [...srcVideos.value], (list) => {
   const token = ++thumbToken
@@ -156,9 +263,6 @@ function openDubbedDir(): void {
   const d = dubbedDlg.value.outDir
   if (d) playDubbed(d)
 }
-
-/** AI 生成 style 下拉（原客户端 _build_tab_ai L1588-1594 同款 7 项，硬编码不拉接口） */
-const bgmStyleOptions = [...BGM_STYLE_OPTIONS]
 
 /** 输出画幅下拉（原版 layout_combo 3 项；首项动态附原片分辨率，L4800-4802 同口径） */
 const LAYOUTS = computed(() => [
@@ -244,6 +348,8 @@ function scoreClass(score: number | undefined): string {
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="15" height="14" rx="2" /><polygon points="10 8 16 11 10 14" fill="currentColor" stroke="none" /><path d="M19 8l3-2v12l-3-2" /></svg>
             </span>
             <span class="video-path" @dblclick="previewSourceVideo(v)">{{ v }}</span>
+            <!-- 时长列（2026-09-09 用户裁决：素材列表加时长显示，ffprobe 探测） -->
+            <span class="video-dur">{{ fmtSrcDur(v) }}</span>
             <button class="video-play-btn" title="播放" @click="previewSourceVideo(v)">▶</button>
             <button class="video-remove-btn" title="从素材列表移除" @click="removeVideo(i)">×</button>
           </li>
@@ -279,11 +385,12 @@ function scoreClass(score: number | undefined): string {
             </select>
           </label>
         </div>
-        <!-- 10 列对照原版 L127-128：勾选|序号|视频片段|景别|时长|画幅|主要画面|产品|型号|评分 -->
+        <!-- 11 列：原版 10 列（勾选|序号|视频片段|景别|时长|画幅|主要画面|产品|型号|评分）
+             + 本端增强「位置」列（2026-09-09 用户裁决：展示景别来源——出场/入场是路径命名推断非 AI 分析） -->
         <div class="tbl-scroll-wrap">
         <table class="tbl">
           <thead><tr>
-            <th class="w32"></th><th>序号</th><th style="min-width:140px">视频片段</th><th>景别</th><th>时长</th>
+            <th class="w32"></th><th>序号</th><th style="min-width:140px">视频片段</th><th>景别</th><th>位置</th><th>时长</th>
             <th>画幅</th><th style="min-width:200px">主要画面</th><th>产品</th><th>型号</th><th>评分</th>
           </tr></thead>
           <tbody>
@@ -298,6 +405,7 @@ function scoreClass(score: number | undefined): string {
                 </span>
                 <span v-else class="muted">—</span>
               </td>
+              <td class="ta-c shot-source-cell" :title="r.shotTypeSource || ''">{{ r.shotTypeSource || '—' }}</td>
               <td class="ta-c">{{ r.duration > 0 ? r.duration.toFixed(1) + 's' : '—' }}</td>
               <td class="ta-c">{{ r.resolution || splitResolution || '—' }}</td>
               <td>
@@ -374,16 +482,27 @@ function scoreClass(score: number | undefined): string {
 
         <!-- 中间结果区（原版 result_box） -->
         <div class="result-box">
-          <!-- 预合成视频列表：全宽，固定 10 行高度 -->
+          <!-- 预合成视频列表（2026-09-09 用户裁决：改表格列显示，不再单行挤在一起；
+               列：序号|视频|状态|口播文案；交互不变：单击选中/双击查看文案/右键菜单） -->
           <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
-          <ul class="plan-list">
-            <li v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
-              :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
-              @contextmenu.prevent="openPlanMenu($event, i)">{{ planRowText(i) }}</li>
-            <!-- 不足 10 行时占位，保持固定高度 -->
-            <li v-for="n in Math.max(0, 10 - assemblePlans.length)" :key="'ph'+n" class="plan-placeholder"></li>
-            <li v-if="!assemblePlans.length" class="muted">尚无预合成视频，勾选镜头后点击「镜头重组」</li>
-          </ul>
+          <table class="tbl plan-tbl">
+            <thead><tr>
+              <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
+            </tr></thead>
+            <tbody>
+              <tr v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
+                :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
+                @contextmenu.prevent="openPlanMenu($event, i)">
+                <td class="ta-c">{{ i + 1 }}</td>
+                <td class="plan-file" :title="p.outputName">{{ p.outputName || `${p.clips.length} 个镜头` }}</td>
+                <td class="ta-c">{{ p.confirmed && p.outputName ? '已合成' : '待确认' }}</td>
+                <td class="plan-copy" :title="p.copy || ''">{{ p.copy ? copyPreviewText(p.copy) : '未生成口播文案' }}</td>
+              </tr>
+              <!-- 不足 10 行时占位，保持固定高度 -->
+              <tr v-for="n in Math.max(0, 10 - assemblePlans.length)" :key="'ph'+n" class="plan-placeholder"><td colspan="4"></td></tr>
+            </tbody>
+          </table>
+          <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
 
           <!-- 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） -->
           <div class="result-bottom">
@@ -392,7 +511,7 @@ function scoreClass(score: number | undefined): string {
               <div class="detail-scroll-wrap">
                 <table class="tbl detail-tbl">
                   <thead><tr>
-                    <th class="w32">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
+                    <th class="w48">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
                     <th>时长</th><th>景别</th><th style="min-width:180px">描述文案</th><th>评分</th>
                   </tr></thead>
                   <tbody v-if="currentPlan">
@@ -439,7 +558,8 @@ function scoreClass(score: number | undefined): string {
       <!-- 确认行（原版 confirm_row L268-286：确认合成视频 + 生成口播文案，初始禁用） -->
       <div class="row confirm-row">
         <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!hasUnconfirmed" @click="confirmAllPrecompose" />
-        <TButton label="生成口播文案" variant="secondary" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
+        <!-- 2026-09-09 用户裁决：合成完成后生成口播文案要标明可点击状态（可用时切 primary 高亮） -->
+        <TButton label="生成口播文案" :variant="confirmedPaths.length ? 'primary' : 'secondary'" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
       </div>
       <!-- 确认合成进度（样式对齐 Step1 split-progress，同卡片内按钮行下方呈现；
         阶段值对照原版 montage_concat_server_worker progress：提交 30/轮询钳 48/完成 100）；
@@ -467,8 +587,9 @@ function scoreClass(score: number | undefined): string {
         <div class="row">
           <label class="label">参考声音:</label>
           <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : ''" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
+          <!-- 2026-09-09 用户裁决：播放条放到样本下拉框后面（同行右侧） -->
+          <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
         </div>
-        <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
 
         <!-- 3. 参考文案行 -->
         <div class="row">
@@ -483,6 +604,10 @@ function scoreClass(score: number | undefined): string {
         <div class="row between">
           <span class="card-title"> 待合成视频列表与配音文案映射 (在配音文案栏直接输入):</span>
           <div class="row">
+            <!-- 2026-09-09 用户裁决：文案生成设置左边加 TTS 选择下拉（默认 idexttts）
+                 + 设置声音克隆按钮（弹窗配置克隆参数，克隆时随请求发送） -->
+            <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
+            <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
             <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
             <TButton label="一键AI修改全部文案" size="small" :loading="rewriteBusy" @click="batchAiRewrite" />
           </div>
@@ -586,23 +711,11 @@ function scoreClass(score: number | undefined): string {
           <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
           <TButton label="开始给视频配音 (替换原声)" :loading="dubBusy" :disabled="!dubbingEnabled" @click="startDubVideos" />
         </div>
-
-        <!-- 9. 页尾上传新样本（对齐 VoiceClone 页同款位置：置于卡片最底部；
-             音频+名称+文字 → 服务端 → 刷新下拉并自动选中；
-             2026-09-08 用户裁决：上传声音放到底部作为新样本上传） -->
-        <div class="ns-section">
-          <div class="ns-title">没有想要的样本？上传音频创建新样本</div>
-          <div class="row">
-            <TButton :label="nsFilePath ? '重新选择音频' : '选择音频文件'" icon="upload" variant="secondary" @click="pickNewSampleFile" />
-            <span v-if="nsFilePath" class="ns-file">{{ pathBasename(nsFilePath) }}</span>
-            <input v-model="nsName" class="input w160" placeholder="样本名称（必填）" />
-            <TButton :label="nsTranscribing ? '正在识别...' : '识别参考文字'" size="small" plain :disabled="!nsFilePath" :loading="nsTranscribing" @click="transcribeNewSample" />
-            <TButton label="上传为样本" icon="upload" :loading="nsBusy" :disabled="!nsFilePath || !nsName.trim()" @click="uploadNewSampleRef" />
-          </div>
-          <input v-model="nsText" class="input grow" placeholder="与参考音频一致的文字（可选）；可点「识别参考文字」自动识别" />
-          <div v-if="nsError" class="ns-msg ns-err">{{ nsError }}</div>
-          <div v-if="nsSuccess" class="ns-msg ns-ok">{{ nsSuccess }}</div>
-        </div>
+        <!-- 克隆/配音批量进度（主进程逐条 emitRow 聚合为整体百分比；文案+进度条对照确认合成形态） -->
+        <template v-if="voiceBusy || dubBusy">
+          <div class="concat-status-line">{{ statusText }}</div>
+          <progress class="vd-progress split-progress" :value="voiceProgress" max="100" />
+        </template>
       </section>
 
       <!-- 导航行（L284-297；btn_next_to_step_4.setEnabled(True) 需有配音视频） -->
@@ -619,38 +732,36 @@ function scoreClass(score: number | undefined): string {
         <div class="row">
           <label class="label"> 背景音乐 (BGM):</label>
           <input :value="bgmPath" placeholder="选择混剪背景音乐 (mp3/wav)，选空则无BGM..." readonly class="input grow" @click="pickBgm" />
+          <!-- 2026-09-09 用户裁决：选择背景音乐前加「选择BGM」按钮，弹音频库选择框 -->
+          <TButton label="选择BGM" size="small" variant="secondary" @click="openBgmPickDlg" />
           <TButton label="选择背景音乐" size="small" variant="secondary" @click="pickBgm" />
-          <!-- 本端保留功能：AI 生成 BGM（生成后主进程下载落盘，走同一本地混音链路） -->
+          <!-- 本端保留功能：AI 生成 BGM（生成后自动归档本地，走同一本地混音链路） -->
           <TButton label="AI 生成 BGM" size="small" :variant="bgmSource === 'ai' ? 'primary' : 'secondary'" @click="bgmSource = bgmSource === 'ai' ? 'local' : 'ai'" />
         </div>
         <div v-if="bgmSource === 'ai'" class="ai-bgm-panel">
-          <div class="row">
-            <label class="label">描述:</label>
-            <input
-              v-model="bgmGenPrompt"
-              placeholder="描述你想要的 BGM，如：激昂的电子音乐，适合科技感视频"
-              class="input grow"
-              @keyup.enter="generateBgm"
-            />
-          </div>
+          <!-- 2026-09-09 用户裁决：AI 生成 BGM 改音频生成页「生成 BGM」同款布局
+               （结构化口径 style/mood/duration；生成后自动归档本地并回填 BGM 路径） -->
           <div class="row">
             <label class="label">风格:</label>
-            <TSelect v-model="bgmGenStyle" :options="bgmStyleOptions" />
-            <!-- 2026-09-05 用户裁决：客户端生成 BGM 上限 30 秒 -->
-            <label class="label">时长 <span class="muted">({{ bgmGenDuration }} 秒，3-30)</span></label>
-            <input v-model.number="bgmGenDuration" type="range" min="3" max="30" step="1" class="grow" />
-            <TButton label="生成 BGM" icon="play" :loading="bgmGenBusy" @click="generateBgm" />
+            <TSelect v-model="bgmStyle" class="ag-style-select" :options="bgmStyleOptions" :disabled="bgmBusy" />
+            <label class="label">时长(秒):</label>
+            <input v-model.number="bgmDuration" class="input ag-num-input" type="number" min="5" max="30" step="5" :disabled="bgmBusy" />
           </div>
           <div class="row">
-            <span class="muted">POST /audio/gen/bgm（MusicGen-small，生成约需 30-60 秒；生成后自动下载落盘供混音/剪映导出）</span>
+            <label class="label">情绪:</label>
+            <TSelect v-model="bgmMood" class="ag-tag-select" :options="bgmMoodOptions" :disabled="bgmBusy" />
+            <label class="label">场景:</label>
+            <TSelect v-model="bgmScene" class="ag-tag-select" :options="bgmSceneOptions" :disabled="bgmBusy" />
           </div>
-          <div v-if="bgmGenError" class="error-msg">⚠ {{ bgmGenError }}（修正后重按「生成 BGM」重试）</div>
-          <div v-if="bgmGenUrl" class="row">
-            <audio controls :src="bgmPreviewUrl" class="grow" />
-            <span class="muted" style="white-space: nowrap">{{ bgmGenMeta }}</span>
+          <div class="row agb-gen-row">
+            <TButton label="生成 BGM" :loading="bgmBusy" :disabled="bgmBusy" @click="generateBgm()" />
           </div>
-          <div v-else-if="bgmGenBusy" class="row">
-            <span class="muted">AI 正在生成 BGM（约需 30-60 秒，请稍候）…</span>
+          <p v-if="bgmResultLabel" class="agb-result">{{ bgmResultLabel }}</p>
+          <div class="row">
+            <TButton label="播放生成的 BGM" variant="ghost" size="small" :disabled="!bgmUrl" @click="playAgBgm" />
+            <TButton label="保存到 BGM 库" variant="secondary" size="small" :loading="bgmSaving" :disabled="!bgmUrl || bgmSaving" @click="saveBgmToLib" />
+            <TButton label="打开位置" variant="secondary" size="small" :disabled="!bgmLocal" title="在资源管理器中打开生成的 BGM 本地文件（outputs/ai_audio）" @click="openBgmLocation" />
+            <audio v-if="bgmUrl" ref="agBgmAudioEl" controls class="grow" />
           </div>
         </div>
 
@@ -719,6 +830,53 @@ function scoreClass(score: number | undefined): string {
       <div v-if="polling" class="pbar"><div class="pbar-inner"></div></div>
     </div>
 
+    <!-- 页尾上传新样本（2026-09-08 用户裁决：放在扫描失败提示之下，整个界面最底部；
+      VoiceClone 底部上传区同款同处理：dropzone 点击/拖拽选文件，
+      字段（名称自动带出/文字可 ASR 识别）→ 上传服务端 → 刷新下拉并自动选中） -->
+    <div v-if="step === 2" class="ns-section">
+      <div class="ns-title">没有想要的样本？上传音频创建新样本</div>
+      <div
+        class="dropzone"
+        :class="{ 'is-active': nsDragging, 'has-file': !!nsFilePath }"
+        @click="pickNsFile"
+        @drop.prevent="onNsDropForward"
+        @dragover.prevent="onNsDragOver(); nsDragging = true"
+        @dragleave.prevent="onNsDragLeave(); nsDragging = false"
+      >
+        <svg v-if="!nsFilePath" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+        </svg>
+        <div class="dropzone__text">
+          <template v-if="!nsFilePath">
+            <span class="dropzone__main">点击选择音频或拖拽到此处</span>
+            <span class="dropzone__hint">支持 MP3 / WAV / M4A / FLAC</span>
+          </template>
+          <template v-else>
+            <span class="dropzone__main">{{ nsFileName }}</span>
+            <span class="dropzone__hint">点击重新选择</span>
+          </template>
+        </div>
+      </div>
+      <div v-if="nsFilePath" class="ns-fields">
+        <div class="ns-field">
+          <label class="ns-label">样本名称 *</label>
+          <input v-model="nsName" class="input" placeholder="例：小美-温柔女声" />
+        </div>
+        <div class="ns-field">
+          <div class="ns-field-head">
+            <label class="ns-label">对应文字（可选）</label>
+            <TButton label="识别参考文字" size="small" :loading="nsTranscribing" :disabled="!nsFilePath" @click="transcribeNewSample" />
+          </div>
+          <textarea v-model="nsText" class="input ns-textarea" rows="2" placeholder="与参考音频一致的文字；也可点击右侧按钮自动识别"></textarea>
+        </div>
+        <div class="ns-actions">
+          <TButton label="上传为样本" icon="upload" :loading="nsBusy" :disabled="!nsFilePath || !nsName.trim()" @click="uploadNewSampleRef" />
+        </div>
+        <div v-if="nsError" class="ns-msg ns-err">{{ nsError }}</div>
+        <div v-if="nsSuccess" class="ns-msg ns-ok">{{ nsSuccess }}</div>
+      </div>
+    </div>
+
     <!-- 镜头片段预览弹层（内置 Plyr 播放器，支持本地路径 + 服务端 URL） -->
     <VideoPreview :visible="!!previewUrl" :src="previewUrl" @close="closePreview" @ended="onSeqEnded" />
 
@@ -757,15 +915,17 @@ function scoreClass(score: number | undefined): string {
               <WbPickProductPanel :active="productDlg.show" @pick="onPickProduct" />
             </div>
             <div class="pick-right">
-              <div class="modal-field"><label>品牌:</label><input v-model="productDlg.brand" class="input grow" placeholder="如 罗技 / Logitech" /></div>
-              <div class="modal-field"><label>产品:</label><input v-model="productDlg.product" class="input grow" placeholder="如 鼠标 / 键盘 / 无线耳机" /></div>
-              <div class="modal-field"><label>型号:</label><input v-model="productDlg.model" class="input grow" placeholder="如 G502 / MX Master 3S" /></div>
-              <div class="modal-field modal-extra"><label>补充卖点（可选）:</label>
+              <!-- 2026-09-09 用户裁决：label 与输入框换行（label 上、输入框下占满），
+                补充卖点高度加倍；生成/取消互换位置并与「选择该产品」平行、宽度平分 -->
+              <div class="modal-field modal-field--stack"><label>品牌:</label><input v-model="productDlg.brand" class="input" placeholder="如 罗技 / Logitech" /></div>
+              <div class="modal-field modal-field--stack"><label>产品:</label><input v-model="productDlg.product" class="input" placeholder="如 鼠标 / 键盘 / 无线耳机" /></div>
+              <div class="modal-field modal-field--stack"><label>型号:</label><input v-model="productDlg.model" class="input" placeholder="如 G502 / MX Master 3S" /></div>
+              <div class="modal-field modal-field--stack modal-extra"><label>补充卖点（可选）:</label>
                 <textarea v-model="productDlg.extra" class="modal-textarea modal-textarea--tall" placeholder="如 8K回报率、轻量化、长续航……（可留空）"></textarea>
               </div>
-              <div class="modal-actions">
-                <TButton label="生成" :loading="copyBusy" @click="productDlgGenerate" />
+              <div class="modal-actions modal-actions--split">
                 <TButton label="取消" plain @click="closeProductDlg" />
+                <TButton label="生成" :loading="copyBusy" @click="productDlgGenerate" />
               </div>
             </div>
           </div>
@@ -800,6 +960,104 @@ function scoreClass(score: number | undefined): string {
           <div class="modal-actions">
             <TButton label="取消" plain @click="closeRewriteSettings" />
             <TButton label="保存" @click="saveRewriteSettings" />
+          </div>
+        </div>
+      </div>
+    </teleport>
+
+    <!-- 设置声音克隆弹窗（2026-09-09 用户裁决：对齐声音克隆页 IndexTTS 参数——语速/情感/情感强度；
+      保存后克隆声音时随每次 TTS 请求发送） -->
+    <teleport to="body">
+      <div v-if="cloneParamsDlg.show" class="modal-mask" @click.self="closeCloneParams">
+        <div class="modal">
+          <span class="modal-title">设置声音克隆</span>
+          <span class="hint">以下参数在克隆声音时随每次 TTS 请求发送（当前引擎：IndexTTS）</span>
+          <div class="cp-field">
+            <div class="row between">
+              <span class="label">语速（duration_factor）</span>
+              <span class="cp-value">{{ cloneParamsDlg.factor.toFixed(1) }}x</span>
+            </div>
+            <input v-model.number="cloneParamsDlg.factor" type="range" min="0.5" max="2" step="0.1" class="grow" />
+            <div class="row between cp-labels"><span>0.5x 慢</span><span>1.0x 正常</span><span>2.0x 快</span></div>
+          </div>
+          <div class="cp-field">
+            <span class="label">情感选择（emo_text，可选）</span>
+            <TSelect :model-value="cloneParamsDlg.emo" :options="TTS_EMO_OPTIONS" placeholder="不选择则使用样本默认情感" @update:model-value="(v: string | number) => (cloneParamsDlg.emo = String(v))" />
+          </div>
+          <div class="cp-field">
+            <div class="row between">
+              <span class="label">情感强度（emo_alpha）</span>
+              <span class="cp-value">{{ cloneParamsDlg.alpha.toFixed(1) }}</span>
+            </div>
+            <input v-model.number="cloneParamsDlg.alpha" type="range" min="0" max="1" step="0.1" class="grow" />
+          </div>
+          <div class="cp-field">
+            <div class="row between">
+              <span class="label">句间停顿（毫秒）</span>
+              <span class="cp-value">{{ cloneParamsDlg.pause > 0 ? cloneParamsDlg.pause + 'ms' : '默认（无额外停顿）' }}</span>
+            </div>
+            <input v-model.number="cloneParamsDlg.pause" type="range" min="0" max="3000" step="100" class="grow" />
+            <div class="row between cp-labels"><span>0 关</span><span>1500ms</span><span>3000ms</span></div>
+            <span class="cp-tip">句间插入服务端停顿标记（((pause=毫秒))），精确控制停顿；每处标记将拆段分别合成，文案较长时耗时增加</span>
+          </div>
+          <div class="modal-actions">
+            <TButton label="取消" plain @click="closeCloneParams" />
+            <TButton label="保存" @click="saveCloneParams" />
+          </div>
+        </div>
+      </div>
+    </teleport>
+
+    <!-- BGM 选择弹窗（2026-09-09 用户裁决：同音频生成页左栏布局——搜索/分类/标签/列表/分页；
+      单击选中、双击或 ▶ 试听；确定后下载落盘回填 BGM 路径） -->
+    <teleport to="body">
+      <div v-if="bgmPickDlg.show" class="modal-mask" @click.self="bgmPickDlg.show = false">
+        <div class="modal modal-wide bgm-pick">
+          <span class="modal-title">选择 BGM</span>
+          <div class="row">
+            <input v-model="listQuery" class="input grow" placeholder="搜索音频（语义检索，如：激昂的背景音乐）" :disabled="listLoading" @keydown.enter="doSearch()" />
+            <TButton label="搜索" :loading="listLoading" :disabled="listLoading" @click="doSearch()" />
+          </div>
+          <div class="row">
+            <label class="label">分类:</label>
+            <TSelect v-model="listKind" class="bgm-kind-select" :options="[...LIST_KIND_OPTIONS]" :disabled="listLoading" @update:model-value="doSearch()" />
+            <input v-model="listTag" class="input bgm-tag-input" placeholder="情绪/场景标签" :disabled="listLoading" @keydown.enter="doSearch()" />
+          </div>
+          <div class="bgm-pick-rows">
+            <div v-if="!listLoading && !listError && !listRows.length" class="bgm-pick-state">暂无音频，试试调整筛选条件。</div>
+            <div
+              v-for="it in listRows"
+              v-else
+              :key="it.mid"
+              class="bgm-pick-row"
+              :class="{ picked: bgmPickDlg.pickedMid === it.mid, playing: playingMid === it.mid }"
+              :title="`${it.filename}\n分类: ${it.kindName}\n时长: ${it.durStr}\n大小: ${it.sizeStr}`"
+              @click="bgmPickDlg.pickedMid = it.mid"
+              @dblclick="playListRow(it)"
+            >
+              <span class="bgm-pick-name" :title="it.filename">{{ it.filename }}</span>
+              <span class="vd-tag muted-tag">{{ it.kindName }}</span>
+              <span class="bgm-pick-meta">{{ it.durStr }}</span>
+              <span class="bgm-pick-meta">{{ it.sizeStr }}</span>
+              <span class="bgm-pick-act" role="button" title="试听" @click.stop="playListRow(it)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9V3z" /></svg>
+              </span>
+            </div>
+          </div>
+          <div class="row">
+            <span class="muted" :title="listError || listStat">{{ listError || (listLoading ? '加载中...' : `${listStat} · 单击选中，双击或 ▶ 试听`) }}</span>
+            <span class="grow"></span>
+            <TButton label="上一页" variant="secondary" size="small" :disabled="!canPrevPage || listLoading" @click="goPrevPage()" />
+            <span class="muted">{{ pageLabel }}</span>
+            <TButton label="下一页" variant="secondary" size="small" :disabled="!canNextPage || listLoading" @click="goNextPage()" />
+            <label class="label">每页:</label>
+            <input v-model.number="listPageSize" class="input bgm-page-input" type="number" min="10" max="200" step="10" :disabled="listLoading" @change="doSearch()" />
+            <audio v-show="playingMid" ref="listAudioEl" controls class="bgm-pick-audio" />
+          </div>
+          <div v-if="bgmPickDlg.error" class="error-msg">⚠ {{ bgmPickDlg.error }}</div>
+          <div class="modal-actions">
+            <TButton label="取消" plain @click="bgmPickDlg.show = false" />
+            <TButton label="确定" :loading="bgmPickDlg.busy" :disabled="!bgmPickDlg.pickedMid || bgmPickDlg.busy" @click="confirmBgmPick" />
           </div>
         </div>
       </div>
@@ -930,6 +1188,8 @@ function scoreClass(score: number | undefined): string {
 .video-thumb { width: 60px; height: 40px; object-fit: cover; border-radius: var(--radius-sm); background: #000; flex: none; }
 .video-thumb--ph { display: inline-flex; align-items: center; justify-content: center; color: var(--muted-foreground); background: var(--surface-container-high); }
 .video-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.video-dur { flex: none; width: 52px; text-align: right; font-size: 12px; color: var(--muted-foreground); margin-right: 8px; font-variant-numeric: tabular-nums; }
+.shot-source-cell { font-size: 12px; color: var(--muted-foreground); white-space: nowrap; }
 .video-play-btn { width: 24px; height: 24px; padding: 0; font-size: 12px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; margin-right: 4px; }
 .video-play-btn:hover { color: var(--success); border-color: var(--success); }
 .video-remove-btn { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
@@ -982,21 +1242,21 @@ function scoreClass(score: number | undefined): string {
   display: flex; flex-direction: column; gap: 10px; padding: 10px;
   background: var(--surface-container); border: 1px dashed var(--border); border-radius: var(--radius-md);
 }
-/* 预合成列表：固定 10 行高度（分隔线式每行 ~29px），不足占位，多余滚动 */
-.plan-list {
-  display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0;
-  height: 290px; /* 10 行 × 29px（文字 18 + padding 10 + 分隔线 1）；分隔线式后行距重算 */
-  overflow-y: auto; font-size: 13px;
+/* 预合成列表（2026-09-09 用户裁决改表格）：固定 10 行高度，不足占位，多余滚动 */
+.plan-tbl {
+  height: 290px; /* 10 行 × 29px，同原 .plan-list 口径 */
+  border: 1px solid var(--border); border-radius: var(--radius-md);
 }
-.plan-list li {
-  padding: 5px 10px; border-bottom: 1px solid var(--border);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; flex: none;
-}
-.plan-list li:last-child { border-bottom: none; }
-.plan-list li.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
-.plan-list li.plan-placeholder {
-  visibility: hidden; pointer-events: none;
-}
+.plan-tbl tr { cursor: pointer; }
+.plan-tbl tbody tr:hover { background: color-mix(in srgb, var(--primary) 6%, transparent); }
+.plan-tbl tr.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.plan-tbl tr.plan-placeholder { visibility: hidden; pointer-events: none; }
+.plan-tbl tr.plan-placeholder td { border-bottom: 1px solid var(--border); height: 29px; }
+.plan-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.plan-copy { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
+.plan-empty { padding: 8px 10px; }
+.w48 { width: 48px; white-space: nowrap; }
+.w64 { width: 64px; white-space: nowrap; }
 /* 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） */
 .result-bottom { display: flex; gap: 15px; align-items: flex-start; }
 .detail-col { flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -1013,6 +1273,21 @@ function scoreClass(score: number | undefined): string {
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 .player-video { width: 100%; height: 100%; object-fit: contain; }
+/* 预览区 contain 约束（视频播放器尺寸规范）：Plyr wrapper 默认按视频比例撑高，
+   竖屏/大分辨率镜头会被 overflow:hidden 裁到只剩一角且超出预览区；
+   覆写为 wrapper 填满预览框 + 视频 object-fit: contain，完整帧恒可见且不越界 */
+.player-wrap :deep(.plyr),
+.player-wrap :deep(.plyr__video-wrapper) {
+  height: 100%;
+}
+.player-wrap :deep(.plyr__video-wrapper) {
+  aspect-ratio: auto !important;
+}
+.player-wrap :deep(video) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 .player-empty { color: var(--muted-foreground); font-size: 12px; }
 .detail-tbl td { height: 30px; }
 .grip-cell { cursor: grab; color: var(--muted-foreground); user-select: none; }
@@ -1039,8 +1314,18 @@ function scoreClass(score: number | undefined): string {
 .pick-left { flex: 1 1 50%; min-width: 0; min-height: 0; }
 .pick-right { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
 .pick-right .modal-field { flex: 0 0 auto; }
-.pick-right .modal-field.modal-extra { flex: 1 1 auto; }
+/* 2026-09-09 用户裁决：字段换行（label 上、输入框下占满整行） */
+.pick-right .modal-field--stack { flex-direction: column; align-items: stretch; gap: 6px; }
+.pick-right .modal-field--stack label { width: auto; }
+.pick-right .modal-field--stack :deep(.input) { width: 100%; flex: none; }
+.pick-right .modal-field.modal-extra { flex: 1 1 auto; min-height: 0; }
+/* 2026-09-09 用户裁决：补充卖点与上方输入框左右对齐（占满整行），高度弹性填满
+  剩余空间（不出现右侧滚动条） */
+.pick-right .modal-textarea--tall { min-height: 0; height: auto; flex: 1 1 auto; width: 100%; }
+/* 生成/取消与「选择该产品」平行（margin-top:auto 贴底）且宽度平分右侧 */
 .pick-right .modal-actions { margin-top: auto; }
+.pick-right .modal-actions--split { justify-content: stretch; gap: 12px; }
+.pick-right .modal-actions--split :deep(.t-button) { flex: 1 1 0; }
 .modal-textarea--tall { min-height: 220px; }
 .modal-title { font-size: 15px; font-weight: 600; }
 .modal-field { display: flex; align-items: center; gap: 8px; }
@@ -1056,17 +1341,39 @@ function scoreClass(score: number | undefined): string {
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Step3 口播配音样式（对照 VoiceRowDetailWidget 三行布局；颜色走 V3 design tokens） */
-/* Step3 参考声音播放条（对齐 VoiceClone sample-audio：常驻控件换 src） */
-.ref-audio { height: 32px; width: 100%; max-width: 480px; margin-left: 96px; }
-/* Step3 底部上传新样本区（对齐 VoiceClone upload-section） */
+/* Step3 参考声音播放条（2026-09-09 用户裁决：与样本下拉同行、位于其后） */
+.ref-audio { height: 32px; width: 320px; flex: 0 1 auto; }
+/* 页尾上传新样本（VoiceClone upload-section 同款卡片 + dropzone 拖拽区） */
 .ns-section {
-  display: flex; flex-direction: column; gap: 8px;
-  border-top: 1px solid var(--border); padding-top: var(--space-3); margin-top: var(--space-2);
+  padding: var(--space-5);
+  background: var(--surface-container);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
 }
-.ns-title { font-size: 13px; font-weight: var(--font-weight-semibold); color: var(--foreground); }
-.ns-file { font-size: 12px; color: var(--muted-foreground); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ns-msg { font-size: 12px; }
-.ns-err { color: var(--destructive, #e5484d); }
+.ns-title {
+  font-size: var(--font-size-lead); font-weight: var(--font-weight-semibold);
+  color: var(--foreground); margin-bottom: var(--space-4);
+}
+.dropzone {
+  display: flex; align-items: center; gap: var(--space-3); min-height: 120px; padding: var(--space-5);
+  background: color-mix(in srgb, var(--primary) 6%, var(--surface-container));
+  border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border));
+  border-radius: var(--radius-lg); color: var(--muted-foreground); cursor: pointer;
+  transition: border-color var(--duration-fast), background var(--duration-fast);
+}
+.dropzone:hover, .dropzone.is-active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
+.dropzone.has-file { border-style: solid; color: var(--foreground); }
+.dropzone__text { display: flex; flex-direction: column; gap: 2px; }
+.dropzone__main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); color: var(--foreground); }
+.dropzone__hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
+.ns-fields { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-4); }
+.ns-field { display: flex; flex-direction: column; gap: var(--space-2); }
+.ns-label { font-size: var(--font-size-caption); font-weight: var(--font-weight-medium); color: var(--foreground-muted); }
+.ns-field-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.ns-textarea { min-height: 56px; resize: vertical; }
+.ns-actions { display: flex; justify-content: flex-end; }
+.ns-msg { font-size: var(--font-size-caption); }
+.ns-err { color: var(--error, var(--destructive, #e5484d)); }
 .ns-ok { color: var(--success, #2e9e5b); }
 
 .voice-table { margin-top: var(--space-3); }
@@ -1137,6 +1444,51 @@ function scoreClass(score: number | undefined): string {
 .rw-title { font-size: 13px; color: var(--foreground); }
 .rw-desc { font-size: 12px; color: var(--muted-foreground); white-space: pre-line; }
 .rw-value { font-size: 14px; font-weight: 700; color: var(--primary); text-align: center; }
+
+/* TTS 引擎下拉（表格标题行内，不占满） */
+.tts-engine-select { width: 220px; flex: none; }
+/* 设置声音克隆弹窗 */
+.cp-field { display: flex; flex-direction: column; gap: 6px; }
+.cp-value { font-size: 13px; font-weight: 700; color: var(--primary); }
+.cp-labels { font-size: 11px; color: var(--muted-foreground); }
+.cp-tip { font-size: 11px; color: var(--muted-foreground); line-height: 1.5; }
+
+/* AI 生成 BGM 面板（音频生成页「生成 BGM」同款布局，2026-09-09 用户裁决） */
+.ag-style-select { width: 160px; flex: none; }
+.ag-tag-select { width: 150px; flex: none; }
+.ag-num-input { width: 72px; flex: none; }
+.agb-gen-row { justify-content: flex-end; }
+.agb-result { margin: 0; font-size: 12px; color: var(--muted-foreground); white-space: pre-line; }
+
+/* BGM 选择弹窗（音频生成页左栏同款） */
+.bgm-pick { width: min(900px, 92vw); }
+.bgm-kind-select { width: 170px; flex: none; }
+.bgm-tag-input { max-width: 140px; }
+.bgm-page-input { width: 64px; }
+.bgm-pick-audio { height: 30px; max-width: 220px; }
+.bgm-pick-rows {
+  height: min(420px, 50vh); overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  display: flex; flex-direction: column;
+}
+.bgm-pick-state { padding: 24px 16px; text-align: center; font-size: 12px; color: var(--muted-foreground); }
+.bgm-pick-row {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 0 auto; height: 36px; padding: 0 12px;
+  border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.bgm-pick-row:last-child { border-bottom: none; }
+.bgm-pick-row:hover { background: var(--surface-container); }
+.bgm-pick-row.picked { background: var(--surface-container); box-shadow: inset 3px 0 0 var(--primary); }
+.bgm-pick-row.playing { color: var(--primary); }
+.bgm-pick-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.bgm-pick-meta { font-size: 12px; color: var(--muted-foreground); flex: none; }
+.bgm-pick-act {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: var(--radius-sm);
+  color: var(--primary); flex: none; cursor: pointer;
+}
+.bgm-pick-act:hover { background: var(--surface-container-high); }
 
 /* 配音文案编辑弹窗原文对照 */
 .edit-orig { display: flex; align-items: flex-start; gap: 6px; }

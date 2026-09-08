@@ -143,6 +143,8 @@ export interface SplitSceneRow {
   clipLocalPath?: string
   checked: boolean
   shotType?: string  // 景别分类（服务端 shot_type 优先，否则路径推断：入场/出场/中景/特写/''）
+  /** 景别来源描述（2026-09-09 用户裁决新增「位置」列）：服务端分析 / 文件名「xx」/ 文件夹「xx」；空=未标注 */
+  shotTypeSource?: string
   /** PR#4 条目10：本地已裁剪替换（concat 需改走本地 files 上传，服务端 clip 指向未裁剪原件） */
   trimmed?: boolean
   product?: string   // 产品列（服务端逐镜分析，空则 UI 显 —）
@@ -153,6 +155,7 @@ export interface SplitSceneRow {
 /** shots → 镜头表格行（checked 默认 true，行号从 1 起；sourcePath 用于景别兜底推断） */
 export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?: string): SplitSceneRow[] {
   const inferred = sourcePath ? classifyShotType(sourcePath) : ''
+  const detail = sourcePath ? classifyShotTypeDetail(sourcePath) : null
   return shots.map((s, i) => ({
     idx: i + 1,
     name: s.filename || `${sourceName}_shot_${String(s.shotIndex || i + 1).padStart(3, '0')}.mp4`,
@@ -168,6 +171,10 @@ export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?:
     downloadState: 'pending' as const,
     checked: true,
     ...(s.shotType || inferred ? { shotType: s.shotType || inferred } : {}),
+    // 位置列：服务端 shot_type 优先标「服务端分析」；否则标路径命名命中段（景别如何来的）
+    ...(s.shotType
+      ? { shotTypeSource: '服务端分析' }
+      : detail?.type ? { shotTypeSource: detail.origin === 'file' ? `文件名「${detail.seg}」` : `文件夹「${detail.seg}」` } : {}),
     ...(s.product ? { product: s.product } : {}),
     ...(s.model ? { model: s.model } : {}),
     ...(s.resolution ? { resolution: s.resolution } : {}),
@@ -601,20 +608,27 @@ export const SHOT_TYPE_COLORS: Record<string, string> = {
  * - 均未命中返回 ""（未标注，编排时当中间镜头处理）。
  */
 export function classifyShotType(filePath: string): string {
-  if (!filePath) return ''
+  return classifyShotTypeDetail(filePath).type
+}
+
+/** 景别推断详情：type=景别键，seg=命中段文本，origin=命中位置（file=文件名 / dir=父目录）。
+ *  供分割表「位置」列展示景别来源（2026-09-09 用户裁决：出场/入场是路径命名推断，
+ *  非 AI 分析，需在表里展示它是如何来的）。 */
+export function classifyShotTypeDetail(filePath: string): { type: string; seg: string; origin: 'file' | 'dir' } {
+  if (!filePath) return { type: '', seg: '', origin: 'file' }
   // 取文件名（去扩展名）+ 父目录由深到浅
   const parts = filePath.replace(/\\/g, '/').split('/')
   const fileName = parts[parts.length - 1] || ''
   const nameNoExt = fileName.replace(/\.[^.]+$/, '')
   const dirs = parts.slice(0, -1).filter(Boolean).reverse()
   const segs = [nameNoExt, ...dirs]
-  for (const seg of segs) {
-    const low = seg.toLowerCase()
+  for (let si = 0; si < segs.length; si++) {
+    const low = segs[si].toLowerCase()
     for (const [st, kws] of Object.entries(SHOT_TYPE_KEYWORDS)) {
-      if (kws.some((kw) => low.includes(kw))) return st
+      if (kws.some((kw) => low.includes(kw))) return { type: st, seg: segs[si], origin: si === 0 ? 'file' : 'dir' }
     }
   }
-  return ''
+  return { type: '', seg: '', origin: 'file' }
 }
 
 /**

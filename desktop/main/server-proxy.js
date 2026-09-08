@@ -262,8 +262,13 @@ function httpRequest(method, fullPath, { body, headers = {}, timeout = 30000 } =
       })
     })
 
+    // 超时：socket 闲置信叠除了 destroy 外直接 reject（不依赖 'error' 事件——实测存在
+    //   destroy 后 error 不触发致 promise 永不 settle 的场景，那会把轮询循环永久的卡死
+    //   在单发请求上，表象即「服务端已合成完客户端还在转」；重复 reject/resolve 无害）
     req.on('timeout', () => {
-      req.destroy(new Error('Request timeout'))
+      try { req.destroy() } catch (_) {}
+      try { _httpWarn('http', `✗ ${method} ${fullPath} Request timeout`) } catch (_) {}
+      reject(new Error('Request timeout'))
     })
     req.on('error', (err) => {
       try { _httpWarn('http', `✗ ${method} ${fullPath} ${err && (err.code || err.message) || err}`) } catch (_) {}

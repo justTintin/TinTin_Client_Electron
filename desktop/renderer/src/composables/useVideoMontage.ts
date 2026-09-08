@@ -14,7 +14,7 @@
 // 纯函数在 videoMontageLogic.ts（parser/builder 层），本文件仅编排（IRON-06/07）。
 // ═══════════════════════════════════════════════════════════════
 
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { clientError } from '../utils/clientLog'
 import {
   extractTaskObj,
@@ -201,6 +201,17 @@ export function useVideoMontage() {
 
   // ══ Step1 素材解析（/montage/split，同步）═══════════════════
   const srcVideos = ref<string[]>([])
+    // 素材时长列（2026-09-09 用户裁决：素材列表加时长显示；路径→秒，ffprobe 增量探测）
+    const srcDurations = reactive(new Map<string, number>())
+    watch(srcVideos, (list) => {
+      for (const p of list) {
+        if (srcDurations.has(p)) continue
+        void window.tintin.ffmpeg.probe(p).then((info) => {
+          const d = Number(info?.duration) || 0
+          if (d > 0) srcDurations.set(p, d)
+        }).catch(() => { /* 探测失败显 — */ })
+      }
+    }, { immediate: true })
   const threshold = ref(50)        // 原版 L67 默认 50，范围 10-100（数字越大越不敏感）
   const minSceneLen = ref(0.5)     // 最小镜头秒（原版 L76 默认 0.5，范围 0.1-60）
   const imageDuration = ref(3)     // 精华时长（原版 L85 默认 3；无法分割的视频自动挑出多长的精华片段）
@@ -818,22 +829,42 @@ export function useVideoMontage() {
     return hasFile ? 'invalid' : 'no-file'
   }
 
+  /** 单个 promise 硬性兑底期限：到期未 settle 则返回 fallback（2026-09-08 实测存在
+   *  主进程 httpRequest 超时失效、IPC promise 永不 settle 的场景，会把轮询循环
+   *  永久的卡死在单发请求上——总超时检查只在两拍之间，永远走不到） */
+  function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+    return new Promise<T>((resolve) => {
+      let settled = false
+      const timer = setTimeout(() => { if (!settled) { settled = true; resolve(fallback) } }, ms)
+      p.then(
+        (v) => { if (!settled) { settled = true; clearTimeout(timer); resolve(v) } },
+        () => { if (!settled) { settled = true; clearTimeout(timer); resolve(fallback) } },
+      )
+    })
+  }
+
   /** PR#4 条目13：结果端点直取轮询（对照 _poll_result_endpoint L224-239：
    *  GET /montage/concat/result/{id} 未完成 404 → 继续轮，完成 200 直出 mp4 →
    *  落盘 + 完整性校验；总超时兑底（原版 _RESULT_POLL_TIMEOUT 60 分钟，本端兑底路径取 30 分钟）。
    *  偏差修正：原版新契约不注册任务表故不查；本端服务端实测新契约任务也注册任务表
    *  （failed 带 error_msg，结果端点永远 404）→ 每拍穿插查一次任务表，failed 立即终止，
-   *  查无任务（404）时回退纯结果端点轮询（对齐原版假设）；轮询期更新状态文案 */
+   *  查无任务（404）时回退纯结果端点轮询（对齐原版假设）；轮询期更新状态文案。
+   *  每发请求均套硬性兑底期限（下载 > 主进程 600s 超时取 11 分钟；任务表查询 40s），
+   *  单发挂死只会损失一拍，循环与总超时始终可达 */
   async function pollResultEndpoint(id: string, localPath: string, timeoutMs = 30 * 60 * 1000): Promise<'ok' | 'no-file' | 'invalid'> {
     const url = toAbsolute(`/montage/concat/result/${encodeURIComponent(id)}`)
     const startedAt = Date.now()
     for (;;) {
-      const r = await downloadFinalChecked(url, localPath)
+      const r = await withDeadline(downloadFinalChecked(url, localPath), 11 * 60 * 1000, 'no-file' as const)
       if (r !== 'no-file') return r
       if (Date.now() - startedAt > timeoutMs) return 'no-file'
       // 穿插任务表状态（新契约本端服务端也注册表）：failed 立即终止报服务端错误
       try {
-        const resp = await window.tintin.server.get<Record<string, unknown>>(`/scheduled/tasks/${encodeURIComponent(id)}`)
+        const resp = await withDeadline(
+          window.tintin.server.get<Record<string, unknown>>(`/scheduled/tasks/${encodeURIComponent(id)}`),
+          40 * 1000,
+          {} as Record<string, unknown>,
+        )
         const task = extractTaskObj(resp) as Record<string, any>
         const errCarrier = { error_msg: task.error_message || task.error_msg || task.error || task.message || '' }
         const info = mapTaskStatus(task.status ?? task.state, errCarrier)
@@ -881,8 +912,9 @@ export function useVideoMontage() {
       const name = `montage_concat_server_${Math.floor(Math.random() * 9000 + 1000)}_1.mp4`
       const localPath = joinPath(await readCacheDir(), 'montage_cache',
         splitsJobId.value || 'session', 'outputs', name)
-      // PR#4 条目12：下载 + 完整性校验（>1KB 且 ffprobe 可读，失败自动重下 1 次）
-      let final = await downloadFinalChecked(url, localPath)
+      // PR#4 条目12：下载 + 完整性校验（>1KB 且 ffprobe 可读，失败自动重下 1 次）；
+      // 同样套硬性兑底期限，防单发请求挂死卡死整个确认流程
+      let final = await withDeadline(downloadFinalChecked(url, localPath), 11 * 60 * 1000, 'no-file' as const)
       if (final === 'no-file') {
         // PR#4 条目13：任务表 completed 但成片下载不到 → 极可能历史任务撞名（同类型旧任务
         // 恰好同 ID，其 video_url 指向别的产物或已失效），不据此报错终止；改走 concat
@@ -998,6 +1030,15 @@ export function useVideoMontage() {
       temperature: msgs.temperature,
     }), '生成口播文案')
     p.copy = parseLlmCopyResponse(res)
+    // 旁车落盘（对照原版 on_ok L7027-7030：写 <成片路径>.txt；Step3 voice:scanDir
+    //   按同一约定读原文，不落盘则口播配音页原文恒为空）
+    if (p.outputPath) {
+      const w = await window.tintin?.liveclip?.writeTextFile?.({
+        path: p.outputPath.replace(/\.[^.]+$/, '') + '.txt',
+        content: p.copy,
+      })
+      if (w && 'error' in w && w.error) throw new Error(`写入文案文件失败：${w.error}`)
+    }
   }
   
   /** 产品信息弹窗「生成」：全空确认后逐条串行生成（对照 _start_batch_copy 队列） */
@@ -1139,6 +1180,23 @@ export function useVideoMontage() {
 
   /** 生成结果的预览地址（相对路径拼服务端基址） */
   const bgmPreviewUrl = computed(() => toAbsolute(bgmGenUrl.value))
+
+  /** BGM 选择弹窗确认（2026-09-09 用户裁决）：音频库音频经 /audio/library/{mid}/file
+   *  下载落盘后回填 bgmPath（ffmpeg 混音/剪映导出需本地文件） */
+  async function applyLibraryBgm(mid: string, filename: string): Promise<{ path?: string; error?: string }> {
+    try {
+      const destDir = voiceDirInput.value
+        ? joinPath(resolveOutMontageDir(voiceDirInput.value), 'bgm_lib')
+        : joinPath(await readCacheDir(), 'montage_cache', 'bgm_lib')
+      const dl = await window.tintin?.server?.bgmDownloadUrl?.({ url: `/audio/library/${mid}/file`, destDir })
+      if (!dl || !('path' in dl) || !dl.path) return { error: '下载失败（服务端不可达或文件不存在）' }
+      bgmPath.value = dl.path
+      bgmName.value = filename || pathBasename(dl.path)
+      return { path: dl.path }
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) }
+    }
+  }
 
   /** 选择背景音乐（_select_bgm L1522：标题「选择背景配乐」，mp3/wav/m4a/aac） */
   function pickBgm(): void {
@@ -1411,6 +1469,15 @@ export function useVideoMontage() {
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
   const rewriteTemp = ref(0.5)
   const aiRewriteDlg = ref({ show: false, pct: 50 })
+    // TTS 引擎选择与克隆参数（2026-09-09 用户裁决：文案生成设置左边加 TTS 下拉，默认 idexttts，
+    //  对齐声音克隆页裁决；duration_factor/emo_text/emo_alpha 契约同 /indextts/tts，克隆时逐条随请求发送）
+    const ttsEngine = ref('idexttts')
+    const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0（对齐 VoiceClone 页）
+    const ttsEmoText = ref('')           // 情感文字（空=用样本默认情感）
+    const ttsEmoAlpha = ref(0.5)         // 情感强度 0~1，默认 0.5
+    // 句间停顿（2026-09-08 服务端新增，毫秒；0=不插标记，句间停顿由模型按标点自然处理）
+    const ttsPauseMs = ref(0)
+    const cloneParamsDlg = ref({ show: false, factor: 1.0, emo: '', alpha: 0.5, pause: 0 })
   const editDlg = ref({ show: false, index: -1, title: '', content: '', original: '' })
   const dubbedDlg = ref({
     show: false,
@@ -1423,6 +1490,11 @@ export function useVideoMontage() {
   const dubbingEnabled = computed(() => voiceRows.value.some((r) => r.wavPath))
 
   let offVoiceProgress: (() => void) | null = null
+  // 批量克隆/配音整体进度（0-100）：主进程逐条 emitRow，渲染层按
+  //  「已完成条数 + 当条百分比」聚合；动作行下方进度条呈现（2026-09-09 用户裁决）
+  const voiceProgress = ref(0)
+  let voiceTotal = 0
+  let voiceDone = 0
   function nextVoiceChannel(): string {
     const ch = `voice:progress:${(crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')}`
     offVoiceProgress?.(); offVoiceProgress = null
@@ -1432,6 +1504,11 @@ export function useVideoMontage() {
         if (row) {
           if (d.value !== undefined) row.progress = d.value
           if (d.value !== undefined) row.status = d.value >= 100 ? 'done' : 'generating'
+        }
+        if (d.value !== undefined && voiceTotal > 0) {
+          if (d.value >= 100) voiceDone++
+          const frac = d.value < 100 ? d.value / 100 : 0
+          voiceProgress.value = Math.min(100, Math.round(((voiceDone + frac) / voiceTotal) * 100))
         }
       }
       if (d.stage) statusText.value = d.stage
@@ -1456,10 +1533,13 @@ export function useVideoMontage() {
     if (!voiceDirInput.value) { voiceRows.value = []; return }
     try {
       const prevTexts = new Map(voiceRows.value.map((r) => [r.path, r.text]))
+      // 展开为纯数组：ref([]) 的 .value 是响应式 Proxy，ipcRenderer.invoke 结构化克隆
+      //   不支持 Proxy，直接传会批「An object could not be cloned」致扫描永远失败
+      //   （2026-09-08 实测：Step3 视频列表从未建成的真正根因）
       const res = await window.tintin?.server?.voiceScanDir?.({
         dirPath: voiceDirInput.value,
-        selectedFiles: selectedVoiceFiles.value,
-        keepFiles: keepFiles && keepFiles.length ? keepFiles : undefined,
+        selectedFiles: [...selectedVoiceFiles.value],
+        keepFiles: keepFiles && keepFiles.length ? [...keepFiles] : undefined,
       })
       if (!res || 'error' in res) throw new Error((res as { error?: string })?.error || '扫描失败')
       voicesDir.value = res.voicesDir || ''
@@ -1500,8 +1580,15 @@ export function useVideoMontage() {
 
   /** 进入 Step3 自动带视频（对照 _on_enter_step_3 L636-656 一比一）：
    *  取已确认合成产物所在目录 → 清理旧产物 → 回填目录并扫描。
-   *  无确认产物时不动现有列表（保留原版回退语义的空态） */
+   *  无确认产物时不动现有列表（保留原版回退语义的空态）。
+   *  字幕字体列表来自服务端，进 Step3 预拉一次（对照同函数 L667-669：
+   *  if not _fonts_loaded → _refresh_server_fonts；失败可用「刷新字体」重拉） */
+  let fontsPreloaded = false
   async function enterStepVoice(): Promise<void> {
+    if (!fontsPreloaded) {
+      fontsPreloaded = true
+      void refreshFonts()
+    }
     const confirmed = assemblePlans.value
       .filter((p) => p.confirmed && p.outputPath)
       .map((p) => p.outputPath as string)
@@ -1582,7 +1669,7 @@ export function useVideoMontage() {
       try {
         const p = await window.tintin?.dialog?.openFile?.({
           title: '选择音频文件上传为样本',
-          filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a'] }, { name: 'All Files', extensions: ['*'] }],
+          filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }, { name: 'All Files', extensions: ['*'] }],
         })
         if (!p) return
         nsFilePath.value = p
@@ -1653,6 +1740,20 @@ export function useVideoMontage() {
     aiRewriteDlg.value.show = false
   }
 
+  /** 设置声音克隆弹窗（对齐声音克隆页 IndexTTS 参数：语速/情感/情感强度；保存后克隆时生效。
+   *  句间停顿：2026-09-08 服务端新增 ((pause=毫秒)) 标记口径） */
+  function openCloneParams(): void {
+    cloneParamsDlg.value = { show: true, factor: ttsDurationFactor.value, emo: ttsEmoText.value, alpha: ttsEmoAlpha.value, pause: ttsPauseMs.value }
+  }
+  function closeCloneParams(): void { cloneParamsDlg.value.show = false }
+  function saveCloneParams(): void {
+    ttsDurationFactor.value = cloneParamsDlg.value.factor
+    ttsEmoText.value = cloneParamsDlg.value.emo
+    ttsEmoAlpha.value = cloneParamsDlg.value.alpha
+    ttsPauseMs.value = cloneParamsDlg.value.pause
+    cloneParamsDlg.value.show = false
+  }
+
   /** 一键AI修改全部文案（对照 _batch_ai_rewrite_scripts + BatchAITextRewriteWorker；
    *  V3 LLM 凭证由服务端持有（用户裁决 2026-08-28）→ 不再检查本地 llm_model 配置） */
   async function batchAiRewrite(): Promise<void> {
@@ -1699,6 +1800,7 @@ export function useVideoMontage() {
         outWavPath: joinPath(voicesDir.value, `voice_${i + 1}.wav`),
       }))
     voiceBusy.value = true
+    voiceTotal = tasks.length; voiceDone = 0; voiceProgress.value = 0
     const channel = nextVoiceChannel()
     try {
       const res = await window.tintin?.server?.voiceCloneBatch?.({
@@ -1709,6 +1811,13 @@ export function useVideoMontage() {
         apiUrl: ttsApiUrl.value,
         speedMin: ttsSpeedMin.value,
         speedMax: ttsSpeedMax.value,
+        // 克隆参数（「设置声音克隆」弹窗配置；主进程展开进 /indextts/tts 载荷）
+        ttsParams: {
+          durationFactor: ttsDurationFactor.value,
+          emoText: ttsEmoText.value,
+          emoAlpha: ttsEmoAlpha.value,
+          pauseMs: ttsPauseMs.value,
+        },
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')
@@ -1784,6 +1893,7 @@ export function useVideoMontage() {
       return
     }
     dubBusy.value = true
+    voiceTotal = tasks.length; voiceDone = 0; voiceProgress.value = 0
     const channel = nextVoiceChannel()
     try {
       const res = await window.tintin?.server?.voiceDubVideos?.({
@@ -1794,7 +1904,9 @@ export function useVideoMontage() {
         fancyStyle: fancyStyle.value,
         fancyPosition: fancyPosition.value,
         subtitleBoxOpacity: subtitleBgOpacity.value,
-        fancyTemplate: selectedFancyTemplate.value,
+        // 展开为纯对象：computed 从响应式数组 find 出的是 Proxy，直传 IPC 会报
+        //   「An object could not be cloned」（同 scanVoiceDir selectedFiles 教训）
+        fancyTemplate: selectedFancyTemplate.value ? { ...selectedFancyTemplate.value } : null,
         subtitleFont: addSubtitles.value ? selectedFontFamily() : '',
         progressChannel: channel,
       })
@@ -2011,7 +2123,7 @@ export function useVideoMontage() {
     // 共享
     serverUrl, polling, activeTaskId, statusText, cancelPolling, stopPolling,
     // Step1 素材解析
-    srcVideos, threshold, minSceneLen, imageDuration,
+    srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
     addVideos, selectFolder, onDrop, removeVideo, runSplit,
@@ -2037,11 +2149,14 @@ export function useVideoMontage() {
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
     addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
     fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
-    fancyTemplateId, fancyTemplates, fancyPreviews, fancyTemplatesLoading,
+    fancyTemplateId, fancyTemplates, fancyPreviews,
+    voiceProgress, fancyTemplatesLoading,
     selectedFancyTemplate, loadFancyTemplates,
     previewFancyWords, fancyPreviewDlg, closeFancyPreviewDlg,
     FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
     aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
+    ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
+    cloneParamsDlg, openCloneParams, closeCloneParams, saveCloneParams,
     editDlg, openEditDlg, saveEditDlg,
     dubbedDlg,
     rewriteTemp,
@@ -2060,7 +2175,7 @@ export function useVideoMontage() {
     bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl,
     bgmPlaying, bgmPosMs, bgmDurMs,
     generateBgm,
-    pickBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
+    pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
     enterStep4, startFinalMix, openFinalDir,
     exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo,
     fmtBgmTime,

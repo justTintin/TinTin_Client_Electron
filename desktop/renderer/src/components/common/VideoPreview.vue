@@ -152,6 +152,27 @@ function handleError() {
   justify-content: center;
   background: #000;
   min-height: 280px;
+  /* 弹窗内视频可用高度预算（90vh - 顶栏） */
+  --vp-h: calc(90vh - 65px);
+}
+
+/* 竖屏视频裁切修复（视频播放器尺寸规范：max-height + contain 模式）：
+   竖屏成片 1080×1920 会被宽度撑到 960×1706 超出弹窗 90vh 被裁剪，
+   Plyr 控制条在元素底部随同被裁出可视区——表现为「正方形无控制条」。
+   覆写 Plyr 强制的 aspect-ratio，视频元素按自身比例缩放限高，完整帧可见 */
+.video-preview__stage :deep(.plyr__video-wrapper) {
+  aspect-ratio: auto !important;
+  width: 100%;
+}
+
+.video-preview__stage :deep(video) {
+  width: auto;
+  height: auto;
+  max-height: var(--vp-h);
+  max-width: 100%;
+  object-fit: contain;
+  display: block;
+  margin: 0 auto;
 }
 
 .video-preview__error {

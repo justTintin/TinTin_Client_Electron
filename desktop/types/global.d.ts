@@ -413,7 +413,18 @@ declare interface TintinBridgeServer {
       fancyPosition: string
       fancyTemplate: Record<string, unknown> | null
     }
-    subtitleTexts?: Array<{ videoPath: string; text: string; timingPath: string }>
+    subtitleTexts?: Array<{
+      videoPath: string
+      text: string
+      timingPath: string
+      /** 配音 wav 路径（2026-09-11 统一合成契约提案③接线：服务端链路随 concat
+       *  voice 轨上传（voice_mode=replace 替换原声），不再本地预先替换原声；
+       *  本地链路不使用该字段——已由 dubVideos 替换进视频） */
+      voicePath?: string
+      /** 文字模板命中行（服务端 /text_templates/match 选中行；2026-09-11 用户裁决：
+       *  本地烧制与预览同源——仅本地合成链路预取，服务端链路由 concat 自行命中） */
+      fxLines?: Array<{ text: string; start: number; end: number; keywords?: string[] }>
+    }>
     progressChannel?: string
   }): Promise<{ results: string[] } | { error: string }>
   /** 回退扫描 outputs 排列视频（_collect_mix_candidates 回退段 + _get_out_montage_dir 规则） */

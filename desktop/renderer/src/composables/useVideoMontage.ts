@@ -1391,20 +1391,25 @@ export function useVideoMontage() {
   // _export_to_jianying_draft/_export_all_to_jianying_draft 一比一）──
 
   /** 收集待混音候选：优先第③步配音视频，回退扫描 outputs 排列视频（本端另含
-   *  已确认合成的本地落盘产物，等价原版 outputs 目录扫描口径） */
-  async function collectCandidates(): Promise<string[]> {
-    const dubbed = voiceRows.value.map((r) => r.dubbedPath || '').filter(Boolean)
+   *  已确认合成的本地落盘产物，等价原版 outputs 目录扫描口径）。
+   *  2026-09-11 voice 接线（统一合成契约提案③）：useSource=true（服务端链路）取
+   *  源视频路径（有配音 wav 的行）——配音随 concat voice 轨上传，不再本地替换
+   *  原声（无「先声音合成」中间态）；本地链路维持 dubbed 产物口径。 */
+  async function collectCandidates(useSource = false): Promise<string[]> {
+    const primary = useSource
+      ? voiceRows.value.filter((r) => r.wavPath && r.path).map((r) => r.path)
+      : voiceRows.value.map((r) => r.dubbedPath || '').filter(Boolean)
     let outputsFiles: string[] = assemblePlans.value
       .map((p) => (p.outputPath && p.confirmed ? p.outputPath : ''))
       .filter(Boolean)
-    if (!dubbed.length && !outputsFiles.length) {
+    if (!primary.length && !outputsFiles.length) {
       const dirPath = voiceDirInput.value
       if (dirPath) {
         const res = await window.tintin?.server?.finalCollectOutputs?.({ dirPath })
         if (res && 'files' in res) outputsFiles = res.files || []
       }
     }
-    return collectMixCandidates(dubbed, outputsFiles)
+    return collectMixCandidates(primary, outputsFiles)
   }
 
   /** 切到第④步：待混音数量 stage 提示（_go_to_step index==3 L388-395 逐字） */
@@ -1461,14 +1466,19 @@ export function useVideoMontage() {
     finalProgress.value = 0
     stopBgmPlay()
     try {
-      // ── 配音阶段（一键链第①段）：重新克隆会置空 dubbedPath，此处自动重配；
-      //    无声音的行不配音，直接用原视频进后续特效/混音
-      const needDub = voiceRows.value.filter((r) => r.wavPath && r.path && !r.dubbedPath).length
-      if (needDub) {
-        statusText.value = `正在替换口播原声 (${needDub} 个视频)...`
-        await runDubBatch()
+      // ── 配音阶段（一键链第①段，仅本地链路）：本地替换原声需要 dubbed 产物；
+      //    服务端链路配音改随 concat voice 轨一次合成（2026-09-11 统一合成契约
+      //    提案③），直接用源视频 + voice 上传，不再本地预热——无配音的行不带
+      //    voice 直通；无声音的行不配音，直接用原视频进后续特效/混音
+      if (mode === 'local') {
+        const needDub = voiceRows.value.filter((r) => r.wavPath && r.path && !r.dubbedPath).length
+        if (needDub) {
+          statusText.value = `正在替换口播原声 (${needDub} 个视频)...`
+          await runDubBatch()
+        }
       }
-      const candidates = await collectCandidates()
+      // 服务端链路候选=源视频（voice 轨单独上传）；本地链路=dubbed 产物
+      const candidates = await collectCandidates(mode === 'server')
       if (!candidates.length) {
         notify('无待合成视频', '未找到待合成的视频。\n请先完成第③步「口播配音」生成声音，或确认第②步的排列视频已生成。')
         return
@@ -1478,15 +1488,38 @@ export function useVideoMontage() {
       const tasks = buildFinalTasks(candidates, srcDirName(voiceDirInput.value), outFinalDir)
       const channel = nextVoiceChannel()
       // 2026-09-09 裁决：特效配置迁 Step4，混音前统一烧制字幕/花字。
-      // subtitleTexts 按候选视频（dubbedPath）映射 Step3 文案行：无对应行（如 outputs
+      // subtitleTexts 按候选视频映射 Step3 文案行：无对应行（如 outputs
       // 未配音排列视频）不烧字幕/花字，直通混音。
+      // fxLines：文字模板命中行（服务端 match 结果，仅本地烧制消费，见下方预取）
+      // voicePath：配音 wav（2026-09-11 voice 接线：仅服务端链路消费，随 concat
+      //   voice 轨上传；本地链路已由 dubVideos 替换进视频，不消费）
       const subtitleTexts = candidates
         .map((c) => {
-          const row = voiceRows.value.find((r) => r.dubbedPath === c)
+          // 服务端链路候选=源视频（r.path）；本地链路=配音产物（r.dubbedPath）
+          const row = voiceRows.value.find((r) => (mode === 'server' ? r.path : r.dubbedPath) === c)
           if (!row || !row.text.trim()) return null
-          return { videoPath: c, text: row.text.trim(), timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '' }
+          return {
+            videoPath: c,
+            text: row.text.trim(),
+            timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '',
+            voicePath: row.wavPath || '',
+            fxLines: [] as Array<{ text: string; start: number; end: number; keywords: string[] }>,
+          }
         })
-        .filter((x): x is { videoPath: string; text: string; timingPath: string } => !!x)
+        .filter((x): x is {
+          videoPath: string; text: string; timingPath: string; voicePath: string
+          fxLines: Array<{ text: string; start: number; end: number; keywords: string[] }>
+        } => !!x)
+      // 2026-09-11 用户裁决：本地合成文字模板与服务端 match、效果预览同源（预览所见即
+      // 合成所做）——仅本地链路预取命中行（服务端链路由 concat 自行从字幕命中）；
+      // 离线/失败 → 空数组（不烧，与预览空轨口径一致，不造数）
+      if (mode === 'local' && textFxEnabled.value && subtitleTexts.length) {
+        statusText.value = '正在获取文字模板命中...'
+        await Promise.all(subtitleTexts.map(async (st) => {
+          const r = await fetchTextFxHits(st.videoPath, st.text, st.timingPath)
+          st.fxLines = r.lines
+        }))
+      }
       const hasFx = addSubtitles.value || fancyEnabled.value || textFxEnabled.value
       // 2026-09-11 用户终裁：按钮决定链路，开了哪些特效、是否选 BGM 都只是参数——
       // 点「服务端合成」= 特效烧制 + BGM 混音整条交服务端一次 concat 完成（失败
@@ -1529,8 +1562,10 @@ export function useVideoMontage() {
             textFxStyles: activeTextPool.value.map((t) => textFxStyleOf(t)),
             textFxCount: activeTextCount.value,
           },
-          subtitleTexts,
         } : {}),
+        // 2026-09-11 voice 接线：subtitleTexts 在服务端链路无条件下发（其中 voicePath
+        // 即 concat voice 轨来源，无特效纯配音任务也要带）；本地链路无特效不传（零开销直通）
+        ...((hasFx || (mode === 'server' && subtitleTexts.length)) ? { subtitleTexts } : {}),
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')
@@ -1686,7 +1721,8 @@ export function useVideoMontage() {
   const ttsSpeedMin = ref(0.9)
   const ttsSpeedMax = ref(1.2)
   // 字幕/花字（L210-265）
-  const addSubtitles = ref(false)
+  // 2026-09-11 用户裁决：烧制字幕默认勾选（Step4 特效包装开箱即用，未配置也走字幕烧制）
+  const addSubtitles = ref(true)
   const subtitleFont = ref('')
   const fontOptions = ref<Array<{ label: string; value: string }>>([{ label: '默认（不指定字体）', value: '' }])
   const fontsLoading = ref(false)
@@ -1732,8 +1768,9 @@ export function useVideoMontage() {
     { label: '随机样式', value: 'random' },
     ...textTemplates.value.map((t) => ({ label: String(t.name || t.template_id), value: t.template_id })),
   ])
-  /** 按密度档位从口播文案提取卖点词（2026-09-11 起仅剩两个消费者：效果预览词条
-   *  与剪映导出随行特效——服务端合成不再传词表，关键词命中由服务端从字幕完成）。
+  /** 按密度档位从口播文案提取卖点词（2026-09-11 起仅剩一个消费者：剪映导出随行
+   *  特效——效果预览与本地合成均已改走服务端 /text_templates/match 命中行，服务端
+   *  合成不传词表、关键词命中由服务端从字幕完成）。
    *  上限随档位：低=3/中=8/高=12，TEXT_KEYWORD_DENSITY_MAX */
   function extractTextFxWords(): string[] {
     const joined = voiceRows.value.map((r) => r.text).join('\n')
@@ -1758,6 +1795,39 @@ export function useVideoMontage() {
    *  与 textFxPreviewTracks 同批刷新，另在 enterStep4 主动刷一次不依赖 textFx 开关） */
   const step4Candidates = ref<string[]>([])
   let textFxTrackSeq = 0
+  /** 逐视频取服务端 /text_templates/match 命中行（效果预览与本地合成共用同一口径：
+   *  rows 由 buildSubtitleRows 组装，density 透传，llm_fill=true 按合成口径保底；
+   *  离线/失败 → 空（不造数）。返回 { dur, lines }——dur 供预览轨背景条复用 */
+  async function fetchTextFxHits(
+    videoPath: string,
+    text: string,
+    timingPath: string,
+  ): Promise<{ dur: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }> }> {
+    const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(videoPath).catch?.(() => 0)) || 0
+    let timing: Array<{ text: string; start: number; end: number }> = []
+    if (timingPath) {
+      const res = await window.tintin?.server?.finalReadTiming?.({ timingPath })
+      timing = res && 'items' in res ? res.items : []
+    }
+    const rows = buildSubtitleRows(String(text || '').trim(), timing, dur)
+    if (!rows.length) return { dur, lines: [] }
+    const res = await window.tintin?.server?.textfxMatchKeywords?.({
+      rows,
+      density: textKeywordDensity.value,
+      llmFill: true,
+    })
+    const lines = res && 'lines' in res && Array.isArray(res.lines)
+      ? res.lines
+        .filter((l) => l.selected)
+        .map((l) => ({
+          text: String(l.text || ''),
+          start: Number(l.start) || 0,
+          end: Number(l.end) || 0,
+          keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
+        }))
+      : []
+    return { dur, lines }
+  }
   async function refreshTextFxTracks(): Promise<void> {
     const seq = ++textFxTrackSeq
     if (!textFxEnabled.value) { textFxPreviewTracks.value = []; return }
@@ -1769,32 +1839,13 @@ export function useVideoMontage() {
       .map((p) => (p.confirmed && p.outputPath ? p.outputPath : ''))
       .filter(Boolean)
     if (!outputs.length) { textFxPreviewTracks.value = []; return }
-    // 逐视频组字幕行（timing 优先/字数均分）→ 服务端命中判定；离线/失败 → 空轨
+    // 逐视频取服务端命中判定（与本地合成同一取数函数 fetchTextFxHits；
+    // 离线/失败 → 空轨）
     const matched = await Promise.all(outputs.map(async (c) => {
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
-      const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)) || 0
-      let timing: Array<{ text: string; start: number; end: number }> = []
-      if (row?.wavPath) {
-        const res = await window.tintin?.server?.finalReadTiming?.({ timingPath: `${row.wavPath}.timing.json` })
-        timing = res && 'items' in res ? res.items : []
-      }
-      const rows = buildSubtitleRows(String(row?.text || '').trim(), timing, dur)
-      if (!rows.length) return { name: pathBasename(c), durationSec: dur, lines: [] }
-      const res = await window.tintin?.server?.textfxMatchKeywords?.({
-        rows,
-        density: textKeywordDensity.value,
-        llmFill: true,
-      })
-      const lines = res && 'lines' in res && Array.isArray(res.lines)
-        ? res.lines
-          .filter((l) => l.selected)
-          .map((l) => ({
-            text: String(l.text || ''),
-            start: Number(l.start) || 0,
-            end: Number(l.end) || 0,
-            keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
-          }))
-        : []
+      const { dur, lines } = await fetchTextFxHits(
+        c, String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '',
+      )
       return { name: pathBasename(c), durationSec: dur, lines }
     }))
     if (seq !== textFxTrackSeq) return // 过期响应丢弃（连续触发只保留最新）

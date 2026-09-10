@@ -725,7 +725,9 @@ function scoreClass(score: number | undefined): string {
                实际时长，待确认=未删除镜头之和估计；交互不变：单击选中/双击查看文案/右键菜单） -->
           <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
           <!-- 滚动容器（2026-09-11 用户裁决）：最大 10 行高度（表头 + 10 行，与下方详情表
-               332px 同口径），超出滚动；少于 10 行随真实行数收缩，不再用占位行撑高 -->
+               380px 同口径），超出滚动；少于 10 行随真实行数收缩，不再用占位行撑高。
+               注：旧值 332px 行高实测约 33px 只能完整显示 9 行 → 调至 380px（表头约
+               30px + 10 行 × 35px），2026-09-11 用户裁决「至少显示 10 个」 -->
           <div class="plan-tbl-wrap">
             <table class="tbl plan-tbl">
               <thead><tr>
@@ -746,7 +748,8 @@ function scoreClass(score: number | undefined): string {
           </div>
           <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
 
-          <!-- 下半区：分割镜头详情表（10行高度；连播预览已迁右侧统一预览栏，
+          <!-- 下半区：分割镜头详情表（表头 + 10 行高，见 .detail-scroll-wrap 380px；
+               2026-09-11 用户裁决至少显示 10 个；连播预览已迁右侧统一预览栏，
                2026-09-10 用户需求：单击预览块联动选中方案） -->
           <div class="result-bottom">
             <div class="detail-col">
@@ -1600,7 +1603,8 @@ function scoreClass(score: number | undefined): string {
 /* 预合成列表（2026-09-09 用户裁决改表格；2026-09-11 用户裁决：最大 10 行高度，
    超出滚动；不足 10 行随真实行数收缩——占位行已删，防止两表之间空余过多） */
 .plan-tbl-wrap {
-  max-height: 332px; overflow-y: auto;
+  /* 380px = 表头(约30px) + 10 行(约35px/行) 完整可见（旧值 332px 行高下只能显 9 行） */
+  max-height: 380px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: var(--radius-md);
 }
 .plan-tbl-wrap .plan-tbl { border-radius: 0; }
@@ -1612,12 +1616,12 @@ function scoreClass(score: number | undefined): string {
 .plan-empty { padding: 8px 10px; }
 .w48 { width: 48px; white-space: nowrap; }
 .w64 { width: 64px; white-space: nowrap; }
-/* 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） */
+/* 下半区：分割镜头详情表（表头 + 10 行高，见 .detail-scroll-wrap） */
 .result-bottom { display: flex; gap: 15px; align-items: flex-start; }
 .detail-col { flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-/* 详情表滚动容器：固定 10 行高度（表头 ~30px + 10 行 × 30px + 2px 边框补偿） */
 .detail-scroll-wrap {
-  max-height: 332px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  /* 用户裁决(2026-09-11)：镜头详情至少显示 10 行 → 380px（同上方预合成列表口径） */
+  max-height: 380px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .detail-scroll-wrap .tbl { border-radius: 0; }
 .detail-placeholder-row td { height: 30px; border-bottom: 1px solid var(--border); }

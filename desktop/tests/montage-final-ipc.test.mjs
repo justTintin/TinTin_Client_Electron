@@ -29,6 +29,10 @@ test('buildSrtFromTiming: timing.json 优先 → 句级时间轴 SRT', () => {
   )
   assert.ok(srt.startsWith('1\n00:00:00,000 --> 00:00:02,000\n第一句\n'))
   assert.ok(srt.endsWith('2\n00:00:02,000 --> 00:00:04,500\n第二句'))
+  // cue 之间必须空行分隔（标准 SRT）：缺空行会被严格解析器当 1 条 cue，文本塞满
+  // 编号/时间戳行 → 行级命中退化为整片一个动画（2026-09-11 服务端 #914 实测教训）
+  assert.ok(srt.includes('第一句\n\n2\n'))
+  assert.equal(srt.split(/\n\n/).length, 2)
 })
 
 test('buildSrtFromTiming: 无 timing → 字数比例均分到视频时长', () => {
@@ -37,6 +41,8 @@ test('buildSrtFromTiming: 无 timing → 字数比例均分到视频时长', () 
   assert.ok(srt.includes('第一句啊'))
   // 句间隔至少 0.2s（max(start+0.2, end) 口径）
   assert.ok(srt.includes('第二句'))
+  // 无 timing 分支同样空行分隔
+  assert.ok(srt.includes('第一句啊\n\n2\n'))
 })
 
 test('buildSrtFromTiming: 空文本/无行 → 空串', () => {
@@ -162,9 +168,13 @@ function makeTmpVideos() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fx-concat-'))
   const video = path.join(dir, 'in.mp4')
   const bgm = path.join(dir, 'bgm.mp3')
+  const bgmWav = path.join(dir, 'bgm2.wav')
+  const voice = path.join(dir, 'v.wav')
   fs.writeFileSync(video, Buffer.alloc(4096, 7))
   fs.writeFileSync(bgm, Buffer.alloc(512, 9))
-  return { dir, video, bgm, out: path.join(dir, 'out.mp4') }
+  fs.writeFileSync(bgmWav, Buffer.alloc(512, 11))
+  fs.writeFileSync(voice, Buffer.alloc(512, 13))
+  return { dir, video, bgm, bgmWav, voice, out: path.join(dir, 'out.mp4') }
 }
 
 /** 假 httpRequest：POST 捕获提交体，GET 返回大于 1KB 的 video 体（让轮询立即结束）
@@ -204,6 +214,7 @@ test('serverComposeOne: 特效+源规格+BGM 同一次 /montage/concat 提交', 
   assert.ok(body.includes('name="burn_subtitle"\r\n\r\ntrue'))
   assert.ok(body.includes('name="font_id"\r\n\r\nmsyh_001'))
   assert.ok(!body.includes('name="fontname"'))
+  assert.ok(!body.includes('voice_mode')) // 无 voicePath → 不附配音轨
   fs.rmSync(t.dir, { recursive: true, force: true })
 })
 
@@ -261,5 +272,66 @@ test('serverComposeOne: fps=0（可变帧率探测失败）→ 不回传 fps，�
   )
   assert.ok(!body.includes('name="fps"'))
   assert.ok(body.includes('name="width"\r\n\r\n720'))
+  fs.rmSync(t.dir, { recursive: true, force: true })
+})
+
+// ── voice 配音轨（2026-09-11 统一合成契约提案③接线）──
+
+test('serverComposeOne: 配音 wav → voice 字段 + voice_mode=replace（ctype 按扩展名）', async () => {
+  const t = makeTmpVideos()
+  let body = ''
+  const httpRequest = fakeHttp((_u, b) => { body = b.toString('latin1') })
+  await assert.rejects(
+    () => M.serverComposeOne({
+      httpRequest, videoPath: t.video, outPath: t.out,
+      fx: null, sub: { text: '口播', timingPath: '', voicePath: t.voice }, videoDur: 3,
+      spec: { durationSec: 3, width: 720, height: 1280, fps: 25 },
+      bgmPath: '', bgmVol: 0.6,
+    }),
+    /产物无法读取/,
+  )
+  assert.match(body, /name="voice"; filename="v\.wav"/)
+  assert.ok(body.includes('Content-Type: audio/wav')) // 扩展名映射（旧实现只固定 audio/mpeg）
+  assert.ok(body.includes('name="voice_mode"\r\n\r\nreplace')) // 口播默认替换原声
+  fs.rmSync(t.dir, { recursive: true, force: true })
+})
+
+test('serverComposeOne: voicePath 文件缺失 → 不附 voice 也不传 voice_mode', async () => {
+  const t = makeTmpVideos()
+  let body = ''
+  const httpRequest = fakeHttp((_u, b) => { body = b.toString('latin1') })
+  await assert.rejects(
+    () => M.serverComposeOne({
+      httpRequest, videoPath: t.video, outPath: t.out,
+      fx: null, sub: { text: '口播', timingPath: '', voicePath: path.join(t.dir, 'nope.wav') }, videoDur: 3,
+      spec: { durationSec: 3, width: 720, height: 1280, fps: 25 },
+      bgmPath: '', bgmVol: 0.6,
+    }),
+    /产物无法读取/,
+  )
+  assert.ok(!body.includes('name="voice"'))
+  assert.ok(!body.includes('voice_mode'))
+  fs.rmSync(t.dir, { recursive: true, force: true })
+})
+
+test('serverComposeOne: bgm_volume clamp 0~1（0 不回退 0.6）且 wav BGM ctype 正确', async () => {
+  const t = makeTmpVideos()
+  const bodies = []
+  const httpRequest = fakeHttp((_u, b) => { bodies.push(b.toString('latin1')) })
+  for (const vol of [0, 1.5, undefined]) {
+    await assert.rejects(
+      () => M.serverComposeOne({
+        httpRequest, videoPath: t.video, outPath: t.out,
+        fx: null, sub: null, videoDur: 3,
+        spec: { durationSec: 3, width: 720, height: 1280, fps: 25 },
+        bgmPath: t.bgmWav, bgmVol: vol,
+      }),
+      /产物无法读取/,
+    )
+  }
+  assert.ok(bodies[0].includes('name="bgm_volume"\r\n\r\n0.00')) // 0=静音合法值，不再回退 0.6
+  assert.ok(bodies[1].includes('name="bgm_volume"\r\n\r\n1.00')) // 1.5 → clamp 1（契约 0~1）
+  assert.ok(bodies[2].includes('name="bgm_volume"\r\n\r\n0.60')) // 缺省 → 契约默认
+  assert.ok(bodies[0].includes('Content-Type: audio/wav')) // wav BGM 不再固定 audio/mpeg
   fs.rmSync(t.dir, { recursive: true, force: true })
 })

@@ -823,14 +823,17 @@ function buildFancyDrawtextList(o, fancyEvents) {
 }
 
 /**
- * 文字模板关键词 drawtext 段构建（2026-09-10 用户裁决：本地合成也烧制文字模板
- * 动画——此前 textFxEnabled 只透传服务端 text_template_* 字段，本地链路啥也不烧）。
- * 口径与效果预览 buildTextFxTracks 同源：句文本命中全局词表 → 该句时间窗内顶部
- * 居中显示命中词（多词空格拼接）；样式池先按视频序确定性洗牌取随机子集
- * （textFxCount 个，随机数量对每条视频独立生效），再按 (视频序+命中序) 轮换；
+ * 文字模板关键词 drawtext 段构建（2026-09-11 用户裁决：本地合成与服务端
+ * /text_templates/match 命中同源——命中的行/词/时间一律取渲染层预取的服务端
+ * 结果（预览所见即合成所做），不再本地提取卖点词、不再本地判定命中；
+ * 此前 2026-09-10 版本地提取在无卖点词文案上提取为空会导致文字模板整块不烧）。
+ * 渲染文案与效果预览 buildTextFxTracks 同款：命中词优先（"/" 拼接），
+ * 无词行（LLM 补足/等距兜底）整行截断；样式池先按视频序确定性洗牌取随机子集
+ * （textFxCount 个，随机数量对每条视频独立生效），再按 (视频序+命中行序) 轮换；
  * 动画 fade/slide/pulse（drawtext 能力边界，其余模板动画本地近似 fade，
  * 完整动画走剪映导出 appendKeywordTrack）。
- * o: { textFxWords: string[], textFxStyles: Array<{color,effectColor,anim}>, textFxCount, fancyFontPath }
+ * o: { textFxStyles: Array<{color,effectColor,anim}>, textFxCount, fancyFontPath }
+ * hits: Array<{ text, start, end, keywords }>（服务端 match 选中行；空 → 不烧）
  */
 // 确定性种子洗牌（LCG；与渲染层 videoMontageLogic.seededShuffle 逐行同款——
 // 跨端无共享模块，两边同步改，保证预览与烧制同视频同子集）
@@ -845,11 +848,11 @@ function textFxSeedShuffle(arr, seed) {
   return a
 }
 
-function buildTextFxDrawtextList(o, subLines, subStarts, subEnds, videoIdx) {
-  const words = (Array.isArray(o.textFxWords) ? o.textFxWords : [])
-    .map((w) => String(w).trim()).filter(Boolean)
+function buildTextFxDrawtextList(o, hits, videoIdx) {
+  const rows = (Array.isArray(hits) ? hits : [])
+    .filter((h) => h && typeof h === 'object' && String(h.text || '').trim())
   const allStyles = Array.isArray(o.textFxStyles) ? o.textFxStyles : []
-  if (!words.length || !allStyles.length) return []
+  if (!rows.length || !allStyles.length) return []
   // 每视频独立随机子集（2026-09-10 用户裁决：随机数量 N 对应每条视频；
   // textFxCount<=0 或池≤1 → 全量轮换）
   const count = Number(o.textFxCount) || 0
@@ -858,23 +861,18 @@ function buildTextFxDrawtextList(o, subLines, subStarts, subEnds, videoIdx) {
     : allStyles
   const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
   const drawtexts = []
-  let hitIdx = 0 // 命中条目序：与预览 (视频序+词序) 轮换同口径（非句序，避免跳样）
-  for (let i = 0; i < subLines.length; i++) {
-    const line = String(subLines[i] || '')
-    if (!line) continue
-    // 命中词（按词长降序去重，避免短词在长词内重复计入）
-    const sorted = [...words].sort((a, b) => b.length - a.length)
-    const hits = []
-    for (const w of sorted) {
-      if (line.includes(w) && !hits.some((h) => h.toLowerCase().includes(w.toLowerCase()))) hits.push(w)
-    }
-    if (!hits.length) continue
+  rows.forEach((h, hitIdx) => {
+    const kws = (Array.isArray(h.keywords) ? h.keywords : [])
+      .map((k) => String(k).trim()).filter(Boolean)
+    const full = String(h.text).trim()
+    // 渲染文案与效果预览同款（2026-09-11 用户裁决：关键词命中显词、无词行整行截断）
+    const shown = kws.length ? kws.join('/')
+      : (full.length > 10 ? `${full.slice(0, 10)}…` : full)
     const st = styles[(videoIdx + hitIdx) % styles.length] // 与预览 (视频序+词序) 轮换同口径
-    hitIdx += 1
     const color = String(st.color || '#FFFFFF').replace('#', '0x')
     const effect = String(st.effectColor || st.color || '#FFD24D').replace('#', '0x')
-    const startT = Math.max(0, subStarts[i])
-    const endT = Math.max(startT + 0.2, subEnds[i])
+    const startT = Math.max(0, Number(h.start) || 0)
+    const endT = Math.max(startT + 0.2, Number(h.end) || 0)
     const s = startT.toFixed(3)
     const animDur = 0.3
     // 动画（写法对照字幕/花字 fade/slide 先例；pulse=持续脉动；x/y 含逗号必须引号包裹）
@@ -891,14 +889,14 @@ function buildTextFxDrawtextList(o, subLines, subStarts, subEnds, videoIdx) {
     }
     drawtexts.push(
       `drawtext=fontfile='${fontPath}':`
-      + `text='${escapeDrawText(hits.join(' '))}':`
+      + `text='${escapeDrawText(shown)}':`
       + `fontsize=h*0.055:fontcolor=${color}:`
       + `borderw=3:bordercolor=${effect}@0.9:`
       + `x='${xExpr}':y='${yExpr}':`
       + `enable='between(t,${startT.toFixed(3)},${endT.toFixed(3)})'`
       + (animParts.length ? ':' + animParts.join(':') : ''),
     )
-  }
+  })
   return drawtexts
 }
 
@@ -908,7 +906,9 @@ function buildTextFxDrawtextList(o, subLines, subStarts, subEnds, videoIdx) {
  * opts: { videoPath, outputVideoPath, text, timing, videoDur,
  *         addSubtitles, subtitleFontPath(已转义), subtitleStyle, subtitleBoxOpacity, subtitleAnim,
  *         fancyText, fancyStyle, fancyPosition, fancyFontPath(已转义), fancyTemplate,
- *         fancySoundPath, fancySoundGainDb }
+ *         fancySoundPath, fancySoundGainDb,
+ *         textFxHits(服务端 match 选中行，2026-09-11 用户裁决本地同源),
+ *         textFxStyles, textFxCount, videoIdx(样式轮换序号) }
  * 返回 null = 无特效可烧（调用方直通跳过）。
  */
 function buildEffectBurnArgs(opts) {
@@ -919,9 +919,12 @@ function buildEffectBurnArgs(opts) {
   let subLines = []
   let subStarts = []
   let subEnds = []
-  const hasTextFx = Array.isArray(o.textFxWords) && o.textFxWords.length
+  // 文字模板命中行（2026-09-11 用户裁决：本地烧制与服务端 /text_templates/match、
+  // 效果预览同源；行/词/时间由渲染层预取随 payload 下发——不再本地提取卖点词，
+  // 旧实现在无卖点词文案上提取为空会导致文字模板整块不烧）
+  const hasTextFx = Array.isArray(o.textFxHits) && o.textFxHits.length
     && Array.isArray(o.textFxStyles) && o.textFxStyles.length
-  if ((o.addSubtitles || o.fancyText || hasTextFx) && o.text) {
+  if ((o.addSubtitles || o.fancyText) && o.text) {
     const built = buildSubtitleLines({
       timing: o.timing, text: o.text, displayDur: videoDur,
       needAudioSpeed: false, videoDur, audioDur: videoDur,
@@ -969,9 +972,10 @@ function buildEffectBurnArgs(opts) {
     }
   }
   // 文字模板关键词叠加（2026-09-10 用户裁决：本地合成同烧；接在字幕/花字链尾，
-  // 输出标 vtx 恒唯一；videoIdx 供样式轮换与预览同源）
-  if (Array.isArray(o.textFxWords) && o.textFxWords.length && Array.isArray(o.textFxStyles) && o.textFxStyles.length && subLines.length) {
-    const txd = buildTextFxDrawtextList(o, subLines, subStarts, subEnds, Number(o.videoIdx) || 0)
+  // 输出标 vtx 恒唯一；videoIdx 供样式轮换与预览同源；2026-09-11 起命中行直接
+  // 用服务端 match 结果，不依赖 subLines——仅勾文字模板（无字幕/花字）也不影响）
+  if (hasTextFx) {
+    const txd = buildTextFxDrawtextList(o, o.textFxHits, Number(o.videoIdx) || 0)
     if (txd.length) {
       videoFilters.push(`[${videoLabel}]${txd.join(',')}[vtx]`)
       videoLabel = 'vtx'

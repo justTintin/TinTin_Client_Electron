@@ -461,31 +461,37 @@ test('buildEffectBurnArgs: 无特效/时长不可读 → null（调用方直通�
   assert.equal(L.buildEffectBurnArgs({ videoPath: 'a', outputVideoPath: 'b', videoDur: 0, addSubtitles: true, text: 'x' }), null)
 })
 
-// ── buildTextFxDrawtextList / 文字模板本地烧制（2026-09-10 用户裁决：本地合成同烧）──
+// ── buildTextFxDrawtextList / 文字模板本地烧制（2026-09-11 用户裁决：本地烧制
+// 与服务端 /text_templates/match 命中同源，行/词/时间取渲染层预取的 fxLines）──
 
-test('buildTextFxDrawtextList: 命中句时间窗顶部叠加 + 样式轮换 + 颜色 0x 化；未命中句不生条目', () => {
+test('buildTextFxDrawtextList: 服务端命中行时间窗顶部叠加 + 样式轮换 + 颜色 0x 化（与预览同口径）', () => {
   const drawtexts = L.buildTextFxDrawtextList(
     {
-      textFxWords: ['持久', '便宜'],
       textFxStyles: [
         { name: '脉冲', color: '#FFD24D', effectColor: '#FF8800', anim: 'pulse' },
         { name: '滑入', color: '#4FC3F7', effectColor: '#FFFFFF', anim: 'slide' },
       ],
     },
-    ['持久续航很好用', '不划算', '真的便宜'],
-    [0, 3, 6],
-    [3, 6, 9],
+    [
+      { text: '持久续航很好用', start: 0, end: 3, keywords: ['持久'] },
+      { text: '持久还便宜', start: 3, end: 6, keywords: ['持久', '便宜'] },
+      { text: '这是没有命中词的补足整行文本', start: 6, end: 9, keywords: [] },
+    ],
     0, // videoIdx
   )
-  assert.equal(drawtexts.length, 2) // 第 2 句无命中
-  // 句 1：样式池 [0]（pulse）；句 3：样式池 [1]（slide）—— (videoIdx+句序)%池长 轮换
+  assert.equal(drawtexts.length, 3) // 命中行逐行生条目（含无词补足行）
+  // 行 1：样式池 [0]（pulse）；行 2 样式 [1]（slide）；行 3 轮回 [0]——(videoIdx+命中行序)%池长
   assert.ok(drawtexts[0].includes('text=') && drawtexts[0].includes('持久'))
   assert.ok(drawtexts[0].includes('fontcolor=0xFFD24D')) // # → 0x（ffmpeg 色值）
   assert.ok(drawtexts[0].includes('bordercolor=0xFF8800@0.9'))
-  assert.ok(drawtexts[0].includes("y='h*0.08'") && drawtexts[0].includes("between(t,0.000,3.000)"))
+  assert.ok(drawtexts[0].includes("y='h*0.08'") && drawtexts[0].includes('between(t,0.000,3.000)'))
   assert.ok(drawtexts[0].includes('0.65+0.35*abs(sin((t-0.000)*6))')) // pulse 持续脉动
-  assert.ok(drawtexts[1].includes('fontcolor=0x4FC3F7') && drawtexts[1].includes('便宜'))
-  assert.ok(drawtexts[1].includes('w*0.10')) // slide x 位移
+  // 行 2：多词 "/" 拼接 + slide x 位移
+  assert.ok(drawtexts[1].includes("text='持久/便宜'"))
+  assert.ok(drawtexts[1].includes('fontcolor=0x4FC3F7') && drawtexts[1].includes('w*0.10'))
+  // 行 3：无词行（LLM 补足）整行截断（>10 字，与预览同款）；样式回到 pool[0]
+  assert.ok(drawtexts[2].includes('这是没有命中词的补足…'))
+  assert.ok(drawtexts[2].includes('fontcolor=0xFFD24D') && drawtexts[2].includes('between(t,6.000,9.000)'))
 })
 
 test('buildTextFxDrawtextList textFxCount：每视频确定性洗牌取子集；count<=0 全量轮换', () => {
@@ -495,10 +501,13 @@ test('buildTextFxDrawtextList textFxCount：每视频确定性洗牌取子集；
     { name: '丙', color: '#555555', effectColor: '#666666', anim: 'fade' },
     { name: '丁', color: '#777777', effectColor: '#888888', anim: 'fade' },
   ]
-  const o = { textFxWords: ['持久'], textFxStyles: styles, textFxCount: 2 }
-  const subLines = ['持久给力', '依然持久', '还是持久']
-  const starts = [0, 3, 6]; const ends = [3, 6, 9]
-  const run = (vi) => L.buildTextFxDrawtextList(o, subLines, starts, ends, vi)
+  const o = { textFxStyles: styles, textFxCount: 2 }
+  const hits = [
+    { text: '持久给力', start: 0, end: 3, keywords: ['持久'] },
+    { text: '依然持久', start: 3, end: 6, keywords: ['持久'] },
+    { text: '还是持久', start: 6, end: 9, keywords: ['持久'] },
+  ]
+  const run = (vi) => L.buildTextFxDrawtextList(o, hits, vi)
   const v0 = run(0); const v0b = run(0)
   assert.equal(v0.length, 3)
   assert.deepEqual(v0, v0b) // 确定性：同视频同子集（预览/烧制同源）
@@ -510,7 +519,7 @@ test('buildTextFxDrawtextList textFxCount：每视频确定性洗牌取子集；
   }
   assert.ok(pool0.size <= 2, `count=2 时视频 0 至多 2 种主色，实为 ${pool0.size}`)
   // count=0 → 全量轮换（4 样式均可能出现在同视频）
-  const all = L.buildTextFxDrawtextList({ textFxWords: ['持久'], textFxStyles: styles }, subLines, starts, ends, 0)
+  const all = L.buildTextFxDrawtextList({ textFxStyles: styles }, hits, 0)
   const poolAll = new Set(all.map((d) => (d.match(/fontcolor=0x([0-9A-F]{6})/) || [])[1]))
   assert.ok(poolAll.size > 2, `count=0 应全量轮换，实为 ${poolAll.size} 种`)
 })
@@ -519,16 +528,19 @@ test('buildEffectBurnArgs: 仅勾文字模板（无字幕/花字）也生烧制�
   const base = {
     videoPath: 'D:\\v\\dubbed\\dubbed_a.mp4', outputVideoPath: 'D:\\v\\final\\dubbed_a.fx.mp4',
     text: '持久续航真的便宜', videoDur: 10,
-    textFxWords: ['持久', '便宜'],
+    textFxHits: [
+      { text: '持久续航真的便宜', start: 0, end: 3, keywords: ['持久', '便宜'] },
+    ],
     textFxStyles: [{ name: 's', color: '#FFD24D', effectColor: '#FF8800', anim: 'fade' }],
     timing: [{ text: '持久续航真的便宜', start: 0, end: 3 }],
     fancyFontPath: 'msyh',
   }
-  // 仅文字模板：subLines 由 hasTextFx 触发构建，args 非 null 且含 vtx 链
+  // 仅文字模板：命中行直接驱动（不依赖 subLines），args 非 null 且含 vtx 链
   const only = L.buildEffectBurnArgs({ ...base })
   assert.ok(Array.isArray(only))
   let fc = only[only.indexOf('-filter_complex') + 1]
   assert.ok(fc.includes('[vtx]'))
+  assert.ok(fc.includes('持久/便宜')) // 命中词 "/" 拼接
   // 字幕 + 文字模板：链式叠加（字幕 [v] → 文字模板 [vtx]）
   const both = L.buildEffectBurnArgs({
     ...base, addSubtitles: true,

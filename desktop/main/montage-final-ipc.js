@@ -218,7 +218,7 @@ const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v'])
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 /** 句级时间轴 → SRT 字符串（timing.json 优先，回退字数比例均分；与本地
- *  buildSubtitleLines 同口径，供服务端统一合成 subtitle_srt 字段） */
+ *  buildSubtitleLines 同口径，供服务端统一合成 subtitle_srt 字段；cue 间空行分隔） */
 function buildSrtFromTiming(text, timing, videoDur) {
   let lines, starts, ends
   if (Array.isArray(timing) && timing.length && timing.every((t) => t && t.text)) {
@@ -247,7 +247,12 @@ function buildSrtFromTiming(text, timing, videoDur) {
     const mmm = String(ms % 1000).padStart(3, '0')
     return `${h}:${m}:${sec},${mmm}`
   }
-  return lines.map((l, i) => `${i + 1}\n${ts(starts[i])} --> ${ts(Math.max(starts[i] + 0.2, ends[i]))}\n${l}`).join('\n')
+  // cue 之间必须空行分隔（标准 SRT；2026-09-11 服务端实测教训：单 \n 连接时
+  // 严格解析器把整段 SRT 当 1 条 cue——文本塞满编号/时间戳行，行级命中退化
+  // 为整片一个动画，#914 命中事件「1 条 cue」即此因）
+  return lines
+    .map((l, i) => `${i + 1}\n${ts(starts[i])} --> ${ts(Math.max(starts[i] + 0.2, ends[i]))}\n${l}`)
+    .join('\n\n')
 }
 
 /** 特效配置 → 服务端统一合成表单字段（口径对照服务端 /guide「镜头拼接」V-FANCY-3）：
@@ -323,6 +328,18 @@ function buildFxMultipart(fields, filePath, extraFiles) {
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` }
 }
 
+/** 音频上传 ctype 按扩展名映射（BGM/voice；未知扩展名兜底 audio/mpeg）。
+ *  2026-09-11 修正：旧实现固定 audio/mpeg，wav/m4a 等 BGM 会传错 MIME。 */
+function audioCtype(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase()
+  if (ext === '.wav') return 'audio/wav'
+  if (ext === '.m4a' || ext === '.mp4') return 'audio/mp4'
+  if (ext === '.aac') return 'audio/aac'
+  if (ext === '.flac') return 'audio/flac'
+  if (ext === '.ogg' || ext === '.opus') return 'audio/ogg'
+  return 'audio/mpeg'
+}
+
 /** 服务端统一合成（单视频，2026-09-11 用户终裁：点「服务端合成」= 特效烧制 + BGM
  *  混音全部由服务端一次 /montage/concat 调用完成）：提交 → 轮询
  *  /montage/concat/result/{id} → 落盘 outPath → 校验。
@@ -335,7 +352,9 @@ function buildFxMultipart(fields, filePath, extraFiles) {
  *   - 不走 /montage/bgm：该端点 video_url=/output/... 实测 404（API 未挂静态目录），
  *     而 concat 产物经 result 端点下载可用。
  *  任一环节失败抛错（终裁：调用方直接报错给用户，不回退本地——回退会使两按钮语义失真）。
- *  产物校验防两处实测坑：未就绪 200+0B 空体、就绪产物截断 moov 缺失。 */
+ *  产物校验防两处实测坑：未就绪 200+0B 空体、就绪产物截断 moov 缺失。
+ *  配音轨（2026-09-11 统一合成契约提案③）：口播 wav 随 concat voice 字段上传 +
+ *  voice_mode=replace（替换原声；契约默认同值，显式固定）；不再本地预热 dub 产物。 */
 async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, videoDur, spec, bgmPath, bgmVol }) {
   let fields = {}
   if (fx && sub) {
@@ -357,9 +376,18 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
   if (spec && spec.fps > 0) fields.fps = String(spec.fps)
   const extraFiles = []
   if (bgmPath && fs.existsSync(bgmPath)) {
-    // bgm_volume 为 volume 系数口径（服务端默认 0.6，与客户端 bgmVolume/100 同口径）
-    fields.bgm_volume = Number(bgmVol || 0.6).toFixed(2)
-    extraFiles.push({ name: 'bgm', path: bgmPath, ctype: 'audio/mpeg' })
+    // bgm_volume 契约值域 0~1（默认 0.6）：客户端 UI 0-200 → 系数 0-2.0，clamp 到
+    // [0,1]；0 是合法值（静音），不能用 `|| 0.6` 回退（2026-09-11 修正）
+    const vol = Number(bgmVol)
+    fields.bgm_volume = (Number.isFinite(vol) ? Math.min(1, Math.max(0, vol)) : 0.6).toFixed(2)
+    extraFiles.push({ name: 'bgm', path: bgmPath, ctype: audioCtype(bgmPath) })
+  }
+  // 配音轨（契约提案③）：voice 文件 + voice_mode=replace；无配音/文件缺失的视频
+  // 不带 voice 直通（与本地链路「无 wav 不替换原声」同语义）
+  const voicePath = String((sub && sub.voicePath) || '')
+  if (voicePath && fs.existsSync(voicePath)) {
+    fields.voice_mode = 'replace'
+    extraFiles.push({ name: 'voice', path: voicePath, ctype: audioCtype(voicePath) })
   }
   const { body, contentType } = buildFxMultipart(fields, videoPath, extraFiles)
   const res = await httpRequest('POST', '/montage/concat', {
@@ -431,9 +459,12 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const subTexts = Array.isArray(p.subtitleTexts) ? p.subtitleTexts : []
       const serverMode = p.mixMode !== 'local' && typeof httpRequest === 'function'
       const hasFx = !!(fx && (fx.addSubtitles || fx.fancyText || fx.textFxEnabled) && subTexts.length)
-      // 无特效且无 BGM：没有任何处理要做，本地 -c copy 直通即可（走服务端只会
-      // 无谓重编一遍）；只要有参数就整条交给服务端。
-      const doServer = serverMode && (hasFx || hasBgm)
+      // 配音轨（2026-09-11 voice 接线）：服务端链路 voice 随 concat 上传；本地链路
+      // 的配音已在 dubVideos 阶段替换进视频，不消费 voicePath
+      const hasVoice = subTexts.some((s) => s && s.voicePath && fs.existsSync(String(s.voicePath)))
+      // 无特效且无 BGM 且无配音：没有任何处理要做，本地 -c copy 直通即可（走服务端
+      // 只会无谓重编一遍）；只要有参数就整条交给服务端。
+      const doServer = serverMode && (hasFx || hasBgm || hasVoice)
       let fontPathEsc = ''
       let fancyFontPath = ''
       let fancyTemplate = null
@@ -510,13 +541,11 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             fancyTemplate,
             fancySoundPath,
             fancySoundGainDb,
-            // 文字模板关键词（2026-09-11 用户裁决：词表不再由渲染层提取传递——本地
-            // 链路从该视频字幕（sub.text）用同源卖点提取器生成，与服务端「从字幕
-            // 提取」同语义（价格 > 数字参数 > 关键词）；上限随密度档位）
-            textFxWords: L.extractFancyWordsFromText(
-              String(sub.text || ''),
-              ({ low: 3, mid: 8, high: 12 })[String(fx.matchDensity || '').trim().toLowerCase()] || 8,
-            ),
+            // 文字模板命中行（2026-09-11 用户裁决：本地烧制与服务端 /text_templates/match
+            // 命中同源——渲染层按合成口径预取命中行（fxLines）随 payload 下发；
+            // 离线/未取到 → 空（不烧，与预览空轨口径一致；不再本地提取卖点词，
+            // 旧实现在无卖点词文案上提取为空会导致文字模板整块不烧））
+            textFxHits: Array.isArray(sub.fxLines) ? sub.fxLines : [],
             // textFxCount=每视频随机选 N 个（随机样式模式），漏传会导致全量轮换
             textFxStyles: Array.isArray(fx.textFxStyles) ? fx.textFxStyles : [],
             textFxCount: Number(fx.textFxCount) || 0,
@@ -545,14 +574,15 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         if (doServer) {
           emit(`服务端统一合成 (${index + 1}/${total})...`, Math.floor(index / total * 95))
           const spec = probeMedia(videoPath)
-          const sub = hasFx ? subTexts.find((s) => s.videoPath === videoPath) : null
+          // sub 无条件查找（2026-09-11 voice 接线）：仅配音/仅 BGM 的视频也需带 voicePath 提交
+          const sub = subTexts.find((s) => s.videoPath === videoPath) || null
           // 该视频无配套文案（如未配音的排列视频）或时长读不出（无法定位时间轴）
-          // → 不传特效字段，仅按参数做 BGM 混音（与本地链路「直通」同语义）
-          const fxForTask = (sub && String(sub.text || '').trim() && spec.durationSec > 0) ? fx : null
+          // → 不传特效字段，仅按参数做 BGM 混音或配音替换（与本地链路「直通」同语义）
+          const fxForTask = (hasFx && sub && String(sub.text || '').trim() && spec.durationSec > 0) ? fx : null
           try {
             await serverComposeOne({
               httpRequest, videoPath, outPath,
-              fx: fxForTask, sub: fxForTask ? sub : null,
+              fx: fxForTask, sub,
               videoDur: spec.durationSec, spec,
               bgmPath: hasBgm ? p.bgmPath : '', bgmVol,
             })

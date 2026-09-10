@@ -280,10 +280,13 @@ declare interface TintinBridgeServer {
   /** 批量替换原声（ffmpeg 字幕/花字/atempo；对照 VideoDubbingWorker；2026-09-07 PR#4 新口径） */
   voiceDubVideos(payload: {
     tasks: Array<{ videoPath: string; voiceWavPath: string; outVideoPath: string; text: string }>
-    addSubtitles: boolean
+    /** 2026-09-09 裁决：特效迁 Step4 统一烧制后，配音纯化不传特效字段（缺省=不烧） */
+    addSubtitles?: boolean
     lengthModes: Record<string, string>
-    fancyText: boolean
-    fancyStyle: string
+    fancyText?: boolean
+    fancyStyle?: string
+    /** 字幕文字样式预设 key（SUBTITLE_STYLE_PRESETS；2026-09-09 裁决：样式属字幕配置） */
+    subtitleStyle?: string
     /** 兼容保留：花字内容已改为自动提取卖点，不再参与渲染 */
     fancyWords?: string[]
     /** 花字出现位置（FANCY_POSITIONS 键，默认 upper_middle） */
@@ -292,7 +295,7 @@ declare interface TintinBridgeServer {
     subtitleBoxOpacity?: number
     /** 花字模板 dict（样式+动画+音效；null=自定义样式） */
     fancyTemplate?: Record<string, unknown> | null
-    subtitleFont: string
+    subtitleFont?: string
     progressChannel?: string
   }): Promise<{ results: Record<string, string> } | { error: string; results?: Record<string, string> }>
   /** 花字模板列表（全业务字段）+ 已缓存预览图（PR#4：对照 utils/fancy_templates.py） */
@@ -300,23 +303,45 @@ declare interface TintinBridgeServer {
     templates: Array<Record<string, unknown> & { template_id: string; name: string; style: string; anim: string; hasSound: boolean }>
     previews: Record<string, string>
   } | { error: string }>
-  /** 后台补齐缺失模板预览图（ffmpeg 逐个生成；对照 _FancyPreviewWorker） */
-  fancyEnsurePreviews(): Promise<{ previews: Record<string, string>; generated: number } | { error: string }>
+  /** 后台补齐缺失模板预览图（ffmpeg 逐个生成；对照 _FancyPreviewWorker；
+   *  2026-09-09 对齐：templates 可选传服务端 /fancy/templates 模板——与本地同格式，同一预览口径） */
+  fancyEnsurePreviews(payload?: { templates?: Array<Record<string, unknown> & { template_id: string; name: string; style?: string }> }): Promise<{ previews: Record<string, string>; generated: number } | { error: string }>
+  /** 服务端花字模板库（GET /fancy/templates，响应 {items,total}；离线 null） */
+  fancyServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
+  /** 服务端文字模板库（GET /textfx/templates，响应 {items,total}；与花字独立体系；离线 null） */
+  textfxServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
   /** 订阅模板预览图生成进度 */
   fancyOnPreviewProgress(cb: (d: { idx: number; total: number }) => void): () => void
   /** 服务端字体列表（GET /config/fonts） */
   voiceFonts(): Promise<{ fonts: Array<{ id: string; family: string; filename?: string }> } | { error: string } | null>
+  /** 服务端字体文件字节（GET /config/fonts/{font_id}/file；FontFace 加载自渲染用；离线 null） */
+  voiceFontFile(fontId: string): Promise<{ data: Uint8Array } | { error: string } | null>
   /** 导出克隆声音（copy2 到用户选的保存路径） */
   voiceExportAudio(payload: { srcPath: string; savePath: string }): Promise<{ ok: boolean; savePath: string } | { error: string }>
   /** 订阅 voice 域进度事件（返回取消订阅函数） */
   onVoiceProgress(channel: string, cb: (d: { rowIdx?: number; value?: number; stage?: string }) => void): () => void
 
   // ---------- 智能混剪 Step4 特效包装（FinalMixWorker 主进程化 + 剪映草稿导出）----------
-  /** 最终混音合成（本地 ffmpeg：sidechain ducking + 淡入淡出 + loudnorm；无 BGM -c copy） */
+  /** 最终混音合成（本地 ffmpeg：sidechain ducking + 淡入淡出 + loudnorm；无 BGM -c copy）。
+   *  2026-09-09 裁决：特效配置迁 Step4，可带 effects + subtitleTexts（混音前逐视频烧制
+   *  字幕/花字到中间文件再混音；无特效配置零开销直通） */
   finalMix(payload: {
     tasks: Array<{ videoPath: string; outPath: string }>
     bgmPath: string
     bgmVolume: number
+    effects?: {
+      addSubtitles: boolean
+      subtitleFont: string
+      subtitleStyle: string
+      subtitleBoxOpacity: number
+      /** 字幕入场动画（fade/rise/slide/pop/none；2026-09-10 用户裁决，预览与烧制同源） */
+      subtitleAnim: string
+      fancyText: boolean
+      fancyStyle: string
+      fancyPosition: string
+      fancyTemplate: Record<string, unknown> | null
+    }
+    subtitleTexts?: Array<{ videoPath: string; text: string; timingPath: string }>
     progressChannel?: string
   }): Promise<{ results: string[] } | { error: string }>
   /** 回退扫描 outputs 排列视频（_collect_mix_candidates 回退段 + _get_out_montage_dir 规则） */
@@ -390,6 +415,8 @@ declare interface TintinBridgeServer {
   }): Promise<{ renamed: Array<[string, string, number]>; skipped: number } | { error: string }>
   /** 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读；对照 _probe_video_ok；hasFile 区分未取到/损坏） */
   montageValidateFinal(path: string): Promise<{ ok: boolean; hasFile: boolean; duration?: number; error?: string }>
+    /** 删除下载校验未通过的坏成片（防误删：仅限 montage_cache 目录内，2026-09-10） */
+    montageDeleteBadFinal(path: string): Promise<{ ok: boolean } | { error: string }>
   /** POST /audio/gen/bgm — 生成 BGM（MusicGen-small；2026-09-05 服务端 GUIDE 新口径 {style,mood?,duration}，无 prompt），生成即出 {url, duration, engine} */
   audioGenBgm(payload: AudioAPI.GenBgmRequest): Promise<IpcError<AudioAPI.GenBgmResponse>>
   /** POST /audio/gen/sfx — AI 生成音效（AudioLDM2，原客户端 gen_sfx 同口径 {prompt,duration}） */
@@ -440,6 +467,11 @@ declare interface TintinBridgeFfprobeResult {
 }
 declare interface TintinBridgeFfmpeg {
   probe(file: string): Promise<TintinBridgeFfprobeResult>
+  /** 仅取时长（秒）；resources/bin 无 ffprobe.exe 时主进程回退 ffmpeg -i stderr 解析，失败返 0 */
+  probeDuration(file: string): Promise<number>
+  /** 预览可播性保障（2026-09-10）：Chromium 不可播编码（H.264 4:2:2/10bit、MP4+PCM 等）
+   *  自动转码到临时缓存 mp4；可播/检测失败原路径直返 → { path, transcoded } 或 { error } */
+  ensurePlayable(file: string): Promise<{ path: string; transcoded: boolean } | { error: string }>
   // （extractThumb 已废弃删除：预览缩略图改渲染层 canvas 抓帧，分辨率=视频真实分辨率，2026-09-07）
   /**
    * 批量抽帧 + base64（视觉模型研判类工具共用：视频评价预测/视频营销检测）。

@@ -307,6 +307,36 @@ const FANCY_STYLES = {
   yellow_red:    'fontcolor=0xFFFF00:borderw=5:bordercolor=0xCC0000:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8',
 }
 
+/** 字幕文字样式预设（2026-09-09 用户裁决：样式属字幕配置，图3 色系 ~24 格）。
+ *  key 与渲染层 SUBTITLE_STYLE_PRESETS（videoMontageLogic.ts）一一对应，
+ *  两表同步维护：本表为 drawtext 片段，渲染层表为色板 UI 元数据。 */
+const SUBTITLE_STYLES = {
+  white:        'fontcolor=white',
+  white_blk:    'fontcolor=0xFFFFFF:borderw=3:bordercolor=0x000000',
+  white_gray:   'fontcolor=0xFFFFFF:borderw=3:bordercolor=0x555555',
+  white_red:    'fontcolor=0xFFFFFF:borderw=3:bordercolor=0xCC2222',
+  white_blue:   'fontcolor=0xFFFFFF:borderw=3:bordercolor=0x2266CC',
+  black_white:  'fontcolor=0x111111:borderw=3:bordercolor=0xFFFFFF',
+  black_yellow: 'fontcolor=0x111111:borderw=3:bordercolor=0xFFD700',
+  yellow_blk:   'fontcolor=0xFFE135:borderw=3:bordercolor=0x000000',
+  yellow_red:   'fontcolor=0xFFE135:borderw=3:bordercolor=0xCC0000',
+  gold_blk:     'fontcolor=0xF0C040:borderw=3:bordercolor=0x3A2000',
+  gold_red:     'fontcolor=0xF0C040:borderw=3:bordercolor=0xCC0000',
+  orange_white: 'fontcolor=0xFF8C1A:borderw=3:bordercolor=0xFFFFFF',
+  pink_blk:     'fontcolor=0xFF7EB9:borderw=3:bordercolor=0x000000',
+  pink_white:   'fontcolor=0xFF7EB9:borderw=3:bordercolor=0xFFFFFF',
+  red_white:    'fontcolor=0xFF4040:borderw=3:bordercolor=0xFFFFFF',
+  red_yellow:   'fontcolor=0xFF4040:borderw=3:bordercolor=0xFFE135',
+  blue_blk:     'fontcolor=0x40A0FF:borderw=3:bordercolor=0x000000',
+  blue_white:   'fontcolor=0x40A0FF:borderw=3:bordercolor=0xFFFFFF',
+  sky_white:    'fontcolor=0x7FD4FF:borderw=3:bordercolor=0xFFFFFF',
+  green_blk:    'fontcolor=0x40FF80:borderw=3:bordercolor=0x000000',
+  green_white:  'fontcolor=0x40FF80:borderw=3:bordercolor=0xFFFFFF',
+  teal_white:   'fontcolor=0x2EC4B6:borderw=3:bordercolor=0xFFFFFF',
+  purple_white: 'fontcolor=0xC060FF:borderw=3:bordercolor=0xFFFFFF',
+  purple_blk:   'fontcolor=0xC060FF:borderw=3:bordercolor=0x000000',
+}
+
 /** drawtext 文本转义（对照 L915 逐字：\\ → \\\\ 、' 、: 、, ） */
 /** 剥读音标注括号（concat_workers.py _strip_pron_annotation 逐行移植）：
  * 555(三五)电池 → 555电池；仅括号前紧贴字母/数字时识别。字幕/花字显示原文。 */
@@ -665,6 +695,213 @@ function buildSubtitleLines({ timing, text, displayDur, needAudioSpeed, videoDur
   return { rawLines: rawLines.map(stripPronAnnotation), lineStarts, lineEnds }
 }
 
+/** 字幕 drawtext 段构建（供配音链与 Step4 特效烧制共用，保证样式/时机一致；
+ *  run L1218-1242 口径：背景可配/底边安全框/超长行按时间窗切段） */
+function buildSubtitleDrawtextList(o, subLines, subStarts, subEnds) {
+  const fontPath = o.subtitleFontPath || 'msyh'
+  // 背景不透明度可配（run L1057-1060：异常回退 0.5；0=无背景框）
+  let boxOpacity = 0.5
+  try { boxOpacity = Math.min(1.0, Math.max(0.0, Number(o.subtitleBoxOpacity))) } catch (_) { /* NaN 等 → 默认 */ }
+  if (!Number.isFinite(boxOpacity)) boxOpacity = 0.5
+  const boxStr = boxOpacity > 0
+    ? `box=1:boxcolor=black@${boxOpacity.toFixed(2)}:boxborderw=6:`
+    : ''
+  // 底边贴安全框下沿再抬 2%（run L1225）
+  const yExpr = `${SAFE_BOTTOM_EDGE}-text_h-h*${SUB_BOTTOM_GAP}`
+  // 文字样式预设（2026-09-09 裁决：样式属字幕配置；未知 key 回退默认白字，与旧版一致）
+  const styleStr = SUBTITLE_STYLES[o.subtitleStyle] || SUBTITLE_STYLES.white
+  // 入场动画（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；口径对照花字
+  //  fade/rise/slide/pop，白名单复用 VALID_ANIMS；none=硬切；无效值回退 fade）
+  const animRaw = String(o.subtitleAnim || '').trim().toLowerCase()
+  const anim = VALID_ANIMS.has(animRaw) ? animRaw : 'fade'
+  const animDur = 0.4
+  const drawtexts = []
+  for (let i = 0; i < subLines.length; i++) {
+    const startT = subStarts[i]
+    const endT = Math.max(startT + 0.2, subEnds[i])
+    // 超长行不再多行堆叠：按配音时间窗把长句切多个短段依次显示（run L1218-1242）
+    const parts = wrapSubtitleLine(subLines[i])
+    let segs
+    if (parts.length === 1) {
+      segs = [[parts[0], startT, endT]]
+    } else {
+      // 段时长按等效字数占比切分行时间窗
+      const weights = parts.map((p) => subLineWeight(p))
+      const totalW = weights.reduce((a, b) => a + b, 0) || parts.length
+      let cum = startT
+      segs = parts.map((part, k) => {
+        const segEnd = k === parts.length - 1 ? endT : cum + (endT - startT) * weights[k] / totalW
+        const seg = [part, cum, segEnd]
+        cum = segEnd
+        return seg
+      })
+    }
+    for (const [part, segStart, segEnd] of segs) {
+      // 入场动画：alpha 淡入 + 按类型 x/y 位移（写法对照花字 fade/rise/slide/pop；
+      //  drawtext 的 alpha 只作用于文字，背景框不参与动画淡入）
+      const s = segStart.toFixed(3)
+      const animParts = []
+      let xAnim = ''
+      let yAnim = ''
+      if (anim === 'fade') {
+        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+      } else if (anim === 'rise') {
+        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+        yAnim = `(${yExpr})-(1-min((t-${s})/${animDur},1))*h*0.03`
+      } else if (anim === 'slide') {
+        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+        xAnim = `(w-text_w)/2+(1-min((t-${s})/${animDur},1))*w*0.10`
+      } else if (anim === 'pop') {
+        animParts.push(`alpha='if(lt(t,${s}+0.15),(t-${s})/0.15,1)'`)
+        yAnim = `(${yExpr})-abs(sin((t-${s})*14))*h*0.012*(1-min((t-${s})/0.7,1))`
+      }
+      const animStr = animParts.length ? ':' + animParts.join(':') : ''
+      drawtexts.push(
+        `drawtext=fontfile='${fontPath}':`
+        + `text='${escapeDrawText(part)}':`
+        + `fontsize=h*${SUB_FONT_SCALE}:${styleStr}:`
+        + boxStr
+        + `x=${xAnim ? `'${xAnim}'` : '(w-text_w)/2'}:`
+        + `y=${yAnim ? `'${yAnim}'` : yExpr}:`
+        + `enable='between(t,${segStart.toFixed(3)},${segEnd.toFixed(3)})'`
+        + animStr,
+      )
+    }
+  }
+  return drawtexts
+}
+
+/** 花字 drawtext 段 + 模板音效构建（供配音链与 Step4 特效烧制共用；run L1309-1383 口径） */
+function buildFancyDrawtextList(o, fancyEvents) {
+  const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
+  let styleStr = FANCY_STYLES[o.fancyStyle] || FANCY_STYLES.gold
+  const tpl = o.fancyTemplate && typeof o.fancyTemplate === 'object' ? o.fancyTemplate : null
+  // 模板优先：选了花字模板时，样式以模板的 drawtext 串为准（run L1309-1311）
+  if (tpl && tpl.style) styleStr = String(tpl.style)
+  // 花字位置（run L1328）：未知值回退默认中上
+  const pos = FANCY_POSITIONS[o.fancyPosition] || FANCY_POSITIONS.upper_middle
+  // 入场动画：模板 jy_intro_anim 映射本地动画；未选模板时默认淡入（run L1332-1341）
+  const anim = getFancyAnim(tpl)
+  const animDur = 0.4
+  const fancyDrawtexts = []
+  const soundSpecs = [] // [音效绝对路径, 延迟ms]
+  for (const [word, ftStart, ftEnd] of fancyEvents) {
+    const escaped = escapeDrawText(word)
+    // 动画选项：alpha 淡入 + 按类型的 x/y 位移；s=出现时刻。
+    // x/y 必须成对提供（drawtext 默认 x/y=0，缺一个就跑位）
+    const s = ftStart.toFixed(3)
+    const animParts = []
+    let xExpr = ''
+    let yExpr = ''
+    if (anim === 'fade') {
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+    } else if (anim === 'rise') {
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+      yExpr = `(${pos.y})-(1-min((t-${s})/${animDur},1))*h*0.04`
+    } else if (anim === 'slide') {
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+      xExpr = `(${pos.x})+(1-min((t-${s})/${animDur},1))*w*0.10`
+    } else if (anim === 'pop') {
+      animParts.push(`alpha='if(lt(t,${s}+0.15),(t-${s})/0.15,1)'`)
+      yExpr = `(${pos.y})-abs(sin((t-${s})*14))*h*0.012*(1-min((t-${s})/0.7,1))`
+    }
+    const animStr = animParts.length ? ':' + animParts.join(':') : ''
+    const xStr = xExpr ? `x='${xExpr}'` : `x=${pos.x}`
+    const yStr = yExpr ? `y='${yExpr}'` : `y=${pos.y}`
+    fancyDrawtexts.push(
+      `drawtext=fontfile='${fontPath}':`
+      + `text='${escaped}':`
+      + `fontsize=h*0.08:${styleStr}:`
+      + `${xStr}:${yStr}:`
+      + `enable='between(t,${ftStart.toFixed(3)},${ftEnd.toFixed(3)})'`
+      + animStr,
+    )
+    // 模板音效：每个花字出现时刻混入（路径由主进程预解析，缺失时为空 → 不混）
+    if (o.fancySoundPath) soundSpecs.push([o.fancySoundPath, Math.trunc(ftStart * 1000)])
+  }
+  return { fancyDrawtexts, soundSpecs }
+}
+
+/**
+ * 构建 Step4 特效烧制 ffmpeg 参数（2026-09-09 用户裁决：字幕/花字特效自配音链迁至
+ * 特效包装统一烧制；复用与配音链同一构建器保证样式/时机一致；无配音替换，音频 copy）。
+ * opts: { videoPath, outputVideoPath, text, timing, videoDur,
+ *         addSubtitles, subtitleFontPath(已转义), subtitleStyle, subtitleBoxOpacity, subtitleAnim,
+ *         fancyText, fancyStyle, fancyPosition, fancyFontPath(已转义), fancyTemplate,
+ *         fancySoundPath, fancySoundGainDb }
+ * 返回 null = 无特效可烧（调用方直通跳过）。
+ */
+function buildEffectBurnArgs(opts) {
+  const o = opts || {}
+  const videoDur = Number(o.videoDur || 0)
+  if (!(videoDur > 0)) return null
+  // 逐句时间轴：优先 .timing.json 真实句级时间轴；无则字数比例估算（与配音链同一口径）
+  let subLines = []
+  let subStarts = []
+  let subEnds = []
+  if ((o.addSubtitles || o.fancyText) && o.text) {
+    const built = buildSubtitleLines({
+      timing: o.timing, text: o.text, displayDur: videoDur,
+      needAudioSpeed: false, videoDur, audioDur: videoDur,
+    })
+    subLines = built.rawLines
+    subStarts = built.lineStarts
+    subEnds = built.lineEnds
+  }
+  const videoFilters = []
+  let videoLabel = '0:v'
+  let audioLabel = '0:a:0'
+  const soundInputPaths = []
+  if (o.addSubtitles && o.text && subLines.length) {
+    const drawtexts = buildSubtitleDrawtextList(o, subLines, subStarts, subEnds)
+    if (drawtexts.length) {
+      videoFilters.push(`[${videoLabel}]${drawtexts.join(',')}[v]`)
+      videoLabel = 'v'
+    }
+  }
+  let fancyEvents = []
+  if (o.fancyText && subLines.length && videoDur > 0) {
+    fancyEvents = buildFancyEvents({ subLines, subStarts, subEnds, displayDur: videoDur })
+  }
+  if (o.fancyText && fancyEvents.length) {
+    const { fancyDrawtexts, soundSpecs } = buildFancyDrawtextList(o, fancyEvents)
+    if (fancyDrawtexts.length) {
+      videoFilters.push(`[${videoLabel}]${fancyDrawtexts.join(',')}[vf]`)
+      videoLabel = 'vf'
+    }
+    // 花字模板音效混入（adelay 对齐 + amix；有音效时音频需重编码）
+    let soundGain = -6.0
+    try { soundGain = Number(o.fancySoundGainDb) } catch (_) { /* 缺省 -6 */ }
+    if (!Number.isFinite(soundGain)) soundGain = -6.0
+    if (soundSpecs.length) {
+      let nextIdx = 1 // 输入流：0=video，音效从 1 开始
+      let amixIn = `[${audioLabel}]`
+      soundSpecs.forEach(([sfxPath, delayMs], si) => {
+        videoFilters.push(`[${nextIdx}:a]adelay=${delayMs}:all=1,volume=${soundGain.toFixed(1)}dB[s${si}]`)
+        amixIn += `[s${si}]`
+        soundInputPaths.push(sfxPath)
+        nextIdx += 1
+      })
+      videoFilters.push(`${amixIn}amix=inputs=${soundSpecs.length + 1}:normalize=0:duration=longest[a_mix]`)
+      audioLabel = 'a_mix'
+    }
+  }
+  if (!videoFilters.length) return null
+  // 滤镜输出标签（无冒号）需要 [] 包裹；裸输入流（如 0:a:0）不加
+  const audioMap = audioLabel.includes(':') ? audioLabel : `[${audioLabel}]`
+  const cmd = ['-y', '-i', o.videoPath]
+  for (const sp of soundInputPaths) cmd.push('-i', sp)
+  cmd.push(
+    '-filter_complex', videoFilters.join(';'),
+    '-map', `[${videoLabel}]`, '-map', audioMap,
+    '-c:v', 'libx264', '-crf', '23', '-preset', 'superfast',
+  )
+  if (soundInputPaths.length) cmd.push('-c:a', 'aac')
+  else cmd.push('-c:a', 'copy')
+  cmd.push(o.outputVideoPath)
+  return cmd
+}
+
 /**
  * 构建配音替换完整 ffmpeg 参数（对照 VideoDubbingWorker.run L1137-1456，
  * 2026-09-07 PR#4 新口径逐行移植；不含 ffmpeg 可执行路径前缀）。
@@ -674,7 +911,9 @@ function buildSubtitleLines({ timing, text, displayDur, needAudioSpeed, videoDur
  *         subtitleFontPath(已转义), subtitleBoxOpacity,
  *         fancyTemplate(模板 dict 或 null), fancySoundPath(主进程已解析绝对路径或''),
  *         fancySoundGainDb,
- *         fancyWords(兼容保留：花字内容已改为自动提取卖点，不再参与渲染) }
+ *         fancyWords(兼容保留：花字内容已改为自动提取卖点，不再参与渲染),
+ *         burnEffects(2026-09-09 裁决：特效迁 Step4 后配音链显式传 false 纯化配音；
+ *                     默认 true 保持向后兼容与既有单测口径) }
  * 编码：对齐 ffmpeg-gate.js 先例（原版 get_video_encode_args 硬件探测 → libx264）
  */
 function buildDubFFmpegArgs(opts) {
@@ -697,12 +936,16 @@ function buildDubFFmpegArgs(opts) {
     videoLabel = 'v_padded'
   }
 
+  // 火效烧制开关（2026-09-09 裁决：字幕/花字迁 Step4 统一烧制，配音链传 false 纯化；
+  // 默认 true 保持向后兼容）
+  const burnEffects = o.burnEffects !== false
+
   // 逐句时间轴（字幕烧制与花字跟字幕时机共用，run L1178-1210）：
   // 优先 .timing.json 真实句级时间轴；无时间轴按字数比例估算（旧行为）
   let subLines = []
   let subStarts = []
   let subEnds = []
-  if ((o.addSubtitles || o.fancyText) && o.text) {
+  if (burnEffects && (o.addSubtitles || o.fancyText) && o.text) {
     const built = buildSubtitleLines({
       timing: o.timing, text: o.text, displayDur, needAudioSpeed, videoDur, audioDur,
     })
@@ -711,50 +954,8 @@ function buildDubFFmpegArgs(opts) {
     subEnds = built.lineEnds
   }
 
-  if (o.addSubtitles && o.text && subLines.length) {
-    const fontPath = o.subtitleFontPath || 'msyh'
-    // 背景不透明度可配（run L1057-1060：异常回退 0.5；0=无背景框）
-    let boxOpacity = 0.5
-    try { boxOpacity = Math.min(1.0, Math.max(0.0, Number(o.subtitleBoxOpacity))) } catch (_) { /* NaN 等 → 默认 */ }
-    if (!Number.isFinite(boxOpacity)) boxOpacity = 0.5
-    const boxStr = boxOpacity > 0
-      ? `box=1:boxcolor=black@${boxOpacity.toFixed(2)}:boxborderw=6:`
-      : ''
-    // 底边贴安全框下沿再抬 2%（run L1225）
-    const yExpr = `${SAFE_BOTTOM_EDGE}-text_h-h*${SUB_BOTTOM_GAP}`
-    const drawtexts = []
-    for (let i = 0; i < subLines.length; i++) {
-      const startT = subStarts[i]
-      const endT = Math.max(startT + 0.2, subEnds[i])
-      // 超长行不再多行堆叠：按配音时间窗把长句切多个短段依次显示（run L1218-1242）
-      const parts = wrapSubtitleLine(subLines[i])
-      let segs
-      if (parts.length === 1) {
-        segs = [[parts[0], startT, endT]]
-      } else {
-        // 段时长按等效字数占比切分行时间窗
-        const weights = parts.map((p) => subLineWeight(p))
-        const totalW = weights.reduce((a, b) => a + b, 0) || parts.length
-        let cum = startT
-        segs = parts.map((part, k) => {
-          const segEnd = k === parts.length - 1 ? endT : cum + (endT - startT) * weights[k] / totalW
-          const seg = [part, cum, segEnd]
-          cum = segEnd
-          return seg
-        })
-      }
-      for (const [part, segStart, segEnd] of segs) {
-        drawtexts.push(
-          `drawtext=fontfile='${fontPath}':`
-          + `text='${escapeDrawText(part)}':`
-          + `fontsize=h*${SUB_FONT_SCALE}:fontcolor=white:`
-          + boxStr
-          + 'x=(w-text_w)/2:'
-          + `y=${yExpr}:`
-          + `enable='between(t,${segStart.toFixed(3)},${segEnd.toFixed(3)})'`,
-        )
-      }
-    }
+  if (burnEffects && o.addSubtitles && o.text && subLines.length) {
+    const drawtexts = buildSubtitleDrawtextList(o, subLines, subStarts, subEnds)
     if (drawtexts.length) {
       videoFilters.push(`[${videoLabel}]${drawtexts.join(',')}[v]`)
       videoLabel = 'v'
@@ -765,56 +966,11 @@ function buildDubFFmpegArgs(opts) {
   // 每条视频最多 FANCY_MAX_PER_VIDEO 个）；时机跟随对应字幕行——提前 FANCY_LEAD_SEC
   // 秒出现、该行字幕结束即消失；无卖点的行不出现。
   let fancyEvents = []
-  if (o.fancyText && subLines.length && displayDur > 0) {
+  if (burnEffects && o.fancyText && subLines.length && displayDur > 0) {
     fancyEvents = buildFancyEvents({ subLines, subStarts, subEnds, displayDur })
   }
-  if (o.fancyText && fancyEvents.length) {
-    const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
-    let styleStr = FANCY_STYLES[o.fancyStyle] || FANCY_STYLES.gold
-    const tpl = o.fancyTemplate && typeof o.fancyTemplate === 'object' ? o.fancyTemplate : null
-    // 模板优先：选了花字模板时，样式以模板的 drawtext 串为准（run L1309-1311）
-    if (tpl && tpl.style) styleStr = String(tpl.style)
-    // 花字位置（run L1328）：未知值回退默认中上
-    const pos = FANCY_POSITIONS[o.fancyPosition] || FANCY_POSITIONS.upper_middle
-    // 入场动画：模板 jy_intro_anim 映射本地动画；未选模板时默认淡入（run L1332-1341）
-    const anim = getFancyAnim(tpl)
-    const animDur = 0.4
-    const fancyDrawtexts = []
-    const soundSpecs = [] // [音效绝对路径, 延迟ms]
-    for (const [word, ftStart, ftEnd] of fancyEvents) {
-      const escaped = escapeDrawText(word)
-      // 动画选项：alpha 淡入 + 按类型的 x/y 位移；s=出现时刻。
-      // x/y 必须成对提供（drawtext 默认 x/y=0，缺一个就跑位）
-      const s = ftStart.toFixed(3)
-      const animParts = []
-      let xExpr = ''
-      let yExpr = ''
-      if (anim === 'fade') {
-        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
-      } else if (anim === 'rise') {
-        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
-        yExpr = `(${pos.y})-(1-min((t-${s})/${animDur},1))*h*0.04`
-      } else if (anim === 'slide') {
-        animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
-        xExpr = `(${pos.x})+(1-min((t-${s})/${animDur},1))*w*0.10`
-      } else if (anim === 'pop') {
-        animParts.push(`alpha='if(lt(t,${s}+0.15),(t-${s})/0.15,1)'`)
-        yExpr = `(${pos.y})-abs(sin((t-${s})*14))*h*0.012*(1-min((t-${s})/0.7,1))`
-      }
-      const animStr = animParts.length ? ':' + animParts.join(':') : ''
-      const xStr = xExpr ? `x='${xExpr}'` : `x=${pos.x}`
-      const yStr = yExpr ? `y='${yExpr}'` : `y=${pos.y}`
-      fancyDrawtexts.push(
-        `drawtext=fontfile='${fontPath}':`
-        + `text='${escaped}':`
-        + `fontsize=h*0.08:${styleStr}:`
-        + `${xStr}:${yStr}:`
-        + `enable='between(t,${ftStart.toFixed(3)},${ftEnd.toFixed(3)})'`
-        + animStr,
-      )
-      // 模板音效：每个花字出现时刻混入（路径由主进程预解析，缺失时为空 → 不混）
-      if (o.fancySoundPath) soundSpecs.push([o.fancySoundPath, Math.trunc(ftStart * 1000)])
-    }
+  if (burnEffects && o.fancyText && fancyEvents.length) {
+    const { fancyDrawtexts, soundSpecs } = buildFancyDrawtextList(o, fancyEvents)
     if (fancyDrawtexts.length) {
       videoFilters.push(`[${videoLabel}]${fancyDrawtexts.join(',')}[vf]`)
       videoLabel = 'vf'
@@ -900,6 +1056,7 @@ module.exports = {
   cleanRewriteContent,
   parseFancyWords,
   FANCY_STYLES,
+  SUBTITLE_STYLES,
   escapeDrawText,
   stripPronAnnotation,
   SAFE_X,
@@ -928,4 +1085,5 @@ module.exports = {
   resolveSubtitleFontPath,
   buildSubtitleLines,
   buildDubFFmpegArgs,
+  buildEffectBurnArgs,
 }

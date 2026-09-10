@@ -20,7 +20,7 @@ import { useAudioGen } from '@/composables/useAudioGen'
 import { useFilePicker } from '@/composables/useFilePicker'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import { markdownListLines } from '@/composables/opsProductLibraryLogic'
-import { copyPreviewText } from '@/composables/videoMontageLogic'
+import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/videoMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
 // 步骤条文案对照原客户端 gui/video_montage_page.py steps_text L257，严格一致
@@ -43,7 +43,7 @@ const {
   splitBusy, splitError, splitMsg, splitProgress, splitResolution,
   selectFolder, onDrop, removeVideo, runSplit,
   updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
-  previewUrl, openSplitsDir, splitsDownloading,
+  previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
   // Step2 镜头重组
   assembleLogic, concatLayout, durationLimit, DURATION_LIMITS, batchCount, recBatchCount,
   concatTransition, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
@@ -65,19 +65,24 @@ const {
   transcribeNewSample, uploadNewSampleRef,
   ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
   addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
+  // 字幕预设样式（2026-09-09 裁决：样式属字幕配置；SUBTITLE_STYLE_PRESETS 为图3 色板）
+  subtitleStyleKey, SUBTITLE_STYLE_PRESETS, subtitlePreviewStyle, fontOptionStyle,
+  subtitleAnimKey,
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
+  // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立；随机样式默认 3 个）
+  textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
+  textRandomCount, TEXT_RANDOM_COUNT_OPTIONS, textFxPreviewItems, textFxStyleSamples,
   voiceProgress,
   fancyTemplateId, fancyTemplates, fancyPreviews,
-  loadFancyTemplates, previewFancyWords, fancyPreviewDlg, closeFancyPreviewDlg,
+  loadFancyTemplates,
   FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
   aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
   ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
   cloneParamsDlg, openCloneParams, closeCloneParams, saveCloneParams,
   editDlg, openEditDlg, saveEditDlg,
-  dubbedDlg,
-  voiceBusy, dubBusy, rewriteBusy, dubbingEnabled,
+    voiceBusy, rewriteBusy,
   scanVoiceDir, enterStepVoice,
-  batchAiRewrite, startSynthesizeVoice, startDubVideos,
+    batchAiRewrite, startSynthesizeVoice,
   regenVoice, exportVoice, playVoice, playRowVideo, playDubbedVideo,
   toggleLengthMode, lengthModeTip,
   voiceStatusText, voiceStatusClass, pathBasename,
@@ -92,6 +97,7 @@ const {
   fmtBgmTime,
   selectRefAudio,
   fmtDur,
+  planDurText,
   // 景别分类
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
@@ -212,19 +218,24 @@ let thumbToken = 0
 watch(() => [...srcVideos.value], (list) => {
   const token = ++thumbToken
   void (async () => {
-    for (const v of list) {
-      if (token !== thumbToken) return
-      if (thumbs.has(v)) continue
-      // 每素材独立 tag（extractFrames 输出目录按 tag 清空重建，避免互踩）
-      try {
-        const r = await window.tintin.ffmpeg.extractFrames({
-          videoPath: v, times: [1.0], tag: `montagethumb${++thumbSeq}`, width: 160, quality: 3,
-        })
-        if (token !== thumbToken) return
-        const b64 = r?.frames?.[0]?.base64
-        if (b64) thumbs.set(v, `data:image/jpeg;base64,${b64}`)
-      } catch { /* 抽帧失败 → 该行显示占位图标 */ }
+    // 3 路并发池：4K XAVC 单帧解码较慢，串行 50 行需数分钟（2026-09-09 用户反馈封面迟迟不出）
+    const pending = list.filter((v) => !thumbs.has(v))
+    let cursor = 0
+    const worker = async () => {
+      while (token === thumbToken && cursor < pending.length) {
+        const v = pending[cursor++]
+        // 每素材独立 tag（extractFrames 输出目录按 tag 清空重建，避免互踩）
+        try {
+          const r = await window.tintin.ffmpeg.extractFrames({
+            videoPath: v, times: [1.0], tag: `montagethumb${++thumbSeq}`, width: 160, quality: 3,
+          })
+          if (token !== thumbToken) return
+          const b64 = r?.frames?.[0]?.base64
+          if (b64) thumbs.set(v, `data:image/jpeg;base64,${b64}`)
+        } catch { /* 抽帧失败 → 该行显示占位图标 */ }
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(3, pending.length) }, () => worker()))
   })()
 }, { immediate: true })
 onUnmounted(() => { thumbToken++ })
@@ -242,27 +253,60 @@ const fancyStyleOptions = FANCY_STYLE_OPTIONS
 const fancyPositionOptions = FANCY_POSITION_OPTIONS
 /** 字幕背景下拉（原版 subtitle_bg_combo 6 项，L226-228） */
 const subtitleBgOptions = SUBTITLE_BG_OPTIONS
-/** 花字模板下拉（原版 fancy_template_combo：首项「自定义 (下方样式)」value=''，L269-274） */
+/** 字幕入场动画下拉（2026-09-10 用户裁决：可选动画，预览与烧制同用该选择；
+ *  key 与主进程 VALID_ANIMS 同表） */
+const SUBTITLE_ANIM_OPTIONS = [
+  { label: '淡入', value: 'fade' },
+  { label: '上浮', value: 'rise' },
+  { label: '滑入', value: 'slide' },
+  { label: '弹入', value: 'pop' },
+  { label: '无动画', value: 'none' },
+]
+const subtitleAnimOptions = SUBTITLE_ANIM_OPTIONS
+/** 花字模板下拉（原版 fancy_template_combo：首项「自定义 (下方样式)」value=''，L269-274；
+ *  2026-09-09 服务端对接：服务端模板库条目加「（服务端）」来源后缀，排在本地模板前） */
 const fancyTemplateOptions = computed(() => [
   { label: '自定义 (下方样式)', value: '' },
-  ...fancyTemplates.value.map((t) => ({ label: t.name, value: t.template_id })),
+  ...fancyTemplates.value.map((t) => ({
+    label: t.origin === 'server' ? `${t.name}（服务端）` : t.name,
+    value: t.template_id,
+  })),
 ])
+/** 当前选中模板（含来源标记） */
+const selectedTemplate = computed(() =>
+  fancyTemplateId.value ? fancyTemplates.value.find((t) => t.template_id === fancyTemplateId.value) || null : null)
+/** 服务端模板描述预览（textfx 动画渲染在服务端，客户端不自行渲染——显描述文字占位，
+ *  对照 docs/CLIENT-FANCY-ACCESS.md §6「不做：客户端自行渲染花字」） */
+const serverTemplateDesc = computed(() => {
+  const t = selectedTemplate.value
+  if (!t || t.origin !== 'server') return ''
+  const desc = String(t.description || t.category || '').trim()
+  return desc ? `${t.name}：${desc}` : `${t.name}：服务端模板（渲染在服务端）`
+})
 /** 当前模板预览图（dataURL；对照 fancy_template_preview_lbl） */
 const fancyTemplatePreview = computed(() =>
   fancyTemplateId.value ? fancyPreviews.value[fancyTemplateId.value] || '' : '')
+/** 花字效果预览样本字（行3 效果预览；卖点风格样例） */
+const FANCY_PREVIEW_TEXT = '199元超值'
+/** 花字自定义样式效果预览（行3）：选模板时解析模板 drawtext style 还原主色+描边；
+ *  自定义（无模板）时用选中样式预设的 CSS 近似（对照主进程 FANCY_STYLES） */
+const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
+  const tpl = selectedTemplate.value
+  const parsed = tpl ? fancyDrawtextToPreview(String(tpl.style || '')) : null
+  if (parsed) return parsed
+  const p = FANCY_STYLE_PREVIEW[fancyStyle.value] || FANCY_STYLE_PREVIEW.white_outline
+  return {
+    color: p.color,
+    webkitTextStroke: `3px ${p.stroke}`,
+    paintOrder: 'stroke',
+    textShadow: '2px 2px 4px rgba(0,0,0,.6)',
+  }
+})
 onMounted(() => { void loadFancyTemplates() })
 // 声音样本与 VoiceClone 页同口径：每次进入 Step3（及挂载时）重新拉取（原实现仅在
 // composable 创建时拉一次，服务端新增样本/离线恢复后下拉一直为空）
 onMounted(() => { void loadRefSamples() })
 watch(step, (v) => { if (v === 2) void loadRefSamples() })
-
-/** 配音结果弹窗行动作（DubbedVideosDialog） */
-function playDubbed(path: string): void { try { window.tintin?.shell?.openItem?.(path) } catch (_) {} }
-function locateDubbed(path: string): void { try { window.tintin?.shell?.revealInFolder?.(path) } catch (_) {} }
-function openDubbedDir(): void {
-  const d = dubbedDlg.value.outDir
-  if (d) playDubbed(d)
-}
 
 /** 输出画幅下拉（原版 layout_combo 3 项；首项动态附原片分辨率，L4800-4802 同口径） */
 const LAYOUTS = computed(() => [
@@ -292,8 +336,9 @@ function planMenuConfirm(): void { const i = planMenu.value.index; closePlanMenu
 function planMenuGen(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) openProductDlg(i) }
 function planMenuView(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) viewPlanCopy(i) }
 
-// ── 口播弹窗左侧内嵌产品选择区（WbPickProductPanel：左列表右参数/卖点，
-//   点行仅预览、「选择该产品」才选中；选中后自动回填右侧四字段，仍可手改）──
+// ── 口播弹窗左侧内嵌产品选择区（WbPickProductPanel：左列表右参数/卖点；
+//   2026-09-09 用户裁决：不需要「选择该产品」按钮，点左侧行即选中，
+//   中间预览与右侧四字段同步填充，仍可手改）──
 function onPickProduct(it: PickerItem): void {
   productDlg.value.brand = String(it.brand || '')
   productDlg.value.product = String(it.category || '')
@@ -386,7 +431,8 @@ function scoreClass(score: number | undefined): string {
           </label>
         </div>
         <!-- 11 列：原版 10 列（勾选|序号|视频片段|景别|时长|画幅|主要画面|产品|型号|评分）
-             + 本端增强「位置」列（2026-09-09 用户裁决：展示景别来源——出场/入场是路径命名推断非 AI 分析） -->
+             + 本端增强「位置」列（2026-09-09 裁决：位置≠景别——位置=入场/出场等叙事位置，
+             服务端 enter/exit 优先、源素材文件名/文件夹命名兑底；景别仅服务端返回） -->
         <div class="tbl-scroll-wrap">
         <table class="tbl">
           <thead><tr>
@@ -398,6 +444,7 @@ function scoreClass(score: number | undefined): string {
               <td><input v-model="r.checked" type="checkbox" @dblclick.stop /></td>
               <td class="ta-c">{{ r.idx }}</td>
               <td :title="r.clipUrl || r.name">{{ r.name }}</td>
+              <!-- 景别：仅服务端 shot_analysis.shot_type，客户端不自行推断（2026-09-09 裁决） -->
               <td class="ta-c">
                 <span v-if="r.shotType" class="shot-type-badge"
                   :style="{ color: SHOT_TYPE_COLORS[r.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[r.shotType] || '#888' }">
@@ -405,7 +452,14 @@ function scoreClass(score: number | undefined): string {
                 </span>
                 <span v-else class="muted">—</span>
               </td>
-              <td class="ta-c shot-source-cell" :title="r.shotTypeSource || ''">{{ r.shotTypeSource || '—' }}</td>
+              <!-- 位置：入场/出场（服务端 enter/exit 优先，否则路径命名兑底；tooltip 标来源） -->
+              <td class="ta-c shot-source-cell" :title="r.positionSource || ''">
+                <span v-if="r.position" class="shot-type-badge"
+                  :style="{ color: SHOT_TYPE_COLORS[r.position] || '#888', borderColor: SHOT_TYPE_COLORS[r.position] || '#888' }">
+                  {{ SHOT_TYPE_LABELS[r.position] || r.position }}
+                </span>
+                <span v-else class="muted">—</span>
+              </td>
               <td class="ta-c">{{ r.duration > 0 ? r.duration.toFixed(1) + 's' : '—' }}</td>
               <td class="ta-c">{{ r.resolution || splitResolution || '—' }}</td>
               <td>
@@ -453,8 +507,8 @@ function scoreClass(score: number | undefined): string {
             <select v-model.number="durationLimit" class="input w80" title="每个预合成视频的总时长上限（实际不超此值的 1.1 倍）">
               <option v-for="s in DURATION_LIMITS" :key="s" :value="s">{{ s }} 秒</option>
             </select>
-            <span class="param-label">生成视频数量 (1-10):</span>
-            <input v-model.number="batchCount" type="number" min="1" max="10" class="input w60" />
+            <span class="param-label">生成视频数量 (1-20):</span>
+            <input v-model.number="batchCount" type="number" min="1" max="20" class="input w60" />
             <span class="hint">推荐: {{ recBatchCount }}</span>
           </div>
           <!-- Parameters row 2（原版 L109-140：转场动画 | 出入场加速） -->
@@ -465,7 +519,7 @@ function scoreClass(score: number | undefined): string {
             </select>
             <span class="param-label">出入场加速:</span>
             <select v-model.number="edgeSpeedup" class="input w90"
-              title="识别为「入场/出场」景别的镜头按此倍速加速播放（中景/特写不受影响）。\n景别来自素材文件夹/文件名命名（入场、出场、中景、特写）；\n走服务端合成时生效；本地回退合成不支持加速；无景别标注的素材无效果。">
+              title="识别为「入场/出场」（位置，非景别）的镜头按此倍速加速播放，其它位置不受影响。&#10;位置来源：服务端 enter/exit 标注优先，否则按素材文件夹/文件名命名（入场、出场等）推断（见分割表「位置」列）。&#10;走服务端合成时生效；本地回退合成不支持加速；无位置标注的素材无效果。">
               <option v-for="o in EDGE_SPEEDUP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
           </div>
@@ -483,11 +537,12 @@ function scoreClass(score: number | undefined): string {
         <!-- 中间结果区（原版 result_box） -->
         <div class="result-box">
           <!-- 预合成视频列表（2026-09-09 用户裁决：改表格列显示，不再单行挤在一起；
-               列：序号|视频|状态|口播文案；交互不变：单击选中/双击查看文案/右键菜单） -->
+               列：序号|视频|时长|状态|口播文案；时长列为同日追加裁决：已合成=成片探测
+               实际时长，待确认=未删除镜头之和估计；交互不变：单击选中/双击查看文案/右键菜单） -->
           <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
           <table class="tbl plan-tbl">
             <thead><tr>
-              <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
+              <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">时长</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
             </tr></thead>
             <tbody>
               <tr v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
@@ -495,11 +550,12 @@ function scoreClass(score: number | undefined): string {
                 @contextmenu.prevent="openPlanMenu($event, i)">
                 <td class="ta-c">{{ i + 1 }}</td>
                 <td class="plan-file" :title="p.outputName">{{ p.outputName || `${p.clips.length} 个镜头` }}</td>
+                <td class="ta-c">{{ planDurText(p) }}</td>
                 <td class="ta-c">{{ p.confirmed && p.outputName ? '已合成' : '待确认' }}</td>
                 <td class="plan-copy" :title="p.copy || ''">{{ p.copy ? copyPreviewText(p.copy) : '未生成口播文案' }}</td>
               </tr>
               <!-- 不足 10 行时占位，保持固定高度 -->
-              <tr v-for="n in Math.max(0, 10 - assemblePlans.length)" :key="'ph'+n" class="plan-placeholder"><td colspan="4"></td></tr>
+              <tr v-for="n in Math.max(0, 10 - assemblePlans.length)" :key="'ph'+n" class="plan-placeholder"><td colspan="5"></td></tr>
             </tbody>
           </table>
           <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
@@ -666,68 +722,150 @@ function scoreClass(score: number | undefined): string {
         </table>
         <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
 
-        <!-- 6. 烧制字幕行（L210-251；背景 6 项 + 字体下拉 + 刷新） -->
-        <div class="row">
-          <label class="chk" title="字幕字体取自服务端字体库（GET /config/fonts）。&#10;走服务端合成时，会把 font_id / fontname / burn_subtitle / subtitle_style 一并提交；&#10;服务端尚未支持该参数时，回退到本地 ffmpeg 烧制（按同名解析本机已装字体）。">
-            <input v-model="addSubtitles" type="checkbox" />
-            烧制字幕（逐行按时间显示，字号随视频高度自适应）
-          </label>
-          <label class="param-label">背景:</label>
-          <TSelect v-model="subtitleBgOpacity" :options="subtitleBgOptions" class="w130"
-            title="字幕背景色为黑色，此项调背景不透明度（0=无背景框）。&#10;值越高背景越实；走服务端合成时随 subtitle_style 一并提交。" />
-          <label class="param-label">字幕字体:</label>
-          <TSelect v-model="subtitleFont" :options="fontOptions" class="w230" title="字体列表来自服务端 /config/fonts，可输入关键字过滤" />
-          <TButton label="刷新字体" variant="secondary" size="small" :loading="fontsLoading" title="重新从服务端拉取字体列表" @click="refreshFonts" />
+        <!-- 6. 声音克隆动作外框（2026-09-09 用户裁决：烧制字幕/添加花字属配音设置，
+             移入下方「视频配音设置」分组，此处仅保留克隆按钮独立成框） -->
+        <div class="action-box voice-clone-box">
+          <TButton label="开始批量克隆人声合成" class="clone-btn" :loading="voiceBusy" @click="startSynthesizeVoice" />
         </div>
 
-        <!-- 7. 花字行（L253-353；「同步服务端」属条目5 服务端模板库，未部署暂不移植） -->
-        <div class="row">
-          <label class="chk" title="在视频画面叠加花字特效文字（可选出现位置），用于突出关键卖点/价格/型号等信息。&#10;花字内容自动从口播文案中逐行提取卖点（价格 > 数字参数 > 关键词），无需手动输入；&#10;每个花字随对应字幕提前 0.3 秒出现、该句字幕结束即消失。">
-            <input v-model="fancyEnabled" type="checkbox" />
-            添加花字 (关键信息加重提醒)
-          </label>
-          <label class="param-label">模板:</label>
-          <TSelect v-model="fancyTemplateId" :options="fancyTemplateOptions" class="w130"
-            title="花字模板 = 样式 + 入场动画 + 出现音效 + 出现时机。&#10;选「自定义」时用下方样式/位置；选模板时以模板样式为准。&#10;模板的剪映入场动画映射为本地动画（滑→滑入、弹/跳/晃/摆→弹跳、其它→淡入）；右侧预览标签展示渲染效果。&#10;模板文件在 resources/fancy/templates/，可把剪映提取的 effect_id 填入新增模板。" />
-          <span class="fancy-preview"
-            title="花字模板预览（按模板样式渲染样本字）；悬停查看动画/音效/时机信息。">
-            <img v-if="fancyTemplatePreview" :src="fancyTemplatePreview" alt="预览" />
-            <template v-else>预览生成中…</template>
-          </span>
-          <TButton label="花字预览" variant="secondary" size="small"
-            title="按每个视频当前的口播文案预览将生成的花字（自动提取卖点）。&#10;文案改动后重新点击即可刷新。"
-            @click="previewFancyWords" />
-          <label class="param-label">样式:</label>
-          <TSelect v-model="fancyStyle" :options="fancyStyleOptions" class="w110" />
-          <label class="param-label">位置:</label>
-          <TSelect v-model="fancyPosition" :options="fancyPositionOptions" class="w110"
-            title="花字在画面中出现的位置。&#10;底部两个位置与逐行字幕可能重叠，字幕开启时建议选顶部/中上/四角。" />
-          <label class="param-label">花字内容:</label>
-          <span class="fancy-content-hint">自动提取口播文案卖点（价格/数字参数/关键词），随对应字幕提前 0.3 秒出现、字幕结束消失</span>
-        </div>
+        <!-- 7. 配音动作已迁 Step4 统一合成（2026-09-09 用户裁决：Step3 只合成口播声音，
+             配音+特效烧制+BGM 混音在第四步点「开始混音合成」一键完成） -->
 
-        <!-- 8. 动作行（L267-281；配音按钮初始禁用，L279） -->
-        <div class="row voice-actions">
-          <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
-          <TButton label="开始给视频配音 (替换原声)" :loading="dubBusy" :disabled="!dubbingEnabled" @click="startDubVideos" />
-        </div>
-        <!-- 克隆/配音批量进度（主进程逐条 emitRow 聚合为整体百分比；文案+进度条对照确认合成形态） -->
-        <template v-if="voiceBusy || dubBusy">
+        <!-- 克隆批量进度（主进程逐条 emitRow 聚合为整体百分比；文案+进度条对照确认合成形态） -->
+        <template v-if="voiceBusy">
           <div class="concat-status-line">{{ statusText }}</div>
           <progress class="vd-progress split-progress" :value="voiceProgress" max="100" />
         </template>
       </section>
 
-      <!-- 导航行（L284-297；btn_next_to_step_4.setEnabled(True) 需有配音视频） -->
+      <!-- 导航行（L284-297；2026-09-09 用户裁决：合成声音即可跳转第四步，配音在第四步统一处理） -->
       <div class="row between">
         <TButton label="上一步：镜头重组" plain @click="go(1)" />
-        <TButton label="下一步：特效包装" icon="right" :disabled="!voiceRows.some(r => r.dubbedPath)" @click="go(3)" />
+        <TButton label="下一步：特效包装" icon="right" title="生成口播声音后即可进入；配音/特效/混音在第四步统一合成"
+          :disabled="!voiceRows.some(r => r.wavPath)" @click="go(3)" />
       </div>
     </template>
 
-    <!-- Step 4: 特效包装（step4_final_view.py L14-196 逐控件；另保留本端 AI 生成 BGM） -->
+    <!-- Step 4: 特效包装（step4_final_view.py L14-196 逐控件；另保留本端 AI 生成 BGM）；
+         2026-09-09 用户裁决：烧制字幕/花字/文字模板特效配置自 Step3 迁入此处，随混音统一烧制，
+         字幕文案按视频从 Step3 文案表带过去 -->
     <template v-else>
       <section class="card">
+        <!-- 特效包装分组：烧制字幕 + 花字 + 文字模板 -->
+        <div class="action-box fx-pack-box">
+          <div class="fx-pack-title">特效包装</div>
+
+          <!-- 烧制字幕（原 Step3 三行原样迁入：行1 勾选 / 行2 字体+背景+预设样式色板 / 行3 效果预览；
+               样式 key 与主进程 SUBTITLE_STYLES 同表） -->
+          <div class="row">
+            <label class="chk" title="字幕字体取自服务端字体库（GET /config/fonts）。&#10;本地 ffmpeg 烧制：预设样式以 drawtext 描边（borderw=3）实现；&#10;服务端合成时随 subtitle_style 一并提交。">
+              <input v-model="addSubtitles" type="checkbox" />
+              烧制字幕（逐行按时间显示，字号随视频高度自适应）
+            </label>
+          </div>
+          <div v-if="addSubtitles" class="row">
+            <label class="param-label">字幕字体:</label>
+            <TSelect v-model="subtitleFont" :options="fontOptions" class="w230" :option-style="fontOptionStyle"
+              title="字体列表来自服务端 /config/fonts，各选项按自身字体渲染" />
+            <TButton label="刷新字体" variant="secondary" size="small" :loading="fontsLoading" title="重新从服务端拉取字体列表" @click="refreshFonts" />
+            <label class="param-label">背景:</label>
+            <TSelect v-model="subtitleBgOpacity" :options="subtitleBgOptions" class="w130"
+              title="字幕背景色为黑色，此项调背景不透明度（0=无背景框）。&#10;值越高背景越实。" />
+            <label class="param-label">动画:</label>
+            <TSelect v-model="subtitleAnimKey" :options="subtitleAnimOptions" class="w130"
+              title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
+            <label class="param-label">预设样式:</label>
+            <div class="sub-style-grid" title="字幕文字样式预设（烧制时以 ffmpeg drawtext 描边实现，效果以成品为准）">
+              <button v-for="p in SUBTITLE_STYLE_PRESETS" :key="p.key" type="button" class="sub-style-tile"
+                :class="{ active: subtitleStyleKey === p.key }" :title="p.label" @click="subtitleStyleKey = p.key">
+                <span class="sub-style-tile-text" :style="subtitlePresetTileStyle(p)">字幕</span>
+              </button>
+            </div>
+          </div>
+          <div v-if="addSubtitles" class="row">
+            <label class="param-label">效果预览:</label>
+            <div class="style-preview-canvas">
+              <span class="style-preview-text" :class="subtitleAnimKey !== 'none' ? 'sub-anim-' + subtitleAnimKey : ''"
+                :style="subtitlePreviewStyle">这是字幕预览效果 ABC123</span>
+            </div>
+          </div>
+
+          <!-- 花字（原 Step3 三行原样迁入） -->
+          <div class="row">
+            <label class="chk" title="在视频画面叠加花字特效文字（可选出现位置），用于突出关键卖点/价格/型号等信息。&#10;花字内容自动从口播文案中逐行提取卖点（价格 > 数字参数 > 关键词），无需手动输入；&#10;每个花字随对应字幕提前 0.3 秒出现、该句字幕结束即消失。">
+              <input v-model="fancyEnabled" type="checkbox" />
+              添加花字 (关键信息加重提醒)
+            </label>
+            <label class="param-label">花字内容:</label>
+            <span class="fancy-content-hint">自动提取口播文案卖点（价格/数字参数/关键词），随对应字幕提前 0.3 秒出现、字幕结束消失</span>
+          </div>
+          <div v-if="fancyEnabled" class="row">
+            <label class="param-label">模板:</label>
+            <TSelect v-model="fancyTemplateId" :options="fancyTemplateOptions" class="w130"
+              title="花字模板 = 样式 + 入场动画 + 出现音效 + 出现时机。&#10;标「（服务端）」的条目来自服务端花字模板库（GET /fancy/templates），与本地同格式、可直接参与配音烧制；其余为本地剪映提取模板（resources/fancy/templates/）。&#10;选「自定义」时用下方样式/位置；选模板时以模板样式为准；右侧预览标签展示渲染效果。" />
+            <span class="fancy-preview"
+              title="花字模板预览（按模板样式渲染样本字）；悬停查看动画/音效/时机信息。服务端与本地模板同一预览口径。">
+              <img v-if="fancyTemplatePreview" :src="fancyTemplatePreview" alt="预览" />
+              <span v-else-if="serverTemplateDesc" class="fancy-preview-desc">{{ serverTemplateDesc }}</span>
+              <template v-else>预览生成中…</template>
+            </span>
+            <label class="param-label">样式:</label>
+            <TSelect v-model="fancyStyle" :options="fancyStyleOptions" class="w110" />
+            <label class="param-label">位置:</label>
+            <TSelect v-model="fancyPosition" :options="fancyPositionOptions" class="w110"
+              title="花字在画面中出现的位置。&#10;底部两个位置与逐行字幕可能重叠，字幕开启时建议选顶部/中上/四角。" />
+          </div>
+          <div v-if="fancyEnabled" class="row">
+            <label class="param-label">效果预览:</label>
+            <div class="style-preview-canvas">
+              <span class="style-preview-text" :style="fancyCustomPreviewStyle">{{ FANCY_PREVIEW_TEXT }}</span>
+            </div>
+          </div>
+
+          <!-- 文字模板（2026-09-09 用户裁决：服务端 textfx 动画体系，与花字独立概念；
+               随机样式默认从全部模板中选 3 个；烧制待服务端烧制接口上线，先配置+预览；
+               2026-09-10 布局裁决：勾选/设置/样式预览/效果预览各占一行） -->
+          <div class="row">
+            <label class="chk" title="服务端文字模板（textfx 动画：弹跳/打字机/霓虹等），与花字是独立体系。&#10;随机样式：从模板库全部样式中随机选取 N 个轮换使用。&#10;烧制需服务端渲染支持（接口上线后接线）。">
+              <input v-model="textFxEnabled" type="checkbox" />
+              添加文字模板 (关键信息动画提醒)
+            </label>
+          </div>
+          <div v-if="textFxEnabled" class="row">
+            <label class="param-label">文字模板:</label>
+            <TSelect v-model="textTemplateId" :options="textTemplateOptions" class="w130"
+              title="来自服务端文字模板库（GET /text_templates/templates）。&#10;选「随机样式」时每次合成从全部模板随机选取 N 个，逐个关键词轮换使用。" />
+            <template v-if="textTemplateId === 'random'">
+              <label class="param-label">随机数量:</label>
+              <TSelect v-model="textRandomCount" :options="TEXT_RANDOM_COUNT_OPTIONS" class="w80"
+                title="随机模式下从全部文字模板样式中选取的个数（默认 3 个）" />
+            </template>
+          </div>
+          <div v-if="textFxEnabled" class="row">
+            <label class="param-label">样式预览:</label>
+            <div class="style-preview-canvas">
+              <template v-if="textFxStyleSamples.length">
+                <span v-for="s in textFxStyleSamples" :key="'ts' + s.id" class="textfx-sample"
+                  :title="`模板：${s.name}`">
+                  <span class="textfx-sample-text" :class="`textfx-anim-${s.anim}`" :style="s.style">{{ s.text }}</span>
+                  <small class="textfx-word-tpl">{{ s.name }}</small>
+                </span>
+              </template>
+              <span v-else class="muted">{{ textTemplates.length ? '未命中模板' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
+            </div>
+          </div>
+          <div v-if="textFxEnabled" class="row">
+            <label class="param-label">效果预览:</label>
+            <div class="style-preview-canvas">
+              <template v-if="textFxPreviewItems.length">
+                <span v-for="(w, i) in textFxPreviewItems" :key="'tw' + i" class="textfx-word"
+                  :title="`模板：${w.tplName}`">{{ w.word }}<small class="textfx-word-tpl">{{ w.tplName }}</small></span>
+              </template>
+              <span v-else class="muted">{{ textTemplates.length ? '提取不到关键词（需口播文案含价格/数字/关键词）' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
+            </div>
+          </div>
+        </div>
+
         <!-- 1. BGM input -->
         <div class="row">
           <label class="label"> 背景音乐 (BGM):</label>
@@ -813,9 +951,9 @@ function scoreClass(score: number | undefined): string {
         </div>
       </section>
 
-      <!-- 导航行（原版 Step4 仅「上一步：克隆人声」，文案逐字 L190） -->
+      <!-- 导航行（原版 Step4 仅「上一步：口播配音」，文案逐字 L190） -->
       <div class="row left">
-        <TButton label="上一步：克隆人声" plain @click="go(2)" />
+        <TButton label="上一步：口播配音" plain @click="go(2)" />
       </div>
     </template>
 
@@ -878,7 +1016,7 @@ function scoreClass(score: number | undefined): string {
     </div>
 
     <!-- 镜头片段预览弹层（内置 Plyr 播放器，支持本地路径 + 服务端 URL） -->
-    <VideoPreview :visible="!!previewUrl" :src="previewUrl" @close="closePreview" @ended="onSeqEnded" />
+    <VideoPreview :visible="!!previewUrl" :src="previewUrl" :loading="previewTranscoding" @close="closePreview" @ended="onSeqEnded" />
 
     <!-- 预合成列表右键菜单（原版 _show_assembled_context_menu L5412-5434 三项，查看文案仅已生成时显示） -->
     <teleport to="body">
@@ -912,7 +1050,7 @@ function scoreClass(score: number | undefined): string {
           <span class="hint">输入产品信息，由大模型生成该组合视频的口播文案；可从产品库选择自动填充，也可直接手动填写：</span>
           <div class="pick-layout">
             <div class="pick-left">
-              <WbPickProductPanel :active="productDlg.show" @pick="onPickProduct" />
+              <WbPickProductPanel :active="productDlg.show" click-to-pick @pick="onPickProduct" />
             </div>
             <div class="pick-right">
               <!-- 2026-09-09 用户裁决：label 与输入框换行（label 上、输入框下占满），
@@ -1077,44 +1215,6 @@ function scoreClass(score: number | undefined): string {
           <div class="modal-actions">
             <TButton label="确定" @click="saveEditDlg" />
             <TButton label="取消" plain @click="editDlg.show = false" />
-          </div>
-        </div>
-      </div>
-    </teleport>
-
-    <!-- 配音完成弹窗（原版 DubbedVideosDialog，dialogs.py L167-231 文案逐字） -->
-    <teleport to="body">
-      <div v-if="dubbedDlg.show" class="modal-mask" @click.self="dubbedDlg.show = false">
-        <div class="modal modal-wide">
-          <span class="modal-title"> 配音替换完成</span>
-          <span class="dub-header">所有视频配音替换完毕！已成功为您生成以下配音文件：</span>
-          <div v-if="dubbedDlg.outDir" class="dub-dir">
-            <b>保存目录：</b><span class="dub-dir-path">{{ dubbedDlg.outDir }}</span>
-          </div>
-          <div class="dub-list">
-            <div v-for="it in dubbedDlg.items" :key="it.dubbedPath" class="dub-item"
-              :title="`原视频: ${it.videoPath}\n配音视频: ${it.dubbedPath}`">
-              <span class="dub-name">{{ it.name }}</span>
-              <TButton label="播放视频" size="small" @click="playDubbed(it.dubbedPath)" />
-              <TButton label="打开所在目录" size="small" @click="locateDubbed(it.dubbedPath)" />
-            </div>
-          </div>
-          <div class="modal-actions">
-            <TButton label="打开整体输出文件夹" plain @click="openDubbedDir" />
-            <TButton label="确认并返回" @click="dubbedDlg.show = false" />
-          </div>
-        </div>
-      </div>
-    </teleport>
-    <!-- 花字预览弹窗（对照 _preview_fancy_words QMessageBox 文案逐字） -->
-    <teleport to="body">
-      <div v-if="fancyPreviewDlg.show" class="modal-mask" @click.self="closeFancyPreviewDlg">
-        <div class="modal modal-wide">
-          <span class="modal-title">花字预览</span>
-          <span class="hint">{{ fancyPreviewDlg.head }}</span>
-          <div class="fancy-preview-body">{{ fancyPreviewDlg.body }}</div>
-          <div class="modal-actions">
-            <TButton label="确定" @click="closeFancyPreviewDlg" />
           </div>
         </div>
       </div>
@@ -1322,7 +1422,7 @@ function scoreClass(score: number | undefined): string {
 /* 2026-09-09 用户裁决：补充卖点与上方输入框左右对齐（占满整行），高度弹性填满
   剩余空间（不出现右侧滚动条） */
 .pick-right .modal-textarea--tall { min-height: 0; height: auto; flex: 1 1 auto; width: 100%; }
-/* 生成/取消与「选择该产品」平行（margin-top:auto 贴底）且宽度平分右侧 */
+/* 生成/取消与右侧表单贴底（2026-09-09 裁决：预览确认按钮已删，点行即选） */
 .pick-right .modal-actions { margin-top: auto; }
 .pick-right .modal-actions--split { justify-content: stretch; gap: 12px; }
 .pick-right .modal-actions--split :deep(.t-button) { flex: 1 1 0; }
@@ -1416,8 +1516,12 @@ function scoreClass(score: number | undefined): string {
 .vd-progress { width: 100%; height: 6px; appearance: none; border-radius: 3px; overflow: hidden; }
 .vd-progress::-webkit-progress-bar { background: var(--surface-container); }
 .vd-progress::-webkit-progress-value { background: var(--primary); transition: width 0.3s; }
-.voice-actions > :first-child { flex: 2; }
-.voice-actions > :last-child { flex: 3; }
+/* 2026-09-09 用户裁决：克隆按钮独立外框 + 配音设置分组（字幕/花字/配音按钮） */
+.action-box {
+  padding: var(--space-4); background: var(--surface-container);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.voice-clone-box .clone-btn { width: 100%; }
 .chk {
   display: flex; align-items: center; gap: 6px; cursor: pointer;
   font-size: 13px; font-weight: 600; color: var(--foreground);
@@ -1434,11 +1538,72 @@ function scoreClass(score: number | undefined): string {
   overflow: hidden;
 }
 .fancy-preview img { width: 100%; height: 100%; object-fit: cover; }
-.fancy-content-hint { color: #888; font-size: 12px; }
-.fancy-preview-body {
-  white-space: pre-wrap; font-size: 12px; color: var(--foreground);
-  max-height: 50vh; overflow: auto; line-height: 1.7;
+/* 服务端模板无本地预览图（textfx 渲染在服务端）→ 描述文字占位 */
+.fancy-preview-desc {
+  max-width: 100%; max-height: 100%; padding: 0 6px; text-align: center;
+  font-size: 10px; line-height: 1.3; color: #aaa;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
+.fancy-content-hint { color: #888; font-size: 12px; }
+/* 字幕预设样式色板（2026-09-09 裁决：图3 ~24 格，点选即选中；tile 内嵌「字幕」样字按预设渲染） */
+.sub-style-grid {
+  /* 2026-09-09 二次裁决：单行流式（原固定 8 列三行），放不下自动换行 */
+  display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px;
+  flex: 1 1 auto; min-width: 0;
+}
+.sub-style-tile {
+  height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  background: #2a2a2a; border: 1px solid var(--border); border-radius: 4px;
+  cursor: pointer; padding: 0; overflow: hidden;
+  transition: border-color var(--duration-fast) var(--easing-default),
+    box-shadow var(--duration-fast) var(--easing-default);
+}
+.sub-style-tile:hover { border-color: var(--primary); }
+.sub-style-tile.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
+.sub-style-tile-text { font-size: 14px; font-weight: 700; line-height: 1; white-space: nowrap; pointer-events: none; }
+/* 效果预览画布（字幕/花字行3 共用；深底渐变近似视频画面） */
+.style-preview-canvas {
+  flex: 1; min-width: 0; height: 52px;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #3a3f4a 0%, #23262e 100%);
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+}
+.style-preview-text {
+  max-width: 94%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 2px 10px;
+}
+/* 字幕入场动画预览（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；
+   CSS 循环近似演示 drawtext 烧制效果，与成品非逐帧一致） */
+@keyframes sub-anim-fade-kf {
+  0%   { opacity: 0; }
+  25%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes sub-anim-rise-kf {
+  0%   { opacity: 0; transform: translateY(8px); }
+  25%  { opacity: 1; transform: translateY(0); }
+  80%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(0); }
+}
+@keyframes sub-anim-slide-kf {
+  0%   { opacity: 0; transform: translateX(24px); }
+  25%  { opacity: 1; transform: translateX(0); }
+  80%  { opacity: 1; transform: translateX(0); }
+  100% { opacity: 0; transform: translateX(0); }
+}
+@keyframes sub-anim-pop-kf {
+  0%   { opacity: 0; transform: scale(0.6); }
+  20%  { opacity: 1; transform: scale(1.15); }
+  30%  { transform: scale(0.95); }
+  38%  { transform: scale(1); }
+  80%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+.sub-anim-fade  { animation: sub-anim-fade-kf 2.4s ease-in-out infinite; }
+.sub-anim-rise  { animation: sub-anim-rise-kf 2.4s ease-out infinite; }
+.sub-anim-slide { animation: sub-anim-slide-kf 2.4s ease-out infinite; }
+.sub-anim-pop   { animation: sub-anim-pop-kf 2.4s ease-out infinite; }
 
 /* 文案生成设置弹窗 */
 .rw-title { font-size: 13px; color: var(--foreground); }
@@ -1494,21 +1659,6 @@ function scoreClass(score: number | undefined): string {
 .edit-orig { display: flex; align-items: flex-start; gap: 6px; }
 .edit-orig .vd-orig { white-space: pre-wrap; max-height: 72px; overflow-y: auto; }
 
-/* 配音完成弹窗（原版 header 绿色 + 目录蓝色链接色） */
-.dub-header { font-size: 14px; font-weight: 700; color: var(--success); }
-.dub-dir { font-size: 12px; color: var(--foreground); word-break: break-all; }
-.dub-dir-path { color: var(--primary); }
-.dub-list { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; }
-.dub-item {
-  display: flex; align-items: center; gap: 10px; padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-}
-.dub-item:last-child { border-bottom: none; }
-.dub-name {
-  flex: 1; min-width: 0; font-size: 13px; font-weight: 700;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
 /* Step4 AI 生成 BGM 面板 */
 .ai-bgm-panel {
   display: flex; flex-direction: column; gap: var(--space-3);
@@ -1516,6 +1666,105 @@ function scoreClass(score: number | undefined): string {
   border: 1px solid var(--border); border-radius: var(--radius-md);
 }
 .ai-bgm-panel audio { flex: 1; min-width: 200px; height: 36px; }
+
+/* Step4 特效包装分组（2026-09-09 裁决：字幕/花字/文字模板自 Step3 迿入） */
+.fx-pack-box { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-4); }
+.fx-pack-title {
+  font-size: 13px; font-weight: var(--font-weight-semibold); color: var(--foreground);
+  padding-bottom: var(--space-2); border-bottom: 1px solid var(--border);
+}
+/* 文字模板效果预览：逐词应用随机模板，词下角标显示模板名 */
+.textfx-word {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 2px;
+  margin: 0 6px; padding: 2px 8px; background: #2a2a2a; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 16px; font-weight: 700; color: #ffd24d;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+.textfx-word-tpl { font-size: 10px; font-weight: 400; color: #9aa; max-width: 120px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 文字模板样式预览：按模板 variables 默认色本地渲染示例（服务端无预览接口，2026-09-10） */
+.textfx-sample {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 2px;
+  margin: 0 6px; padding: 4px 10px; background: #2a2a2a; border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.textfx-sample-text {
+  font-weight: 700; line-height: 1.2; max-width: 160px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+/* 样式预览循环动画（2026-09-10 按服务端模板定义全量对齐 10 个动画模板：
+   服务端以 id/name 语义 + variables 效果色变量约定动画，效果色经 --fx-color 注入；
+   本地 CSS 近似演示，与服务端烧制效果非逐帧一致） */
+@keyframes textfx-slide-in {
+  0%   { opacity: 0; transform: translateX(-22px); }
+  18%  { opacity: 1; transform: translateX(0); }
+  82%  { opacity: 1; transform: translateX(0); }
+  100% { opacity: 0; transform: translateX(-22px); }
+}
+@keyframes textfx-shine-sweep {
+  0%   { background-position: 100% 0; }
+  60%  { background-position: 0% 0; }
+  100% { background-position: 0% 0; }
+}
+@keyframes textfx-bounce-in {
+  0%   { opacity: 0; transform: scale(0.3); }
+  25%  { opacity: 1; transform: scale(1.15); text-shadow: 0 0 10px var(--fx-color); }
+  38%  { transform: scale(0.92); }
+  50%  { transform: scale(1.05); text-shadow: 0 0 10px var(--fx-color); }
+  62%  { transform: scale(1); }
+  85%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.3); }
+}
+@keyframes textfx-flip-in {
+  0%   { opacity: 0; transform: perspective(300px) rotateY(-90deg); }
+  35%  { opacity: 1; transform: perspective(300px) rotateY(0deg); text-shadow: 0 0 10px var(--fx-color); }
+  80%  { opacity: 1; transform: perspective(300px) rotateY(0deg); text-shadow: 0 0 10px var(--fx-color); }
+  100% { opacity: 0; transform: perspective(300px) rotateY(-90deg); }
+}
+@keyframes textfx-pulse-soft {
+  0%, 100% { transform: scale(1); text-shadow: 0 0 2px transparent; }
+  50%      { transform: scale(1.12); text-shadow: 0 0 12px var(--fx-color); }
+}
+@keyframes textfx-fade-io {
+  0%   { opacity: 0; }
+  25%  { opacity: 1; }
+  80%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes textfx-flow {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+@keyframes textfx-neon {
+  0%, 100% { text-shadow: 0 0 3px var(--fx-color); }
+  50%      { text-shadow: 0 0 14px var(--fx-color), 0 0 26px var(--fx-color); }
+}
+@keyframes textfx-type {
+  0%   { clip-path: inset(0 100% 0 0); }
+  60%  { clip-path: inset(0 0 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
+@keyframes textfx-caret {
+  0%, 49%  { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.textfx-anim-slide  { animation: textfx-slide-in 2.4s ease infinite; }
+.textfx-anim-shine  { animation: textfx-shine-sweep 2.2s linear infinite; }
+.textfx-anim-bounce { animation: textfx-bounce-in 2.6s ease infinite; }
+.textfx-anim-flip   { animation: textfx-flip-in 2.8s ease infinite; }
+.textfx-anim-pulse  { animation: textfx-pulse-soft 1.8s ease-in-out infinite; }
+.textfx-anim-fade   { animation: textfx-fade-io 2.4s ease infinite; }
+.textfx-anim-flow   { animation: textfx-flow 3s linear infinite; }
+.textfx-anim-neon   { animation: textfx-neon 1.6s ease-in-out infinite; }
+/* 打字机：逐字裁切显现 + 光标色竖线闪烁（cursorColor → --fx-color） */
+.textfx-anim-type   { animation: textfx-type 2.6s steps(10, end) infinite; }
+.textfx-anim-type::after {
+  content: ''; display: inline-block; width: 2px; height: 1em;
+  margin-left: 2px; vertical-align: -0.12em;
+  background: var(--fx-color); animation: textfx-caret 1s steps(1) infinite;
+}
+.w80 { width: 80px; flex: none; }
 
 /* Step4 特效包装（对照 step4_final_view.py L80-196 同布局；颜色走 V3 design tokens） */
 .vd4-gain { width: 200px; flex: none; accent-color: var(--primary); }

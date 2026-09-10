@@ -5,14 +5,15 @@
 // 2026-09-08 折壳重构：内容抽自 WbPickProductDialog（该弹窗改为 TDialog +
 // 本面板薄壳，工作台用法不变）；VideoMontage 生成口播弹窗内嵌本面板
 // （2026-09-08 用户裁决：选择产品与填写窗口合二为一，不再二次弹窗）。
-// 2026-09-01 用户裁决（预览模式）：左侧列表仅型号行，点击仅切换右侧预览
-// （选中产品的性能参数+核心卖点全文，像素材预览），预览区下方「选择该产品」
-// 按钮才真正选中——预览与选中语义分离（对齐音频 Tab 的选择按钮口径）。
+// 2026-09-01 用户裁决（预览模式）：左侧列表仅型号行，点击切换右侧预览
+// （选中产品的性能参数+核心卖点全文，像素材预览）。
+// 2026-09-09 用户裁决（口播弹窗）：不需要「选择该产品」按钮，点左侧行直接
+// 选中并填充右侧字段——clickToPick 开启（工作台弹窗壳仍保留按钮口径）。
 import WbPickerPanel from './WbPickerPanel.vue'
 import { fetchProducts, type PickerItem } from '@/composables/useWorkbenchPickers'
 import { markdownListLines } from '@/composables/opsProductLibraryLogic'
 
-defineProps<{ active: boolean }>()
+defineProps<{ active: boolean; clickToPick?: boolean }>()
 const emit = defineEmits<{
   (e: 'pick', item: PickerItem): void
 }>()
@@ -51,6 +52,7 @@ function pointLines(it: PickerItem): string[] {
     empty-text="未找到匹配的产品，换个关键词试试。"
     :fetcher="fetchProducts"
     previewable
+    :click-to-pick="clickToPick"
     @pick="(it) => emit('pick', it)"
   >
     <template #item="{ item }">
@@ -96,7 +98,8 @@ function pointLines(it: PickerItem): string[] {
       </div>
     </template>
 
-    <template #preview-footer="{ item, confirm }">
+    <!-- 工作台弹窗壳仍需确认按钮（clickToPick 模式下不注册该 slot，点行即选） -->
+    <template v-if="!clickToPick" #preview-footer="{ item, confirm }">
       <button class="pv-confirm" title="选中该产品，自动填充右侧产品信息" @click="confirm(item)">
         选择该产品
       </button>
@@ -195,6 +198,7 @@ function pointLines(it: PickerItem): string[] {
   color: var(--muted-foreground);
 }
 
+/* 确认按钮（仅工作台弹窗壳用法；口播弹窗 clickToPick 无按钮） */
 .pv-confirm {
   padding: 7px var(--space-4);
   font-size: 13px;

@@ -7,6 +7,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import Plyr from 'plyr'
 import 'plyr/dist/plyr.css'
+import { toFileUrl } from '@/utils/fileUrl'
 
 const props = withDefaults(
   defineProps<{
@@ -41,12 +42,11 @@ const emit = defineEmits<{
 const videoRef = ref<HTMLVideoElement | null>(null)
 let player: Plyr | null = null
 
-// 处理视频源：Electron 下本地路径需要 file:// 协议
+// 处理视频源：本地路径 → file:/// 三斜杠 + percent 编码
+// （2026-09-10 回退 media:// 协议链路：其前提假设已被实测推翻且链路未经打包版验证，
+//  file:/// 三斜杠是 9 日包实测可播的已知良好状态）
 function resolveSrc(src: string): string {
-  if (!src) return ''
-  if (/^(https?|blob|file|data):/i.test(src)) return src
-  const normalized = src.replace(/\\/g, '/')
-  return `file://${normalized}`
+  return toFileUrl(src)
 }
 
 // 初始化 plyr

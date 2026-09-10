@@ -365,3 +365,98 @@ test('getFancyAnim: anim 显式优先 → jy 语义映射 → 回退 fade', () =
   assert.equal(L.getFancyAnim({}), 'fade')
   assert.equal(L.getFancyAnim(null), 'fade')
 })
+
+// ── 字幕样式预设（2026-09-09 裁决：样式属字幕配置；SUBTITLE_STYLES 查表进字幕 drawtext）──
+test('SUBTITLE_STYLES: 24 项；默认白字无描边（与旧版口径一致）', () => {
+  assert.equal(Object.keys(L.SUBTITLE_STYLES).length, 24)
+  assert.equal(L.SUBTITLE_STYLES.white, 'fontcolor=white')
+})
+test('buildDubFFmpegArgs: subtitleStyle 查表（white_blk → 白字黑描边）', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true, subtitleStyle: 'white_blk',
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('fontsize=h*0.035:fontcolor=0xFFFFFF:borderw=3:bordercolor=0x000000:'))
+})
+test('buildDubFFmpegArgs: 未知 subtitleStyle 回退默认白字；缺省同旧口径', () => {
+  const mk = (style) => L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true, subtitleStyle: style,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  assert.ok(mk('no_such_key')[mk('no_such_key').indexOf('-filter_complex') + 1].includes('fontsize=h*0.035:fontcolor=white:'))
+  assert.ok(mk(undefined)[mk(undefined).indexOf('-filter_complex') + 1].includes('fontsize=h*0.035:fontcolor=white:'))
+})
+
+// ── 特效迁 Step4 统一烧制（2026-09-09 裁决：配音链只出声音，特效在 final:mix 前烧制）──
+test('buildDubFFmpegArgs: burnEffects:false → 不烧字幕/花字（配音纯化）', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true, fancyText: true,
+    burnEffects: false,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  assert.ok(!args.includes('-filter_complex'))
+})
+test('buildDubFFmpegArgs: burnEffects 缺省 true → 仍烧字幕（向后兼容既有单测口径）', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  assert.ok(args.includes('-filter_complex'))
+})
+test('buildEffectBurnArgs: 字幕烧制（无配音替换，音频 copy）', () => {
+  const args = L.buildEffectBurnArgs({
+    videoPath: 'D:\\v\\dubbed\\dubbed_a.mp4', outputVideoPath: 'D:\\v\\final\\dubbed_a.fx.mp4',
+    text: '第一句', videoDur: 10, addSubtitles: true,
+    subtitleFontPath: 'C\\:/Windows/Fonts/msyh.ttc', subtitleStyle: 'white',
+    subtitleBoxOpacity: 0.5,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  assert.ok(Array.isArray(args))
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('drawtext='))
+  assert.ok(args.includes('-c:a') && args.includes('copy'))
+  assert.ok(!args.includes('-shortest'))
+})
+test('buildEffectBurnArgs: 字幕入场动画（fade/rise/slide/pop/none；无效值回退 fade）', () => {
+  const base = {
+    videoPath: 'D:\\v\\dubbed\\dubbed_a.mp4', outputVideoPath: 'D:\\v\\final\\dubbed_a.fx.mp4',
+    text: '第一句', videoDur: 10, addSubtitles: true,
+    subtitleFontPath: 'C\\:/Windows/Fonts/msyh.ttc', subtitleStyle: 'white',
+    subtitleBoxOpacity: 0.5,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  }
+  const fcOf = (o) => {
+    const a = L.buildEffectBurnArgs(o)
+    return a[a.indexOf('-filter_complex') + 1]
+  }
+  // fade：纯 alpha 淡入；rise：alpha + y 位移；slide：alpha + x 位移；pop：短 alpha + y 弹跳
+  assert.ok(fcOf({ ...base, subtitleAnim: 'fade' }).includes("alpha='if(lt(t,"))
+  const rise = fcOf({ ...base, subtitleAnim: 'rise' })
+  assert.ok(rise.includes('alpha=') && rise.includes('(1-min((t-'))
+  const slide = fcOf({ ...base, subtitleAnim: 'slide' })
+  assert.ok(slide.includes('alpha=') && slide.includes('w*0.10'))
+  const pop = fcOf({ ...base, subtitleAnim: 'pop' })
+  assert.ok(pop.includes('alpha=') && pop.includes('sin((t-'))
+  // none=硬切保持旧版行为；缺省/无效值回退 fade
+  assert.ok(!fcOf({ ...base, subtitleAnim: 'none' }).includes('alpha='))
+  assert.ok(fcOf(base).includes('alpha='))
+  assert.ok(fcOf({ ...base, subtitleAnim: 'bogus' }).includes('alpha='))
+})
+test('buildEffectBurnArgs: 花字烧制（卖点提取 + 模板音效 aac 重编码）', () => {
+  const args = L.buildEffectBurnArgs({
+    videoPath: 'D:\\v\\dubbed\\dubbed_a.mp4', outputVideoPath: 'D:\\v\\final\\dubbed_a.fx.mp4',
+    text: '这款扫地机只要199元', videoDur: 10, fancyText: true,
+    fancyStyle: 'gold', fancyPosition: 'upper_middle', fancyFontPath: 'msyh',
+    fancySoundPath: 'D:\\f\\sfx.wav',
+    timing: [{ text: '这款扫地机只要199元', start: 0, end: 3 }],
+  })
+  assert.ok(Array.isArray(args))
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('drawtext='))
+  assert.ok(args.includes('-c:a') && args.includes('aac'))
+})
+test('buildEffectBurnArgs: 无特效/时长不可读 → null（调用方直通）', () => {
+  assert.equal(L.buildEffectBurnArgs({ videoPath: 'a', outputVideoPath: 'b', videoDur: 10 }), null)
+  assert.equal(L.buildEffectBurnArgs({ videoPath: 'a', outputVideoPath: 'b', videoDur: 0, addSubtitles: true, text: 'x' }), null)
+})

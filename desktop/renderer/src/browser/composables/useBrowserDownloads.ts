@@ -18,6 +18,7 @@ import { computed, ref, watch } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import type { BrowserPlatformId } from './useBrowserNav'
 import { pickPageDownloadUrl, needsYtdlpForSniffedUrl } from './browserDownloadLogic'
+import { toFileUrl } from '@/utils/fileUrl'
 
 export interface UseBrowserDownloadsDeps {
   isElectronShell: Ref<boolean>
@@ -152,10 +153,10 @@ async function loadInstalledExtensions(): Promise<void> {
     if (r?.success && r?.data?.extensions) installedExtensions.value = r.data.extensions
   } catch (_) {}
 }
-/** 扩展图标 file://（主进程返回扩展目录 path + icon 相对路径） */
+/** 扩展图标（主进程返回扩展目录 path + icon 相对路径；file:/// 三斜杠，2026-09-10 回退 media:// 链路） */
 function extIconSrc(e: InstalledExtension): string {
   if (!e?.icon || !e?.path) return ''
-  return 'file://' + String(e.path).replace(/\\/g, '/') + '/' + String(e.icon).replace(/^\/+/, '')
+  return toFileUrl(String(e.path).replace(/\\/g, '/') + '/' + String(e.icon).replace(/^\/+/, ''))
 }
 
 function _formatBytesPhase2(b?: number): string {

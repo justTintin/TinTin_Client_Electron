@@ -65,8 +65,12 @@ export interface SplitShot {
   score?: number
   analysis: string
   description: string
-  /** 服务端 shot_type（空=未返回，UI 端回退路径景别推断） */
+  /** 景别（仅服务端 shot_analysis.shot_type；2026-09-09 裁决：景别客户端不自行推断） */
   shotType: string
+  /** 服务端位置标注（/montage/split 逐镜 enter/exit 布尔，2026-09-09 实测确认；
+   *  出场命名素材亦返回 false——服务端暂未实际标注，false 视同未标注由渲染层兑底） */
+  enter?: boolean
+  exit?: boolean
   /** 产品（服务端逐镜分析，多数为空） */
   product: string
   /** 型号（同上） */
@@ -118,6 +122,8 @@ export function parseSplitResponse(resp: unknown): SplitShot[] {
         analysis: analysisText,
         description: String(s.description || ''),
         shotType,
+        enter: !!s.enter,
+        exit: !!s.exit,
         product: String((analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).product : s.product) || ''),
         model: String((analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).model : s.model) || ''),
         resolution: String(s.resolution || ''),
@@ -142,9 +148,13 @@ export interface SplitSceneRow {
   /** 本地 splits 目录落盘路径（分割后批量下载填充；空=未落盘，预览回退内嵌） */
   clipLocalPath?: string
   checked: boolean
-  shotType?: string  // 景别分类（服务端 shot_type 优先，否则路径推断：入场/出场/中景/特写/''）
-  /** 景别来源描述（2026-09-09 用户裁决新增「位置」列）：服务端分析 / 文件名「xx」/ 文件夹「xx」；空=未标注 */
-  shotTypeSource?: string
+  /** 景别（仅服务端 shot_analysis.shot_type，客户端不自行推断，空则 UI 显 —） */
+  shotType?: string
+  /** 位置（2026-09-09 裁决与 /montage/split 对齐：位置≠景别，指入场/出场等叙事位置）：
+   *  服务端 enter/exit 布尔优先，否则按源素材文件名/文件夹命名兜底推断（原 classify 口径） */
+  position?: string
+  /** 位置来源描述：服务端标注 / 文件名「xx」/ 文件夹「xx」；空=未标注 */
+  positionSource?: string
   /** PR#4 条目10：本地已裁剪替换（concat 需改走本地 files 上传，服务端 clip 指向未裁剪原件） */
   trimmed?: boolean
   product?: string   // 产品列（服务端逐镜分析，空则 UI 显 —）
@@ -152,10 +162,14 @@ export interface SplitSceneRow {
   resolution?: string // 画幅列（服务端返回，空则 UI 用 ffprobe 探测源片结果兜底）
 }
 
-/** shots → 镜头表格行（checked 默认 true，行号从 1 起；sourcePath 用于景别兜底推断） */
+/** shots → 镜头表格行（checked 默认 true，行号从 1 起；sourcePath 用于「位置」兜底推断——
+ *  景别仅认服务端返回；位置服务端 enter/exit 优先、路径命名兜底，2026-09-09 裁决） */
 export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?: string): SplitSceneRow[] {
-  const inferred = sourcePath ? classifyShotType(sourcePath) : ''
   const detail = sourcePath ? classifyShotTypeDetail(sourcePath) : null
+  // 位置兑底只认入场/出场（2026-09-09 用户裁决二次纠偏：特写/中景是景别不是位置，
+  //  不得因文件名含「特写」就标进位置列；原版消费侧也只挑 entrance/exit 参与出入场
+  //  裁剪/加速，medium/closeup 命中仅用于素材列表景别徽章展示）
+  const posType = detail && (detail.type === 'entrance' || detail.type === 'exit') ? detail.type : ''
   return shots.map((s, i) => ({
     idx: i + 1,
     name: s.filename || `${sourceName}_shot_${String(s.shotIndex || i + 1).padStart(3, '0')}.mp4`,
@@ -170,11 +184,17 @@ export function shotsToRows(shots: SplitShot[], sourceName: string, sourcePath?:
     serverPath: s.serverPath,
     downloadState: 'pending' as const,
     checked: true,
-    ...(s.shotType || inferred ? { shotType: s.shotType || inferred } : {}),
-    // 位置列：服务端 shot_type 优先标「服务端分析」；否则标路径命名命中段（景别如何来的）
-    ...(s.shotType
-      ? { shotTypeSource: '服务端分析' }
-      : detail?.type ? { shotTypeSource: detail.origin === 'file' ? `文件名「${detail.seg}」` : `文件夹「${detail.seg}」` } : {}),
+    // 景别：仅服务端 shot_analysis.shot_type，客户端不自行推断（2026-09-09 裁决）
+    ...(s.shotType ? { shotType: s.shotType } : {}),
+    // 位置：服务端 enter/exit 标注优先；否则按源素材文件名/文件夹命名兑底（仅入场/出场）
+    //（2026-09-09 实测：服务端 enter/exit 恒 false——出场命名素材亦然，false 视同未标注回退路径推断）
+    ...(s.enter
+      ? { position: 'entrance', positionSource: '服务端标注' }
+      : s.exit
+        ? { position: 'exit', positionSource: '服务端标注' }
+        : posType
+          ? { position: posType, positionSource: detail!.origin === 'file' ? `文件名「${detail!.seg}」` : `文件夹「${detail!.seg}」` }
+          : {}),
     ...(s.product ? { product: s.product } : {}),
     ...(s.model ? { model: s.model } : {}),
     ...(s.resolution ? { resolution: s.resolution } : {}),
@@ -288,14 +308,14 @@ export function extractSubmitTaskId(resp: unknown): string {
 export const EDGE_CLIP_MAX_SEC = 4.0
 
 /** 收集出入场超长片段裁剪任务（对照 _maybe_trim_edge_clips L1729-1747 扫描口径：
- *  景别 entrance/exit 且时长 > 阈值；本端景别取行 shotType（服务端逐镜分析优先，
- *  路径推断兑底），起止秒取行 startSec/endSec（原版从文件名解析） */
+ *  位置 entrance/exit 且时长 > 阈值；本端位置取行 position（服务端 enter/exit 优先，
+ *  路径推断兜底，2026-09-09 裁决），起止秒取行 startSec/endSec（原版从文件名解析） */
 export function collectEdgeTrimJobs(rows: SplitSceneRow[]): Array<{
-  path: string; startSec: number; endSec: number; idx: number; desc: string; shotType: string
+  path: string; startSec: number; endSec: number; idx: number; desc: string; position: string
 }> {
   return (rows || [])
     .filter((r) => r.clipLocalPath
-      && (r.shotType === 'entrance' || r.shotType === 'exit')
+      && (r.position === 'entrance' || r.position === 'exit')
       && r.duration > EDGE_CLIP_MAX_SEC + 0.01)
     .map((r) => ({
       path: r.clipLocalPath as string,
@@ -303,7 +323,7 @@ export function collectEdgeTrimJobs(rows: SplitSceneRow[]): Array<{
       endSec: r.endSec,
       idx: r.idx,
       desc: r.description || '',
-      shotType: r.shotType || '',
+      position: r.position || '',
     }))
 }
 
@@ -359,6 +379,15 @@ export interface PrecomposePlan {
   outputPath: string
   /** 口播文案（生成口播文案后填充；原版同名 .txt 口径） */
   copy: string
+  /** 成片实际时长（秒；确认合成后渲染层 ffmpeg:probeDuration 探测回写，0=探测中/失败） */
+  durationSec?: number
+}
+
+/** 预合成行估计时长（秒）：未删除镜头时长之和（对照原版 sum(cut.end - cut.start) 口径；
+ *  已合成行的实际时长走成片探测，不用此估计） */
+export function planActiveDurationSec(p: PrecomposePlan): number {
+  return (p.clips || []).reduce(
+    (acc, c, i) => acc + (p.deletedFlags[i] ? 0 : Math.max(0, (c.endSec || 0) - (c.startSec || 0))), 0)
 }
 
 export function newPrecomposePlan(clips: SplitSceneRow[], mode = 'random'): PrecomposePlan {
@@ -392,7 +421,7 @@ export function buildPrecomposePlans(opts: {
   batchCount: number
   durationLimitSec: number
   randomness: string
-  shotTypeOf?: (row: SplitSceneRow) => string
+  positionOf?: (row: SplitSceneRow) => string
   randomFn?: () => number
 }): PrecomposePlan[] {
   const rnd = opts.randomFn || Math.random
@@ -414,7 +443,7 @@ export function buildPrecomposePlans(opts: {
   }
   const maxTotal = opts.durationLimitSec > 0 ? opts.durationLimitSec * 1.1 : 0
   const target = unique.length
-  const shotTypeOf = opts.shotTypeOf || ((r: SplitSceneRow) => r.shotType || '')
+  const positionOf = opts.positionOf || ((r: SplitSceneRow) => r.position || '')
   const plans: PrecomposePlan[] = []
   let cursor = 0
   // 跨成片镜头使用计数（对照 usage_count L5786）：让全部镜头轮流上场，
@@ -466,10 +495,10 @@ export function buildPrecomposePlans(opts: {
     }
     // 兑底：极端情况至少保证 1 个镜头
     if (!seq.length) seq.push(unique[0])
-    // 景别编排：入场头/出场尾/其余居中（有任何标注才生效，对照原版）
+    // 位置编排：入场头/出场尾/其余居中（有任何标注才生效，对照原版）
     let ordered = seq
-    if (seq.some((c) => shotTypeOf(c))) {
-      ordered = applyShotLayoutOrder(seq, shotTypeOf)
+    if (seq.some((c) => positionOf(c))) {
+      ordered = applyShotLayoutOrder(seq, positionOf)
     }
     plans.push(newPrecomposePlan(ordered))
     console.log(`[plans] 方案 ${b + 1}: ${ordered.length} 个镜头, totalDur=${totalDur.toFixed(1)}s`)
@@ -612,7 +641,8 @@ export function classifyShotType(filePath: string): string {
 }
 
 /** 景别推断详情：type=景别键，seg=命中段文本，origin=命中位置（file=文件名 / dir=父目录）。
- *  供分割表「位置」列展示景别来源（2026-09-09 用户裁决：出场/入场是路径命名推断，
+ *  供分割表「位置」列兑底（仅取 entrance/exit 两键，特写/中景不进位置列）与
+ *  素材列表景别徽章（四键全用，2026-09-09 用户裁决：出场/入场是路径命名推断，
  *  非 AI 分析，需在表里展示它是如何来的）。 */
 export function classifyShotTypeDetail(filePath: string): { type: string; seg: string; origin: 'file' | 'dir' } {
   if (!filePath) return { type: '', seg: '', origin: 'file' }
@@ -787,6 +817,87 @@ export const FANCY_STYLE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'yellow_red', label: '黄字红描边' },
 ]
 
+/** 花字样式 → CSS 近似色对（Step3 行3 效果预览用；对照主进程 FANCY_STYLES drawtext 片段：
+ *  color=fontcolor stroke=bordercolor，borderw≈4→text-stroke 3px、5→4px） */
+export const FANCY_STYLE_PREVIEW: Record<string, { color: string; stroke: string }> = {
+  gold:          { color: '#F0C040', stroke: '#6B3000' },
+  red:           { color: '#FF4040', stroke: '#800000' },
+  blue:          { color: '#40A0FF', stroke: '#003080' },
+  purple:        { color: '#C060FF', stroke: '#300060' },
+  neon_green:    { color: '#40FF80', stroke: '#004020' },
+  white_outline: { color: '#FFFFFF', stroke: '#000000' },
+  yellow_red:    { color: '#FFFF00', stroke: '#CC0000' },
+}
+
+/** 花字 drawtext 样式串 → CSS 近似预览（模板行3 效果预览：服务端/本地模板 style 即
+ *  ffmpeg drawtext 片段，解析 fontcolor/borderw/bordercolor 还原主色+描边；
+ *  shadow 统一近似为 textShadow。解析失败返回 null，回退选中样式预设色板） */
+export function fancyDrawtextToPreview(style: string): Record<string, string> | null {
+  const s = String(style || '').trim()
+  if (!s) return null
+  const pick = (k: string): string => {
+    const m = s.match(new RegExp(`${k}=([^:]*)`))
+    return m ? m[1] : ''
+  }
+  const hex = (v: string): string => {
+    const t = v.trim().toLowerCase()
+    if (!t) return ''
+    if (t === 'white') return '#FFFFFF'
+    if (t === 'black') return '#000000'
+    const m = t.match(/^0x([0-9a-f]{6})/)
+    return m ? `#${m[1].toUpperCase()}` : ''
+  }
+  const color = hex(pick('fontcolor'))
+  if (!color) return null
+  const bw = parseInt(pick('borderw'), 10)
+  const stroke = hex(pick('bordercolor'))
+  const out: Record<string, string> = { color }
+  if (bw > 0 && stroke) {
+    out.webkitTextStroke = `${Math.min(5, Math.max(2, bw - 1))}px ${stroke}`
+    out.paintOrder = 'stroke'
+  }
+  if (pick('shadowx') || pick('shadowy')) out.textShadow = '2px 2px 4px rgba(0,0,0,.6)'
+  return out
+}
+
+// ══ 文字模板（textfx；2026-09-09 用户裁决：与花字独立概念）════════
+
+/** 随机模式下可选取的文字模板个数选项（默认 3，用户裁决口径） */
+export const TEXT_RANDOM_COUNT_OPTIONS = [
+  { label: '1 个', value: 1 },
+  { label: '2 个', value: 2 },
+  { label: '3 个', value: 3 },
+  { label: '4 个', value: 4 },
+  { label: '5 个', value: 5 },
+]
+
+/** 关键词密度档位（2026-09-10 用户裁决：低/中/高，调节后重新提取关键词并重新生成
+ *  需要合成的文字模板；提取为本地函数 extractFancyWordsFromText，上限随档位变化） */
+export const TEXT_KEYWORD_DENSITY_OPTIONS = [
+  { label: '低', value: 'low' },
+  { label: '中', value: 'mid' },
+  { label: '高', value: 'high' },
+]
+/** 密度档位 → 关键词提取上限（低=价格等硬卖点；中=2026-09-10 前硬编码口径；
+ *  高=关键词层扩容） */
+export const TEXT_KEYWORD_DENSITY_MAX: Record<string, number> = {
+  low: 3,
+  mid: 8,
+  high: 12,
+}
+
+/** 从池中随机取 n 个（Fisher-Yates 部分洗牌；n≥池长时全量乱序返回；
+ *  供文字模板「随机样式」与效果预览逐词轮换使用，纯函数可单测） */
+export function pickRandomItems<T>(pool: readonly T[], n: number): T[] {
+  const arr = [...pool]
+  const take = Math.max(0, Math.min(Math.floor(n) || 0, arr.length))
+  for (let i = 0; i < take; i++) {
+    const j = i + Math.floor(Math.random() * (arr.length - i))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr.slice(0, take)
+}
+
 /** AI 改写自由度说明（对照 _show_ai_rewrite_settings desc QLabel 逐字） */
 export const AI_REWRITE_DESC =
   '控制AI改写文案时的创造性程度：\n' +
@@ -943,6 +1054,48 @@ export const FANCY_POSITION_OPTIONS = [
   { label: '左下角', value: 'bottom_left' },
   { label: '右下角', value: 'bottom_right' },
 ]
+
+/** 字幕文字样式预设（2026-09-09 用户裁决：样式属字幕配置，图3 色系 ~24 格）。
+ *  key 与主进程 SUBTITLE_STYLES（voice-tts-logic.js，drawtext 片段）一一对应，两表同步维护；
+ *  color=文字色 stroke=描边色（''=无描边，即旧版白字效果）；首个为默认（与旧版一致）。 */
+export interface SubtitleStylePreset { key: string; label: string; color: string; stroke: string }
+export const SUBTITLE_STYLE_PRESETS: SubtitleStylePreset[] = [
+  { key: 'white',        label: '默认 白字', color: '#FFFFFF', stroke: '' },
+  { key: 'white_blk',    label: '白字黑边', color: '#FFFFFF', stroke: '#000000' },
+  { key: 'white_gray',   label: '白字灰边', color: '#FFFFFF', stroke: '#555555' },
+  { key: 'white_red',    label: '白字红边', color: '#FFFFFF', stroke: '#CC2222' },
+  { key: 'white_blue',   label: '白字蓝边', color: '#FFFFFF', stroke: '#2266CC' },
+  { key: 'black_white',  label: '黑字白边', color: '#111111', stroke: '#FFFFFF' },
+  { key: 'black_yellow', label: '黑字黄边', color: '#111111', stroke: '#FFD700' },
+  { key: 'yellow_blk',   label: '黄字黑边', color: '#FFE135', stroke: '#000000' },
+  { key: 'yellow_red',   label: '黄字红边', color: '#FFE135', stroke: '#CC0000' },
+  { key: 'gold_blk',     label: '金字黑边', color: '#F0C040', stroke: '#3A2000' },
+  { key: 'gold_red',     label: '金字红边', color: '#F0C040', stroke: '#CC0000' },
+  { key: 'orange_white', label: '橙字白边', color: '#FF8C1A', stroke: '#FFFFFF' },
+  { key: 'pink_blk',     label: '粉字黑边', color: '#FF7EB9', stroke: '#000000' },
+  { key: 'pink_white',   label: '粉字白边', color: '#FF7EB9', stroke: '#FFFFFF' },
+  { key: 'red_white',    label: '红字白边', color: '#FF4040', stroke: '#FFFFFF' },
+  { key: 'red_yellow',   label: '红字黄边', color: '#FF4040', stroke: '#FFE135' },
+  { key: 'blue_blk',     label: '蓝字黑边', color: '#40A0FF', stroke: '#000000' },
+  { key: 'blue_white',   label: '蓝字白边', color: '#40A0FF', stroke: '#FFFFFF' },
+  { key: 'sky_white',    label: '天蓝白边', color: '#7FD4FF', stroke: '#FFFFFF' },
+  { key: 'green_blk',    label: '绿字黑边', color: '#40FF80', stroke: '#000000' },
+  { key: 'green_white',  label: '绿字白边', color: '#40FF80', stroke: '#FFFFFF' },
+  { key: 'teal_white',   label: '青字白边', color: '#2EC4B6', stroke: '#FFFFFF' },
+  { key: 'purple_white', label: '紫字白边', color: '#C060FF', stroke: '#FFFFFF' },
+  { key: 'purple_blk',   label: '紫字黑边', color: '#C060FF', stroke: '#000000' },
+]
+
+/** 字幕样式预设 → 色板 tile 内联样式（T 字样例；描边用 text-stroke，无描边不加） */
+export function subtitlePresetTileStyle(p: SubtitleStylePreset): Record<string, string> {
+  const s: Record<string, string> = { color: p.color }
+  if (p.stroke) {
+    // 3px 描边近似 drawtext borderw=3；深色字用外描边视觉更接近烧制效果
+    s.webkitTextStroke = `2.5px ${p.stroke}`
+    s.paintOrder = 'stroke'
+  }
+  return s
+}
 
 /** 字幕背景 6 项（对照 subtitle_bg_combo L226-228，value 为黑框不透明度） */
 export const SUBTITLE_BG_OPTIONS = [

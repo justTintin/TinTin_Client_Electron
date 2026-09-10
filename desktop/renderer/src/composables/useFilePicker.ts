@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { ref } from 'vue'
+import { toFileUrl } from '@/utils/fileUrl'
 
 export interface FileDialogFilter {
   name: string
@@ -65,11 +66,9 @@ export function useFilePicker(opts: UseFilePickerOptions) {
     isDragging.value = false
   }
 
-  /** 本地路径转可显示 URL */
+  /** 本地路径转可显示 URL（file:/// 三斜杠，2026-09-10 回退 media:// 链路） */
   function resolveSrc(src: string): string {
-    if (!src) return ''
-    if (/^(https?|blob|file|data):/i.test(src)) return src
-    return `file://${src.replace(/\\/g, '/')}`
+    return toFileUrl(src)
   }
 
   return {

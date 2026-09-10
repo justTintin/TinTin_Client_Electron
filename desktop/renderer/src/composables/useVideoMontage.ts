@@ -32,11 +32,20 @@ import {
   EDGE_CLIP_MAX_SEC,
   // Step2 镜头重组·预合成方案
   buildPrecomposePlans,
+  planActiveDurationSec,
   type PrecomposePlan,
   buildSceneCopyMessages,
   parseLlmCopyResponse,
   assembledRowText,
   copyPreviewText,
+  // Step3 字幕样式预设（2026-09-09 裁决：样式属字幕配置，字幕新增自有预设色板）
+  SUBTITLE_STYLE_PRESETS,
+  subtitlePresetTileStyle,
+  type SubtitleStylePreset,
+  // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立）
+  TEXT_RANDOM_COUNT_OPTIONS,
+  pickRandomItems,
+  extractFancyWordsFromText,
   // Step4 特效包装（对照 step4_final_view.py / FinalMixWorker / JianyingExporter）
   buildBgmGenPayload,
   parseBgmGenResponse,
@@ -63,7 +72,6 @@ import {
   cleanRewriteContent,
   FANCY_POSITION_OPTIONS,
   SUBTITLE_BG_OPTIONS,
-  extractFancyWordsFromText,
   resolveOutMontageDir,
   voiceStatusText,
   voiceStatusClass,
@@ -201,17 +209,22 @@ export function useVideoMontage() {
 
   // ══ Step1 素材解析（/montage/split，同步）═══════════════════
   const srcVideos = ref<string[]>([])
-    // 素材时长列（2026-09-09 用户裁决：素材列表加时长显示；路径→秒，ffprobe 增量探测）
-    const srcDurations = reactive(new Map<string, number>())
-    watch(srcVideos, (list) => {
-      for (const p of list) {
-        if (srcDurations.has(p)) continue
-        void window.tintin.ffmpeg.probe(p).then((info) => {
-          const d = Number(info?.duration) || 0
-          if (d > 0) srcDurations.set(p, d)
-        }).catch(() => { /* 探测失败显 — */ })
-      }
-    }, { immediate: true })
+  // 素材时长列（2026-09-09 用户裁决：素材列表加时长显示；路径→秒，增量探测）
+  // 2026-09-09 修复：原 watch(srcVideos, ...) 为 ref 浅层监听，addVideos/selectFolder
+  //  均为 push 原地变更不触发 → 探测从未启动全列显「—」；改 getter 形式监听数组变更。
+  //  探测改 ffmpeg:probeDuration（resources/bin 无 ffprobe.exe，主进程回退 ffmpeg -i 解析）。
+  const srcDurations = reactive(new Map<string, number>())
+  watch(() => [...srcVideos.value], (list) => {
+    for (const p of list) {
+      if (srcDurations.has(p)) continue
+      srcDurations.set(p, 0) // 占位防并发重复探测（探测完成回写真实值，0 仍显 —）
+      void window.tintin.ffmpeg.probeDuration(p).then((d) => {
+        const sec = Number(d) || 0
+        if (sec > 0) srcDurations.set(p, sec)
+        else srcDurations.delete(p)
+      }).catch(() => { srcDurations.delete(p) /* 探测失败显 — */ })
+    }
+  }, { immediate: true })
   const threshold = ref(50)        // 原版 L67 默认 50，范围 10-100（数字越大越不敏感）
   const minSceneLen = ref(0.5)     // 最小镜头秒（原版 L76 默认 0.5，范围 0.1-60）
   const imageDuration = ref(3)     // 精华时长（原版 L85 默认 3；无法分割的视频自动挑出多长的精华片段）
@@ -339,7 +352,7 @@ export function useVideoMontage() {
           throw lastErr || new Error('服务端不可达（OFFLINE）')
         }
         const res = unwrapIpc(raw as any, '素材解析')
-        // 传递 sourcePath 用于景别分类（对齐 PR#3 classify_shot_type）
+        // 传递 sourcePath 用于「位置」兑底推断（对齐 PR#3 classify_shot_type；景别仅服务端返回）
         const shots = parseSplitResponse(res)
         console.log(`[split] ${name}: ${shots.length} shots, 首个 clipUrl=${shots[0]?.downloadUrl || '(空)'}`)
         rows.push(...shotsToRows(shots, name, v))
@@ -446,10 +459,41 @@ export function useVideoMontage() {
     if (row) row.description = desc.trim()
   }
 
+  /** 镜头片段预览：内置 Plyr 播放器弹窗（本地路径 / 服务端 URL 均支持） */
+  const previewUrl = ref('')
+  /** 不可播编码自动转码进行中（VideoPreview 弹窗显示转码提示，2026-09-10） */
+  const previewTranscoding = ref(false)
+  let previewToken = 0
+
+  /** 预览可播性保障：Chromium 不可播编码（H.264 4:2:2 10bit、MP4+PCM 等，
+   *  2026-09-10 素材预览全灭根因）主进程 ensurePlayable 自动转码兜底；
+   *  可播/检测失败原路径直返，转码失败提示后按原样播放（沿用既有错误 UI）。 */
+  async function ensurePreviewSrc(p: string, token: number): Promise<string> {
+    try {
+      const res = await window.tintin.ffmpeg.ensurePlayable(p)
+      // 弹窗已关闭或已有更新一次预览 → 丢弃本次结果
+      if (token !== previewToken || !previewUrl.value) return ''
+      if (res && 'error' in res) {
+        console.error(`[preview] ensurePlayable 转码失败: ${res.error}`)
+        splitMsg.value = `预览转码失败（${res.error}），将按原样播放`
+        return p
+      }
+      return res.path
+    } catch (err) {
+      console.error(`[preview] ensurePlayable 调用失败: ${err}`)
+      return p
+    }
+  }
+
   /** 素材双击预览：内置 Plyr 播放器弹窗（替代系统播放器） */
-  function previewSourceVideo(path: string): void {
+  async function previewSourceVideo(path: string): Promise<void> {
     if (!path) return
+    const token = ++previewToken
     previewUrl.value = path
+    previewTranscoding.value = true
+    const playable = await ensurePreviewSrc(path, token)
+    if (playable) previewUrl.value = playable
+    if (token === previewToken) previewTranscoding.value = false
   }
 
   /** 分割完成后把服务端片段批量下载到本地 splits 目录（并发 4，单个失败不阻断） */
@@ -497,17 +541,15 @@ export function useVideoMontage() {
     try { window.tintin.shell.openItem(dir) } catch (_) { /* 打开失败静默 */ }
   }
 
-  /** 镜头片段预览：内置 Plyr 播放器弹窗（本地路径 / 服务端 URL 均支持） */
-  const previewUrl = ref('')
   function previewScene(row: SplitSceneRow): void {
     if (row.clipLocalPath) {
-      previewUrl.value = row.clipLocalPath
+      void previewSourceVideo(row.clipLocalPath)
       return
     }
     if (!row.clipUrl) return
     void (async () => {
       await ensureServerUrl()
-      previewUrl.value = toAbsolute(row.clipUrl)
+      await previewSourceVideo(toAbsolute(row.clipUrl))
     })()
   }
   function closePreview(): void { previewUrl.value = '' }
@@ -570,12 +612,32 @@ export function useVideoMontage() {
   
   const checkedCount = computed(() => scenes.value.filter((s) => s.checked).length)
   
-  // 推荐数量 = max(1, 勾选数)//2 夹 1-10，勾选变化时回写 spin（原版 _update_batch_count_recommendation）
+  // 推荐数量 = max(1, 勾选数)//2 夹 1-20，勾选变化时回写 spin（原版 _update_batch_count_recommendation
+  //  夹 1-10；2026-09-09 用户裁决：生成视频数量上限扩至 1-20，推荐值同步放宽）
   const recBatchCount = computed(() =>
-    Math.max(1, Math.min(10, Math.floor(Math.max(1, checkedCount.value) / 2))))
+    Math.max(1, Math.min(20, Math.floor(Math.max(1, checkedCount.value) / 2))))
   watch(checkedCount, () => { batchCount.value = recBatchCount.value })
   
   const assemblePlans = ref<PrecomposePlan[]>([])
+  // 预合成时长列（2026-09-09 用户裁决新增）：已合成行探测成片实际时长（ffmpeg:probeDuration，
+  //  resources/bin 无 ffprobe.exe 时主进程回退 ffmpeg -i 解析）；待确认行走镜头时长求和（planDurText）。
+  //  watch 用 getter 形式监听确认状态/落盘路径变更（确认合成后 p.confirmed/outputPath 才填充）。
+  watch(() => assemblePlans.value.map((p) => `${p.confirmed ? 1 : 0}|${p.outputPath}`).join('\n'), () => {
+    for (const p of assemblePlans.value) {
+      if (!p.confirmed || !p.outputPath || p.durationSec !== undefined) continue
+      p.durationSec = 0 // 占位防重复探测（探测完成回写真实值，0 仍显 —）
+      const path = p.outputPath
+      void window.tintin.ffmpeg.probeDuration(path).then((d) => {
+        const sec = Number(d) || 0
+        if (sec > 0 && p.outputPath === path) p.durationSec = sec
+      })
+    }
+  })
+  /** 预合成行时长文本：已合成=成片实际时长（探测回写 durationSec）；待确认=未删除镜头时长之和（估计值） */
+  function planDurText(p: PrecomposePlan): string {
+    if (p.confirmed) return p.durationSec && p.durationSec > 0 ? fmtDur(p.durationSec) : '—'
+    return fmtDur(planActiveDurationSec(p))
+  }
   const currentPlanIdx = ref(-1)
   const currentPlan = computed(() =>
     currentPlanIdx.value >= 0 ? assemblePlans.value[currentPlanIdx.value] || null : null)
@@ -605,7 +667,8 @@ export function useVideoMontage() {
           batchCount: batchCount.value,
           durationLimitSec: Number(durationLimit.value),
           randomness: randomness.value,
-          shotTypeOf: (r) => r.shotType || '',
+          // 位置编排取行 position（2026-09-09 裁决：入场头/出场尾属位置编排，非景别）
+          positionOf: (r) => r.position || '',
         })
         assemblePlans.value = plans
         currentPlanIdx.value = plans.length ? 0 : -1
@@ -686,6 +749,7 @@ export function useVideoMontage() {
     p.outputUrl = ''
     p.outputName = ''
     p.outputPath = ''
+    p.durationSec = undefined // 重合成后时长需重新探测
   }
   
   function onDetailDragStart(i: number): void { detailDragFrom.value = i }
@@ -762,7 +826,8 @@ export function useVideoMontage() {
       crf: 23,
       preset: 'superfast',
     })
-    // 景别标注随载荷摊平（对照原版 L3004-3015：仅当有非空景别才发送；
+    // 位置标注随载荷摊平（对照原版 L3004-3015：仅当有非空标注才发送；
+    // 2026-09-09 裁决：出入场加速按「位置」（entrance/exit）判断而非景别——
     // 服务端只对 clip_shot_types 里 entrance/exit 的片段应用 edge_speedup 加速）
     const stPayload: Record<string, string> = {}
     for (const [k, v] of Object.entries(clipShotTypes || {})) {
@@ -825,6 +890,10 @@ export function useVideoMontage() {
         }
       } catch (_) { /* 校验失败按未通过处理 */ }
       console.warn(`[montage_concat] 成片完整性校验未通过（第 ${attempt}/2 次）: ${localPath}`)
+      // 2026-09-10 实测：服务端 result 端点会返回未写完的截断 mp4（moov 缺失）甚至
+      //  200 空体，坏片残留 outputs 会被 Step3 扫描带入配音/合成链，问题延迟到第四步
+      //  统一合成才暴露——校验未通过即删，重下也拿不到旧坏文件残留的干扰
+      try { await window.tintin.server.montageDeleteBadFinal(localPath) } catch (_) { /* 删失败不阻断 */ }
     }
     return hasFile ? 'invalid' : 'no-file'
   }
@@ -896,9 +965,10 @@ export function useVideoMontage() {
     // 本端提交前置 10 以区分上传阶段）
     concatProgress.value = 10
     try {
-      // 景别标注：key = 片段文件名（对照原版 os.path.basename(clip)；裁剪后行名已同步改写）
+      // 位置标注随载荷（key = 片段文件名，对照原版 os.path.basename(clip)；裁剪后行名已同步改写；
+      // 2026-09-09 裁决：clip_shot_types 语义是出入场位置——服务端仅对 entrance/exit 应用 edge_speedup）
       const activeClips = p.clips.filter((_, i) => !p.deletedFlags[i])
-      const shotTypes = Object.fromEntries(activeClips.map((c) => [c.name, c.shotType || '']))
+      const shotTypes = Object.fromEntries(activeClips.map((c) => [c.name, c.position || '']))
       // PR#4 条目10：有被裁剪片段且全部活动片段均已本地落盘 → 改走本地 files 上传
       // （顺序与 clipUrls 一致；有片段未落盘时回退 clip_urls，注：该方案内被裁片段
       // 将以服务端未裁剪原件参与合成，属下载失败兑底场景）
@@ -910,8 +980,13 @@ export function useVideoMontage() {
       concatProgress.value = 30
       statusText.value = `已提交服务端合成，任务 ID=${id}，正在轮询...`
       const name = `montage_concat_server_${Math.floor(Math.random() * 9000 + 1000)}_1.mp4`
-      const localPath = joinPath(await readCacheDir(), 'montage_cache',
-        splitsJobId.value || 'session', 'outputs', name)
+      // 2026-09-09 治本：落盘目录优先跟随已有确认产物所在目录——确认期间 jobId 可能被重置
+      // （清空缓存/重新分割），新产物会落到 session 目录致产物分散（Step3 只显示部分成片的根因）
+      const prevConfirmed = assemblePlans.value.find((q) => q !== p && q.confirmed && q.outputPath)
+      const outDir = prevConfirmed?.outputPath
+        ? prevConfirmed.outputPath.slice(0, Math.max(prevConfirmed.outputPath.lastIndexOf('\\'), prevConfirmed.outputPath.lastIndexOf('/')))
+        : joinPath(await readCacheDir(), 'montage_cache', splitsJobId.value || 'session', 'outputs')
+      const localPath = joinPath(outDir, name)
       // PR#4 条目12：下载 + 完整性校验（>1KB 且 ffprobe 可读，失败自动重下 1 次）；
       // 同样套硬性兑底期限，防单发请求挂死卡死整个确认流程
       let final = await withDeadline(downloadFinalChecked(url, localPath), 11 * 60 * 1000, 'no-file' as const)
@@ -1289,6 +1364,8 @@ export function useVideoMontage() {
   async function enterStep4(): Promise<void> {
     statusText.value = ''
     finalProgress.value = -1
+    // 2026-09-09 裁决：特效配置迁入 Step4，进入时拉取服务端文字模板库（空库仅随机项）
+    void loadTextTemplates()
     try {
       const n = (await collectCandidates()).length
       statusText.value = n > 0
@@ -1297,29 +1374,67 @@ export function useVideoMontage() {
     } catch (_) { /* 原版 except pass */ }
   }
 
-  /** 开始混音合成（_start_final_mix L4114-4161 一比一；FinalMixWorker 在主进程 final:mix） */
+  /** 开始混音合成（_start_final_mix 一比一；FinalMixWorker 在主进程 final:mix）。
+   *  2026-09-09 用户裁决：口播声音带到第四步统一合成处理——一键链=①给有声音未配音的
+   *  视频替换原声 → ②特效烧制 → ③BGM 混音；无声音行沿用原视频直通 */
   async function startFinalMix(): Promise<void> {
     if (finalBusy.value) return
-    const candidates = await collectCandidates()
-    if (!candidates.length) {
-      notify('无待合成视频', '未找到待合成的视频。\n请先完成第③步「口播配音」生成配音视频，或确认第②步的排列视频已生成。')
-      return
-    }
-    const outFinalDir = resolveOutFinalDir(candidates[0])
-    // 原版 src_name = 第①步素材目录名（folder_path_input basename）；本端取第③步视频输入目录名同语义
-    const tasks = buildFinalTasks(candidates, srcDirName(voiceDirInput.value), outFinalDir)
     finalBusy.value = true
     finalDone.value = false
     finalVideoList.value = []
     finalVideoPath.value = ''
     finalProgress.value = 0
     stopBgmPlay()
-    const channel = nextVoiceChannel()
     try {
+      // ── 配音阶段（一键链第①段）：重新克隆会置空 dubbedPath，此处自动重配；
+      //    无声音的行不配音，直接用原视频进后续特效/混音
+      const needDub = voiceRows.value.filter((r) => r.wavPath && r.path && !r.dubbedPath).length
+      if (needDub) {
+        statusText.value = `正在替换口播原声 (${needDub} 个视频)...`
+        await runDubBatch()
+      }
+      const candidates = await collectCandidates()
+      if (!candidates.length) {
+        notify('无待合成视频', '未找到待合成的视频。\n请先完成第③步「口播配音」生成声音，或确认第②步的排列视频已生成。')
+        return
+      }
+      const outFinalDir = resolveOutFinalDir(candidates[0])
+      // 原版 src_name = 第①步素材目录名（folder_path_input basename）；本端取第③步视频输入目录名同语义
+      const tasks = buildFinalTasks(candidates, srcDirName(voiceDirInput.value), outFinalDir)
+      const channel = nextVoiceChannel()
+      // 2026-09-09 裁决：特效配置迁 Step4，混音前统一烧制字幕/花字。
+      // subtitleTexts 按候选视频（dubbedPath）映射 Step3 文案行：无对应行（如 outputs
+      // 未配音排列视频）不烧字幕/花字，直通混音。
+      const subtitleTexts = candidates
+        .map((c) => {
+          const row = voiceRows.value.find((r) => r.dubbedPath === c)
+          if (!row || !row.text.trim()) return null
+          return { videoPath: c, text: row.text.trim(), timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '' }
+        })
+        .filter((x): x is { videoPath: string; text: string; timingPath: string } => !!x)
+      const hasFx = addSubtitles.value || fancyEnabled.value
+      // 展开为纯对象：computed 从响应式数组 find 出的是 Proxy，直传 IPC 会报
+      //   「An object could not be cloned」（同 scanVoiceDir selectedFiles 教训）
+      const fxTpl = selectedFancyTemplate.value
+      const fxTplPlain = fxTpl ? { ...fxTpl } : null
       const res = await window.tintin?.server?.finalMix?.({
         tasks,
         bgmPath: bgmPath.value,
         bgmVolume: bgmVolume.value,
+        ...(hasFx ? {
+          effects: {
+            addSubtitles: addSubtitles.value,
+            subtitleFont: addSubtitles.value ? selectedFontFamily() : '',
+            subtitleStyle: subtitleStyleKey.value,
+            subtitleBoxOpacity: subtitleBgOpacity.value,
+            subtitleAnim: subtitleAnimKey.value,
+            fancyText: fancyEnabled.value,
+            fancyStyle: fancyStyle.value,
+            fancyPosition: fancyPosition.value,
+            fancyTemplate: fxTplPlain,
+          },
+          subtitleTexts,
+        } : {}),
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')
@@ -1458,6 +1573,11 @@ export function useVideoMontage() {
   const fontsLoading = ref(false)
   const fancyEnabled = ref(false)
   const fancyStyle = ref('gold')
+  // 字幕样式预设 key（2026-09-09 裁决：字幕配置新增自有样式色板，key 与主进程 SUBTITLE_STYLES 同表）
+  const subtitleStyleKey = ref('white')
+  // 字幕入场动画 key（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；
+  // key 与主进程 VALID_ANIMS 同表：fade/rise/slide/pop/none）
+  const subtitleAnimKey = ref('fade')
   // 花字位置/字幕背景/模板（L224-352；模板首项「自定义 (下方样式)」value=''）
   const fancyPosition = ref('upper_middle')
   const subtitleBgOpacity = ref(0.5)
@@ -1465,7 +1585,107 @@ export function useVideoMontage() {
   const fancyTemplates = ref<FancyTemplateItem[]>([])
   const fancyPreviews = ref<Record<string, string>>({})
   const fancyTemplatesLoading = ref(false)
-  const fancyPreviewDlg = ref({ show: false, head: '', body: '' })
+  // ── 文字模板（2026-09-09 用户裁决：服务端 textfx 体系，与花字独立概念）──
+  // textTemplateId 首项 'random'（随机样式，默认）：每次合成从全部模板随机选 N 个（默认 3）；
+  // 烧制待服务端成片链路文字模板烧制接口上线（契约缺口已上报），本轮仅配置+预览。
+  const textFxEnabled = ref(false)
+  const textTemplateId = ref('random')
+  const textRandomCount = ref(3)
+  const textTemplates = ref<Array<Record<string, unknown> & { template_id: string; name: string }>>([])
+  const textTemplatesLoading = ref(false)
+  /** 随机/指定模板当前生效集合（random 模式下 watch 重掷，保证预览与合成同池） */
+  const textRandomPick = ref<Array<Record<string, unknown> & { template_id: string; name: string }>>([])
+  function rerollTextPick(): void {
+    if (textTemplateId.value !== 'random') {
+      const one = textTemplates.value.find((t) => t.template_id === textTemplateId.value)
+      textRandomPick.value = one ? [one] : []
+      return
+    }
+    textRandomPick.value = pickRandomItems(textTemplates.value, textRandomCount.value)
+  }
+  watch([textTemplateId, textRandomCount, textTemplates], rerollTextPick)
+  /** 文字模板下拉：首项随机样式（默认），其余为服务端库条目 */
+  const textTemplateOptions = computed(() => [
+    { label: '随机样式', value: 'random' },
+    ...textTemplates.value.map((t) => ({ label: String(t.name || t.template_id), value: t.template_id })),
+  ])
+  /** 效果预览：按口播文案关键词（价格/数字参数/关键词提取）逐词轮换套用随机模板 */
+  const textFxPreviewItems = computed(() => {
+    if (!textFxEnabled.value || !textRandomPick.value.length) return []
+    const joined = voiceRows.value.map((r) => r.text).join('\n')
+    const words = [...new Set(extractFancyWordsFromText(joined, 8))]
+    return words.map((word, i) => ({
+      word,
+      tplName: String(textRandomPick.value[i % textRandomPick.value.length]?.name || ''),
+    }))
+  })
+  /** 样式预览样本：按命中模板 variables 默认值本地渲染（2026-09-10 服务端
+   *  /text_templates/templates/{id}/preview 实测 404 无预览图，取色/字号/文案
+   *  从 variables 推导：颜色收集≥2 个做渐变字，fontSize 按比例缩到预览口径） */
+  const textFxStyleSamples = computed(() => {
+    return textRandomPick.value.slice(0, 6).map((t) => {
+      const vars = (t.variables && typeof t.variables === 'object' ? t.variables : {}) as Record<string, { default?: unknown }>
+      const colors: string[] = []
+      let fontSize = 0
+      for (const v of Object.values(vars)) {
+        const d = v && typeof v === 'object' ? (v as { default?: unknown }).default : v
+        if (typeof d === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(d) && colors.length < 3) colors.push(d)
+        if (typeof d === 'number' && d >= 10 && d <= 300) fontSize = Math.max(fontSize, d)
+      }
+      const text = String((vars.text && typeof vars.text === 'object' ? (vars.text as { default?: unknown }).default : undefined) || t.name || '')
+      const size = fontSize ? Math.min(28, Math.max(14, Math.round((fontSize / 72) * 28))) : 20
+      // 动画类型：按服务端模板定义对齐（服务端无结构化动画字段，以 id/name 语义
+      //  命名 + variables 效果色变量约定动画；2026-09-10 全量对齐 10 个模板）
+      const key = `${t.template_id || ''}${t.name || ''}`
+      const anim = /bounce|pop|弹/.test(key) ? 'bounce'
+        : /flip|翻转/.test(key) ? 'flip'
+        : /gradient|渐变/.test(key) ? 'flow'
+        : /neon|glow|霓虹/.test(key) ? 'neon'
+        : /shimmer|闪|扫/.test(key) ? 'shine'
+        : /slide|滑/.test(key) ? 'slide'
+        : /typewriter|打字/.test(key) ? 'type'
+        : /pulse|zoom|脉冲|缩放/.test(key) ? 'pulse'
+        : /fade|淡/.test(key) ? 'fade'
+        : 'fade'
+      // 效果色：variables 中除主色 color 外的第一个色值（jumpColor/popColor/shine/
+      //  glow/pulse/accent/cursorColor/color2 —— 服务端为每个动画模板配的专用色）
+      const mainColor = String((vars.color && typeof vars.color === 'object' ? (vars.color as { default?: unknown }).default : '') || '#FFFFFF')
+      const effect = colors.find((c) => c.toLowerCase() !== mainColor.toLowerCase()) || mainColor
+      const style: Record<string, string> = { fontSize: size + 'px', '--fx-color': effect }
+      if (anim === 'flow') {
+        // gradient_text：color+color2 双色渐变流动（background-position 循环）
+        style.background = `linear-gradient(90deg, ${mainColor}, ${effect}, ${mainColor})`
+        style.backgroundSize = '200% 100%'
+        style.webkitBackgroundClip = 'text'
+        style.backgroundClip = 'text'
+        style.color = 'transparent'
+      } else if (anim === 'shine') {
+        // shimmer 闪光扫过：三段渐变含高光带（高光色用服务端 shine 变量）+ 扫光动画
+        style.background = `linear-gradient(110deg, ${mainColor} 35%, ${effect} 50%, ${mainColor} 65%)`
+        style.backgroundSize = '300% 100%'
+        style.webkitBackgroundClip = 'text'
+        style.backgroundClip = 'text'
+        style.color = 'transparent'
+      } else {
+        style.color = mainColor
+      }
+      return { id: String(t.template_id), name: String(t.name || t.template_id), text, anim, style }
+    })
+  })
+  /** 拉取服务端文字模板库（GET /text_templates/templates，2026-09-10 纠偏；进入 Step4 时调用；空库时下拉仅随机项） */
+  async function loadTextTemplates(): Promise<void> {
+    if (textTemplatesLoading.value) return
+    textTemplatesLoading.value = true
+    try {
+      const sr = await window.tintin?.server?.textfxServerTemplates?.()
+      const items = sr && !('error' in sr) && Array.isArray(sr.templates) ? sr.templates : []
+      textTemplates.value = items.filter((t) => t && t.template_id)
+    } catch (_) {
+      textTemplates.value = []
+    } finally {
+      textTemplatesLoading.value = false
+    }
+  }
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
   const rewriteTemp = ref(0.5)
   const aiRewriteDlg = ref({ show: false, pct: 50 })
@@ -1479,15 +1699,9 @@ export function useVideoMontage() {
     const ttsPauseMs = ref(0)
     const cloneParamsDlg = ref({ show: false, factor: 1.0, emo: '', alpha: 0.5, pause: 0 })
   const editDlg = ref({ show: false, index: -1, title: '', content: '', original: '' })
-  const dubbedDlg = ref({
-    show: false,
-    outDir: '',
-    items: [] as Array<{ videoPath: string; dubbedPath: string; name: string }>,
-  })
   const voiceBusy = ref(false)
-  const dubBusy = ref(false)
   const rewriteBusy = ref(false)
-  const dubbingEnabled = computed(() => voiceRows.value.some((r) => r.wavPath))
+  // 2026-09-09 用户裁决：配音动作迁 Step4 统一合成（dubBusy/dubbingEnabled/配音弹窗随之移除）
 
   let offVoiceProgress: (() => void) | null = null
   // 批量克隆/配音整体进度（0-100）：主进程逐条 emitRow，渲染层按
@@ -1526,31 +1740,57 @@ export function useVideoMontage() {
   /** 选择视频（原 _select_voice_dir 本地目录选择：2026-09-08 用户裁决口播配音不需要视频输入功能，删除；
    *  配音对象改为自动取 Step2 已确认合成产物所在目录，见下方 watch） */
 
+  /** 确认产物所在目录（去重保序；2026-09-09 修复：确认合成产物可能分散在多个 outputs 目录——
+   *  落盘目录跟随确认时的 splitsJobId，jobId 被重置后（清空缓存/重新分割）产物落到 session 目录，
+   *  Step3 只扫第一个目录致「合成 3 个只显示 1 个」实测根因） */
+  function confirmedVoiceDirs(paths: string[]): string[] {
+    const dirs: string[] = []
+    for (const p of paths) {
+      const dir = p.slice(0, Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')))
+      if (dir && !dirs.includes(dir)) dirs.push(dir)
+    }
+    return dirs
+  }
+
   /** 扫描视频目录（对照 _do_scan_voice_dir；保留已编辑文案 existing_texts 口径）。
-   *  keepFiles：本次确认合成产物列表，主进程据此清理 outputs 里的旧 montage_concat_* 产物
-   *  （对照 _cleanup_stale_montage_outputs L597-634；不传则不清理仅扫描） */
-  async function scanVoiceDir(keepFiles?: string[]): Promise<void> {
-    if (!voiceDirInput.value) { voiceRows.value = []; return }
+   *  keepFiles：本次确认合成产物列表，主进程据此清理首个目录里的旧 montage_concat_* 产物
+   *  （对照 _cleanup_stale_montage_outputs L597-634；不传则不清理仅扫描）。
+   *  dirs：聚合扫描目录列表（2026-09-09 新增；缺省=[voiceDirInput]），
+   *  确认产物分散多目录时逐目录扫描合并，配音对象目录仍取首个（voices/outputs 推导基准不变）。 */
+  async function scanVoiceDir(opts?: { keepFiles?: string[]; dirs?: string[] }): Promise<void> {
+    const dirs = (opts?.dirs?.length ? opts.dirs : [voiceDirInput.value]).filter((d) => d && d.trim())
+    if (!dirs.length) { voiceRows.value = []; return }
     try {
       const prevTexts = new Map(voiceRows.value.map((r) => [r.path, r.text]))
       // 展开为纯数组：ref([]) 的 .value 是响应式 Proxy，ipcRenderer.invoke 结构化克隆
       //   不支持 Proxy，直接传会批「An object could not be cloned」致扫描永远失败
       //   （2026-09-08 实测：Step3 视频列表从未建成的真正根因）
-      const res = await window.tintin?.server?.voiceScanDir?.({
-        dirPath: voiceDirInput.value,
-        selectedFiles: [...selectedVoiceFiles.value],
-        keepFiles: keepFiles && keepFiles.length ? [...keepFiles] : undefined,
-      })
-      if (!res || 'error' in res) throw new Error((res as { error?: string })?.error || '扫描失败')
-      voicesDir.value = res.voicesDir || ''
-      voiceRows.value = res.files.map((f) => ({
+      const allFiles: Array<{ path: string; name: string; originalText: string; wavPath?: string; durationSec?: number }> = []
+      let voicesDirFirst = ''
+      for (let i = 0; i < dirs.length; i++) {
+        const dirPath = dirs[i]
+        const res = await window.tintin?.server?.voiceScanDir?.({
+          dirPath,
+          selectedFiles: [...selectedVoiceFiles.value],
+          // keepFiles 清理只作用于首个目录（原版单目录口径）；其余目录仅扫描不清理
+          keepFiles: i === 0 && opts?.keepFiles?.length ? [...opts.keepFiles] : undefined,
+        })
+        if (!res || 'error' in res) throw new Error((res as { error?: string })?.error || '扫描失败')
+        if (!voicesDirFirst) voicesDirFirst = res.voicesDir || ''
+        allFiles.push(...res.files)
+      }
+      // 多目录合并去重（同路径防御）
+      const seen = new Set<string>()
+      const files = allFiles.filter((f) => (seen.has(f.path) ? false : (seen.add(f.path), true)))
+      voicesDir.value = voicesDirFirst
+      voiceRows.value = files.map((f) => ({
         path: f.path,
         name: f.name,
         text: prevTexts.get(f.path) || f.originalText || '',
         originalText: f.originalText,
         status: f.wavPath ? 'done' : 'pending',
         progress: f.wavPath ? 100 : 0,
-        wavPath: f.wavPath,
+        wavPath: f.wavPath || '',
         lengthMode: 'video' as const,
         durationSec: f.durationSec || 0,
         voiceDurSec: 0,
@@ -1566,15 +1806,17 @@ export function useVideoMontage() {
   watch(
     () => assemblePlans.value.map((p) => (p.confirmed ? p.outputPath || '' : '')).join('|'),
     (sig) => {
-      const first = sig.split('|').find(Boolean)
-      if (!first) return
+      const paths = sig.split('|').filter(Boolean)
+      if (!paths.length) return
+      const first = paths[0]
       const dir = first.slice(0, Math.max(first.lastIndexOf('\\'), first.lastIndexOf('/')))
       if (!dir) return
       // 确认产物同落一个 outputs 目录：不能以「目录变化/列表为空」为重扫条件，
       // 否则第 2~N 条确认完成后不会进列表（旧守卫 bug）；签名变化即重扫，
-      // 已编辑文案由 scanVoiceDir 的 prevTexts 按路径保留
+      // 已编辑文案由 scanVoiceDir 的 prevTexts 按路径保留。
+      // 2026-09-09：产物可能分散多目录（jobId 重置后落 session），聚合扫描全部目录
       voiceDirInput.value = dir
-      void scanVoiceDir()
+      void scanVoiceDir({ dirs: confirmedVoiceDirs(paths) })
     },
   )
 
@@ -1597,7 +1839,8 @@ export function useVideoMontage() {
     const dir = first.slice(0, Math.max(first.lastIndexOf('\\'), first.lastIndexOf('/')))
     if (!dir) return
     voiceDirInput.value = dir
-    await scanVoiceDir(confirmed)
+    // 2026-09-09 修复：确认产物可能分散多目录（jobId 重置后落 session），聚合扫描全部目录
+    await scanVoiceDir({ keepFiles: confirmed, dirs: confirmedVoiceDirs(confirmed) })
   }
 
   /** 拉取服务端声音样本库（GET /voice/samples，与 VoiceClone 页 loadCatalog 同源） */
@@ -1827,6 +2070,8 @@ export function useVideoMontage() {
         const wav = res.results[t.videoPath]
         if (wav && voiceRows.value[t.rowIdx]) {
           voiceRows.value[t.rowIdx].wavPath = wav
+          // 重新克隆 = 旧配音失效（Step4 一键链检测到缺 dubbedPath 会自动重配）
+          voiceRows.value[t.rowIdx].dubbedPath = ''
           voiceRows.value[t.rowIdx].status = 'done'
           voiceRows.value[t.rowIdx].progress = 100
           // 克隆音频时长（voice_audio_durations 口径，行内绿字）
@@ -1875,10 +2120,11 @@ export function useVideoMontage() {
     }
   }
 
-  /** 开始给视频配音（替换原声）（对照 _start_dubbing_videos 逐字） */
-  async function startDubVideos(): Promise<void> {
-    if (dubBusy.value) return
-    if (!voiceDirInput.value) { notify('路径无效', '请选择有效的视频输入目录。'); return }
+  /** Step4 一键链·配音阶段（原 startDubVideos 内核；2026-09-09 用户裁决：配音动作自
+   *  Step3 迁入 Step4 统一合成时自动执行——纯化配音不烧特效（特效在 final:mix 阶段），
+   *  完成回写 dubbedPath，不再弹配音完成弹窗；失败抛错由 startFinalMix 统一上报） */
+  async function runDubBatch(): Promise<void> {
+    if (!voiceDirInput.value) throw new Error('视频输入目录无效，请先回到第②步确认合成产物')
     const dubbedDir = joinPath(resolveOutMontageDir(voiceDirInput.value), 'dubbed')
     const tasks = voiceRows.value
       .filter((r) => r.wavPath && r.path)
@@ -1888,50 +2134,24 @@ export function useVideoMontage() {
         outVideoPath: joinPath(dubbedDir, `dubbed_${r.name}`),
         text: r.text.trim(),
       }))
-    if (!tasks.length) {
-      notify('缺少音频', '尚未生成任何对应的克隆人声音频。请先点击“开始批量克隆人声合成”进行合成。')
-      return
-    }
-    dubBusy.value = true
+    if (!tasks.length) return
     voiceTotal = tasks.length; voiceDone = 0; voiceProgress.value = 0
     const channel = nextVoiceChannel()
     try {
+      // 纯化配音：字幕/花字特效已在 final:mix 统一烧制，此处不传任何特效配置
       const res = await window.tintin?.server?.voiceDubVideos?.({
         tasks,
-        addSubtitles: addSubtitles.value,
         lengthModes: Object.fromEntries(voiceRows.value.map((r) => [r.path, r.lengthMode])),
-        fancyText: fancyEnabled.value,
-        fancyStyle: fancyStyle.value,
-        fancyPosition: fancyPosition.value,
-        subtitleBoxOpacity: subtitleBgOpacity.value,
-        // 展开为纯对象：computed 从响应式数组 find 出的是 Proxy，直传 IPC 会报
-        //   「An object could not be cloned」（同 scanVoiceDir selectedFiles 教训）
-        fancyTemplate: selectedFancyTemplate.value ? { ...selectedFancyTemplate.value } : null,
-        subtitleFont: addSubtitles.value ? selectedFontFamily() : '',
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')
       if ('error' in res) throw new Error(res.error)
       // 回写配音后视频（dubbed_video_paths 口径）
-      const items: Array<{ videoPath: string; dubbedPath: string; name: string }> = []
       for (const [vid, dubbed] of Object.entries(res.results)) {
         const row = voiceRows.value.find((r) => r.path === vid)
         if (row) row.dubbedPath = dubbed
-        items.push({ videoPath: vid, dubbedPath: dubbed, name: pathBasename(dubbed) })
       }
-      statusText.value = '完成： 替换视频原声配音完成！'
-      // DubbedVideosDialog（dialogs.py L167-230：标题/header/保存目录/列表）
-      dubbedDlg.value = {
-        show: true,
-        outDir: items.length ? items[0].dubbedPath.slice(0, Math.max(items[0].dubbedPath.lastIndexOf('\\'), 0)) : '',
-        items,
-      }
-    } catch (e) {
-      statusText.value = '失败： 配音替换失败'
-      clientError('video-montage', '配音替换失败', e)
-      notify('配音替换错误', `替换配音过程中发生错误：\n${errText(e)}`)
     } finally {
-      dubBusy.value = false
       offVoiceProgress?.(); offVoiceProgress = null
     }
   }
@@ -1941,6 +2161,71 @@ export function useVideoMontage() {
     const opt = fontOptions.value.find((o) => o.value === subtitleFont.value)
     return opt ? opt.value : ''
   }
+
+  // ---- 字体自渲染设施（2026-09-09 裁决：字幕三行改造，下拉/预览按各自字体渲染，图2）----
+  // fontId → 服务端族名（CSS font-family 回退链用）；FontFace 注册为 'stfont_<id>'
+  //  独立族名，避免与本地同名字体冲突；fontFacesVersion 驱动样式重算。
+  const serverFontFamilies = new Map<string, string>()
+  const fontFaceLoaded = new Set<string>()
+  const fontFacePending = new Set<string>()
+  const fontFacesVersion = ref(0)
+
+  /** 预载服务端字体文件并注册 FontFace（voice:fontFile → GET /config/fonts/{id}/file） */
+  async function ensureServerFontFace(fid: string): Promise<void> {
+    if (!fid || fontFaceLoaded.has(fid) || fontFacePending.has(fid)) return
+    fontFacePending.add(fid)
+    try {
+      const res = await window.tintin?.server?.voiceFontFile?.(fid)
+      const buf = res && !('error' in res) && res.data ? res.data : null
+      if (buf) {
+        // 断言说明：IPC 结构化克隆后的字节载体必为普通 ArrayBuffer（非 SharedArrayBuffer），
+        //  TS 泛型 ArrayBufferLike 无法窄化，故这里显式断言为 BufferSource
+        const ff = new FontFace(`stfont_${fid}`, buf as unknown as BufferSource)
+        await ff.load()
+        document.fonts.add(ff)
+        fontFaceLoaded.add(fid)
+        fontFacesVersion.value++
+      }
+    } catch (_) {
+      // 字体文件拉取失败：保留族名回退链，不阻断 UI
+    } finally {
+      fontFacePending.delete(fid)
+    }
+  }
+
+  /** 字体选项的 CSS font-family（stfont_ 注册族 → 服务端族名 → sans-serif） */
+  function fontOptionCssFamily(fid: string): string {
+    if (!fid) return ''
+    const family = (serverFontFamilies.get(fid) || '').replace(/'/g, '')
+    return `'stfont_${fid}'${family ? `, '${family}'` : ''}, sans-serif`
+  }
+
+  /** TSelect optionStyle：字体下拉/触发器按所选字体自渲染；顺带惰性预载字体文件 */
+  function fontOptionStyle(opt: { label: string; value: string | number }): Record<string, string> | undefined {
+    const fid = String(opt.value || '')
+    if (!fid) return undefined
+    void fontFacesVersion.value
+    void ensureServerFontFace(fid)
+    return { fontFamily: fontOptionCssFamily(fid) }
+  }
+
+  /** 字幕效果预览（行3）：选中预设的 CSS 近似（描边 paintOrder）+ 选中字体 + 背景框 */
+  const selectedSubtitlePreset = computed<SubtitleStylePreset>(
+    () => SUBTITLE_STYLE_PRESETS.find((p) => p.key === subtitleStyleKey.value) || SUBTITLE_STYLE_PRESETS[0]
+  )
+  const subtitlePreviewStyle = computed<Record<string, string>>(() => {
+    void fontFacesVersion.value
+    const st = subtitlePresetTileStyle(selectedSubtitlePreset.value)
+    st.fontSize = '18px'
+    st.fontWeight = '700'
+    st.lineHeight = '1.5'
+    st.textAlign = 'center'
+    if (subtitleFont.value) st.fontFamily = fontOptionCssFamily(subtitleFont.value)
+    if (addSubtitles.value && subtitleBgOpacity.value > 0) {
+      st.background = `rgba(0,0,0,${subtitleBgOpacity.value})`
+    }
+    return st
+  })
 
   /** 刷新字体（对照 _refresh_server_fonts：失败降级空列表不阻断） */
   async function refreshFonts(): Promise<void> {
@@ -1956,11 +2241,17 @@ export function useVideoMontage() {
         const fid = String(f.id || '').trim()
         const family = String(f.family || f.filename || '').trim()
         if (!fid || !family) continue
+        serverFontFamilies.set(fid, family)
         const label = seen.has(family) && f.filename ? `${family}（${f.filename}）` : family
         seen.add(family)
         items.push({ label, value: fid })
       }
       fontOptions.value = items
+      // 后台按序预载字体文件（自渲染下拉需要；FontFace 注册一次后 document.fonts 缓存复用）
+      void items.slice(1).reduce(
+        (p, it) => p.then(() => ensureServerFontFace(it.value)),
+        Promise.resolve()
+      )
       if (!subtitleFont.value) subtitleFont.value = ''
       statusText.value = items.length > 1
         ? `已从服务端加载 ${items.length - 1} 个字体`
@@ -1972,20 +2263,43 @@ export function useVideoMontage() {
     }
   }
 
-  /** 花字模板列表 + 预览图（对照 _start_fancy_preview_loader / _update_fancy_template_preview：
-   *  已缓存直接回填，缺失的后台 ffmpeg 渲染后刷新；失败不阻断页面） */
+  /** 花字模板列表 + 预览图（对照 _start_fancy_preview_loader / _update_fancy_template_preview）。
+   *  2026-09-09 对齐核实：服务端 GET /fancy/templates 返回的剪映系模板与本地同格式
+   *  （style 即 ffmpeg drawtext 样式串），可直接进本地配音烧制链；来源标记仅用于
+   *  UI 后缀展示。预览图：服务端模板与本地同一 ffmpeg drawtext 预览口径。
+   *  服务端离线/失败回退本地 resources/fancy/templates。 */
   async function loadFancyTemplates(): Promise<void> {
     if (fancyTemplatesLoading.value) return
     fancyTemplatesLoading.value = true
     try {
+      // 服务端模板库（宽容解析：items 包裹/数组直收；离线 null）
+      const sr = await window.tintin?.server?.fancyServerTemplates?.()
+      const serverItems: FancyTemplateItem[] = sr && !('error' in sr) && Array.isArray(sr.templates)
+        ? sr.templates.map((t) => ({
+            ...t,
+            // 防御：服务端模板 style 必为 drawtext 样式串，缺省置空（不可进烧制链时预览/烧制自动降级）
+            style: String((t as Record<string, unknown>).style ?? ''),
+            origin: 'server' as const,
+            anim: '',
+            hasSound: !!(t as Record<string, unknown>).sound,
+          }))
+        : []
+      // 本地模板（服务端不可用时的回退集）
       const res = await window.tintin?.server?.fancyListTemplates?.()
-      if (res && !('error' in res)) {
-        fancyTemplates.value = res.templates
-        fancyPreviews.value = { ...res.previews }
-        const r2 = await window.tintin?.server?.fancyEnsurePreviews?.()
-        if (r2 && !('error' in r2) && r2.generated > 0) {
-          fancyPreviews.value = { ...fancyPreviews.value, ...r2.previews }
-        }
+      const localItems: FancyTemplateItem[] = res && !('error' in res)
+        ? res.templates.map((t) => ({ ...t, origin: 'local' as const }))
+        : []
+      fancyTemplates.value = [...serverItems, ...localItems]
+      fancyPreviews.value = res && !('error' in res) ? { ...res.previews } : {}
+      // 本地+服务端缺失预览图后台补齐（同一 drawtext 预览口径；服务端模板传 dict 生成）
+      const r2 = await window.tintin?.server?.fancyEnsurePreviews?.(
+        serverItems.length ? { templates: serverItems.map((t) => ({ ...t })) } : undefined,
+      )
+      if (r2 && !('error' in r2) && r2.generated > 0) {
+        fancyPreviews.value = { ...fancyPreviews.value, ...r2.previews }
+      }
+      if (serverItems.length) {
+        statusText.value = `已从服务端加载 ${serverItems.length} 个花字模板`
       }
     } catch (_) { /* 模板加载失败不阻断页面 */ } finally {
       fancyTemplatesLoading.value = false
@@ -1997,39 +2311,6 @@ export function useVideoMontage() {
     if (!fancyEnabled.value || !fancyTemplateId.value) return null
     return fancyTemplates.value.find((t) => t.template_id === fancyTemplateId.value) || null
   })
-
-  /** 花字预览弹窗（对照 _preview_fancy_words L4139-4178：按每个视频当前文案预览将生成的花字） */
-  function previewFancyWords(): void {
-    const rows: Array<{ name: string; text: string; words: string[] }> = []
-    for (const [i, r] of voiceRows.value.entries()) {
-      if (!r.path && !r.text.trim()) continue
-      rows.push({
-        name: r.path ? pathBasename(r.path) : `第 ${i + 1} 行`,
-        text: r.text.trim(),
-        words: extractFancyWordsFromText(r.text),
-      })
-    }
-    if (!rows.length) {
-      notify('花字预览', '当前没有视频/文案。请先在上方导入素材并填写文案。')
-      return
-    }
-    const lines: string[] = []
-    let nWord = 0
-    for (const { name, text, words } of rows) {
-      if (!text) { lines.push(` ${name}：（无文案，不克隆声音、不烧花字）`); continue }
-      let ws: string
-      if (words.length) { nWord += words.length; ws = words.join('、') }
-      else ws = '（未提取到卖点，不叠加花字）'
-      const suffix = fancyEnabled.value ? '' : '   [未勾选「添加花字」，仅预览不生效]'
-      lines.push(` ${name}\n    花字：${ws}${suffix}`)
-    }
-    let head = `共 ${rows.length} 个视频，预计烧制 ${nWord} 个花字`
-    if (!fancyEnabled.value) head += '（未勾选「添加花字」）'
-    fancyPreviewDlg.value = { show: true, head, body: lines.join('\n') }
-  }
-  function closeFancyPreviewDlg(): void {
-    fancyPreviewDlg.value.show = false
-  }
 
   /** 双击文案 → 弹窗编辑（对照 _on_edit_double_clicked → TextEditDialog） */
   function openEditDlg(index: number): void {
@@ -2128,7 +2409,7 @@ export function useVideoMontage() {
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
     addVideos, selectFolder, onDrop, removeVideo, runSplit,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
-    previewUrl, openSplitsDir, splitsDownloading,
+    previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
     // Step2 镜头重组
     assembleLogic, concatLayout, durationLimit, DURATION_LIMITS, batchCount, recBatchCount,
     concatTransition, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
@@ -2148,26 +2429,31 @@ export function useVideoMontage() {
     refSamples, selectedRefSample, refAudioPath, refText, selectRefAudio,
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
     addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
+    subtitleStyleKey, SUBTITLE_STYLE_PRESETS, selectedSubtitlePreset, subtitlePreviewStyle,
+    subtitleAnimKey,
+    fontOptionStyle,
     fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
     fancyTemplateId, fancyTemplates, fancyPreviews,
     voiceProgress, fancyTemplatesLoading,
     selectedFancyTemplate, loadFancyTemplates,
-    previewFancyWords, fancyPreviewDlg, closeFancyPreviewDlg,
+    // 文字模板（textfx；与花字独立；随机样式默认 3 个）
+    textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
+    textRandomCount, TEXT_RANDOM_COUNT_OPTIONS, textFxPreviewItems, textFxStyleSamples, loadTextTemplates,
     FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
     aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
     cloneParamsDlg, openCloneParams, closeCloneParams, saveCloneParams,
     editDlg, openEditDlg, saveEditDlg,
-    dubbedDlg,
     rewriteTemp,
-    voiceBusy, dubBusy, rewriteBusy, dubbingEnabled,
+    voiceBusy, rewriteBusy,
     scanVoiceDir, enterStepVoice, loadRefSamples, refPreviewUrl,
     nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
     pickNewSampleFile, transcribeNewSample, uploadNewSampleRef,
-    batchAiRewrite, startSynthesizeVoice, startDubVideos,
+    batchAiRewrite, startSynthesizeVoice,
     regenVoice, exportVoice, playVoice, playRowVideo, playDubbedVideo,
     toggleLengthMode, lengthModeTip,
     voiceStatusText, voiceStatusClass, fmtDur, pathBasename,
+    planDurText,
     // Step4 特效包装
     bgmPath, bgmName, bgmVolume, finalBusy, finalDone, finalProgress,
     finalVideoList, finalVideoPath, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
@@ -2191,6 +2477,11 @@ export type FancyTemplateItem = Record<string, unknown> & {
   style: string
   anim: string
   hasSound: boolean
+  /** 模板来源（2026-09-09 服务端对接）：server=GET /fancy/templates 模板库；local=本地 resources/fancy */
+  origin?: 'server' | 'local'
+  /** 服务端模板描述（textfx 模板无本地预览图，UI 显描述文字） */
+  description?: string
+  category?: string
 }
 
 /** TSelect 选项最小结构（避免组件层依赖方向反转） */

@@ -25,6 +25,8 @@ const props = withDefaults(
     disabled?: boolean
     /** 是否可清空 */
     clearable?: boolean
+    /** 每个选项的内联样式（2026-09-09：字幕字体下拉按各自字体自渲染；返回 undefined = 默认渲染） */
+    optionStyle?: (opt: SelectOption) => Record<string, string> | undefined
   }>(),
   {
     modelValue: '',
@@ -38,6 +40,13 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string | number): void
 }>()
+
+// 触发器选中项样式（与下拉选项同一 optionStyle 口径）
+const selectedOptStyle = computed(() => {
+  if (!props.optionStyle) return undefined
+  const opt = props.options.find((o) => o.value === props.modelValue)
+  return opt ? props.optionStyle(opt) : undefined
+})
 
 const open = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
@@ -93,7 +102,8 @@ watch(
   <div ref="rootRef" class="t-select" :class="{ 'is-disabled': disabled, 'is-open': open }">
     <!-- 触发器 -->
     <div class="t-select__trigger" @click="toggleMenu">
-      <span class="t-select__value" :class="{ 'is-placeholder': !selectedLabel }">
+      <span class="t-select__value" :class="{ 'is-placeholder': !selectedLabel }"
+        :style="selectedOptStyle">
         {{ selectedLabel || placeholder }}
       </span>
       <div class="t-select__suffix">
@@ -139,7 +149,7 @@ watch(
           }"
           @click="selectOption(opt)"
         >
-          <span>{{ opt.label }}</span>
+          <span :style="props.optionStyle ? props.optionStyle(opt) : undefined">{{ opt.label }}</span>
           <svg
             v-if="opt.value === modelValue"
             class="t-select__check"

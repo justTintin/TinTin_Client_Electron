@@ -412,8 +412,53 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
+  // ── fancy:serverTemplates — 服务端花字模板库（GET /fancy/templates）──
+  // 对照 docs/CLIENT-FANCY-ACCESS.md：模板管理与渲染在服务端，客户端只做「选择设置」。
+  // 响应 {items,total}（openapi 空 schema，宽容解析：数组直收 / items 包裹解包）；
+  // 与 voice:fonts 同模式：离线返回 null，渲染层回退本地模板。
+  ipcMain.handle('fancy:serverTemplates', async () => {
+    try {
+      const res = await httpRequest('GET', '/fancy/templates', { timeout: 10000 })
+      const data = res.data
+      const items = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+      return { templates: items, total: data?.total ?? items.length }
+    } catch (err) {
+      if (isExpectedOfflineError(err)) return null
+      return { error: err.message }
+    }
+  })
+
+  // ── textfx:serverTemplates — 服务端文字模板库 ──
+  // 2026-09-09 用户裁决：文字模板（textfx 动画体系）与花字（fancy 模板）是独立概念，
+  // 不得混淆。解析口径同 fancy:serverTemplates（{items,total} 宽容解包，离线 null）。
+  // 2026-09-10 实测纠偏：服务端真实路由为 /text_templates/templates（本地契约快照
+  // 记录的 /textfx/templates 在服务端从未存在、恒 404，宽容解析误显示为空库）；
+  // 返回字段为 id（渲染层口径 template_id），在此归一化，渲染层零改动。
+  // 注：文字模板动画仅服务端可渲染，本 handler 仅供选择/预览，
+  // 烧制待服务端成片链路文字模板烧制接口上线后接线。
+  ipcMain.handle('textfx:serverTemplates', async () => {
+    try {
+      const res = await httpRequest('GET', '/text_templates/templates', { timeout: 10000 })
+      const data = res.data
+      const raw = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+      const items = raw
+        .map((it) => {
+          const id = it && (it.id ?? it.template_id ?? it.templateId)
+          if (!id) return null
+          return { ...it, template_id: String(id) }
+        })
+        .filter(Boolean)
+      return { templates: items, total: data?.total ?? items.length }
+    } catch (err) {
+      if (isExpectedOfflineError(err)) return null
+      return { error: err.message }
+    }
+  })
+
   // ── fancy:ensurePreviews — 补齐缺失的模板预览图（逐个 ffmpeg 生成，后台调用）──
-  ipcMain.handle('fancy:ensurePreviews', async (event) => {
+  // 2026-09-09 对齐：payload.templates 可选传入服务端 /fancy/templates 模板（与本地
+  // 同格式，ensureTemplatePreview 按 style 串渲染，与本地模板同一预览口径）。
+  ipcMain.handle('fancy:ensurePreviews', async (event, payload) => {
     try {
       const ffmpeg = getFfmpegPath()
       const fontPath = fs.existsSync('C:/Windows/Fonts/msyhbd.ttc')
@@ -421,7 +466,8 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         : (fs.existsSync('C:/Windows/Fonts/msyh.ttc') ? 'C:/Windows/Fonts/msyh.ttc' : '')
       const previews = {}
       let generated = 0
-      const templates = FT.listFancyTemplates(true)
+      const serverList = Array.isArray(payload && payload.templates) ? payload.templates : []
+      const templates = [...FT.listFancyTemplates(true), ...serverList.filter((t) => t && t.template_id)]
       for (let i = 0; i < templates.length; i++) {
         const tpl = templates[i]
         const out = FT.ensureTemplatePreview(tpl, ffmpeg, fontPath)
@@ -461,11 +507,17 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         : (fs.existsSync('C:/Windows/Fonts/msyh.ttc') ? 'C\\:/Windows/Fonts/msyh.ttc' : 'msyh')
 
       // 花字模板（L1054-1055：非 dict → None=自定义样式）+ 模板音效（缺失静默跳过）
+      // 2026-09-09 对齐核实：服务端 /fancy/templates 返回的剪映系模板与本地同格式
+      // （style 即 ffmpeg drawtext 样式串），可直接进本地烧制链；anim 缺失时推导。
       let fancyTemplate = null
       if (p.fancyTemplate) {
         try {
           const parsed = typeof p.fancyTemplate === 'string' ? JSON.parse(p.fancyTemplate) : p.fancyTemplate
-          if (parsed && typeof parsed === 'object' && parsed.template_id) fancyTemplate = parsed
+          if (parsed && typeof parsed === 'object' && parsed.template_id) {
+            fancyTemplate = parsed
+            // 服务端模板无 anim 字段（本地 listTemplates 时推导）→ 此处补推导，烧制动画不丢
+            if (!fancyTemplate.anim) fancyTemplate.anim = L.getFancyAnim(fancyTemplate)
+          }
         } catch (_) { fancyTemplate = null }
       }
       const fancySoundPath = fancyTemplate ? FT.getFancySoundPath(fancyTemplate) : ''
@@ -514,6 +566,11 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             fancyWords: Array.isArray(p.fancyWords) ? p.fancyWords : [],
             fancyPosition: p.fancyPosition || 'upper_middle',
             subtitleBoxOpacity: p.subtitleBoxOpacity ?? 0.5,
+            // 2026-09-09 裁决：字幕/花字特效迁 Step4 统一烧制，配音链只出声音（纯化配音）
+            burnEffects: false,
+            // 字幕文字样式预设 key（2026-09-09 裁决：样式属字幕配置；主进程 SUBTITLE_STYLES 查表）
+            subtitleStyle: String(p.subtitleStyle || 'white'),
+            subtitleAnim: String(p.subtitleAnim || 'fade'),
             fancyTemplate,
             fancySoundPath,
             fancySoundGainDb,
@@ -543,6 +600,23 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const data = res.data
       const fonts = Array.isArray(data) ? data : (Array.isArray(data?.fonts) ? data.fonts : [])
       return { fonts }
+    } catch (err) {
+      if (isExpectedOfflineError(err)) return null
+      return { error: err.message }
+    }
+  })
+
+  // ── voice:fontFile — 服务端字体文件字节（GET /config/fonts/{font_id}/file；
+  // 2026-09-09 用户裁决：字体下拉按自身字体自渲染，FontFace 加载服务端字体文件）──
+  ipcMain.handle('voice:fontFile', async (_e, fontId) => {
+    const fid = String(fontId || '').trim()
+    if (!fid || /[\\/]/.test(fid)) return { error: '非法 font_id' }
+    try {
+      // httpRequest 保留原始 Buffer（res.raw），非 JSON 二进制响应原样透传
+      const res = await httpRequest('GET', `/config/fonts/${encodeURIComponent(fid)}/file`, { timeout: 30000 })
+      const buf = res.raw
+      if (!buf || !buf.length) return { error: '字体文件为空' }
+      return { data: new Uint8Array(buf) }
     } catch (err) {
       if (isExpectedOfflineError(err)) return null
       return { error: err.message }

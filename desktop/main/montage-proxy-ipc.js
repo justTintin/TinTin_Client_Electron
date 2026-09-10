@@ -244,7 +244,7 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
           fs.renameSync(tmp, src)
         }
         renamed.push([src, newPath, Number(keep.toFixed(3))])
-        console.log(`[出入场裁剪] ${String(job.shotType || '')} ${path.basename(src)} ${dur.toFixed(1)}s → ${keep.toFixed(1)}s`)
+        console.log(`[出入场裁剪] ${String(job.position || '')} ${path.basename(src)} ${dur.toFixed(1)}s → ${keep.toFixed(1)}s`)
       } catch (e) {
         console.warn(`[出入场裁剪] 失败跳过: ${e && e.message}`)
         if (tmp) { try { fs.unlinkSync(tmp) } catch (_) {} }
@@ -267,6 +267,23 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
       return { ok: getMediaDuration(p) > 0, hasFile: true }
     } catch (err) {
       return { ok: false, hasFile: fs.existsSync(p), error: err && err.message }
+    }
+  })
+
+  // 删除下载校验未通过的坏成片（2026-09-10 实测：服务端 result 端点会返回未写完的
+  //  截断 mp4（moov 缺失）甚至 200 空体，坏片残留 outputs 会被 Step3 扫描带入配音/合成链，
+  //  问题延迟到第四步统一合成才暴露——渲染层校验未通过即调此通道清除）。
+  //  防误删：与 clearCache 同款策略，目标路径必须包含 montage_cache 段。
+  ipcMain.handle('montage:deleteBadFinal', (_e, payload) => {
+    const p = String((payload || {}).path || '')
+    if (!p || !p.includes('montage_cache')) {
+      return { error: '拒绝删除：目标不在混剪缓存目录（montage_cache）内' }
+    }
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p)
+      return { ok: true }
+    } catch (err) {
+      return { error: err && err.message }
     }
   })
 

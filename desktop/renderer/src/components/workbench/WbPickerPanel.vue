@@ -5,8 +5,9 @@
 // 搜索编排（fetcher 调用 / 离线与 5xx 文案）在 usePickerSearch
 // （composables/useWorkbenchPickers），本组件只绘制三态（加载中/失败/空结果）
 // 与结果列表。每次激活（active=true）重置并按空关键字预载列表（原版弹窗每次
-// exec 重新加载口径）。预览模式（previewable）：点行仅切换右侧预览区
-// （slot #preview，插槽 props: item/confirm），由预览区内「选择」按钮触发 pick。
+// exec 重新加载口径）。预览模式（previewable）：点行切换右侧预览区
+// （slot #preview）；clickToPick 同时点行即选（2026-09-09 用户裁决：口播弹窗
+// 不需要「选择该产品」按钮，点左侧行直接选中并填充，预览仅同步跟随）。
 import { ref, watch } from 'vue'
 import { usePickerSearch, type PickerItem } from '@/composables/useWorkbenchPickers'
 
@@ -22,6 +23,8 @@ const props = defineProps<{
   emptyText: string
   /** 预览模式：点行不 pick，只切换右侧预览区（默认 false 保持点行即选） */
   previewable?: boolean
+  /** 预览模式下点行即选（预览+选中同步；点行触发 pick，无确认按钮） */
+  clickToPick?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -55,11 +58,12 @@ function onPick(item: PickerItem) {
   emit('pick', item)
 }
 
-/** 行点击：预览模式仅切换预览；普通模式即选 */
+/** 行点击：预览模式仅切换预览（clickToPick 时同时上报选中）；普通模式即选 */
 function onRowClick(item: PickerItem) {
   if (props.previewable) {
     sel.value = item
     emit('preview', item)
+    if (props.clickToPick) onPick(item)
   } else {
     onPick(item)
   }
@@ -104,7 +108,7 @@ function onRowClick(item: PickerItem) {
         <div class="picker-preview custom-scroll">
           <slot name="preview" :item="sel" />
         </div>
-        <div v-if="sel" class="picker-preview-footer">
+        <div v-if="sel && $slots['preview-footer']" class="picker-preview-footer">
           <slot name="preview-footer" :item="sel" :confirm="onPick" />
         </div>
       </div>

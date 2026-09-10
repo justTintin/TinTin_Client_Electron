@@ -2,6 +2,7 @@ const { ipcMain } = require('electron')
 const { spawn } = require('node:child_process')
 const path = require('node:path')
 const fs = require('node:fs')
+const logger = require('./logger')
 
 // ffmpeg/ffprobe 可执行文件路径
 function getBinDir(studioRoot) {
@@ -55,6 +56,24 @@ function applyRotationSize(width, height, rotationDeg) {
   return (Math.abs(Math.round(rotationDeg || 0)) % 180 === 90)
     ? { width: height, height: width }
     : { width, height }
+}
+
+/**
+ * ffmpeg -i stderr 解析时长（无 ffprobe 时的回退；仅依赖 ffmpeg.exe）。
+ * Duration: 00:00:03.50 → 秒；无法解析返回 0。
+ */
+function probeDurationViaFfmpeg(ffmpegPath, file) {
+  return new Promise((resolve) => {
+    if (!file || !fs.existsSync(file)) return resolve(0)
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-i', file], { windowsHide: true })
+    let stderr = ''
+    proc.stderr.on('data', (d) => { stderr += d })
+    proc.on('error', () => resolve(0))
+    proc.on('close', () => {
+      const m = /Duration:\s*(\d+):(\d{2}):(\d{2})\.(\d+)/.exec(stderr)
+      resolve(m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number('0.' + m[4]) : 0)
+    })
+  })
 }
 
 /**
@@ -389,12 +408,150 @@ function cutClip(ffmpegPath, video, outPath, startSec, endSec, opts) {
   })
 }
 
+/**
+ * ffmpeg -i stderr 解析视频/音频流编码与像素格式（编码可播性检测）。
+ * 与 probeDurationViaFfmpeg 同模式：ffprobe 未随包（resources/bin 仅 ffmpeg.exe），
+ * 仅依赖 ffmpeg.exe stderr（Stream #0:0... Video: h264 (High 4:2:2)..., yuv422p10le...）。
+ * 返回 { video, pixFmt, audio }（全小写）；文件不存在/解析失败返 null。
+ */
+function parseCodecsViaFfmpeg(ffmpegPath, file) {
+  return new Promise((resolve) => {
+    if (!file || !fs.existsSync(file)) return resolve(null)
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-i', file], { windowsHide: true })
+    let stderr = ''
+    proc.stderr.on('data', (d) => { stderr += d })
+    proc.on('error', () => resolve(null))
+    proc.on('close', () => {
+      const out = { video: '', pixFmt: '', audio: '' }
+      for (const line of stderr.split(/\r?\n/)) {
+        let m = /Stream #\d+:\d+.*?:\s*Video:\s*([A-Za-z0-9_]+)/.exec(line)
+        if (m) {
+          out.video = m[1].toLowerCase()
+          // 像素格式：编码名/括号参数后的已知族 token（yuv422p10le / yuvj420p / nv12 等）
+          const pix = /,\s*(yuv[a-z0-9_]+|nv\d{2}|p010[le]?|gbrp\w*|bgr[a-z0-9_]+|rgb[a-z0-9_]+|gray[a-z0-9_]*)/.exec(line)
+          if (pix) out.pixFmt = pix[1].toLowerCase()
+          continue
+        }
+        m = /Stream #\d+:\d+.*?:\s*Audio:\s*([A-Za-z0-9_]+)/.exec(line)
+        if (m) out.audio = m[1].toLowerCase()
+      }
+      resolve(out.video || out.audio ? out : null)
+    })
+  })
+}
+
+// Chromium/Electron 31 <video> 可直接解码的集合。其余一律 MediaError：
+// H.264 仅支持 4:2:0 8bit（专业设备的 High 4:2:2 / 10bit yuv422p10le 拒解），
+// MP4 容器音频仅认 AAC/MP3 等压缩流（pcm_s16be/twos 拒解）——
+// 2026-09-10 素材预览全灭根因（555电池批次 3840x2160 h264 4:2:2 10bit + PCM）。
+const PLAYABLE_VIDEO_CODECS = new Set(['h264', 'vp8', 'vp9', 'av1'])
+const PLAYABLE_PIX_FORMATS = new Set(['yuv420p', 'yuvj420p', 'nv12'])
+const PLAYABLE_AUDIO_CODECS = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac'])
+
+/** 可播性判定（info=null 即检测失败：不拦截，交给播放器与既有错误 UI） */
+function isStreamPlayable(info) {
+  if (!info) return true
+  const vOk = PLAYABLE_VIDEO_CODECS.has(info.video) && (!info.pixFmt || PLAYABLE_PIX_FORMATS.has(info.pixFmt))
+  const aOk = !info.audio || PLAYABLE_AUDIO_CODECS.has(info.audio)
+  return vOk && aOk
+}
+
+/**
+ * 预览可播性保障（2026-09-10 素材预览全灭兜底）：
+ * 不可播编码 → ffmpeg 转码到临时缓存 mp4（文件名含 size+mtime 自失效，
+ * 预览用 1280 宽降采样 + veryfast + faststart，秒级出片）；
+ * 可播/带协议 URL/检测失败 → 原路径直返。视频流可播仅音频不播时只转音频（视频 copy）。
+ * @returns {Promise<{path: string, transcoded: boolean} | {error: string}>}
+ */
+async function ensurePlayablePreview(ffmpegPath, file) {
+  if (!file || /^[a-z][a-z0-9+.-]*:/i.test(String(file)) || !fs.existsSync(file)) {
+    return { path: file, transcoded: false }
+  }
+  const info = await parseCodecsViaFfmpeg(ffmpegPath, file)
+  // 全程留痕（2026-09-10 素材预览事故教训：转码兜底链路无日志，断点无法定位）
+  try { logger.logInfo('ffmpeg', `ensurePlayable 检测 ${file} → video=${info?.video || '(未解析)'} pixFmt=${info?.pixFmt || '(未解析)'} audio=${info?.audio || '(无/未解析)'}`) } catch (_) {}
+  if (isStreamPlayable(info)) {
+    try { logger.logInfo('ffmpeg', 'ensurePlayable 判定可播，原路径直返') } catch (_) {}
+    return { path: file, transcoded: false }
+  }
+  const outDir = path.join(require('node:os').tmpdir(), 'tintin_preview')
+  fs.mkdirSync(outDir, { recursive: true })
+  const st = fs.statSync(file)
+  const base = path.basename(file).replace(/\.[^.]+$/, '').slice(0, 60)
+  const outPath = path.join(outDir, `${base}_${st.size}_${Math.round(st.mtimeMs)}_p.mp4`)
+  // 缓存命中须同时有产物 + .ok 完成标记（防中断残留的半截文件被复用）
+  if (fs.existsSync(outPath) && fs.existsSync(outPath + '.ok')) {
+    try { logger.logInfo('ffmpeg', `ensurePlayable 缓存命中 ${outPath}`) } catch (_) {}
+    return { path: outPath, transcoded: true }
+  }
+  const vPlayable = !!info && PLAYABLE_VIDEO_CODECS.has(info.video) && (!info.pixFmt || PLAYABLE_PIX_FORMATS.has(info.pixFmt))
+  const aPlayable = !!info && (!info.audio || PLAYABLE_AUDIO_CODECS.has(info.audio))
+  const args = [
+    '-y', '-i', file,
+    '-map', '0:v:0', '-map', '0:a:0?', '-sn',
+    ...(vPlayable
+      ? ['-c:v', 'copy']
+      : ['-vf', 'scale=1280:-2:flags=bicubic,format=yuv420p', '-c:v', 'libx264', '-crf', '20', '-preset', 'veryfast']),
+    ...(aPlayable ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '192k']),
+    '-movflags', '+faststart',
+    outPath,
+  ]
+  await new Promise((resolve, reject) => {
+    const started = Date.now()
+    const proc = spawn(ffmpegPath, args, { windowsHide: true })
+    let stderr = ''
+    proc.stderr.on('data', (d) => { stderr += d })
+    proc.on('error', (err) => {
+      try { logger.logError('ffmpeg', `ensurePlayable spawn 失败: ${err.message}`) } catch (_) {}
+      reject(err)
+    })
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        try { fs.unlinkSync(outPath) } catch (_) {}
+        try { logger.logError('ffmpeg', `ensurePlayable 转码失败 code=${code}: ${stderr.slice(-300)}`) } catch (_) {}
+        reject(new Error(`ffmpeg 转码失败: ${stderr.slice(-300)}`))
+        return
+      }
+      try { logger.logInfo('ffmpeg', `ensurePlayable 转码完成 ${Math.round((Date.now() - started) / 100) / 10}s → ${outPath}`) } catch (_) {}
+      try { fs.writeFileSync(outPath + '.ok', '1') } catch (_) {}
+      resolve()
+    })
+  })
+  return { path: outPath, transcoded: true }
+}
+
 function createFfmpegGate(ipcMain, studioRoot) {
   const ffmpegPath = getFfmpegPath(studioRoot)
   const ffprobePath = getFfprobePath(studioRoot)
 
   ipcMain.handle('ffmpeg:probe', async (event, file) => {
     return await probe(ffprobePath, file)
+  })
+
+  // ── ffmpeg:probeDuration — 仅取时长（2026-09-09 用户裁决：素材列表加时长列）──
+  // resources/bin 未随包 ffprobe.exe（仅 ffmpeg.exe/yt-dlp.exe），getFfprobePath
+  // 回退 PATH 的 ffprobe 也不存在 → ffmpeg:probe 必然失败。
+  // 策略：ffprobe 可用优先（精度一致）；否则回退 ffmpeg -i stderr 的 Duration 行解析。
+  ipcMain.handle('ffmpeg:probeDuration', async (event, file) => {
+    if (ffprobePath && path.isAbsolute(ffprobePath)) {
+      try {
+        const r = await probe(ffprobePath, file)
+        const d = Number(r && r.duration)
+        if (d > 0) return d
+      } catch (_) { /* 回退 ffmpeg 解析 */ }
+    }
+    return await probeDurationViaFfmpeg(ffmpegPath, file)
+  })
+
+  // ── ffmpeg:ensurePlayable — 预览可播性保障（2026-09-10 素材预览全灭兜底）：
+  // Chromium 不可播编码（H.264 4:2:2/10bit、MP4+PCM 等）自动转码到临时缓存，
+  // 可播/检测失败原路径直返 → { path, transcoded } 或 { error } ──
+  ipcMain.handle('ffmpeg:ensurePlayable', async (event, file) => {
+    try {
+      return await ensurePlayablePreview(ffmpegPath, file)
+    } catch (err) {
+      return { error: (err && err.message) || String(err) }
+    }
   })
 
   // （ffmpeg:extractThumb 已废弃删除：预览缩略图改渲染层 canvas 抓帧，2026-09-07）
@@ -429,4 +586,4 @@ function createFfmpegGate(ipcMain, studioRoot) {
   })
 }
 
-module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize, extractFramesBatch }
+module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize, extractFramesBatch, parseCodecsViaFfmpeg, isStreamPlayable }

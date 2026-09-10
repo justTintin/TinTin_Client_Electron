@@ -185,10 +185,16 @@ const server = {
   voiceCloneBatch:      (p) => ipcRenderer.invoke('voice:cloneBatch', p),
   voiceDubVideos:       (p) => ipcRenderer.invoke('voice:dubVideos', p),
   voiceFonts:           () => ipcRenderer.invoke('voice:fonts'),
+  // 服务端字体文件字节（GET /config/fonts/{id}/file；字体下拉按自身字体自渲染用）
+  voiceFontFile:        (fontId) => ipcRenderer.invoke('voice:fontFile', fontId),
   voiceExportAudio:     (p) => ipcRenderer.invoke('voice:exportAudio', p),
   // 花字模板（PR#4）：列表+已缓存预览图（dataURL）/ 后台补齐缺失预览图
   fancyListTemplates:   () => ipcRenderer.invoke('fancy:listTemplates'),
-  fancyEnsurePreviews:  () => ipcRenderer.invoke('fancy:ensurePreviews'),
+  // 服务端花字模板库（GET /fancy/templates；CLIENT-FANCY-ACCESS：模板管理与渲染在服务端）
+  fancyServerTemplates: () => ipcRenderer.invoke('fancy:serverTemplates'),
+    // 服务端文字模板库（GET /textfx/templates；与花字独立体系，仅供选择/预览，烧制待服务端接口）
+    textfxServerTemplates: () => ipcRenderer.invoke('textfx:serverTemplates'),
+  fancyEnsurePreviews:  (p) => ipcRenderer.invoke('fancy:ensurePreviews', p),
   fancyOnPreviewProgress: (cb) => {
     const listener = (_e, d) => cb(d)
     ipcRenderer.on('fancy:previewProgress', listener)
@@ -232,6 +238,8 @@ const server = {
   trimEdgeClips: (payload) => ipcRenderer.invoke('montage:trimEdgeClips', payload),
   // 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读，对照 _probe_video_ok）
   montageValidateFinal: (p) => ipcRenderer.invoke('montage:validateFinal', { path: p }),
+    // 删除下载校验未通过的坏成片（防坏片残留 outputs 被后续步骤扫描带入，2026-09-10）
+    montageDeleteBadFinal: (p) => ipcRenderer.invoke('montage:deleteBadFinal', { path: p }),
   // 智能混剪 Step4 AI 生成 BGM（/audio/gen/bgm，原客户端 gen_bgm 同口径）
   audioGenBgm:     (payload) => ipcRenderer.invoke('audio:genBgm', payload),
   // 音频生成 tab（原客户端 audio_material_page.py AI 生成 tab 一比一移植）
@@ -280,6 +288,10 @@ const server = {
 // ── ffmpeg ──
 const ffmpeg = {
   probe: (file) => ipcRenderer.invoke('ffmpeg:probe', file),
+  // 仅取时长（ffprobe 缺失时主进程回退 ffmpeg -i stderr 解析；素材列表时长列用）
+  probeDuration: (file) => ipcRenderer.invoke('ffmpeg:probeDuration', file),
+  // 预览可播性保障：不可播编码（H.264 4:2:2/10bit、MP4+PCM）自动转码到临时缓存
+  ensurePlayable: (file) => ipcRenderer.invoke('ffmpeg:ensurePlayable', file),
   extractThumb: (video, atSec, w) => ipcRenderer.invoke('ffmpeg:extractThumb', video, atSec, w),
   // 批量抽帧 + base64（视觉模型研判类工具共用：视频评价预测/视频营销检测）
   extractFrames: (payload) => ipcRenderer.invoke('ffmpeg:extractFrames', payload),

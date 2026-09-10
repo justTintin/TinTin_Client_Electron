@@ -17,6 +17,53 @@ import assert from 'node:assert/strict'
 
 const R = await import('../renderer/src/composables/videoMontageLogic.ts')
 
+// ── Step3 字幕/花字样式预设（2026-09-09 裁决：样式属字幕配置，字幕三行布局）──
+
+test('SUBTITLE_STYLE_PRESETS：24 格色板，首项默认白字无描边，key 全表唯一', () => {
+  assert.equal(R.SUBTITLE_STYLE_PRESETS.length, 24)
+  assert.equal(R.SUBTITLE_STYLE_PRESETS[0].key, 'white')
+  assert.equal(R.SUBTITLE_STYLE_PRESETS[0].stroke, '')
+  const keys = R.SUBTITLE_STYLE_PRESETS.map((p) => p.key)
+  assert.equal(new Set(keys).size, keys.length)
+})
+
+test('SUBTITLE_STYLE_PRESETS 与主进程 SUBTITLE_STYLES key 一一对应（两表同步维护）', async () => {
+  const { createRequire } = await import('node:module')
+  const L = createRequire(import.meta.url)('../main/voice-tts-logic.js')
+  assert.deepEqual(
+    Object.keys(L.SUBTITLE_STYLES).sort(),
+    R.SUBTITLE_STYLE_PRESETS.map((p) => p.key).sort(),
+  )
+})
+
+test('subtitlePresetTileStyle：无描边只给 color；有描边给 text-stroke+paintOrder', () => {
+  const plain = R.subtitlePresetTileStyle({ key: 'white', label: '', color: '#FFFFFF', stroke: '' })
+  assert.equal(plain.color, '#FFFFFF')
+  assert.equal(plain.webkitTextStroke, undefined)
+  const stroked = R.subtitlePresetTileStyle({ key: 'yellow_red', label: '', color: '#FFE135', stroke: '#CC0000' })
+  assert.equal(stroked.webkitTextStroke, '2.5px #CC0000')
+  assert.equal(stroked.paintOrder, 'stroke')
+})
+
+test('FANCY_STYLE_PREVIEW：7 项与 FANCY_STYLE_OPTIONS 一一对应且色对齐全', () => {
+  for (const o of R.FANCY_STYLE_OPTIONS) {
+    const p = R.FANCY_STYLE_PREVIEW[o.value]
+    assert.ok(p && p.color && p.stroke, o.value)
+  }
+})
+
+test('fancyDrawtextToPreview：drawtext 串还原主色+描边；white/black 别名；空/无 fontcolor → null', () => {
+  const gold = R.fancyDrawtextToPreview('fontcolor=0xF0C040:borderw=4:bordercolor=0x6B3000:shadowx=2:shadowy=2:shadowcolor=0x000000@0.8')
+  assert.equal(gold.color, '#F0C040')
+  assert.equal(gold.webkitTextStroke, '3px #6B3000')
+  assert.equal(gold.paintOrder, 'stroke')
+  const white = R.fancyDrawtextToPreview('fontcolor=white:borderw=5:bordercolor=black')
+  assert.equal(white.color, '#FFFFFF')
+  assert.equal(white.webkitTextStroke, '4px #000000')
+  assert.equal(R.fancyDrawtextToPreview(''), null)
+  assert.equal(R.fancyDrawtextToPreview('borderw=3'), null)
+})
+
 // ── Step1 分割响应解析（对照 ServerSplitWorker L121-171）──
 
 test('parseSplitResponse：shots[] 归一化（download_url/score/description）', () => {
@@ -78,8 +125,8 @@ test('shotsToRows：表格行（勾选默认 true、时长、可过滤评分）'
   assert.equal(rows[0].shotType, undefined) // 无路径关键词、无服务端字段 → 不标注
 })
 
-test('shotsToRows：服务端 shot_type 优先于路径推断；product/model/resolution 透传（原版表格 10 列口径）', () => {
-  // 路径含「特写」但服务端返回「中景」→ 服务端优先
+test('shotsToRows：景别仅服务端返回；位置兑底仅认入场/出场（2026-09-09 二次裁决）', () => {
+  // 路径含「特写」但服务端返回「中景」→ 景别仅取服务端
   const rows = R.shotsToRows([
     { startSec: 0, endSec: 2, shotIndex: 1, filename: 'a.mp4', downloadUrl: '/u1', score: 8.5, analysis: '', description: 'd', shotType: '中景', product: '鼠标', model: 'M3', resolution: '1920x1080' },
     { startSec: 2, endSec: 4, shotIndex: 2, filename: 'b.mp4', downloadUrl: '', score: 0, analysis: '', description: '', shotType: '', product: '', model: '', resolution: '' },
@@ -88,11 +135,45 @@ test('shotsToRows：服务端 shot_type 优先于路径推断；product/model/re
   assert.equal(rows[0].product, '鼠标')
   assert.equal(rows[0].model, 'M3')
   assert.equal(rows[0].resolution, '1920x1080')
-  // 第二行服务端字段全空 → 景别回退路径推断（classifyShotType 返回枚举 key，中文标签由 SHOT_TYPE_LABELS 映射）
-  assert.equal(rows[1].shotType, 'closeup')
+  // 第二行服务端景别空 → 景别不推断显 —；
+  // 文件名含「特写」是景别不是位置 → 位置不得标注（2026-09-09 用户纠偏）
+  assert.equal(rows[1].shotType, undefined)
+  assert.equal(rows[1].position, undefined)
+  assert.equal(rows[1].positionSource, undefined)
   assert.equal(rows[1].product, undefined)
   assert.equal(rows[1].model, undefined)
   assert.equal(rows[1].resolution, undefined)
+})
+
+test('shotsToRows：文件名/文件夹含入场/出场 → 位置兑底标来源；景别词（中景）不进位置列', () => {
+  // 文件名「中景」首段命中即返回（原版 classify 口径：文件名优先、命中即返回，
+  //  不再回退父目录）→ 景别词不进位置列，位置空（原版消费侧也只在
+  //  entrance/exit 时才动作，medium/closeup 命中即放弃）
+  const rows = R.shotsToRows([
+    { startSec: 0, endSec: 2, shotIndex: 1, filename: 'a.mp4', downloadUrl: '/u1' },
+  ], 'mix.mp4', 'X:\\混剪素材\\555电池出场\\555电池中景_001.mp4')
+  assert.equal(rows[0].position, undefined)
+  assert.equal(rows[0].positionSource, undefined)
+  // 纯中景命名 → 位置空
+  const r2 = R.shotsToRows([{ startSec: 0, endSec: 2, shotIndex: 1, filename: 'a.mp4', downloadUrl: '/u1' }],
+    'mix.mp4', 'X:\\混剪素材\\产品中景_002.mp4')
+  assert.equal(r2[0].position, undefined)
+  // 纯出场命名 → 位置=exit（文件名来源）
+  const r3 = R.shotsToRows([{ startSec: 0, endSec: 2, shotIndex: 1, filename: 'a.mp4', downloadUrl: '/u1' }],
+    'mix.mp4', 'X:\\混剪素材\\555电池出场 (1).mp4')
+  assert.equal(r3[0].position, 'exit')
+  assert.ok(r3[0].positionSource.startsWith('文件名「'))
+})
+
+test('shotsToRows：服务端 enter/exit 布尔 → 位置（服务端标注）优先于路径推断', () => {
+  const rows = R.shotsToRows([
+    { startSec: 0, endSec: 2, shotIndex: 1, filename: 'a.mp4', downloadUrl: '/u1', score: 8, analysis: '', description: '', shotType: '', enter: true, exit: false },
+    { startSec: 2, endSec: 4, shotIndex: 2, filename: 'b.mp4', downloadUrl: '', score: 0, analysis: '', description: '', shotType: '', enter: false, exit: true },
+  ], '出场_001.mp4', 'X:\\混剪素材\\出场_001.mp4')
+  assert.equal(rows[0].position, 'entrance')
+  assert.equal(rows[0].positionSource, '服务端标注')
+  assert.equal(rows[1].position, 'exit')
+  assert.equal(rows[1].positionSource, '服务端标注')
 })
 
 // ── Step2 镜头重组（对照 _submit_concat_to_server L2663-2725 + server worker L57-128）──
@@ -312,18 +393,18 @@ test('buildPrecomposePlans：时长预算 limit×1.1（10s×5 镜头 limit30 →
   }
 })
 
-test('buildPrecomposePlans：景别编排入场头/出场尾（apply_shot_layout_order 同口径）', () => {
+test('buildPrecomposePlans：位置编排入场头/出场尾（apply_shot_layout_order 同口径；2026-09-09 裁决取 position）', () => {
   const clips = [
-    mkRow(1, 5, { shotType: 'exit' }),
-    mkRow(2, 5, { shotType: 'entrance' }),
+    mkRow(1, 5, { position: 'exit' }),
+    mkRow(2, 5, { position: 'entrance' }),
     mkRow(3, 5),
   ]
   const plans = R.buildPrecomposePlans({
     clips, batchCount: 1, durationLimitSec: 0, randomness: 'low', randomFn: () => 0.5,
   })
-  const types = plans[0].clips.map((c) => c.shotType)
-  assert.equal(types[0], 'entrance')
-  assert.equal(types[types.length - 1], 'exit')
+  const positions = plans[0].clips.map((c) => c.position)
+  assert.equal(positions[0], 'entrance')
+  assert.equal(positions[positions.length - 1], 'exit')
 })
 
 test('buildPrecomposePlans：空输入 → 空数组', () => {
@@ -391,4 +472,20 @@ test('mapTaskStatus：cancelled 无 error_msg → 服务端重启取消文案（
   // 有 error_msg 时透出原始错误；failed 无 error_msg 仍「未知错误」
   assert.equal(R.mapTaskStatus('cancelled', { error_msg: 'boom' }).error, 'boom')
   assert.equal(R.mapTaskStatus('failed', {}).error, '未知错误')
+})
+
+// ── 文字模板随机池（2026-09-09 裁决：随机样式默认 3 个；Fisher-Yates 部分洗牌）──
+test('pickRandomItems：取 n 个不重复；n≥池长全量乱序；池空/非法 n 返回空；不改原池', () => {
+  const pool = [1, 2, 3, 4, 5]
+  const picked = R.pickRandomItems(pool, 3)
+  assert.equal(picked.length, 3)
+  assert.equal(new Set(picked).size, 3)
+  for (const v of picked) assert.ok(pool.includes(v))
+  assert.deepEqual(pool, [1, 2, 3, 4, 5])
+  const all = R.pickRandomItems(pool, 99)
+  assert.equal(all.length, 5)
+  assert.deepEqual([...all].sort(), [1, 2, 3, 4, 5])
+  assert.deepEqual(R.pickRandomItems([], 3), [])
+  assert.deepEqual(R.pickRandomItems(pool, 0), [])
+  assert.deepEqual(R.pickRandomItems(pool, NaN), [])
 })

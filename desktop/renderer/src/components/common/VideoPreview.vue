@@ -15,11 +15,14 @@ const props = withDefaults(
     src?: string
     /** 是否循环播放 */
     loop?: boolean
+    /** 转码中（主进程 ensurePlayable 不可播编码自动转码，显示提示不挂播放器，2026-09-10） */
+    loading?: boolean
   }>(),
   {
     visible: false,
     src: '',
-    loop: false
+    loop: false,
+    loading: false
   }
 )
 
@@ -42,8 +45,16 @@ function handleMaskClick(event: MouseEvent) {
   }
 }
 
-// 视频加载失败
-function handleError() {
+// 视频加载失败（真实报错落日志：MediaError code/message + 实际 src。
+//  注意 Plyr 转发的 error 事件 target 未必是 video 元素（实测 code/src 全 undefined），
+//  需向下查 video 元素再取 MediaError——2026-09-10 素材预览事故教训）
+function handleError(e: Event) {
+  const t = e?.target as HTMLVideoElement | null
+  const el = t && t.tagName === 'VIDEO'
+    ? t
+    : ((t?.querySelector?.('video') || document.querySelector('.video-preview video')) as HTMLVideoElement | null)
+  const me = el?.error as MediaError | null
+  console.error(`[video-preview] 加载失败 code=${me?.code} message=${me?.message || '(未知)'} src=${el?.currentSrc || el?.src || '(未知)'}`)
   hasError.value = true
 }
 </script>
@@ -65,13 +76,20 @@ function handleError() {
         <!-- 视频容器 -->
         <div class="video-preview__stage">
           <VideoPlayer
-            v-if="src && !hasError"
+            v-if="src && !hasError && !loading"
             :src="src"
             autoplay
             :loop="loop"
             @error="handleError"
             @ended="emit('ended')"
           />
+          <!-- 转码中提示（不可播编码自动转码兜底，2026-09-10） -->
+          <div v-else-if="loading" class="video-preview__error">
+            <svg class="video-preview__spin" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+            </svg>
+            <span>素材编码需转换（专业设备规格），正在转码预览…</span>
+          </div>
           <!-- 加载失败提示 -->
           <div v-else class="video-preview__error">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
@@ -183,6 +201,16 @@ function handleError() {
   padding: var(--space-8);
   color: var(--muted-foreground);
   font-size: var(--font-size-caption);
+}
+
+.video-preview__spin {
+  animation: video-preview-spin 1s linear infinite;
+}
+
+@keyframes video-preview-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 过渡动画 */

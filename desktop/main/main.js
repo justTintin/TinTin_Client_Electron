@@ -516,6 +516,8 @@ if (!gotTheLock) {
   })
 
 // 注册 tintin-ext 为标准协议（支持 Worker/fetch 访问扩展文件）
+// （media:// 本地媒体协议已回退摘除：其前提「dev 页面禁止 file://」被实测推翻，
+//  且链路未经打包版验证；本地媒体恢复 file:/// 直读，2026-09-10）
 protocol.registerSchemesAsPrivileged([
   { scheme: 'tintin-ext', privileges: { standard: true, secure: true, supportFetchAPI: true } }
 ])

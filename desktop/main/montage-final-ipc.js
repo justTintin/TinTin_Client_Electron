@@ -20,6 +20,11 @@ const { spawn, execSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const JY = require('./jianying-exporter')
+// 特效烧制（2026-09-09 裁决：字幕/花字特效自配音链迁 Step4 统一烧制，
+// 与配音链同一构建器 voice-tts-logic.buildEffectBurnArgs 保证样式/时机一致）
+const L = require('./voice-tts-logic')
+const FT = require('./fancy-templates')
+const VI = require('./montage-voice-ipc')
 
 // ── ffmpeg/ffprobe 路径（同 ffmpeg-gate.js getBinDir 口径，未导出故本地等价实现）──
 function getBinDir() {
@@ -170,6 +175,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
 
   // ── final:mix — 最终混音合成（FinalMixWorker.run L662-746 一比一）──
   // tasks: [{videoPath, outPath}]；bgmPath/bgmVolume(0-200)；进度经 progressChannel 推送。
+  // 2026-09-09 裁决扩展：payload 可带 effects（字幕/花字配置）+ subtitleTexts
+  // （[{videoPath, text, timingPath}]，渲染层已按候选视频映射好文案），
+  // 混音前逐视频 ffmpeg 烧制特效到中间文件，混音后清理；无特效配置时零开销直通。
   ipcMain.handle('final:mix', async (event, payload) => {
     try {
       const p = payload || {}
@@ -182,18 +190,108 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const hasBgm = !!(p.bgmPath && fs.existsSync(p.bgmPath))
       const bgmVol = (Number(p.bgmVolume) || 0) / 100.0
 
+      // ── 特效烧制前置阶段（同 dubVideos 字体/模板解析口径）──
+      const fx = p.effects || null
+      const subTexts = Array.isArray(p.subtitleTexts) ? p.subtitleTexts : []
+      const hasFx = !!(fx && (fx.addSubtitles || fx.fancyText) && subTexts.length)
+      let fontPathEsc = ''
+      let fancyFontPath = ''
+      let fancyTemplate = null
+      let fancySoundPath = ''
+      let fancySoundGainDb = -6.0
+      if (hasFx) {
+        // 字幕字体：族名 → 注册表解析本机字体文件，解析不到回退微软雅黑（dubVideos 同口径）
+        const family = String(fx.subtitleFont || '').trim()
+        fontPathEsc = fx.addSubtitles
+          ? L.resolveSubtitleFontPath(family, {
+              familyPath: family ? VI.lookupWindowsFontFile(family) : '',
+              path: (cand) => fs.existsSync(cand.replace(/\\:/g, ':')),
+            })
+          : ''
+        // 花字字体：msyhbd.ttc → msyh.ttc → msyh
+        fancyFontPath = fs.existsSync('C:/Windows/Fonts/msyhbd.ttc')
+          ? 'C\\:/Windows/Fonts/msyhbd.ttc'
+          : (fs.existsSync('C:/Windows/Fonts/msyh.ttc') ? 'C\\:/Windows/Fonts/msyh.ttc' : 'msyh')
+        // 花字模板（非 dict → null=自定义样式）+ anim 缺失推导 + 模板音效
+        if (fx.fancyTemplate) {
+          try {
+            const parsed = typeof fx.fancyTemplate === 'string' ? JSON.parse(fx.fancyTemplate) : fx.fancyTemplate
+            if (parsed && typeof parsed === 'object' && parsed.template_id) {
+              fancyTemplate = parsed
+              if (!fancyTemplate.anim) fancyTemplate.anim = L.getFancyAnim(fancyTemplate)
+            }
+          } catch (_) { fancyTemplate = null }
+        }
+        fancySoundPath = fancyTemplate ? FT.getFancySoundPath(fancyTemplate) : ''
+        fancySoundGainDb = fancyTemplate ? FT.getFancySoundGainDb(fancyTemplate) : -6.0
+      }
+
+      const fxPaths = new Map() // videoPath → 特效烧制中间文件
+      if (hasFx) {
+        for (let i = 0; i < tasks.length; i++) {
+          const t = tasks[i]
+          const sub = subTexts.find((s) => s.videoPath === t.videoPath)
+          if (!sub || !String(sub.text || '').trim()) continue
+          emit(`正在烧制字幕/花字特效 (${i + 1}/${tasks.length})...`, Math.floor(i / tasks.length * 55))
+          const videoDur = getMediaDuration(t.videoPath)
+          if (videoDur <= 0) continue // 时长读不出 → 无法定位时间轴，跳过烧制直通混音
+          // .timing.json 句级时间轴（voice-tts-logic buildSubtitleLines 既有口径）
+          let timing = null
+          try {
+            const sidecar = String(sub.timingPath || '')
+            if (sidecar && fs.existsSync(sidecar)) {
+              const arr = JSON.parse(fs.readFileSync(sidecar, 'utf-8'))
+              if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
+            }
+          } catch (_) { timing = null }
+          const ext = path.extname(t.outPath) || '.mp4'
+          const fxOut = t.outPath.replace(/\.[^.]+$/, '') + '.fx' + ext
+          const args = L.buildEffectBurnArgs({
+            videoPath: t.videoPath,
+            outputVideoPath: fxOut,
+            text: String(sub.text || ''),
+            timing,
+            videoDur,
+            addSubtitles: !!fx.addSubtitles,
+            subtitleFontPath: fontPathEsc,
+            subtitleStyle: String(fx.subtitleStyle || 'white'),
+            subtitleBoxOpacity: fx.subtitleBoxOpacity ?? 0.5,
+            // 字幕入场动画（2026-09-10 用户裁决：可选 fade/rise/slide/pop/none，预览与烧制同源）
+            subtitleAnim: String(fx.subtitleAnim || 'fade'),
+            fancyText: !!fx.fancyText,
+            fancyStyle: fx.fancyStyle || 'gold',
+            fancyPosition: fx.fancyPosition || 'upper_middle',
+            fancyFontPath,
+            fancyTemplate,
+            fancySoundPath,
+            fancySoundGainDb,
+          })
+          if (!args) continue // 无特效可烧（构建器判定）→ 直通
+          const r = await runFfmpeg(args)
+          if (r.code !== 0) {
+            throw new Error(`字幕/花字特效烧制失败：\n${r.stderr || '(无输出)'}`)
+          }
+          fxPaths.set(t.videoPath, fxOut)
+        }
+      }
+
+      // 混音进度分段：有特效烧制时烧制占 0-55、混音占 60-100；无特效保持 0-100
+      const mixBase = hasFx ? 60 : 0
+      const mixSpan = hasFx ? 40 : 100
+
       const results = []
       const total = tasks.length
       for (let index = 0; index < total; index++) {
         const { videoPath, outPath } = tasks[index]
-        emit(`正在进行最终合成配乐 (${index + 1}/${total})...`, Math.floor(index / total * 100))
+        const srcVideo = fxPaths.get(videoPath) || videoPath
+        emit(`正在进行最终合成配乐 (${index + 1}/${total})...`, mixBase + Math.floor(index / total * mixSpan))
         fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
         let args
         if (hasBgm) {
-          const hasAudio = hasAudioStream(videoPath)
+          const hasAudio = hasAudioStream(srcVideo)
           // BGM 淡入淡出：开头 1s 淡入，结尾 2s 淡出（按视频时长定位）
-          const vidDur = getMediaDuration(videoPath)
+          const vidDur = getMediaDuration(srcVideo)
           const fadeOutStart = Math.max(0.0, vidDur - 2.0)
           const bgmFades = vidDur > 0
             ? `afade=t=in:st=0:d=1.0,afade=t=out:st=${fadeOutStart.toFixed(3)}:d=2.0`
@@ -209,7 +307,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
               `loudnorm=I=-16:TP=-1.5:LRA=11[a]`
             )
             args = [
-              '-y', '-i', videoPath,
+              '-y', '-i', srcVideo,
               '-stream_loop', '-1', '-i', p.bgmPath,
               '-filter_complex', filterComplex,
               '-map', '0:v', '-map', '[a]',
@@ -218,7 +316,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             ]
           } else {
             args = [
-              '-y', '-i', videoPath,
+              '-y', '-i', srcVideo,
               '-stream_loop', '-1', '-i', p.bgmPath,
               '-filter_complex', `[1:a]volume=${bgmVol},${bgmFades},loudnorm=I=-16:TP=-1.5:LRA=11[bgm]`,
               '-map', '0:v', '-map', '[bgm]',
@@ -227,13 +325,16 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             ]
           }
         } else {
-          args = ['-y', '-i', videoPath, '-c', 'copy', outPath]
+          args = ['-y', '-i', srcVideo, '-c', 'copy', outPath]
         }
 
         const r = await runFfmpeg(args)
         if (r.code !== 0) {
           throw new Error(`最后合成视频失败：\n${r.stderr || '(无输出)'}`)
         }
+        // 特效烧制中间文件用完即清（失败中断时残留由下次同名烧制覆盖，不阻断）
+        const fxTmp = fxPaths.get(videoPath)
+        if (fxTmp) { try { fs.unlinkSync(fxTmp) } catch (_) { /* 忽略 */ } }
         results.push(outPath)
       }
       emit('所有视频及配乐最终合成完成！', 100)

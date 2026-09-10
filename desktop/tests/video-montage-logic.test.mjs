@@ -103,6 +103,26 @@ test('parseSplitResponse：服务端逐镜扩展字段解析（shot_type/product
   assert.equal(shots[0].resolution, '1920x1080')
 })
 
+// 2026-09-11 在线实测回归：服务端 shots[].resolution 是对象 {width,height}，
+// 旧实现 String(对象) 直接渲染成 "[object Object]" 填满表格画幅列
+test('parseSplitResponse：resolution 为对象 {width,height} → 归一化为 WxH（不得出 [object Object]）', () => {
+  const shots = R.parseSplitResponse({
+    shots: [{ start_sec: 0, end_sec: 1, filename: 'a.mp4', resolution: { width: 1080, height: 1920 } }],
+  })
+  assert.equal(shots[0].resolution, '1080x1920')
+  assert.ok(!shots[0].resolution.includes('object'))
+  // 顶层 source_resolution 同形态（实测含 fps/codec/aspect_ratio）
+  const srcRes = { width: 480, height: 854, aspect_ratio: '240:427', fps: 25, codec: 'h264' }
+  assert.equal(R.normalizeSourceResolution(srcRes), '480x854')
+})
+
+test('parseSplitResponse：resolution 对象缺 width/height → 空串（UI 回退全表兜底值）', () => {
+  const shots = R.parseSplitResponse({
+    shots: [{ start_sec: 0, end_sec: 1, filename: 'a.mp4', resolution: { aspect_ratio: '16:9' } }],
+  })
+  assert.equal(shots[0].resolution, '')
+})
+
 test('parseSplitResponse：clips/segments 兜底；非对象/空 → 空数组', () => {
   assert.equal(R.parseSplitResponse({ clips: [{ start_sec: 1, end_sec: 2 }] }).length, 1)
   assert.equal(R.parseSplitResponse({ segments: [{ start_sec: 1, end_sec: 2 }] }).length, 1)
@@ -223,6 +243,37 @@ test('buildConcatPayload：可选参数白名单透传（transition_duration/fps
   assert.equal(p.image_duration, 3)
   // 未传字段不出现在载荷（对照原注释「options 只包含文档列出的字段」L2671-2672）
   assert.equal('time_limit' in p, false)
+})
+
+// ── Step2 输出帧率（2026-09-11 用户裁决：帧率可控、默认「跟随原片」）──
+// 旧实现写死 fps:30；现由下拉决定，服务端契约 fps 为 integer → 小数帧率必须取整
+
+test('resolveConcatFps：跟随原片→探测值取整（29.97 → 30，契约 integer）', () => {
+  assert.equal(R.resolveConcatFps('source', 25), 25)
+  assert.equal(R.resolveConcatFps('source', 29.97), 30)
+  assert.equal(R.resolveConcatFps('source', 23.976), 24)
+  assert.equal(R.resolveConcatFps('source', 59.94), 60)
+})
+
+test('resolveConcatFps：探测失败（0/NaN/负）→ 兑底 30（与契约默认值一致）', () => {
+  assert.equal(R.resolveConcatFps('source', 0), 30)
+  assert.equal(R.resolveConcatFps('source', NaN), 30)
+  assert.equal(R.resolveConcatFps('source', -1), 30)
+  // 手动档位给非法值同样兑底，不得把 0 传上去（服务端会出 0 帧/拒参）
+  assert.equal(R.resolveConcatFps(0, 25), 30)
+})
+
+test('resolveConcatFps：手动档位直接生效（不受探测值影响）', () => {
+  assert.equal(R.resolveConcatFps(24, 60), 24)
+  assert.equal(R.resolveConcatFps(60, 0), 60)
+})
+
+test('FPS_OPTIONS：首项「跟随原片」（默认值）且数字档位全为整数', () => {
+  assert.equal(R.FPS_OPTIONS[0].value, 'source')
+  const nums = R.FPS_OPTIONS.map((o) => o.value).filter((v) => typeof v === 'number')
+  assert.ok(nums.length >= 3)
+  for (const n of nums) assert.equal(Number.isInteger(n), true, `档位 ${n} 必为整数`)
+  assert.equal(new Set(R.FPS_OPTIONS.map((o) => o.value)).size, R.FPS_OPTIONS.length)
 })
 
 test('buildConcatPayload：无素材来源 → 抛错（对照 server worker L57-59）', () => {
@@ -349,11 +400,18 @@ test('safeSourceName：超长截断 + 8 位散列后缀（同输入同输出，�
   assert.equal(R.safeSourceName('short.mp4'), 'short')
 })
 
-test('normalizeSourceResolution：服务端 split 响应分辨率归一化（数组/WxH 串/无效）', () => {
+test('normalizeSourceResolution：服务端 split 响应分辨率归一化（数组/WxH 串/对象/无效）', () => {
   // 对照原版 _detect_and_show_source_resolution L4768-4773
   assert.equal(R.normalizeSourceResolution([1920, 1080]), '1920x1080')
   assert.equal(R.normalizeSourceResolution('1080x1920'), '1080x1920')
   assert.equal(R.normalizeSourceResolution(' 720x1280 '), '720x1280')
+  // 2026-09-11 在线实测第三形态：对象 {width,height}（shots[].resolution 与顶层
+  // source_resolution 均为对象）；容错 w/h 缩写键
+  assert.equal(R.normalizeSourceResolution({ width: 1080, height: 1920 }), '1080x1920')
+  assert.equal(R.normalizeSourceResolution({ w: 720, h: 1280 }), '720x1280')
+  assert.equal(R.normalizeSourceResolution({ width: 0, height: 0 }), '')
+  assert.equal(R.normalizeSourceResolution({ width: 1080 }), '')
+  assert.equal(R.normalizeSourceResolution({}), '')
   assert.equal(R.normalizeSourceResolution('0x100'), '')
   assert.equal(R.normalizeSourceResolution('abc'), '')
   assert.equal(R.normalizeSourceResolution(''), '')
@@ -490,59 +548,50 @@ test('pickRandomItems：取 n 个不重复；n≥池长全量乱序；池空/非
   assert.deepEqual(R.pickRandomItems(pool, NaN), [])
 })
 
-// ── buildTextFxTracks（2026-09-10 用户裁决：效果预览按视频分行时间轴）──
+// ── buildSubtitleRows（2026-09-11：服务端 match/concat 的 subtitle_rows 组装）──
 
-test('buildTextFxTracks：timing 优先定位时间点；每视频独立轮换模板；未命中词不生成条目', () => {
+test('buildSubtitleRows：timing 优先原样透传；缺失回退字数占比均分（与主进程同口径）', () => {
+  const timing = [{ text: '第一句', start: 2, end: 6 }]
+  assert.deepEqual(R.buildSubtitleRows('随便', timing, 30), [{ text: '第一句', start: 2, end: 6 }])
+  const rows = R.buildSubtitleRows('第一句\n第二句更长一点的文案', undefined, 10)
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].text, '第一句')
+  assert.equal(rows[0].start, 0)
+  assert.ok(rows[0].end > 0 && rows[0].end < 10)
+  assert.equal(Math.round(rows[1].end * 1000) / 1000, 10) // 末行 t1=时长
+  // 空文本/空行/空 timing 回退 → 空数组
+  assert.deepEqual(R.buildSubtitleRows('', undefined, 10), [])
+  assert.deepEqual(R.buildSubtitleRows('  \n ', [], 10), [])
+})
+
+// ── buildTextFxTracks（2026-09-11 用户裁决：命中数据取自服务端 /text_templates/match）──
+
+test('buildTextFxTracks：服务端命中行 → 关键词行显命中词、无词行整行截断；每视频轮换模板', () => {
   const tracks = R.buildTextFxTracks({
     rows: [
       {
-        name: 'a.mp4', text: '这款充电宝持久续航，电量持久不虚标', durationSec: 30,
-        timing: [
-          { text: '这款充电宝持久续航，', start: 2, end: 6 },
-          { text: '电量持久不虚标', start: 6, end: 10 },
+        name: 'a.mp4', durationSec: 30,
+        lines: [
+          { text: '只要199元就能买到', start: 2, end: 6, keywords: ['199元'] },
+          { text: '这款充电宝持久续航不虚标', start: 6, end: 10 },
         ],
       },
-      {
-        name: 'b.mp4', text: '持久续航超长待机', durationSec: 20,
-        timing: [{ text: '持久续航超长待机', start: 1, end: 5 }],
-      },
+      { name: 'b.mp4', durationSec: 20, lines: [{ text: '限时特价', start: 1, end: 5, keywords: ['特价'] }] },
     ],
-    maxWords: 8,
     tplNames: ['霓虹发光', '弹跳', '打字机'],
   })
   assert.equal(tracks.length, 2)
   assert.equal(tracks[0].durationSec, 30)
-  // 词命中句：start 取句级时间点
-  const track0 = tracks[0]
-  assert.ok(track0.items.length >= 1)
-  for (const it of track0.items) {
-    assert.ok(it.start === 2 || it.start === 6, `start 应为命中句起点，实为 ${it.start}`)
-    assert.ok(it.tplName, '模板名不为空')
-  }
-  // 视频间模板错开：(vi+ii)%len 轮换，b 视频首词模板 ≠ a 视频首词模板（池>1 时）
-  assert.equal(tracks[1].items[0].start, 1)
+  // keyword 行 word=命中词；无词（llm/fallback 补足）行=整行截断
+  assert.deepEqual(tracks[0].items.map((it) => it.word), ['199元', '这款充电宝持久续航不…'])
+  assert.equal(tracks[0].items[0].start, 2)
+  assert.equal(tracks[0].items[0].fullText, '只要199元就能买到')
+  for (const it of tracks[0].items) assert.ok(it.tplName, '模板名不为空')
+  // 视频间模板错开：(vi+ii)%len 轮换
   assert.notEqual(tracks[0].items[0].tplName, tracks[1].items[0].tplName)
-})
-
-test('buildTextFxTracks：无 timing 回退字数均分；空池模板名空串；空行返回空 items', () => {
-  const tracks = R.buildTextFxTracks({
-    rows: [{ name: 'c.mp4', text: '第一句文案\n第二句更长一点的文案', durationSec: 10 }],
-    maxWords: 8,
-    tplNames: [],
-  })
-  assert.equal(tracks.length, 1)
-  assert.equal(tracks[0].items.length, 0) // 无关键词命中（无价格/数字词）
-  const tracks2 = R.buildTextFxTracks({
-    rows: [{ name: 'd.mp4', text: '限时 99 元特价', durationSec: 10 }],
-    maxWords: 3,
-    tplNames: [],
-  })
-  // 均分兑底：命中句 start>0 且 <duration
-  for (const it of tracks2[0].items) {
-    assert.ok(it.start >= 0 && it.start < 10)
-    assert.equal(it.tplName, '')
-  }
-  assert.deepEqual(R.buildTextFxTracks({ rows: [], maxWords: 8, tplNames: ['x'] }), [])
+  // 空 lines / 空 rows
+  assert.deepEqual(R.buildTextFxTracks({ rows: [{ name: 'c.mp4', durationSec: 5, lines: [] }], tplNames: ['x'] })[0].items, [])
+  assert.deepEqual(R.buildTextFxTracks({ rows: [], tplNames: ['x'] }), [])
 })
 
 // ── 每视频独立随机样式子集（2026-09-10 二次裁决：样式预览=全量库；随机数量 N 每视频各自生效）──
@@ -568,11 +617,11 @@ test('seededShuffle/pickVideoStyles：确定性（同 seed 同结果）；count<
 
 test('buildTextFxTracks count：每视频条目模板收敛到各自随机子集内；同输入确定性可重现', () => {
   const rows = [
-    { name: 'a.mp4', text: '限时 99 元特价，持久续航不虚标', durationSec: 20 },
-    { name: 'b.mp4', text: '真的便宜，电量持久', durationSec: 20 },
+    { name: 'a.mp4', durationSec: 20, lines: [{ text: '限时 99 元特价', start: 1, end: 3, keywords: ['99元'] }] },
+    { name: 'b.mp4', durationSec: 20, lines: [{ text: '真的便宜', start: 2, end: 4, keywords: [] }] },
   ]
   const tplNames = ['霓虹发光', '弹跳', '打字机', '霓虹灯牌']
-  const run = () => R.buildTextFxTracks({ rows, maxWords: 8, tplNames, count: 2 })
+  const run = () => R.buildTextFxTracks({ rows, tplNames, count: 2 })
   const tracks = run()
   assert.deepEqual(run(), tracks) // 确定性：预览与烧制同源不漂移
   for (const t of tracks) {

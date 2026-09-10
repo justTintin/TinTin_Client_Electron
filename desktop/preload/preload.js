@@ -194,9 +194,9 @@ const server = {
   fancyServerTemplates: () => ipcRenderer.invoke('fancy:serverTemplates'),
     // 服务端文字模板库（GET /text_templates/templates；与花字独立体系，仅供选择/预览，烧制待服务端接口）
     textfxServerTemplates: () => ipcRenderer.invoke('textfx:serverTemplates'),
-      // 服务端全局常用关键词词表（POST /text_templates/keywords 全量覆盖；V-FANCY-3 决策3/10；
-      // 配套 GET 桥接已废弃——渲染层无消费者被 IRON-10 拦下，未来接关键词管理面板时再接回）
-      textfxKeywordsSave: (keywords) => ipcRenderer.invoke('textfx:keywordsSave', keywords),
+    // 关键词命中判定（POST /text_templates/match；合成前自查「命中几个关键词/会有几个动画」，
+    // 与 /montage/concat 命中模式共用选择逻辑 → 预览所见即合成所做；离线 null）
+    textfxMatchKeywords: (p) => ipcRenderer.invoke('textfx:matchKeywords', p),
   fancyEnsurePreviews:  (p) => ipcRenderer.invoke('fancy:ensurePreviews', p),
   fancyOnPreviewProgress: (cb) => {
     const listener = (_e, d) => cb(d)

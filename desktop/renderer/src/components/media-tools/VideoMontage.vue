@@ -10,7 +10,7 @@
 // （纯函数 videoMontageLogic.ts，IRON-06/07 分层）。
 // 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（重按按钮即重试）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VideoPreview from '@/components/common/VideoPreview.vue'
@@ -48,6 +48,7 @@ const {
   previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
   // Step2 镜头重组
   assembleLogic, concatLayout, durationLimit, DURATION_LIMITS, batchCount, recBatchCount,
+  concatFps, FPS_OPTIONS, splitFps,
   concatTransition, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
   concatBusy, confirmBusy, copyBusy, concatError,
   assemblePlans, currentPlanIdx, currentPlan, hasUnconfirmed, confirmedPaths,
@@ -110,6 +111,24 @@ const {
 function toFileUrl(p: string): string {
   return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23')
 }
+
+/** 预览块画幅（2026-09-11 用户裁决）：竖屏模式下预览块也竖起来，不再是横向块里
+ *  嵌竖条（两侧大片黑边）。口径与 Step2「输出画幅」+ layoutSize 兜底完全同步：
+ *  vertical → 9/16；horizontal → 16/9；source → 原片分辨率（splitResolution）；
+ *  source 拿不到 → 9/16（layoutSize 对 source 无效探测的兜底即 1080x1920）。
+ *  三步右栏共用同一比例（Step3/4 预览的都是本链路成片，画幅同源） */
+const previewAspect = computed(() => {
+  const layout = concatLayout.value
+  if (layout === 'vertical') return '9 / 16'
+  if (layout === 'horizontal') return '16 / 9'
+  const m = /^(\d+)x(\d+)$/.exec(splitResolution.value || '')
+  if (m) {
+    const w = Number(m[1])
+    const h = Number(m[2])
+    if (w > 0 && h > 0) return `${w} / ${h}`
+  }
+  return '9 / 16'
+})
 
 /** Step2 右栏：每条方案一块——确认成片直播；未确认给镜头连播序列（激活块内连播） */
 const step2PreviewItems = computed<StepPreviewItem[]>(() => assemblePlans.value.map((p, i) => {
@@ -175,17 +194,66 @@ function onStep4Select(i: number): void {
   finalSelIdx.value = i
 }
 
-// 文字模板样式预览两端箭头滚动（2026-09-10 用户裁决：不用横向滚动条）
+// 文字模板样式预览折叠（2026-09-11 用户裁决：两端箭头废止 → 最右侧折叠按钮，
+// 默认只显示一行，样式多于一行时点「展开」看剩余）
 const textFxCanvasEl = ref<HTMLElement | null>(null)
-function scrollTextFxStyles(dir: number): void {
-  textFxCanvasEl.value?.scrollBy({ left: dir * 260, behavior: 'smooth' })
+const textFxExpanded = ref(false)
+/** 样式是否多到一行装不下（决定折叠按钮是否出现；只有一行时不给按钮） */
+const textFxOverflow = ref(false)
+/** 「一行」高度：按首个卡片实测（字号随模板变化，写死会裁字）+ 上下 padding */
+const textFxRowH = ref(0)
+const textFxCanvasStyle = computed(() =>
+  textFxExpanded.value ? {} : { '--fx-row-h': `${textFxRowH.value || 56}px` })
+/** 仅在收起态测量：展开态 scrollHeight == clientHeight 量不出溢出基准 */
+function measureTextFxStyles(): void {
+  const el = textFxCanvasEl.value
+  if (!el || textFxExpanded.value) return
+  // 不可见时（步未到或勾选关闭）几何全为 0 量不出真实溢出，跳过避免误判「一行装得下」
+  if (!el.clientHeight) return
+  const first = el.querySelector('.textfx-sample') as HTMLElement | null
+  if (first && first.offsetHeight > 0) textFxRowH.value = first.offsetHeight + 8
+  textFxOverflow.value = el.scrollHeight - el.clientHeight > 2
 }
+/** 展开/收起切换：收起后需重测（宽度不变但一行基准变了） */
+async function toggleTextFxStyles(): Promise<void> {
+  textFxExpanded.value = !textFxExpanded.value
+  await nextTick()
+  measureTextFxStyles()
+}
+watch(textFxStyleSamples, async () => {
+  textFxExpanded.value = false
+  await nextTick()
+  measureTextFxStyles()
+})
+// 首次挂载即测（模板库若已有数据、watch 不会触发 → 按钮会永不出现）
+onMounted(async () => { await nextTick(); measureTextFxStyles() })
+// 2026-09-11 二次修复「折叠箭头不出现」——全链路根因：模板库进入第④步才拉取
+// （loadTextTemplates），画布又随 textFxEnabled 勾选 v-if 挂载；原触发点（onMounted/
+// 样本变化）在画布不在 DOM 时全部空跑（ref=null 直接 return），勾选后无任何重测
+// → textFxOverflow 恒 false → 按钮 v-if 永不出现（父布局无固定高度，非布局钳制）。
+// 补两路触发：①扫到第④步/勾选开关变化即重测；②画布实挂载即挂 ResizeObserver
+// （初始回调保证挂载即测一次，持续兜底尺寸与布局变化）
+watch([step, textFxEnabled], async () => { await nextTick(); measureTextFxStyles() })
+let textFxResizeObs: ResizeObserver | null = null
+watch(textFxCanvasEl, (el) => {
+  textFxResizeObs?.disconnect()
+  textFxResizeObs = null
+  if (el) {
+    measureTextFxStyles()
+    textFxResizeObs = new ResizeObserver(() => measureTextFxStyles())
+    textFxResizeObs.observe(el)
+  }
+}, { flush: 'post' })
+onUnmounted(() => { textFxResizeObs?.disconnect(); textFxResizeObs = null })
 
 // ── 左右分栏手动调整（2026-09-10 用户需求）：拖拽分隔条改左右比例，默认 6:4，localStorage 记忆 ──
 const VD_SPLIT_KEY = 'vd-split-pct'
 const vdSplitPct = ref(Math.min(80, Math.max(35, Number(localStorage.getItem(VD_SPLIT_KEY)) || 60)))
 /** 左栏宽度由分隔条拖拽控制（右栏吃剩余全部，三步共享同一比例 → 右栏位置切步不变） */
 const vdLeftStyle = computed(() => ({ flex: `0 0 calc(${vdSplitPct.value}% - 6px)` }))
+// 拖拽改宽后每行能容纳的样式卡片数会变 → 重测样式预览是否溢出（声明须在
+// vdSplitPct 之后，否则 const TDZ 报错）
+watch(vdSplitPct, async () => { await nextTick(); measureTextFxStyles() })
 
 function onSplitDown(e: MouseEvent): void {
   e.preventDefault()
@@ -618,7 +686,8 @@ function scoreClass(score: number | undefined): string {
             <input v-model.number="batchCount" type="number" min="1" max="20" class="input w60" />
             <span class="hint">推荐: {{ recBatchCount }}</span>
           </div>
-          <!-- Parameters row 2（原版 L109-140：转场动画 | 出入场加速） -->
+          <!-- Parameters row 2（原版 L109-140：转场动画 | 出入场加速；输出帧率是本端新增控件——
+               原版无帧率入口、写死 30fps，2026-09-11 用户裁决加下拉且默认「跟随原片」） -->
           <div class="param-row">
             <span class="param-label">转场动画:</span>
             <select v-model="concatTransition" class="input w120" title="镜头之间的转场动画效果（剪映常用转场）">
@@ -629,6 +698,14 @@ function scoreClass(score: number | undefined): string {
               title="识别为「入场/出场」（位置，非景别）的镜头按此倍速加速播放，其它位置不受影响。&#10;位置来源：服务端 enter/exit 标注优先，否则按素材文件夹/文件名命名（入场、出场等）推断（见分割表「位置」列）。&#10;走服务端合成时生效；本地回退合成不支持加速；无位置标注的素材无效果。">
               <option v-for="o in EDGE_SPEEDUP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
+            <span class="param-label">输出帧率:</span>
+            <select v-model="concatFps" class="input w140"
+              title="成片帧率，随服务端合成提交 fps 字段（契约 integer，默认 30）。&#10;跟随原片：用服务端 split 响应的 source_resolution.fps（2026-09-11 实测有此字段），&#10;服务端未给时本地探测兑底；都不行则回退 30。&#10;29.97/23.976 等小数帧率服务端不收，一律取整。">
+              <option v-for="o in FPS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+            <span v-if="concatFps === 'source'" class="src-res"
+              title="服务端 source_resolution.fps 优先，本地探测兑底；都拿不到时按 30 fps 提交">
+              原片: {{ splitFps > 0 ? splitFps + ' fps' : '未知（回退 30）' }}</span>
           </div>
         </div>
 
@@ -647,24 +724,26 @@ function scoreClass(score: number | undefined): string {
                列：序号|视频|时长|状态|口播文案；时长列为同日追加裁决：已合成=成片探测
                实际时长，待确认=未删除镜头之和估计；交互不变：单击选中/双击查看文案/右键菜单） -->
           <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
-          <table class="tbl plan-tbl">
-            <thead><tr>
-              <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">时长</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
-            </tr></thead>
-            <tbody>
-              <tr v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
-                :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
-                @contextmenu.prevent="openPlanMenu($event, i)">
-                <td class="ta-c">{{ i + 1 }}</td>
-                <td class="plan-file" :title="p.outputName">{{ p.outputName || `${p.clips.length} 个镜头` }}</td>
-                <td class="ta-c">{{ planDurText(p) }}</td>
-                <td class="ta-c">{{ p.confirmed && p.outputName ? '已合成' : '待确认' }}</td>
-                <td class="plan-copy" :title="p.copy || ''">{{ p.copy ? copyPreviewText(p.copy) : '未生成口播文案' }}</td>
-              </tr>
-              <!-- 不足 10 行时占位，保持固定高度 -->
-              <tr v-for="n in Math.max(0, 10 - assemblePlans.length)" :key="'ph'+n" class="plan-placeholder"><td colspan="5"></td></tr>
-            </tbody>
-          </table>
+          <!-- 滚动容器（2026-09-11 用户裁决）：最大 10 行高度（表头 + 10 行，与下方详情表
+               332px 同口径），超出滚动；少于 10 行随真实行数收缩，不再用占位行撑高 -->
+          <div class="plan-tbl-wrap">
+            <table class="tbl plan-tbl">
+              <thead><tr>
+                <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">时长</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
+                  :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
+                  @contextmenu.prevent="openPlanMenu($event, i)">
+                  <td class="ta-c">{{ i + 1 }}</td>
+                  <td class="plan-file" :title="p.outputName">{{ p.outputName || `${p.clips.length} 个镜头` }}</td>
+                  <td class="ta-c">{{ planDurText(p) }}</td>
+                  <td class="ta-c">{{ p.confirmed && p.outputName ? '已合成' : '待确认' }}</td>
+                  <td class="plan-copy" :title="p.copy || ''">{{ p.copy ? copyPreviewText(p.copy) : '未生成口播文案' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
           <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
 
           <!-- 下半区：分割镜头详情表（10行高度；连播预览已迁右侧统一预览栏，
@@ -743,7 +822,8 @@ function scoreClass(score: number | undefined): string {
 
         <!-- 右栏：每条方案一块预览（确认成片直播；未确认单击块连播镜头序列，并联动左栏镜头表） -->
         <div class="vd-unified-right">
-          <StepPreviewPane title="方案预览" :items="step2PreviewItems" :active-index="currentPlanIdx"
+          <StepPreviewPane title="画面预览" :items="step2PreviewItems" :active-index="currentPlanIdx"
+            :aspect="previewAspect"
             empty-text="尚无预合成方案，勾选镜头后点击「镜头重组」" @select="selectPlan" />
         </div>
         </div><!-- /vd-unified -->
@@ -762,17 +842,19 @@ function scoreClass(score: number | undefined): string {
 
         <!-- 2. 参考声音（对齐 VoiceClone 页形态：样本下拉 + 常驻播放条换 src；
              声音样本数据源 = 服务端 GET /voice/samples；选中样本自动带出参考文案） -->
-        <div class="row">
+        <div class="row ref-row">
           <label class="label">参考声音:</label>
           <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : ''" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
-          <!-- 2026-09-09 用户裁决：播放条放到样本下拉框后面（同行右侧） -->
+          <!-- 2026-09-09 用户裁决：播放条放到样本下拉框后面（同行右侧）。2026-09-11
+               实测修复：TSelect 根默认 width:100% 会独占整行把播放条挤到下一行 →
+               行内归位为弹性填充（.ref-row 规则） -->
           <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
         </div>
 
-        <!-- 3. 参考文案行 -->
+        <!-- 3. 参考文案行（2026-09-11 用户裁决：单行显示不全 → 两行 textarea） -->
         <div class="row">
           <label class="label">参考文案:</label>
-          <input v-model="refText" class="input grow" placeholder="可选，填入样本台词..." />
+          <textarea v-model="refText" rows="2" class="input grow ref-text" placeholder="可选，填入样本台词..."></textarea>
         </div>
 
         <!-- TTS API 与推理参数行：2026-09-08 用户裁决删除（TTS 地址自动跟随系统设置，
@@ -802,12 +884,16 @@ function scoreClass(score: number | undefined): string {
                     <span class="spacer"></span>
                     <span v-if="row.status === 'generating'" class="vd-progress-text">{{ row.progress }}%</span>
                     <span class="vd-status" :class="voiceStatusClass(row)">{{ voiceStatusText(row) }}</span>
-                    <button class="icon-btn" title="播放克隆的声音" :disabled="!row.wavPath" @click="playVoice(i)">🔊</button>
-                    <button class="icon-btn" title="导出该克隆声音" :disabled="!row.wavPath" @click="exportVoice(i)">💾</button>
-                    <button class="icon-btn" title="对比与编辑文案" @click="openEditDlg(i)">⚖</button>
-                    <button class="icon-btn" title="仅重新生成该声音" :disabled="row.status === 'generating'" @click="regenVoice(i)">↻</button>
-                    <button class="icon-btn" :title="lengthModeTip(row)" @click="toggleLengthMode(i)">{{ row.lengthMode === 'video' ? '🎬' : '🎵' }}</button>
-                    <button class="icon-btn" :title="row.dubbedPath ? '播放配音后的视频' : '尚未生成配音视频'" :disabled="!row.dubbedPath" @click="playDubbedVideo(i)">📽</button>
+                    <!-- 2026-09-11 用户裁决：原 emoji 图标（🔊💾⚖↻🎬📽）与全局按钮体系
+                         不统一、含义不明 → 统一为 TButton 文字小按钮（显示作用），
+                         成组右对齐（.vd-actions，窄宽度换行后仍贴右）；
+                         二次裁决：删「导出」「试看」两按钮（不需要） -->
+                    <div class="vd-actions">
+                      <TButton label="试听" variant="secondary" size="small" :disabled="!row.wavPath" :title="row.wavPath ? '播放克隆的声音' : '尚未生成克隆声音'" @click="playVoice(i)" />
+                      <TButton label="编辑" variant="secondary" size="small" title="对比与编辑文案（双击配音文案栏同效）" @click="openEditDlg(i)" />
+                      <TButton label="重生成" variant="secondary" size="small" :disabled="row.status === 'generating'" :title="row.status === 'generating' ? '生成中，请稍候' : '仅重新生成该声音'" @click="regenVoice(i)" />
+                      <TButton :label="row.lengthMode === 'video' ? '时长:视频' : '时长:音频'" variant="secondary" size="small" :title="lengthModeTip(row)" @click="toggleLengthMode(i)" />
+                    </div>
                   </div>
                   <!-- 行 2：原文 + 视频时长（dialogs.py L424-439） -->
                   <div class="vd-row2">
@@ -870,6 +956,7 @@ function scoreClass(score: number | undefined): string {
         <!-- 右栏：每条待配音视频一块（配音完成切换配音后视频并点亮；进行中显进度，实时联动） -->
         <div class="vd-unified-right">
           <StepPreviewPane title="配音预览" :items="step3PreviewItems"
+            :aspect="previewAspect"
             empty-text="确认合成完成后，Step2 的成片视频会出现在这里逐条预览配音效果" />
         </div>
         </div><!-- /vd-unified -->
@@ -960,7 +1047,7 @@ function scoreClass(score: number | undefined): string {
                随机样式默认从全部模板中选 3 个；烧制待服务端烧制接口上线，先配置+预览；
                2026-09-10 布局裁决：勾选/设置/样式预览/效果预览各占一行） -->
           <div class="row">
-            <label class="chk" title="服务端文字模板（textfx 动画：弹跳/打字机/霓虹等），与花字是独立体系。&#10;随机样式：从模板库全部样式中随机选取 N 个轮换使用。&#10;烧制需服务端渲染支持（接口上线后接线）。">
+            <label class="chk" title="服务端文字模板（textfx 动画：弹跳/打字机/霓虹等），与花字是独立体系。&#10;随机样式=关键词命中模式：服务端从随合成请求提交的字幕里判定命中行（常用关键词∪内置卖点词），命中行整行改用模板动画；不足时自动由 LLM 从字幕行补足（默认开）。&#10;指定样式=整段字幕按该模板渲染。">
               <input v-model="textFxEnabled" type="checkbox" />
               添加文字模板 (关键信息动画提醒)
             </label>
@@ -968,21 +1055,22 @@ function scoreClass(score: number | undefined): string {
           <div v-if="textFxEnabled" class="row">
             <label class="param-label">文字模板:</label>
             <TSelect v-model="textTemplateId" :options="textTemplateOptions" class="w130"
-              title="来自服务端文字模板库（GET /text_templates/templates）。&#10;选「随机样式」时每次合成从全部模板随机选取 N 个，逐个关键词轮换使用。" />
+              title="来自服务端文字模板库（GET /text_templates/templates）。&#10;关键词判定与文案提取全部由服务端从合成请求携带的字幕完成，客户端不上传词表。&#10;选「随机样式」时命中行从随机模板池选样式；指定样式时整段字幕用该模板。" />
             <template v-if="textTemplateId === 'random'">
               <label class="param-label">随机数量:</label>
               <TSelect v-model="textRandomCount" :options="TEXT_RANDOM_COUNT_OPTIONS" class="w80"
-                title="随机模式下从全部文字模板样式中选取的个数（默认 3 个）" />
+                title="随机模板池大小（默认 3 个）：每次合成从模板库随机取 N 个作为命中行的候选样式" />
               <label class="param-label">关键词密度:</label>
               <TSelect v-model="textKeywordDensity" :options="TEXT_KEYWORD_DENSITY_OPTIONS" class="w80"
-                title="关键词密度档位：低=3 个/中=8 个/高=12 个提取上限。&#10;调节后重新提取口播文案关键词并重新生成需要合成的文字模板。" />
+                title="命中动画密度（服务端口径）：每 30 秒按低/中/高分别命中 3/6/10 个，保底 3 个；&#10;命中过多自动等距抽稀，不足时由 LLM 从字幕行挑补足。" />
             </template>
           </div>
           <div v-if="textFxEnabled" class="row">
             <label class="param-label">样式预览:</label>
-            <!-- 2026-09-10 用户裁决：样式多不用横向滚动条，两端箭头点击滚动 -->
-            <button class="icon-btn textfx-arrow" title="向左滚动" @click="scrollTextFxStyles(-1)">‹</button>
-            <div ref="textFxCanvasEl" class="style-preview-canvas textfx-canvas">
+            <!-- 2026-09-11 用户裁决：两端箭头废止，改最右折叠——默认一行，超出点「展开」
+                 （横向滚动条与两端箭头两套旧方案均已废止） -->
+            <div ref="textFxCanvasEl" class="style-preview-canvas textfx-canvas"
+              :class="{ 'textfx-expanded': textFxExpanded }" :style="textFxCanvasStyle">
               <template v-if="textFxStyleSamples.length">
                 <span v-for="s in textFxStyleSamples" :key="'ts' + s.id" class="textfx-sample"
                   :title="`模板：${s.name}`">
@@ -992,21 +1080,26 @@ function scoreClass(score: number | undefined): string {
               </template>
               <span v-else class="muted">{{ textTemplates.length ? '未命中模板' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
             </div>
-            <button class="icon-btn textfx-arrow" title="向右滚动" @click="scrollTextFxStyles(1)">›</button>
+            <button v-if="textFxOverflow" class="textfx-toggle"
+              :title="textFxExpanded ? '收起，只看一行' : '展开全部样式'"
+              @click="toggleTextFxStyles">
+              {{ textFxExpanded ? '收起 ▲' : '展开 ▼' }}
+            </button>
           </div>
-          <!-- 2026-09-10 用户终裁：本行不设「效果预览:」标签字，每行左侧=视频名；
-               时间轴条内词条只显示关键词本体（模板名小字废止，区域=纯文字模板展示区，
-               模板名仅保留在 hover 提示里） -->
+          <!-- 2026-09-10 用户终裁：本行不设「效果预览:」标签字；时间轴条内词条只显示关键词本体
+               （模板名小字废止，仅保留在 hover 提示里）。
+               2026-09-11 用户裁决：行左侧改显示「第N条」序号（完整视频名保留在悬停提示） -->
           <div v-if="textFxEnabled" class="row">
-            <!-- 上一步合成几条就几条轨，轨名=视频名，背景条本身即时长，词条按真实时间点定位 -->
+            <!-- 上一步合成几条就几条轨（2026-09-11 裁决：全部平铺不截断），
+                 轨名=第N条，背景条本身即时长，词条按真实时间点定位 -->
             <div class="style-preview-canvas textfx-tracks">
               <template v-if="textFxPreviewTracks.length">
                 <div v-for="(tr, ti) in textFxPreviewTracks" :key="'tt' + ti" class="textfx-track">
-                  <span class="textfx-track-name" :title="tr.name">{{ tr.name }}</span>
+                  <span class="textfx-track-name" :title="tr.name">第{{ ti + 1 }}条</span>
                   <div class="textfx-track-bar">
                     <span v-for="(it, ii) in tr.items" :key="'ti' + ii" class="textfx-track-item"
                       :style="{ left: (tr.durationSec > 0 ? Math.min(92, (it.start / tr.durationSec) * 100) : 0) + '%' }"
-                      :title="`${it.word} · ${it.tplName} · ${fmtDur(it.start)} / ${fmtDur(tr.durationSec)}`">
+                      :title="`${it.fullText || it.word} · ${it.tplName} · ${fmtDur(it.start)} / ${fmtDur(tr.durationSec)}`">
                       <!-- 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与烧制同源，
                            不再写死黄色）；关键词颜色由模板决定不可改；动画类绑内层
                            避免覆盖词条定位 transform -->
@@ -1068,11 +1161,12 @@ function scoreClass(score: number | undefined): string {
           <span class="vd4-gain-label">{{ bgmVolume }} %</span>
         </div>
 
-        <!-- 2026-09-10 用户裁决：双按钮同行；改名「服务端合成」；各自独立 loading
-             （finalMode 记录本次链路，点本地合成时服务端按钮不再转圈） -->
+        <!-- 2026-09-11 用户终裁：按钮决定链路，开了哪些特效/是否选 BGM 都只是参数——
+             「服务端合成」特效烧制 + BGM 混音整条交服务端一次 concat 完成（失败直接
+             报错，不静默回退本地）；「本地合成」全本地 ffmpeg。各自独立 loading -->
         <div class="row between" style="gap: var(--space-2)">
           <TButton label="服务端合成" class="vd4-run vd4-grow" :loading="finalBusy && finalMode === 'server'"
-            :disabled="finalBusy" title="混音走服务端；特效本地烧制" @click="startFinalMix()" />
+            :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
           <TButton label="本地合成" class="vd4-run vd4-grow" plain :loading="finalBusy && finalMode === 'local'"
             :disabled="finalBusy" title="特效+混音全本地 ffmpeg（字幕动画全功能）" @click="startFinalMix('local')" />
         </div>
@@ -1111,6 +1205,7 @@ function scoreClass(score: number | undefined): string {
         <!-- 右栏：统一预览（成片直播/候选+特效叠加层，点击块切列表选中） -->
         <div class="vd-unified-right">
           <StepPreviewPane title="成片预览" :items="step4PreviewItems" :active-index="finalSelIdx"
+            :aspect="previewAspect"
             empty-text="完成配音后进入本步，点击「服务端合成」或「本地合成」生成成片" @select="onStep4Select" />
         </div>
         </div><!-- /vd-unified -->
@@ -1201,8 +1296,8 @@ function scoreClass(score: number | undefined): string {
 
     <!-- 产品信息弹窗（原版 ProductCopyInputDialog，dialogs.py L347-388 文案逐字；
       2026-09-08 用户裁决：产品选择区与填写区合二为一不再二次弹窗——左侧内嵌
-      WbPickProductPanel（占弹窗一半宽），选中自动回填右侧表单，仍可手改；
-      填写区高度加高） -->
+      WbPickProductPanel，选中自动回填右侧表单，仍可手改；填写区高度加高。
+      2026-09-11 用户裁决：三块（产品列表｜产品详情｜填写表单）宽度 1:1:1） -->
     <teleport to="body">
       <div v-if="productDlg.show" class="modal-mask" @click.self="closeProductDlg">
         <div class="modal modal-pick">
@@ -1366,12 +1461,18 @@ function scoreClass(score: number | undefined): string {
       <div v-if="editDlg.show" class="modal-mask" @click.self="editDlg.show = false">
         <div class="modal modal-wide">
           <span class="modal-title">{{ editDlg.title }}</span>
-          <span class="hint">配音文案编辑:</span>
-          <div v-if="editDlg.original" class="edit-orig">
-            <span class="vd-tag muted-tag">原文:</span>
-            <span class="vd-orig">{{ editDlg.original }}</span>
+          <!-- 2026-09-11 用户裁决：对比改左右并排 1:1（左=原文只读栏、右=修改编辑栏；
+               原「配音文案编辑:」提示行删除——两栏标签已自明） -->
+          <div class="edit-cols">
+            <div v-if="editDlg.original" class="edit-col">
+              <span class="vd-tag muted-tag">原文:</span>
+              <div class="vd-orig">{{ editDlg.original }}</div>
+            </div>
+            <div class="edit-col">
+              <span class="vd-tag accent-tag">修改后:</span>
+              <textarea v-model="editDlg.content" class="modal-textarea modal-copy"></textarea>
+            </div>
           </div>
-          <textarea v-model="editDlg.content" class="modal-textarea modal-copy"></textarea>
           <div class="modal-actions">
             <TButton label="确定" @click="saveEditDlg" />
             <TButton label="取消" plain @click="editDlg.show = false" />
@@ -1490,22 +1591,22 @@ function scoreClass(score: number | undefined): string {
 .param-row .param-label { margin-left: var(--space-3); }
 .param-row .param-label:first-child { margin-left: 0; }
 .src-res { color: var(--warning); font-size: 11px; margin-left: 4px; }
-.w60 { width: 60px; } .w90 { width: 90px; } .w120 { width: 120px; } .w180 { width: 180px; }
+.w60 { width: 60px; } .w90 { width: 90px; } .w120 { width: 120px; } .w140 { width: 140px; } .w180 { width: 180px; }
 .clip-count { font-weight: 700; font-size: 14px; color: var(--warning); }
 .result-box {
   display: flex; flex-direction: column; gap: 10px; padding: 10px;
   background: var(--surface-container); border: 1px dashed var(--border); border-radius: var(--radius-md);
 }
-/* 预合成列表（2026-09-09 用户裁决改表格）：固定 10 行高度，不足占位，多余滚动 */
-.plan-tbl {
-  height: 290px; /* 10 行 × 29px，同原 .plan-list 口径 */
+/* 预合成列表（2026-09-09 用户裁决改表格；2026-09-11 用户裁决：最大 10 行高度，
+   超出滚动；不足 10 行随真实行数收缩——占位行已删，防止两表之间空余过多） */
+.plan-tbl-wrap {
+  max-height: 332px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: var(--radius-md);
 }
+.plan-tbl-wrap .plan-tbl { border-radius: 0; }
 .plan-tbl tr { cursor: pointer; }
 .plan-tbl tbody tr:hover { background: color-mix(in srgb, var(--primary) 6%, transparent); }
 .plan-tbl tr.picked { background: color-mix(in srgb, var(--primary) 12%, transparent); }
-.plan-tbl tr.plan-placeholder { visibility: hidden; pointer-events: none; }
-.plan-tbl tr.plan-placeholder td { border-bottom: 1px solid var(--border); height: 29px; }
 .plan-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .plan-copy { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); }
 .plan-empty { padding: 8px 10px; }
@@ -1540,11 +1641,14 @@ function scoreClass(score: number | undefined): string {
   padding: 20px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
 }
 .modal-wide { width: 600px; }
-/* 口播弹窗两栏：左=内嵌产品选择区（宽度≈原独立选择弹窗的一半），右=填写表单 */
+/* 口播弹窗三块 1:1:1（2026-09-11 用户裁决）：左列=内嵌产品选择区（其内部
+   列表 : 详情预览 = 对半），右列=填写表单——列表 : 详情 : 表单 ≈ 1 : 1 : 1 */
 .modal-pick { width: 80vw; max-width: 90vw; height: 80vh; }
 .pick-layout { flex: 1 1 auto; min-height: 0; display: flex; gap: var(--space-4); }
-.pick-left { flex: 1 1 50%; min-width: 0; min-height: 0; }
-.pick-right { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
+.pick-left { flex: 1 1 66.67%; min-width: 0; min-height: 0; }
+/* 面板默认列表 : 预览 = 54 : 46（工作台弹窗口径不变），本弹窗内覆写为对半 */
+.pick-left :deep(.picker-side) { flex: 0 0 50%; }
+.pick-right { flex: 1 1 33.33%; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
 .pick-right .modal-field { flex: 0 0 auto; }
 /* 2026-09-09 用户裁决：字段换行（label 上、输入框下占满整行） */
 .pick-right .modal-field--stack { flex-direction: column; align-items: stretch; gap: 6px; }
@@ -1573,8 +1677,17 @@ function scoreClass(score: number | undefined): string {
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Step3 口播配音样式（对照 VoiceRowDetailWidget 三行布局；颜色走 V3 design tokens） */
-/* Step3 参考声音播放条（2026-09-09 用户裁决：与样本下拉同行、位于其后） */
+/* Step3 参考声音行（2026-09-09 用户裁决：播放条与样本下拉同行、位于其后；
+   2026-09-11 修复：TSelect 根默认 width:100%，在 flex-wrap 行内独占整行把
+   播放条挤到下一行 → 行内将下拉归位为弹性填充，宽度交给剩余空间） */
+.ref-row :deep(.t-select) { flex: 1 1 0; width: auto; min-width: 0; }
 .ref-audio { height: 32px; width: 320px; flex: 0 1 auto; }
+/* 参考文案（2026-09-11 用户裁决：单行 input 显示不全 → 两行高度，可纵向拉伸）。
+   源序必须在 .input 之后（同特异性覆盖其 height:32px / padding:0 10px） */
+.ref-text {
+  height: auto; min-height: 52px; padding: 6px 10px;
+  line-height: 1.5; font-family: inherit; resize: vertical;
+}
 /* 页尾上传新样本（VoiceClone upload-section 同款卡片 + dropzone 拖拽区） */
 .ns-section {
   padding: var(--space-5);
@@ -1613,8 +1726,20 @@ function scoreClass(score: number | undefined): string {
    列内按钮 flex-wrap 换行、长文本省略，窄宽度不再把操作列挤出可视区 */
 .voice-table { margin-top: var(--space-3); width: 100%; table-layout: fixed; }
 .voice-table .w-idx { width: 48px; }
+/* 整个列表底色（2026-09-11 用户裁决）：表体整体铺 surface-container 浅底，
+   表头再深一档 surface-container-high 保持层级；行内编辑框连带反转为白底
+   （见 .vd-edit 的 .voice-table 覆盖），避免灰底上输入框消失 */
+.voice-table { background: var(--surface-container); }
+.voice-table th { background: var(--surface-container-high); }
 .vd-detail { display: flex; flex-direction: column; gap: 6px; }
 .vd-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* 行内操作按钮组（2026-09-11 用户裁决：emoji 图标统一为文字小按钮；成组右对齐，
+   且右缘与行 2/3「原文/修改后」文案栏右缘对齐——不是与时间列对齐。
+   偏移 66px = 时间列 60px（.vd-dur-*）+ 行间隙 6px（.vd-row2/3 gap），同步维护） */
+.vd-actions {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-left: auto; margin-right: 66px;
+}
 .vd-name {
   max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 13px; font-weight: 600; color: var(--foreground);
@@ -1648,6 +1773,9 @@ function scoreClass(score: number | undefined): string {
 .vd-edit:focus { border-color: var(--success); }
 /* 已生成绿背景（原版 rgba(46,204,113,0.25) + border #2ecc71，L1718-1745） */
 .vd-edit.has-wav { background: rgba(46, 204, 113, 0.25); border-color: #2ecc71; }
+/* 2026-09-11 列表底色裁决连带：表体已铺浅灰底，默认态编辑框反转为白底保持可辨识。
+   必须用 :not(.has-wav) —— 绿底规则同特异性且在本规则之前，不限定会被罩掉 */
+.voice-table .vd-edit:not(.has-wav) { background: var(--card); }
 .vd-progress { width: 100%; height: 6px; appearance: none; border-radius: 3px; overflow: hidden; }
 .vd-progress::-webkit-progress-bar { background: var(--surface-container); }
 .vd-progress::-webkit-progress-value { background: var(--primary); transition: width 0.3s; }
@@ -1656,8 +1784,11 @@ function scoreClass(score: number | undefined): string {
   padding: var(--space-4); background: var(--surface-container);
   border: 1px solid var(--border); border-radius: var(--radius-md);
 }
-/* 2026-09-10 用户裁决：设置组靠左、克隆主操作居最右（两端对齐） */
+/* 2026-09-10 用户裁决：设置组靠左、克隆主操作居最右（两端对齐）。
+   2026-09-11 用户裁决：本行控件等高——下拉 34 / 小按钮 28 / 主按钮 36 三种高度
+   混排 → 统一为输入高度 34px（与下拉及页面表单控件同口径，含四颗按钮） */
 .clone-row { align-items: center; }
+.clone-row :deep(.t-button) { height: var(--size-input-height); }
 .chk {
   display: flex; align-items: center; gap: 6px; cursor: pointer;
   font-size: 13px; font-weight: 600; color: var(--foreground);
@@ -1791,9 +1922,16 @@ function scoreClass(score: number | undefined): string {
 }
 .bgm-pick-act:hover { background: var(--surface-container-high); }
 
-/* 配音文案编辑弹窗原文对照 */
-.edit-orig { display: flex; align-items: flex-start; gap: 6px; }
-.edit-orig .vd-orig { white-space: pre-wrap; max-height: 72px; overflow-y: auto; }
+/* 配音文案编辑弹窗：原文/修改后左右对照 1:1（2026-09-11 用户裁决：左右并排等宽，
+   而非上原文下编辑框；两栏等高，原文栏为只读框、修改栏为编辑 textarea） */
+.edit-cols { display: flex; gap: var(--space-3); align-items: stretch; }
+.edit-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.edit-col .vd-orig {
+  flex: 1 1 auto; min-height: 300px; padding: 8px;
+  background: var(--surface-container); border: 1px solid var(--border);
+  border-radius: var(--radius-md); color: var(--foreground); font-size: 13px;
+  white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto;
+}
 
 /* Step4 AI 生成 BGM 面板 */
 .ai-bgm-panel {
@@ -1819,14 +1957,16 @@ function scoreClass(score: number | undefined): string {
 /* 2026-09-10 用户终裁：词条只显示关键词本体（textfx-word-tpl 模板名小字废止） */
 /* 效果预览时间轴（2026-09-10 用户裁决：每视频一条，背景条=视频时长，
    词条按 timing 真实时间点绝对定位；hover 提示词/模板/时间点） */
-/* 2026-09-10 用户报障：多轨被共用画布 52px 固定高+overflow:hidden 裁到只剩一条 →
-   效果预览容器放开高度（约 3 轨可视，更多纵向滚动） */
-.textfx-tracks { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px; height: auto; max-height: 168px; overflow-y: auto; overflow-x: hidden; }
+/* 2026-09-10 报障：多轨被共用画布 52px 固定高裁剪 → 曾放开到 168px 高、3 轨滚动；
+   2026-09-11 用户裁决改用平铺：有几条视频几条轨全部显示不内部滚动
+   （高度由内容撑开，长列表交给页面滚动） */
+.textfx-tracks { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px; height: auto; overflow: hidden; }
 .textfx-track { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .textfx-track-name {
-  flex: 0 0 190px; font-size: 11px; color: var(--muted-foreground);
-  /* 2026-09-10 用户裁决终态：轨名=完整视频名，过长换行（「第 N 条」角标废止） */
-  word-break: break-all; white-space: normal; text-align: right; line-height: 1.3;
+  /* 2026-09-11 用户裁决：轨名=「第N条」序号（190px 文件名宽版与 break-all 换行废止，
+     完整视频名保留在 title 悬停提示）；定宽保证各轨条头对齐 */
+  flex: 0 0 60px; font-size: 11px; color: var(--muted-foreground);
+  white-space: nowrap; text-align: right; line-height: 1.3;
 }
 .textfx-track-bar {
   position: relative; flex: 1; height: 44px; min-width: 0;
@@ -1844,17 +1984,30 @@ function scoreClass(score: number | undefined): string {
   text-shadow: 0 0 4px rgba(0, 0, 0, 0.8); white-space: nowrap; cursor: default;
 }
 /* 文字模板样式预览：按模板 variables 默认色本地渲染示例（服务端无预览接口，2026-09-10） */
-/* 文字模板行样式预览（2026-09-10 二次裁决：展示模板库全部样式——橱窗式横向滚动；
- * 共用画布居中裁切不适合全量展示，仅此行放开滚动并左对齐） */
+/* 文字模板行样式预览（2026-09-11 用户终裁：换行铺满 + 默认只显示一行，
+ * 超出由行尾「展开/收起」按钮控制；旧的横向滚动 + 两端箭头方案废止） */
 .style-preview-canvas.textfx-canvas {
   justify-content: flex-start;
-  overflow-x: auto; overflow-y: hidden;
-  padding: 0 8px;
-  /* 2026-09-10 用户裁决：不用滚动条，两端箭头控制滚动 */
-  scrollbar-width: none;
+  align-items: flex-start;
+  align-content: flex-start;
+  flex-wrap: wrap;
+  height: auto;
+  max-height: var(--fx-row-h, 56px);
+  overflow: hidden;
+  padding: 4px 8px;
+  row-gap: 4px;
 }
-.style-preview-canvas.textfx-canvas::-webkit-scrollbar { display: none; }
-.textfx-arrow { flex: none; width: 26px; height: 52px; font-size: 18px; color: var(--muted-foreground); }
+.style-preview-canvas.textfx-canvas.textfx-expanded {
+  max-height: 268px;
+  overflow-y: auto;
+}
+/* 折叠按钮（最右侧）：不用 .icon-btn（28px 宽装不下中文） */
+.textfx-toggle {
+  flex: none; height: 24px; padding: 0 8px; font-size: 12px; white-space: nowrap;
+  background: var(--card); color: var(--muted-foreground);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer;
+}
+.textfx-toggle:hover { border-color: var(--primary); color: var(--foreground); }
 .textfx-sample {
   display: inline-flex; flex-direction: column; align-items: center; gap: 2px;
   margin: 0 6px; padding: 4px 10px; background: #2a2a2a; border: 1px solid var(--border);

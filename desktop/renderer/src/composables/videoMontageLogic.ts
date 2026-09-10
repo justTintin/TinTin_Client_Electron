@@ -75,7 +75,8 @@ export interface SplitShot {
   product: string
   /** 型号（同上） */
   model: string
-  /** 画幅 WxH（服务端返回，多数为空 → UI 端 ffprobe 探测源片兜底） */
+  /** 画幅 WxH（服务端逐镜返回对象 {width,height}，2026-09-11 实测；空则 UI 用
+   *  ffprobe 探测源片结果兜底） */
   resolution: string
 }
 
@@ -126,7 +127,9 @@ export function parseSplitResponse(resp: unknown): SplitShot[] {
         exit: !!s.exit,
         product: String((analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).product : s.product) || ''),
         model: String((analysis && typeof analysis === 'object' ? (analysis as Record<string, unknown>).model : s.model) || ''),
-        resolution: String(s.resolution || ''),
+        // 逐镜画幅：服务端返回对象 {width,height}（2026-09-11 在线实测），
+        // 统一归一化为 "WxH"——旧实现 String(对象) 直接渲染成 "[object Object]"
+        resolution: normalizeSourceResolution(s.resolution),
       }
     })
 }
@@ -231,6 +234,27 @@ export function layoutSize(
     if (w > 0 && h > 0) return { width: w, height: h }
   }
   return { width: 1080, height: 1920 }
+}
+
+/** Step2 输出帧率下拉选项（2026-09-11 用户裁决：帧率可控，默认「跟随原片」）。
+ *  服务端 /montage/concat 契约 fps 为 integer（default 30），29.97/23.976 等
+ *  小数帧率不可直传 → 档位一律取整。 */
+export const FPS_OPTIONS: Array<{ label: string; value: number | 'source' }> = [
+  { label: '跟随原片', value: 'source' },
+  { label: '24 fps（影视）', value: 24 },
+  { label: '25 fps（PAL/国内流）', value: 25 },
+  { label: '30 fps（通用）', value: 30 },
+  { label: '50 fps（流畅）', value: 50 },
+  { label: '60 fps（高刷）', value: 60 },
+]
+
+/** 帧率选择 → 提交服务端的整数 fps。
+ *  'source'（跟随原片）用 Step1 探测到的原片帧率；探测失败（0/无效）兑底 30
+ *  ——与契约默认值一致，避免传 0 被服务端拒或出 0 帧产物。 */
+export function resolveConcatFps(sel: number | 'source', probedFps: number): number {
+  const n = sel === 'source' ? Number(probedFps) : Number(sel)
+  if (!Number.isFinite(n) || n <= 0) return 30
+  return Math.max(1, Math.round(n))
 }
 
 export interface ConcatPayload {
@@ -349,10 +373,19 @@ export function safeSourceName(name: string, maxLen = 40): string {
 }
 
 /**
- * 归一化服务端 split 响应的原片分辨率（对照原版 _detect_and_show_source_resolution L4768-4773：
- * 支持 [w,h] 数组或 "WxH" 字符串；无效返回空串，由调用方回退本地探测）。
+ * 归一化服务端 split 响应的画幅值（原片 source_resolution 与逐镜 resolution 共用）。
+ * 对照原版 _detect_and_show_source_resolution L4768-4773（[w,h] 数组 / "WxH" 字符串），
+ * 2026-09-11 在线实测补第三形态：**对象 {width,height}**——旧实现落到 String(obj)
+ * 分支，表格画幅列直接显示 "[object Object]"（shots[].resolution 实测即为对象）；
+ * 无效返回空串，由调用方回退本地探测。
  */
 export function normalizeSourceResolution(value: unknown): string {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const o = value as Record<string, unknown>
+    const w = Math.floor(Number(o.width ?? o.w))
+    const h = Math.floor(Number(o.height ?? o.h))
+    return w > 0 && h > 0 ? `${w}x${h}` : ''
+  }
   if (Array.isArray(value) && value.length === 2) {
     const w = Math.floor(Number(value[0]))
     const h = Math.floor(Number(value[1]))
@@ -931,6 +964,8 @@ export interface TextFxTrackItem {
   anim?: string
   /** 命中模板的预览样式（颜色/渐变，不含 fontSize） */
   tplStyle?: Record<string, string>
+  /** 服务端命中行的完整文本（word 为命中关键词时悬停提示显示整行；2026-09-11） */
+  fullText?: string
 }
 
 /** 确定性种子洗牌（LCG；seed 相同结果相同 → 预览与烧制同源不漂移）。
@@ -962,14 +997,44 @@ export interface TextFxTrack {
 }
 
 /**
- * 组装效果预览时间轴：逐视频从文案提取关键词，命中句级时间轴（timing 优先，
- * 缺失回退字数占比均分视频时长——与主进程 buildSrtFromTiming 兑底同口径）；
- * 模板分配按 (视频序号 + 词序号) 对模板池取模轮换，使不同视频的随机样式错开。
+ * 组装字幕行（服务端 /text_templates/match、/montage/concat 的 subtitle_rows 入参）：
+ * timing 优先；缺失回退字数占比均分视频时长（与主进程 buildSrtFromTiming 兜底同口径）。
  * 纯函数可单测。
  */
+export function buildSubtitleRows(
+  text: string,
+  timing: Array<{ text: string; start: number; end: number }> | undefined,
+  durationSec: number,
+): Array<{ text: string; start: number; end: number }> {
+  const sents = (timing || [])
+    .map((t) => ({ text: String(t.text || '').trim(), start: Number(t.start) || 0, end: Number(t.end) || 0 }))
+    .filter((s) => s.text)
+  if (sents.length) return sents
+  const lines = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  const weights = lines.map((l) => Math.max(1, l.length))
+  const total = weights.reduce((a, b) => a + b, 0)
+  let cum = 0
+  return lines.map((l, i) => {
+    const s = cum
+    cum += (durationSec > 0 ? durationSec : lines.length * 5) * weights[i] / total
+    return { text: l, start: s, end: cum }
+  })
+}
+
+/**
+ * 组装效果预览时间轴（2026-09-11 用户裁决：命中数据一律取自服务端
+ * /text_templates/match 返回的 lines——selected=合成时会加动画的行（含关键词命中/
+ * LLM 补足/等距兜底三类），word 优先显示命中关键词（matched_keywords），无词行
+ * 显示整行文本截断；模板样式按 (视频序号 + 词序号) 对每视频随机子集取模轮换，
+ * 使不同视频的随机样式错开）。纯函数可单测。
+ */
 export function buildTextFxTracks(opts: {
-  rows: Array<{ name: string; text: string; durationSec: number; timing?: Array<{ text: string; start: number; end: number }> }>
-  maxWords: number
+  rows: Array<{
+    name: string
+    durationSec: number
+    /** 服务端命中行动画（lines 中 selected=true 的行；行级时间戳） */
+    lines?: Array<{ text: string; start: number; end: number; keywords?: string[] }>
+  }>
   tplNames: string[]
   /** 每视频随机样式个数（2026-09-10 用户裁决；缺省 0=全量池轮换） */
   count?: number
@@ -977,32 +1042,19 @@ export function buildTextFxTracks(opts: {
   return (opts.rows || []).map((row, vi) => {
     const videoPool = pickVideoStyles(opts.tplNames, opts.count ?? 0, vi) // 每视频独立随机子集
     const dur = Math.max(0, Number(row.durationSec) || 0)
-    let sents = (row.timing || [])
-      .map((t) => ({ text: String(t.text || '').trim(), start: Number(t.start) || 0, end: Number(t.end) || 0 }))
-      .filter((s) => s.text)
-    if (!sents.length) {
-      const lines = String(row.text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-      const weights = lines.map((l) => Math.max(1, l.length))
-      const total = weights.reduce((a, b) => a + b, 0)
-      let cum = 0
-      sents = lines.map((l, i) => {
-        const s = cum
-        cum += (dur > 0 ? dur : lines.length * 5) * weights[i] / total
-        return { text: l, start: s, end: cum }
-      })
-    }
-    const words = [...new Set(extractFancyWordsFromText(row.text, opts.maxWords))]
-    const items: TextFxTrackItem[] = []
-    for (const w of words) {
-      const hit = sents.find((s) => s.text.includes(w))
-      if (!hit) continue
-      items.push({
-        word: w,
-        tplName: videoPool.length ? videoPool[(vi + items.length) % videoPool.length] : '',
-        start: hit.start,
-        end: hit.end,
-      })
-    }
+    const lines = (row.lines || []).filter((l) => String(l.text || '').trim())
+    const items: TextFxTrackItem[] = lines.map((l, i) => {
+      const kws = (Array.isArray(l.keywords) ? l.keywords : []).map((k) => String(k).trim()).filter(Boolean)
+      const full = String(l.text).trim()
+      return {
+        // 命中关键词优先（服务端 matched_keywords）；LLM/兜底补足行无词 → 整行截断
+        word: kws.length ? kws.join('/') : full.length > 10 ? `${full.slice(0, 10)}…` : full,
+        fullText: full,
+        tplName: videoPool.length ? videoPool[(vi + i) % videoPool.length] : '',
+        start: Number(l.start) || 0,
+        end: Number(l.end) || 0,
+      }
+    })
     return { name: row.name, durationSec: dur, items }
   })
 }

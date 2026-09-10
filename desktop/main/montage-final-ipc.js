@@ -16,7 +16,7 @@
 
 'use strict'
 
-const { spawn, execSync } = require('node:child_process')
+const { spawn, spawnSync, execSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const JY = require('./jianying-exporter')
@@ -92,11 +92,22 @@ function hasAudioStream(videoPath) {
   }
 }
 
-/** ffprobe 探测（时长/宽高，供剪映导出 _probe_video） */
+/** ffprobe 不可用时懒加载 ffmpeg-gate 的 stderr 解析器（该模块顶层 require('electron')，
+ *  直接顶部依赖会让 node --test 下的纯函数单测加载失败；拿不到则视为无兜底）。 */
+function parseFfmpegInfoLazy(stderr) {
+  try { return require('./ffmpeg-gate').parseFfmpegInfo(stderr) } catch (_) { return null }
+}
+
+/** ffprobe 探测（时长/宽高/帧率，供剪映导出 _probe_video + 服务端合成回传源规格）。
+ *  fps 必需：/montage/concat 不传 width/height/fps 时按契约默认值 1080x1920@30
+ *  强制改写产物（2026-09-11 实测：源 720x1280@25 → 产物 1080x1920@30）。
+ *  打包环境 resources/bin 不带 ffprobe.exe（仅 ffmpeg.exe/yt-dlp.exe）→ 回退
+ *  ffmpeg -i stderr 解析，否则正式包回传不了源规格、产物被服务端硬改竖屏 30 帧。 */
 function probeMedia(filepath) {
   let durationSec = 0.0
   let width = 1080
   let height = 1920
+  let fps = 0
   try {
     const out = execSync(
       `"${getFfprobePath()}" -v error -show_entries format=duration -of csv=p=0 "${filepath}"`,
@@ -106,7 +117,7 @@ function probeMedia(filepath) {
   } catch (_) { /* 原版失败返回 0 */ }
   try {
     const out = execSync(
-      `"${getFfprobePath()}" -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "${filepath}"`,
+      `"${getFfprobePath()}" -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 "${filepath}"`,
       { timeout: 10000, windowsHide: true, encoding: 'utf-8' },
     ).trim()
     const first = String(out).split(/\r?\n/).find((s) => s.trim())
@@ -116,9 +127,42 @@ function probeMedia(filepath) {
         width = Math.round(parseFloat(parts[0])) || 1080
         height = Math.round(parseFloat(parts[1])) || 1920
       }
+      // r_frame_rate 形如 "25/1"；可变帧率给 "0/0" → 按 0 处理（不回传，交服务端默认）
+      if (parts.length >= 3) {
+        const [n, d] = String(parts[2]).split('/').map((x) => parseFloat(x))
+        if (n > 0 && d > 0) fps = Math.round(n / d)
+      }
     }
-  } catch (_) { /* 原版失败返回默认尺寸 */ }
-  return { durationSec, width, height }
+  } catch (_) { /* 交给下方 ffmpeg 兜底 */ }
+  if (!durationSec || !fps) {
+    const fb = probeMediaViaFfmpeg(filepath)
+    if (fb) {
+      if (!durationSec) durationSec = fb.durationSec || 0.0
+      if (fb.width > 0 && fb.height > 0) { width = fb.width; height = fb.height }
+      if (!fps) fps = fb.fps || 0
+    }
+  }
+  return { durationSec, width, height, fps }
+}
+
+/** ffmpeg -i stderr 兜底探测（无 ffprobe 环境）：同步取 stderr 后交 ffmpeg-gate 解析器；
+ *  失败返回 null 由调用方沿用默认值。fps 取整（服务端契约 integer）。 */
+function probeMediaViaFfmpeg(filepath) {
+  try {
+    const r = spawnSync(getFfmpegPath(), ['-hide_banner', '-i', filepath], {
+      timeout: 10000, windowsHide: true, encoding: 'utf-8',
+    })
+    const parsed = parseFfmpegInfoLazy(String(r.stderr || ''))
+    if (!parsed || !(parsed.width > 0)) return null
+    return {
+      durationSec: parsed.duration || 0,
+      width: parsed.width,
+      height: parsed.height,
+      fps: parsed.fps > 0 ? Math.round(parsed.fps) : 0,
+    }
+  } catch (_) {
+    return null
+  }
 }
 
 /** 输入目录 → outputs 目录（_get_out_montage_dir L3969-3981 一比一） */
@@ -206,21 +250,30 @@ function buildSrtFromTiming(text, timing, videoDur) {
   return lines.map((l, i) => `${i + 1}\n${ts(starts[i])} --> ${ts(Math.max(starts[i] + 0.2, ends[i]))}\n${l}`).join('\n')
 }
 
-/** 特效配置 → 服务端统一合成表单字段（2026-09-10 在线契约；口径对照原版
- *  _submit_concat_to_server：subtitle_style=JSON{box_opacity}；fancy_timing='subtitle_sync'
- *  服务端自动按字幕同步提前 0.3s，客户端不提供时间轴；文案服务端自动提取。
- *  text_template_match_*：2026-09-10 服务端新增 match_density（low/mid/high，默认
- *  high，非法退 high）；模板 id 为 random（未指定）→ match_enabled=true 走全局词表
- *  自动匹配（/text_templates/keywords 为取数源）；text_template_timing 缺省
- *  subtitle_sync 与服务端默认一致不传） */
+/** 特效配置 → 服务端统一合成表单字段（口径对照服务端 /guide「镜头拼接」V-FANCY-3）：
+ *  · 字幕文本（subtitle_srt）= 烧字幕/花字/文字模板的共同数据源 → 任一特效开启即传；
+ *    burn_subtitle 只决定「是否把字幕烧进画面」，与传不传字幕数据无关
+ *    （/guide：花字 subtitle_sync 与文字模板命中均「需同任务字幕」，命中在合成
+ *    请求内做、服务端不保存待命中的字幕 → 必须随请求带全）；
+ *  · 2026-09-11 用户裁决：不再传本地提取的词表（text_template_words）——关键词
+ *    命中由服务端自行完成（常用关键词∪内置卖点词；不足由 LLM 从字幕行补足，
+ *    text_template_match_llm 默认开）；客户端也不再预传词表到 /text_templates/keywords；
+ *  · match 模式必填 text_template_match_ids（客户端模板池，命中行从池中随机选一），
+ *    漏传则服务端无池可用（/guide 决策1/11）。 */
 function buildServerFxFields(fx, srt) {
   const fields = {}
+  // 字幕数据随任一依赖字幕的特效下发（不依赖 burn_subtitle 开关）
+  if (srt && (fx.addSubtitles || fx.fancyText || fx.textFxEnabled)) {
+    fields.subtitle_srt = srt
+  }
   if (fx.addSubtitles) {
     fields.burn_subtitle = 'true'
-    if (fx.subtitleFont) fields.fontname = String(fx.subtitleFont)
+    // 客户端字体下拉的 value 就是服务端字体 id（fontOptions 由 GET /config/fonts
+    // 构建，items.push({ label, value: fid })）→ 走契约 font_id 字段；
+    // fontname 仅适用于真字体族名场景，本端不传（旧实现把 id 当族名传错）
+    if (fx.subtitleFont) fields.font_id = String(fx.subtitleFont)
     const op = Math.min(1, Math.max(0, Number(fx.subtitleBoxOpacity ?? 0.5)))
     fields.subtitle_style = JSON.stringify({ box_opacity: Number.isFinite(op) ? op : 0.5 })
-    if (srt) fields.subtitle_srt = srt
   }
   if (fx.fancyText) {
     fields.fancy_enabled = 'true'
@@ -239,11 +292,12 @@ function buildServerFxFields(fx, srt) {
     if (fx.textTemplateId && fx.textTemplateId !== 'random') {
       fields.text_template_id = String(fx.textTemplateId)
     } else {
-      // 随机样式（未指定模板）→ 按全局词表自动匹配模板
+      // 随机样式（未指定模板）→ 服务端关键词命中模式（match 优先）
       fields.text_template_match_enabled = 'true'
-    }
-    if (Array.isArray(fx.textTemplateWords) && fx.textTemplateWords.length) {
-      fields.text_template_words = JSON.stringify(fx.textTemplateWords)
+      // match 必填：客户端模板池（/guide text_template_match_ids）
+      if (Array.isArray(fx.textTemplateMatchIds) && fx.textTemplateMatchIds.length) {
+        fields.text_template_match_ids = JSON.stringify(fx.textTemplateMatchIds.map((x) => String(x)))
+      }
     }
     const md = String(fx.matchDensity || '').trim().toLowerCase()
     if (md === 'low' || md === 'mid' || md === 'high') fields.text_template_match_density = md
@@ -251,35 +305,63 @@ function buildServerFxFields(fx, srt) {
   return fields
 }
 
-/** multipart 组装（单文件 files 字段 + 文本字段；boundary 随机） */
-function buildFxMultipart(fields, filePath) {
+/** multipart 组装（主视频 files 字段 + 文本字段 + 可选附加文件（BGM）；boundary 随机） */
+function buildFxMultipart(fields, filePath, extraFiles) {
   const boundary = '----TintinFx' + Math.random().toString(16).substring(2)
   const parts = []
   for (const [k, v] of Object.entries(fields || {})) {
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`))
   }
-  const fname = path.basename(filePath).replace(/"/g, '')
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${fname}"\r\nContent-Type: video/mp4\r\n\r\n`))
-  parts.push(fs.readFileSync(filePath))
-  parts.push(Buffer.from('\r\n'))
+  const filePart = (name, fp, ctype) => {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${path.basename(fp).replace(/"/g, '')}"\r\nContent-Type: ${ctype}\r\n\r\n`))
+    parts.push(fs.readFileSync(fp))
+    parts.push(Buffer.from('\r\n'))
+  }
+  filePart('files', filePath, 'video/mp4')
+  for (const ef of (extraFiles || [])) filePart(ef.name, ef.path, ef.ctype)
   parts.push(Buffer.from(`--${boundary}--\r\n`))
   return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` }
 }
 
-/** 服务端统一合成特效烧制（单视频）：提交 → 轮询结果端点 → 下载落盘 → moov 校验。
- *  任一环节失败抛错由调用方回退本地 ffmpeg。产物校验防两处实测坑：
- *  未就绪 200+0B 空体、就绪产物截断 moov 缺失。 */
-async function serverFxBurnOne({ httpRequest, videoPath, fxOut, fx, sub, videoDur }) {
-  let timing = null
-  try {
-    const sidecar = String(sub.timingPath || '')
-    if (sidecar && fs.existsSync(sidecar)) {
-      const arr = JSON.parse(fs.readFileSync(sidecar, 'utf-8'))
-      if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
-    }
-  } catch (_) { timing = null }
-  const fields = buildServerFxFields(fx, buildSrtFromTiming(sub.text, timing, videoDur))
-  const { body, contentType } = buildFxMultipart(fields, videoPath)
+/** 服务端统一合成（单视频，2026-09-11 用户终裁：点「服务端合成」= 特效烧制 + BGM
+ *  混音全部由服务端一次 /montage/concat 调用完成）：提交 → 轮询
+ *  /montage/concat/result/{id} → 落盘 outPath → 校验。
+ *  在线实测依据（192.168.111.31:8000，2026-09-11）：
+ *   - 单镜头约束已放开（单 files 提交 200 clip_count:1，id 880/881/886/887/888）；
+ *   - concat 自带 bgm/bgm_volume 字段：静音素材（mean -91dB）+ BGM 提交后产物
+ *     mean -32.5dB → BGM 确被混入；不传 bgm 时源音轨直通（-21.1dB）；
+ *   - 不传 width/height/fps 会被契约默认值 1080x1920@30 强制改写产物（实测源
+ *     720x1280@25 → 产物 1080x1920@30）→ 必须回传源规格；回传后产物保持 720x1280@25；
+ *   - 不走 /montage/bgm：该端点 video_url=/output/... 实测 404（API 未挂静态目录），
+ *     而 concat 产物经 result 端点下载可用。
+ *  任一环节失败抛错（终裁：调用方直接报错给用户，不回退本地——回退会使两按钮语义失真）。
+ *  产物校验防两处实测坑：未就绪 200+0B 空体、就绪产物截断 moov 缺失。 */
+async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, videoDur, spec, bgmPath, bgmVol }) {
+  let fields = {}
+  if (fx && sub) {
+    let timing = null
+    try {
+      const sidecar = String(sub.timingPath || '')
+      if (sidecar && fs.existsSync(sidecar)) {
+        const arr = JSON.parse(fs.readFileSync(sidecar, 'utf-8'))
+        if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
+      }
+    } catch (_) { timing = null }
+    fields = buildServerFxFields(fx, buildSrtFromTiming(sub.text, timing, videoDur))
+  }
+  // 回传源规格：否则服务端按默认 1080x1920@30 改写产物（实测坑）
+  if (spec && spec.width > 0 && spec.height > 0) {
+    fields.width = String(spec.width)
+    fields.height = String(spec.height)
+  }
+  if (spec && spec.fps > 0) fields.fps = String(spec.fps)
+  const extraFiles = []
+  if (bgmPath && fs.existsSync(bgmPath)) {
+    // bgm_volume 为 volume 系数口径（服务端默认 0.6，与客户端 bgmVolume/100 同口径）
+    fields.bgm_volume = Number(bgmVol || 0.6).toFixed(2)
+    extraFiles.push({ name: 'bgm', path: bgmPath, ctype: 'audio/mpeg' })
+  }
+  const { body, contentType } = buildFxMultipart(fields, videoPath, extraFiles)
   const res = await httpRequest('POST', '/montage/concat', {
     body,
     headers: { 'Content-Type': contentType },
@@ -309,58 +391,23 @@ async function serverFxBurnOne({ httpRequest, videoPath, fxOut, fx, sub, videoDu
     break
   }
   if (!buf) throw new Error('统一合成结果轮询超时（15 分钟）')
-  fs.writeFileSync(fxOut, buf)
-  const dur = getMediaDuration(fxOut)
-  if (!(dur > 0)) {
-    try { fs.unlinkSync(fxOut) } catch (_) { /* 忽略 */ }
-    throw new Error('服务端特效产物无法读取（moov 缺失/截断）')
-  }
-}
-
-/** 服务端 BGM 混音（2026-09-10 用户裁决：统一合成主按钮走服务端）：
- *  POST /montage/bgm 同步返回 {ok, video_url, task_id}（实测，无 result 轮询端点），
- *  bgm_volume 为 volume 系数口径（默认 0.6，与客户端 bgmVolume/100 同口径）→
- *  video_url 下载落盘 → 时长校验。任一环节失败抛错由调用方回退本地混音。
- *  实测注意：①视频必须带音轨，无声视频服务端内部 ffmpeg 500（dubbed 视频均有音轨）；
- *  ②2026-09-10 实测 video_url=/output/... 死链（404，API 未挂载静态产物目录）——
- *  契约矛盾已上报，服务端修复前该函数实际恒回退本地混音，修复后零改动生效。 */
-async function serverBgmMix({ httpRequest, videoPath, outPath, bgmPath, bgmVol }) {
-  const boundary = '----TintinBgm' + Math.random().toString(16).substring(2)
-  const parts = []
-  const filePart = (name, filePath, ctype) => {
-    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${path.basename(filePath).replace(/"/g, '')}"\r\nContent-Type: ${ctype}\r\n\r\n`))
-    parts.push(fs.readFileSync(filePath))
-    parts.push(Buffer.from('\r\n'))
-  }
-  filePart('file', videoPath, 'video/mp4')
-  filePart('bgm', bgmPath, 'audio/mpeg')
-  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="bgm_volume"\r\n\r\n${Number(bgmVol).toFixed(2)}\r\n`))
-  parts.push(Buffer.from(`--${boundary}--\r\n`))
-  const res = await httpRequest('POST', '/montage/bgm', {
-    body: Buffer.concat(parts),
-    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
-    timeout: 600000,
-  })
-  const r = res.data
-  if (!r || !r.ok || !r.video_url) throw new Error('服务端混音未返回产物地址')
-  const url = String(r.video_url).startsWith('/') ? String(r.video_url) : '/' + String(r.video_url)
-  const dl = await httpRequest('GET', url, { timeout: 300000 })
-  const buf = Buffer.from(dl.raw || '')
-  if (!buf.length) throw new Error('服务端混音产物为空')
   fs.writeFileSync(outPath, buf)
-  if (!(getMediaDuration(outPath) > 0)) {
+  const dur = getMediaDuration(outPath)
+  if (!(dur > 0)) {
     try { fs.unlinkSync(outPath) } catch (_) { /* 忽略 */ }
-    throw new Error('服务端混音产物无法读取（moov 缺失/截断）')
+    throw new Error('服务端合成产物无法读取（moov 缺失/截断）')
   }
+  return dur
 }
 
 function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl }) {
 
-  // ── final:mix — 最终混音合成（FinalMixWorker.run L662-746 一比一）──
+  // ── final:mix — 最终合成（特效烧制 + BGM 混音）──
   // tasks: [{videoPath, outPath}]；bgmPath/bgmVolume(0-200)；进度经 progressChannel 推送。
   // 2026-09-09 裁决扩展：payload 可带 effects（字幕/花字配置）+ subtitleTexts
-  // （[{videoPath, text, timingPath}]，渲染层已按候选视频映射好文案），
-  // 混音前逐视频 ffmpeg 烧制特效到中间文件，混音后清理；无特效配置时零开销直通。
+  // （[{videoPath, text, timingPath}]，渲染层已按候选视频映射好文案）。
+  // 2026-09-11 终裁：mixMode 决定链路——'server'（缺省）整条交服务端一次 concat 完成
+  // （特效 + 混音，失败报错不回退）；'local' 逐视频本地 ffmpeg 烧制到中间文件再混音。
   ipcMain.handle('final:mix', async (event, payload) => {
     try {
       const p = payload || {}
@@ -373,23 +420,26 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const hasBgm = !!(p.bgmPath && fs.existsSync(p.bgmPath))
       const bgmVol = (Number(p.bgmVolume) || 0) / 100.0
 
-      // ── 特效烧制前置阶段（同 dubVideos 字体/模板解析口径）──
+      // ── 特效/混音链路裁决（2026-09-11 用户终裁：按钮决定链路，开了哪些特效、
+      // 是否选 BGM 都只是参数）──
+      // 「服务端合成」：特效烧制 + BGM 混音由服务端一次 /montage/concat 完成；
+      // 「本地合成」（mixMode='local'）：全部本地 ffmpeg。
+      // 服务端链路失败直接报错，不静默回退本地（回退会让两按钮语义失真）。
+      // 注：字幕动画（fade/rise/slide/pop）服务端无字段 → 服务端产物不生效（仅本地有意义），
+      // 但不再因此默默改走本地链路。
       const fx = p.effects || null
       const subTexts = Array.isArray(p.subtitleTexts) ? p.subtitleTexts : []
-      // 服务端统一合成特效烧制：2026-09-10 在线实测单镜头约束已放开（单 files 提交
-      // 200 clip_count:1，字幕烧制抽帧验证生效，产物 moov 完整）→ 渲染层服务端模式
-      // 传 serverFx===true 时启用 serverFxBurnOne；失败自动回退本地 ffmpeg
-      // （字幕动画仅本地链路支持，服务端 subtitle_style 契约只有 box_opacity；
-      // 渲染层在字幕动画开启时已直接选本地，此回退为网络/服务端异常兑底）。
-      // 已验证：files×2 提交 200 产物 6s 字幕正确；单 files 提交 200 产物 1s 字幕正确。
-      const useServerFx = p.serverFx === true && typeof httpRequest === 'function'
+      const serverMode = p.mixMode !== 'local' && typeof httpRequest === 'function'
       const hasFx = !!(fx && (fx.addSubtitles || fx.fancyText || fx.textFxEnabled) && subTexts.length)
+      // 无特效且无 BGM：没有任何处理要做，本地 -c copy 直通即可（走服务端只会
+      // 无谓重编一遍）；只要有参数就整条交给服务端。
+      const doServer = serverMode && (hasFx || hasBgm)
       let fontPathEsc = ''
       let fancyFontPath = ''
       let fancyTemplate = null
       let fancySoundPath = ''
       let fancySoundGainDb = -6.0
-      if (hasFx) {
+      if (hasFx && !doServer) {
         // 字幕字体：族名 → 注册表解析本机字体文件，解析不到回退微软雅黑（dubVideos 同口径）
         const family = String(fx.subtitleFont || '').trim()
         fontPathEsc = fx.addSubtitles
@@ -416,8 +466,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         fancySoundGainDb = fancyTemplate ? FT.getFancySoundGainDb(fancyTemplate) : -6.0
       }
 
-      const fxPaths = new Map() // videoPath → 特效烧制中间文件
-      if (hasFx) {
+      const fxPaths = new Map() // videoPath → 特效烧制中间文件（仅本地链路）
+      if (hasFx && !doServer) {
         for (let i = 0; i < tasks.length; i++) {
           const t = tasks[i]
           const sub = subTexts.find((s) => s.videoPath === t.videoPath)
@@ -440,21 +490,6 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           // 自动建输出目录，缺失时报 "No such file or directory"（2026-09-10 实锤根因：
           // 新任务首次合成必炸，两条链路共用此烧制前置）→ 烧制前先建目录
           fs.mkdirSync(path.dirname(fxOut), { recursive: true })
-          // 服务端统一合成优先；失败回退本地 ffmpeg（字幕动画仅本地链路支持，
-          // 服务端 subtitle_style 契约只有 box_opacity，无动画/预设色板字段）
-          if (useServerFx) {
-            try {
-              await serverFxBurnOne({
-                httpRequest, videoPath: t.videoPath,
-                fxOut, fx, sub, videoDur,
-              })
-              fxPaths.set(t.videoPath, fxOut)
-              continue
-            } catch (e) {
-              console.warn(`[final:mix] 服务端特效烧制失败，回退本地: ${e.message}`)
-              try { if (fs.existsSync(fxOut)) fs.unlinkSync(fxOut) } catch (_) { /* 忽略 */ }
-            }
-          }
           const args = L.buildEffectBurnArgs({
             videoPath: t.videoPath,
             outputVideoPath: fxOut,
@@ -475,9 +510,14 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             fancyTemplate,
             fancySoundPath,
             fancySoundGainDb,
-            // 文字模板关键词（2026-09-10 用户裁决：本地合成同烧；词表+模板样式由渲染层传；
-            // textFxCount=每视频随机选 N 个（随机样式模式），漏传会导致全量轮换）
-            textFxWords: Array.isArray(fx.textTemplateWords) ? fx.textTemplateWords : [],
+            // 文字模板关键词（2026-09-11 用户裁决：词表不再由渲染层提取传递——本地
+            // 链路从该视频字幕（sub.text）用同源卖点提取器生成，与服务端「从字幕
+            // 提取」同语义（价格 > 数字参数 > 关键词）；上限随密度档位）
+            textFxWords: L.extractFancyWordsFromText(
+              String(sub.text || ''),
+              ({ low: 3, mid: 8, high: 12 })[String(fx.matchDensity || '').trim().toLowerCase()] || 8,
+            ),
+            // textFxCount=每视频随机选 N 个（随机样式模式），漏传会导致全量轮换
             textFxStyles: Array.isArray(fx.textFxStyles) ? fx.textFxStyles : [],
             textFxCount: Number(fx.textFxCount) || 0,
           })
@@ -490,39 +530,42 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         }
       }
 
-      // 混音进度分段：有特效烧制时烧制占 0-55、混音占 60-100；无特效保持 0-100
-      const mixBase = hasFx ? 60 : 0
-      const mixSpan = hasFx ? 40 : 100
-      // 2026-09-10 用户裁决：主按钮「统一合成」混音走服务端 /montage/bgm（mixMode
-      // 缺省 server）；「本地合成」按钮传 mixMode='local' 全本地。特效烧制两端一致
-      // 走本地 ffmpeg（服务端 concat ≥2 镜头约束收不了单视频，实测 400）。服务端
-      // 混音失败自动回退本地。
-      const serverMix = p.mixMode !== 'local' && typeof httpRequest === 'function' && hasBgm
+      // 进度分段：本地链路有特效烧制时烧制占 0-55、混音占 60-100；无特效保持 0-100；
+      // 服务端链路一次调用完成全部处理，按条均分 0-95
+      const mixBase = hasFx && !doServer ? 60 : 0
+      const mixSpan = hasFx && !doServer ? 40 : 100
 
       const results = []
       const total = tasks.length
       for (let index = 0; index < total; index++) {
         const { videoPath, outPath } = tasks[index]
-        const srcVideo = fxPaths.get(videoPath) || videoPath
-        emit(`正在进行最终合成配乐 (${index + 1}/${total})...`, mixBase + Math.floor(index / total * mixSpan))
         fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
-        // 服务端混音优先（仅 BGM 环节；失败回退本地 ffmpeg）
-        if (serverMix) {
+        // 服务端统一合成（特效烧制 + BGM 混音一次 concat；终裁：失败直接报错不回退）
+        if (doServer) {
+          emit(`服务端统一合成 (${index + 1}/${total})...`, Math.floor(index / total * 95))
+          const spec = probeMedia(videoPath)
+          const sub = hasFx ? subTexts.find((s) => s.videoPath === videoPath) : null
+          // 该视频无配套文案（如未配音的排列视频）或时长读不出（无法定位时间轴）
+          // → 不传特效字段，仅按参数做 BGM 混音（与本地链路「直通」同语义）
+          const fxForTask = (sub && String(sub.text || '').trim() && spec.durationSec > 0) ? fx : null
           try {
-            await serverBgmMix({
-              httpRequest, videoPath: srcVideo, outPath,
-              bgmPath: p.bgmPath, bgmVol,
+            await serverComposeOne({
+              httpRequest, videoPath, outPath,
+              fx: fxForTask, sub: fxForTask ? sub : null,
+              videoDur: spec.durationSec, spec,
+              bgmPath: hasBgm ? p.bgmPath : '', bgmVol,
             })
-            const fxTmpS = fxPaths.get(videoPath)
-            if (fxTmpS) { try { fs.unlinkSync(fxTmpS) } catch (_) { /* 忽略 */ } }
             results.push(outPath)
             continue
           } catch (e) {
-            console.warn(`[final:mix] 服务端混音失败，回退本地: ${e.message}`)
             try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath) } catch (_) { /* 忽略 */ }
+            throw new Error(`服务端合成失败（第 ${index + 1}/${total} 条）：${e.message}\n如需本地合成请改点「本地合成」`)
           }
         }
+
+        const srcVideo = fxPaths.get(videoPath) || videoPath
+        emit(`正在进行最终合成配乐 (${index + 1}/${total})...`, mixBase + Math.floor(index / total * mixSpan))
 
         let args
         if (hasBgm) {
@@ -706,5 +749,5 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
 
 module.exports = {
   createMontageFinalIpc, getOutFinalDir, getOutMontageDir, findSrtForVideo,
-  buildSrtFromTiming, buildServerFxFields,
+  buildSrtFromTiming, buildServerFxFields, buildFxMultipart, serverComposeOne, probeMedia,
 }

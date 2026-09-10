@@ -310,9 +310,53 @@ declare interface TintinBridgeServer {
   fancyServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
   /** 服务端文字模板库（GET /text_templates/templates，响应 {items,total}；与花字独立体系；离线 null） */
   textfxServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
-  /** 全量保存全局常用关键词（POST /text_templates/keywords，覆盖旧值；离线 null）；
-   *  配套 GET textfxKeywordsGet 已废弃（渲染层无消费者，IRON-10 门禁） */
-  textfxKeywordsSave(keywords: string[]): Promise<{ ok: boolean; count: number } | { error: string } | null>
+  /** 关键词命中判定（POST /text_templates/match；2026-09-11 服务端新增，合成之前自查：
+   *  「这个视频命中几个关键词、合成时会加几个动画」；与 /montage/concat 命中模式共用
+   *  选择逻辑（预览所见即合成所做）。离线 null；400（空字幕等）→ {error}） */
+  textfxMatchKeywords(payload: {
+    /** 字幕行（与 srt 二选一，本端一律传行数组） */
+    rows?: Array<{ text: string; start: number; end: number }>
+    srt?: string
+    /** 本次关键词（缺省用服务端「常用关键词」库——本端不传，由服务端判定） */
+    keywords?: string[]
+    /** 密集度 low/mid/high（每 30 秒 3/6/10，保底 3；缺省 high） */
+    density?: string
+    /** 时长（秒）；本端不传——与合成端同口径由服务端取字幕末行 t1 */
+    duration?: number
+    /** 按合成口径用 LLM 补足到保底数量（本端 true=预览所见即合成所做） */
+    llmFill?: boolean
+  }): Promise<{
+    lines: Array<{
+      index: number
+      start: number
+      end: number
+      text: string
+      /** 命中关键词（含内置卖点词） */
+      hit: boolean
+      matched_keywords: string[]
+      /** 合成时会加文字模板动画 */
+      selected: boolean
+      /** keyword/llm/fallback */
+      source: string
+    }>
+    summary: {
+      total_lines: number
+      hit_lines: number
+      /** 命中词列表（去重；实测 2026-09-11 为字符串数组） */
+      matched_keywords: string[]
+      target: number
+      will_animate: number
+      llm_added: number
+      fallback_added: number
+      thinned_out: number
+      span?: number
+      density?: string
+      capped?: boolean
+    }
+    events: Array<[number, number, string]>
+    keywords_used?: { user: string[]; builtin_count: number }
+    llm_fill?: boolean
+  } | { error: string } | null>
   /** 订阅模板预览图生成进度 */
   fancyOnPreviewProgress(cb: (d: { idx: number; total: number }) => void): () => void
   /** 服务端字体列表（GET /config/fonts） */
@@ -321,19 +365,26 @@ declare interface TintinBridgeServer {
   voiceFontFile(fontId: string): Promise<{ data: Uint8Array } | { error: string } | null>
   /** 导出克隆声音（copy2 到用户选的保存路径） */
   voiceExportAudio(payload: { srcPath: string; savePath: string }): Promise<{ ok: boolean; savePath: string } | { error: string }>
-  /** 订阅 voice 域进度事件（返回取消订阅函数） */
-  onVoiceProgress(channel: string, cb: (d: { rowIdx?: number; value?: number; stage?: string }) => void): () => void
+  /** 订阅 voice 域进度事件（返回取消订阅函数；2026-09-11 实时状态：完成事件随带
+   *  wavPath/durSec、失败随带 failed，渲染层即时回写行而不等整批返回） */
+  onVoiceProgress(channel: string, cb: (d: {
+    rowIdx?: number; value?: number; stage?: string
+    /** 该条完成时的产物 wav 绝对路径（cloneBatch 成功事件随带） */
+    wavPath?: string
+    /** 该条克隆音频时长（秒；随 wavPath 一同回传） */
+    durSec?: number
+    /** 该条失败终结标记（渲染层复位为未生成） */
+    failed?: boolean
+  }) => void): () => void
 
   // ---------- 智能混剪 Step4 特效包装（FinalMixWorker 主进程化 + 剪映草稿导出）----------
-  /** 最终混音合成（本地 ffmpeg：sidechain ducking + 淡入淡出 + loudnorm；无 BGM -c copy）。
-   *  2026-09-09 裁决：特效配置迁 Step4，可带 effects + subtitleTexts（混音前逐视频烧制
-   *  字幕/花字到中间文件再混音；无特效配置零开销直通） */
+  /** 最终合成（特效烧制 + BGM 混音）。2026-09-09 裁决：特效配置迁 Step4，可带
+   *  effects + subtitleTexts；2026-09-11 终裁：mixMode 单字段决定整条链路 */
   finalMix(payload: {
-    /** 合成模式（2026-09-10 用户裁决）：'server'（缺省）混音走 /montage/bgm；'local' 全本地 */
+    /** 合成模式（2026-09-11 用户终裁：按钮决定链路，开了哪些特效只是参数）：
+     *  'server'（缺省）特效+ BGM 整条交服务端一次 /montage/concat 完成，失败直接
+     *  报错不回退本地；'local' 逐视频本地 ffmpeg 烧制特效再本地混音 */
     mixMode?: 'server' | 'local'
-    /** 特效烧制走服务端（2026-09-10 接线：服务端 concat 单镜头约束已放开；
-     *  serverFxBurnOne 失败自动回退本地；字幕动画开启时渲染层传 false 保动画） */
-    serverFx?: boolean
     tasks: Array<{ videoPath: string; outPath: string }>
     bgmPath: string
     bgmVolume: number
@@ -347,7 +398,10 @@ declare interface TintinBridgeServer {
       /** 文字模板随统一合成提交服务端（/montage/concat text_template_* 字段；2026-09-10） */
       textFxEnabled?: boolean
       textTemplateId?: string
-      textTemplateWords?: string[]
+      /** match 模式必填模板池（/guide text_template_match_ids；命中行从池中随机选一）。
+       *  2026-09-11 用户裁决：不再传本地提取词表（text_template_words）——关键词
+       *  命中在合成请求内由服务端从随请求提交的字幕自行完成 */
+      textTemplateMatchIds?: string[]
       /** 匹配密度档位透传 text_template_match_density（low/mid/high；服务端默认 high） */
       matchDensity?: string
       /** 本地烧制样式池（2026-09-10 用户裁决：本地合成同烧文字模板；主色/效果色/动画与预览同源） */
@@ -489,6 +543,9 @@ declare interface TintinBridgeFfprobeResult {
   fps: number
   codec: string
   audio_bitrate: number
+  /** 'ffmpeg'：无 ffprobe 环境走 ffmpeg -i stderr 兜底（此时宽高为编码尺寸，
+   *  不含旋转互换）；缺省表示 ffprobe 精确结果 */
+  via?: string
 }
 declare interface TintinBridgeFfmpeg {
   probe(file: string): Promise<TintinBridgeFfprobeResult>

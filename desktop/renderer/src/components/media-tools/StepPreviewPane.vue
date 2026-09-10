@@ -7,7 +7,8 @@
     <div v-if="items.length" class="spp-grid">
       <div
         v-for="(it, i) in items" :key="i"
-        class="spp-item" :class="{ active: i === activeIndex }"
+        class="spp-item" :class="{ active: i === activeIndex, 'spp-fixed': !!aspect }"
+        :style="aspect ? { aspectRatio: aspect } : undefined"
         :title="it.tip || ''"
         @click="$emit('select', i)"
       >
@@ -76,7 +77,11 @@ const props = withDefaults(defineProps<{
   items: StepPreviewItem[]
   activeIndex?: number
   emptyText?: string
-}>(), { activeIndex: -1, emptyText: '' })
+  /** 预览块画幅（CSS aspect-ratio 语法，如 '9 / 16'）。传入后卡片按此比例定高，
+   *  与成片同画幅 → 视频 contain 铺满、无上下/左右黑边（2026-09-11 用户裁决：
+   *  竖屏模式预览块也要竖起来，不再是横向块里嵌小竖条）。缺省保持原固定高 */
+  aspect?: string
+}>(), { activeIndex: -1, emptyText: '', aspect: '' })
 
 defineEmits<{ (e: 'select', index: number): void }>()
 
@@ -121,6 +126,8 @@ function onEnded(i: number): void {
   background: #000; cursor: pointer; min-height: 148px;
   display: flex; align-items: center; justify-content: center;
 }
+/* 传了 aspect：高度由画幅比决定（min-height 会干扰比例 → 归零） */
+.spp-item.spp-fixed { min-height: 0; }
 .spp-item.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--ring); }
 .spp-badge {
   position: absolute; top: 4px; left: 4px; z-index: 3;
@@ -138,11 +145,15 @@ function onEnded(i: number): void {
 .spp-tag.busy { color: #ffd24d; }
 
 .spp-video {
-  width: 100%; height: 176px; object-fit: contain; background: #000; display: block;
+  /* 铺满卡片：卡片宽高比 = 成片画幅（由 aspect 传入）→ contain 也基本无黑边；
+   * 绝对定位防 flex 居中下高度不跟卡片 */
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: contain; background: #000; display: block;
 }
 .spp-empty {
+  position: absolute; inset: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  height: 176px; padding: 8px; text-align: center;
+  padding: 8px; text-align: center;
   color: var(--muted-foreground); font-size: 12px;
   background: linear-gradient(135deg, #3a3f4a 0%, #23262e 100%);
 }

@@ -48,6 +48,7 @@ import {
   TEXT_KEYWORD_DENSITY_MAX,
   pickRandomItems,
   extractFancyWordsFromText,
+  buildSubtitleRows,
   buildTextFxTracks,
   textFxStyleOf,
   type TextFxTrack,
@@ -78,6 +79,8 @@ import {
   FANCY_POSITION_OPTIONS,
   SUBTITLE_BG_OPTIONS,
   resolveOutMontageDir,
+  FPS_OPTIONS,
+  resolveConcatFps,
   voiceStatusText,
   voiceStatusClass,
   fmtDur,
@@ -240,6 +243,10 @@ export function useVideoMontage() {
   const splitMsg = ref('')
   /** 画幅列兜底：服务端 shot 未返回 resolution 时，探测第一个源视频全表共用（原版 _probed_resolution 口径） */
   const splitResolution = ref('')
+  /** 原片帧率（2026-09-11 用户裁决：Step2 输出帧率默认「跟随原片」）。
+   * 数据源：服务端 split 响应的 source_resolution.fps（在线实测 {width,height,
+   * aspect_ratio,fps,codec}）优先；服务端未给时本地 ffmpeg:probe 探测兑底 */
+  const splitFps = ref(0)
 
   function addVideos(): void {
     void (async () => {
@@ -366,9 +373,15 @@ export function useVideoMontage() {
         scenes.value = rows.slice()
         rows.forEach((r, i) => { r.idx = i + 1 })
         // 原片分辨率：优先服务端 split 响应 source_resolution（对照原版 step1_split_controller
-        // L326-328 逐素材覆盖 _source_resolution 的同口径），无则后置本地探测兑底
-        const sr = normalizeSourceResolution((res as { source_resolution?: unknown }).source_resolution)
+        // L326-328 逐素材覆盖 _source_resolution 的同口径），无则后置本地探测兑底。
+        // 帧率同源（2026-09-11 在线实测）：source_resolution 是对象
+        // {width,height,aspect_ratio,fps,codec}，其中 fps 即原片帧率——「跟随原片」
+        // 优先用它（本地探测在无 ffprobe 的打包环境可能失败，服务端值是白送的）
+        const srcRes = (res as { source_resolution?: unknown }).source_resolution
+        const sr = normalizeSourceResolution(srcRes)
         if (sr) splitResolution.value = sr
+        const remoteFps = Number((srcRes as { fps?: unknown } | null | undefined)?.fps)
+        if (Number.isFinite(remoteFps) && remoteFps > 0) splitFps.value = remoteFps
       }
       // 行已随各素材完成逐批增量上表（scenes 与 rows 同引用集），此处仅收尾文案
       splitMsg.value = rows.length
@@ -384,8 +397,10 @@ export function useVideoMontage() {
       // 挂在 _check_split_clips_exist 尾部的同口径：分割完成即扫描）
       void maybeTrimEdgeClips()
       // 探测兑底（原版 _detect_and_show_source_resolution L4783-4793：服务端未返回时
-      // probe 第一个镜头文件；本端片段已落盘 splits，优先探测片段，源视频兑底）
-      if (!splitResolution.value) {
+      // probe 第一个镜头文件；本端片段已落盘 splits，优先探测片段，源视频兑底）。
+      // 触发条件含 fps（2026-09-11 纠偏）：服务端 split 只给 source_resolution 不给
+      // 帧率（在线核实无 source_fps 字段）→ 画幅已知时仍需探测一次拿 fps
+      if (!splitResolution.value || !splitFps.value) {
         const firstClip = rows.find((r) => r.clipLocalPath)
         const probeTarget = firstClip?.clipLocalPath || srcVideos.value[0]
         if (probeTarget) {
@@ -393,7 +408,9 @@ export function useVideoMontage() {
             if (Number(info?.width) > 0 && Number(info?.height) > 0 && !splitResolution.value) {
               splitResolution.value = `${Number(info.width)}x${Number(info.height)}`
             }
-          }).catch(() => { /* 探测失败画幅列显 — */ })
+            // 原片帧率同源探测（一次 probe 同时拿宽高与 fps）
+            if (Number(info?.fps) > 0 && !splitFps.value) splitFps.value = Number(info.fps)
+          }).catch(() => { /* 探测失败：画幅列显 —、帧率走 resolveConcatFps 兑底 30 */ })
         }
       }
     } catch (e) {
@@ -564,6 +581,7 @@ export function useVideoMontage() {
   async function clearSplitCache(): Promise<void> {
     scenes.value = []
     splitResolution.value = ''
+    splitFps.value = 0
     splitError.value = ''
     try {
       const res = await window.tintin.server.clearMontageCache(joinPath(await readCacheDir(), 'montage_cache'))
@@ -588,6 +606,8 @@ export function useVideoMontage() {
   //    _confirm_all_precompose/_batch_gen_copy_by_scene 三段行为链）═══
   const assembleLogic = ref('random')      // 排列逻辑（原版 logic_combo 唯一可见项「智能重排」）
   const concatLayout = ref('source')       // 输出画幅（原版 setCurrentIndex(0)=与原视频一致）
+  // 输出帧率（2026-09-11 用户裁决：加下拉且默认「跟随原片」；旧实现写死 30）
+  const concatFps = ref<number | 'source'>('source')
   const durationLimit = ref(30)            // 时长限制（原版 10/20/30/40/50 秒，默认 30）
   const DURATION_LIMITS = [10, 20, 30, 40, 50]
   const batchCount = ref(3)                // 生成视频数量（原版 spin 默认 3，随推荐值回写）
@@ -796,6 +816,21 @@ export function useVideoMontage() {
       .filter(Boolean)
   }
   
+  /** 原片帧率保障（2026-09-11 用户裁决：输出帧率默认「跟随原片」）：服务端
+   *  source_resolution.fps 优先（在线实测），未给时本地探测兌底；Step1 未拿到时
+   *  提交前补探测一次（与画幅选择无关——选 1080x1920 时同样需要知道原片帧率）。 */
+  async function ensureSourceFps(): Promise<void> {
+    if (splitFps.value > 0) return
+    const firstClip = scenes.value.find((c) => c.clipLocalPath)
+    const candidates = [firstClip?.clipLocalPath, srcVideos.value[0]].filter(Boolean) as string[]
+    for (const p of candidates) {
+      try {
+        const info = await window.tintin.ffmpeg.probe(p)
+        if (Number(info?.fps) > 0) { splitFps.value = Number(info.fps); return }
+      } catch (_) { /* 尝试下一个候选 */ }
+    }
+  }
+
   /** 提交单条 /montage/concat 并轮询至完成，返回成片 URL（原版 MontageConcatServerWorker 同口径）
    *  clip_urls 使用服务端绝对路径（split 返回的 path 字段），文件已在服务端无需上传
    *  clipShotTypes：镜头文件名→景别键（对照原版 L3004-3015 clip_shot_types，仅非空景别收进） */
@@ -815,19 +850,25 @@ export function useVideoMontage() {
             const info = await window.tintin.ffmpeg.probe(p)
             if (Number(info?.width) > 0 && Number(info?.height) > 0) {
               sourceProbe = { width: Number(info.width), height: Number(info.height) }
+              // 帧率同步补探测（Step1 探测失败时走到这里）
+              if (Number(info?.fps) > 0 && !splitFps.value) splitFps.value = Number(info.fps)
               break
             }
           } catch (_) { /* 尝试下一个候选 */ }
         }
       }
     }
+    // 选「跟随原片」但仍未拿到 fps → 独立补探测（画幅非 source 时上面不跑）
+    if (concatFps.value === 'source') await ensureSourceFps()
     const payload = buildConcatPayload({
       clipUrls,
       transition: concatTransition.value,
       layout: concatLayout.value,
       probe: sourceProbe,
       transitionDuration: 0.5,   // 原版 options 固定 transition_duration: 0.5
-      fps: 30,
+      // 帧率按 Step2 下拉决定（2026-09-11 用户裁决：旧实现此处写死 fps: 30）——
+      // 「跟随原片」用探测到的原片 fps，探测不到由 resolveConcatFps 兑底 30
+      fps: resolveConcatFps(concatFps.value, splitFps.value),
       crf: 23,
       preset: 'superfast',
     })
@@ -1405,11 +1446,10 @@ export function useVideoMontage() {
   /** 开始混音合成（_start_final_mix 一比一；FinalMixWorker 在主进程 final:mix）。
    *  2026-09-09 用户裁决：口播声音带到第四步统一合成处理——一键链=①给有声音未配音的
    *  视频替换原声 → ②特效烧制 → ③BGM 混音；无声音行沿用原视频直通 */
-  /** 启动最终合成（2026-09-10 用户裁决双链路）：mode='server'（缺省）混音走
-   *  服务端 /montage/bgm，mode='local' 全本地 ffmpeg；特效烧制随 mode：
-   *  2026-09-10 在线实测服务端 concat 单镜头约束已放开（200 clip_count:1 +
-   *  字幕烧制抽帧验证）→ 服务端模式特效走 serverFxBurnOne（失败自动回退本地）；
-   *  唯字幕动画（服务端 subtitle_style 契约无动画字段）开启时保留本地烧制保动画 */
+  /** 启动最终合成（2026-09-10 用户裁决双链路）：mode='server'（缺省）特效烧制与
+   *  BGM 混音均走服务端，mode='local' 全本地 ffmpeg。
+   *  2026-09-11 用户终裁：按钮决定链路，开启的特效只是参数全部随链路下发；
+   *  服务端环节失败直接报错，不再静默回退本地（否则两按钮语义失真）。 */
   async function startFinalMix(mode: 'server' | 'local' = 'server'): Promise<void> {
     if (finalBusy.value) return
     finalBusy.value = true
@@ -1448,17 +1488,17 @@ export function useVideoMontage() {
         })
         .filter((x): x is { videoPath: string; text: string; timingPath: string } => !!x)
       const hasFx = addSubtitles.value || fancyEnabled.value || textFxEnabled.value
-      // serverFx：特效烧制走服务端（仅服务端模式；字幕动画开启时保留本地——
-      // 服务端 subtitle_style 契约只有 box_opacity，烧不出 fade/rise/slide/pop）
-      const subtitleAnimOn = addSubtitles.value && subtitleAnimKey.value !== 'none'
-      const serverFx = mode === 'server' && !subtitleAnimOn
+      // 2026-09-11 用户终裁：按钮决定链路，开了哪些特效、是否选 BGM 都只是参数——
+      // 点「服务端合成」= 特效烧制 + BGM 混音整条交服务端一次 concat 完成（失败
+      // 直接报错不回退本地）；点「本地合成」= 全部本地 ffmpeg。mixMode 是唯一
+      // 开关（旧 serverFx 字段与它同义，已合并删除）。
+      // 注：字幕动画（fade/rise/slide/pop）服务端无字段，服务端产物不生效。
       // 展开为纯对象：computed 从响应式数组 find 出的是 Proxy，直传 IPC 会报
       //   「An object could not be cloned」（同 scanVoiceDir selectedFiles 教训）
       const fxTpl = selectedFancyTemplate.value
       const fxTplPlain = fxTpl ? { ...fxTpl } : null
       const res = await window.tintin?.server?.finalMix?.({
         mixMode: mode,
-        serverFx,
         tasks,
         bgmPath: bgmPath.value,
         bgmVolume: bgmVolume.value,
@@ -1473,11 +1513,16 @@ export function useVideoMontage() {
             fancyStyle: fancyStyle.value,
             fancyPosition: fancyPosition.value,
             fancyTemplate: fxTplPlain,
-            // 文字模板随统一合成提交服务端（text_template_* 字段；words=按密度档位提取；
-            // random 模板→match_enabled 自动匹配 + match_density 透传密度档位）
+            // 文字模板随统一合成提交服务端（text_template_* 字段；2026-09-11 用户裁决：
+            // 不再传本地提取词表（text_template_words）——关键词命中在合成请求内由
+            // 服务端从随请求提交的字幕自行完成；random 模板→match_enabled + 模板池）
             textFxEnabled: textFxEnabled.value,
             textTemplateId: textTemplateId.value,
-            textTemplateWords: extractTextFxWords(),
+            // match 模式必填（/guide text_template_match_ids）：每次合成从模板库随机
+            // 取 N 个 id 作模板池，命中行从池中随机选一（与「随机数量」UI 语义一致）
+            textTemplateMatchIds: textTemplateId.value === 'random'
+              ? pickRandomItems(activeTextPool.value, textRandomCount.value).map((t) => String(t.template_id))
+              : [],
             matchDensity: textKeywordDensity.value,
             // 本地烧制样式池（2026-09-10 用户二次裁决：传全量库+随机个数，每视频在烧制端
             // 确定性洗牌取子集，与效果预览同源；提炼主色/效果色/动画同预览口径）
@@ -1687,8 +1732,9 @@ export function useVideoMontage() {
     { label: '随机样式', value: 'random' },
     ...textTemplates.value.map((t) => ({ label: String(t.name || t.template_id), value: t.template_id })),
   ])
-  /** 按密度档位从口播文案提取关键词（效果预览与服务端词表同步共用同一口径；
-   *  上限随档位：低=3/中=8/高=12，TEXT_KEYWORD_DENSITY_MAX） */
+  /** 按密度档位从口播文案提取卖点词（2026-09-11 起仅剩两个消费者：效果预览词条
+   *  与剪映导出随行特效——服务端合成不再传词表，关键词命中由服务端从字幕完成）。
+   *  上限随档位：低=3/中=8/高=12，TEXT_KEYWORD_DENSITY_MAX */
   function extractTextFxWords(): string[] {
     const joined = voiceRows.value.map((r) => r.text).join('\n')
     return [...new Set(extractFancyWordsFromText(
@@ -1699,9 +1745,14 @@ export function useVideoMontage() {
   /** 效果预览：按视频分行时间轴（2026-09-10 用户裁决终态：轨数=上一步确认成片条数
    *  （assemblePlans confirmed 产物，不走 collectCandidates 配音优先口径——
    *  3 条成片只配 1 条音时也必须显示 3 条轨）；轨名列=视频名（用户明确要求显示视频名）；
-   *  背景条=视频时长（probeDuration 实测），词条=文字模板（词+模板名小字），
-   *  文案按 voiceRows 行（path 匹配成片）命中 timing.json 真实时间点；
-   *  无命中行仍保留空轨）。异步组装（seq 过期响应丢弃）。 */
+   *  背景条=视频时长（probeDuration 实测），文案按 voiceRows 行（path 匹配成片）命中
+   *  timing.json 真实时间点；无命中行仍保留空轨。异步组装（seq 过期响应丢弃）。
+   *  2026-09-11 用户二次裁决：展示层轨名改「第N条」序号（完整视频名留 title 悬停），
+   *  数据字段 name 仍为文件名，序号由渲染层按行序生成。
+   *  2026-09-11 用户三次裁决：命中数据一律取自服务端 /text_templates/match（合成前自查，
+   *  与 /montage/concat 命中模式共用选择逻辑 → 预览所见即合成所做；llm_fill=true 按
+   *  合成口径补足；density 档位透传，不传 duration——与合成端同口径由服务端取字幕
+   *  末行 t1）；客户端不再本地提取关键词，服务端离线/失败时呈空轨（不造数）。 */
   const textFxPreviewTracks = ref<TextFxTrack[]>([])
   /** Step4 合成候选路径（界面统一联动预览 2026-09-10：右栏预览块数据源；
    *  与 textFxPreviewTracks 同批刷新，另在 enterStep4 主动刷一次不依赖 textFx 开关） */
@@ -1718,29 +1769,42 @@ export function useVideoMontage() {
       .map((p) => (p.confirmed && p.outputPath ? p.outputPath : ''))
       .filter(Boolean)
     if (!outputs.length) { textFxPreviewTracks.value = []; return }
-    const rows = await Promise.all(outputs.map(async (c) => {
+    // 逐视频组字幕行（timing 优先/字数均分）→ 服务端命中判定；离线/失败 → 空轨
+    const matched = await Promise.all(outputs.map(async (c) => {
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
-      const dur = await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)
-      return {
-        name: pathBasename(c), // 2026-09-10 用户裁决：轨名=视频文件名（「第 N 条」角标废止）
-        text: String(row?.text || '').trim(),
-        durationSec: Number(dur) || 0,
-        timingPath: row?.wavPath ? `${row.wavPath}.timing.json` : '',
+      const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)) || 0
+      let timing: Array<{ text: string; start: number; end: number }> = []
+      if (row?.wavPath) {
+        const res = await window.tintin?.server?.finalReadTiming?.({ timingPath: `${row.wavPath}.timing.json` })
+        timing = res && 'items' in res ? res.items : []
       }
-    }))
-    const timed = await Promise.all(rows.map(async (r) => {
-      if (!r.timingPath) return { ...r, timing: [] }
-      const res = await window.tintin?.server?.finalReadTiming?.({ timingPath: r.timingPath })
-      return { ...r, timing: res && 'items' in res ? res.items : [] }
+      const rows = buildSubtitleRows(String(row?.text || '').trim(), timing, dur)
+      if (!rows.length) return { name: pathBasename(c), durationSec: dur, lines: [] }
+      const res = await window.tintin?.server?.textfxMatchKeywords?.({
+        rows,
+        density: textKeywordDensity.value,
+        llmFill: true,
+      })
+      const lines = res && 'lines' in res && Array.isArray(res.lines)
+        ? res.lines
+          .filter((l) => l.selected)
+          .map((l) => ({
+            text: String(l.text || ''),
+            start: Number(l.start) || 0,
+            end: Number(l.end) || 0,
+            keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
+          }))
+        : []
+      return { name: pathBasename(c), durationSec: dur, lines }
     }))
     if (seq !== textFxTrackSeq) return // 过期响应丢弃（连续触发只保留最新）
-    // 2026-09-10 用户终裁：轨名列显示视频名（模板名拼接方案废止）
+    // 2026-09-10 用户终裁：轨名列显示视频名（模板名拼接方案废止；name 字段自此=文件名）
+    // 2026-09-11 用户二次裁决：展示层改「第N条」序号，见 VideoMontage.vue .textfx-track-name
     // 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与样式橱窗 textFxStyleSamples
     //  同源同构，去除 fontSize 只取颜色/渐变；不命中模板的词条走 CSS 默认色）
     const sampleByName = new Map(textFxStyleSamples.value.map((s) => [s.name, s]))
     textFxPreviewTracks.value = buildTextFxTracks({
-      rows: timed,
-      maxWords: TEXT_KEYWORD_DENSITY_MAX[textKeywordDensity.value] ?? 8,
+      rows: matched,
       tplNames,
       count: activeTextCount.value, // 每视频独立随机选 N 个（2026-09-10 用户二次裁决）
     }).map((tr) => ({
@@ -1753,27 +1817,16 @@ export function useVideoMontage() {
       }),
     }))
   }
-  watch([textFxEnabled, textTemplateId, textRandomCount, textTemplates, textKeywordDensity, voiceRows, assemblePlans], () => { void refreshTextFxTracks() }, { deep: true })
-  // 2026-09-10 用户裁决：关键词走服务端接口（/text_templates/keywords 全局词表，
-  // POST 全量覆盖，V-FANCY-3 决策3/10），不留在客户端私有状态——密度档位调节或
-  // 口播文案变化后重新生成并同步到服务端（防抖 800ms；离线失败静默不阻塞预览）
-  const textKeywordsSyncing = ref(false)
-  let textKwSyncTimer: ReturnType<typeof setTimeout> | null = null
-  async function syncTextKeywords(): Promise<void> {
-    const words = extractTextFxWords()
-    if (!words.length) return
-    textKeywordsSyncing.value = true
-    try {
-      await window.tintin?.server?.textfxKeywordsSave?.(words)
-    } catch (_) { /* 词表同步失败不阻塞预览/配置 */ } finally {
-      textKeywordsSyncing.value = false
-    }
-  }
-  const voiceJoinedText = computed(() => voiceRows.value.map((r) => r.text).join('\n'))
-  watch([textKeywordDensity, voiceJoinedText], () => {
-    if (textKwSyncTimer) clearTimeout(textKwSyncTimer)
-    textKwSyncTimer = setTimeout(() => { void syncTextKeywords() }, 800)
-  })
+  // 2026-09-11：match 含 LLM 补足（服务端 15s 内），防抖 800ms 收敛连续触发
+  // （旧本地提取为纯计算，可直接同步跑；接入服务端后必须防抖）
+  let textFxTracksTimer: ReturnType<typeof setTimeout> | null = null
+  watch([textFxEnabled, textTemplateId, textRandomCount, textTemplates, textKeywordDensity, voiceRows, assemblePlans], () => {
+    if (textFxTracksTimer) clearTimeout(textFxTracksTimer)
+    textFxTracksTimer = setTimeout(() => { void refreshTextFxTracks() }, 800)
+  }, { deep: true })
+  // 2026-09-11 用户裁决：本地提取词表 → 上传服务端（旧 textfx:keywordsSave 桥）
+  // 整链废止——关键词命中在合成请求内由服务端从随请求提交的字幕完成，服务端
+  // 不保存待命中的字幕；服务端「全局常用关键词」库不再被客户端覆盖。
   /** 样式预览样本：按命中模板 variables 默认值本地渲染（服务端
    *  /text_templates/templates/{id}/preview 静态预览图 2026-09-10 复测已可用（200 png），
    *  但为单帧静态图无动画，与「文字模板预览要有动画」裁决不符，故预览仍走本地 CSS 动画；
@@ -1877,9 +1930,21 @@ export function useVideoMontage() {
         if (row) {
           if (d.value !== undefined) row.progress = d.value
           if (d.value !== undefined) row.status = d.value >= 100 ? 'done' : 'generating'
+          // 2026-09-11 用户裁决「状态要实时」：完成事件随带 wavPath/时长即回写（此前
+          // wavPath 只在整批返回后统一回写 → 已合成行整批期间仍显示未生成/灰字/试听禁用）
+          if (d.wavPath) {
+            row.wavPath = d.wavPath
+            row.dubbedPath = ''
+            row.voiceDurSec = d.durSec || 0
+            row.status = 'done'
+            row.progress = 100
+          } else if (d.failed) {
+            row.status = 'pending'
+            row.progress = 0
+          }
         }
         if (d.value !== undefined && voiceTotal > 0) {
-          if (d.value >= 100) voiceDone++
+          if (d.value >= 100 || d.failed) voiceDone++ // 失败行同样终结，计入完成数（否则总进度到不了 100）
           const frac = d.value < 100 ? d.value / 100 : 0
           voiceProgress.value = Math.min(100, Math.round(((voiceDone + frac) / voiceTotal) * 100))
         }
@@ -2572,6 +2637,7 @@ export function useVideoMontage() {
     previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
     // Step2 镜头重组
     assembleLogic, concatLayout, durationLimit, DURATION_LIMITS, batchCount, recBatchCount,
+    concatFps, FPS_OPTIONS, splitFps,
     concatTransition, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
     concatBusy, confirmBusy, copyBusy, concatError,
     assemblePlans, currentPlanIdx, currentPlan, hasUnconfirmed, confirmedPaths,
@@ -2599,8 +2665,7 @@ export function useVideoMontage() {
     // 文字模板（textfx；与花字独立；随机样式默认 3 个）
     textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
     textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
-    textKeywordsSyncing,
-        textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
+    textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
     FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
     aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,

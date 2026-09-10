@@ -337,8 +337,8 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         refAudioB64 = Buffer.from(r.raw || '').toString('base64')
       }
 
-      const emitRow = (rowIdx, value, stage) => {
-        if (channel) event.sender.send(channel, { rowIdx, value, stage })
+      const emitRow = (rowIdx, value, stage, extra) => {
+        if (channel) event.sender.send(channel, { rowIdx, value, stage, ...(extra || {}) })
       }
       const emitStage = (stage) => {
         if (channel) event.sender.send(channel, { stage })
@@ -378,9 +378,11 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
 
           results[t.videoPath] = t.outWavPath
           durations[t.videoPath] = getMediaDuration(t.outWavPath)
-          emitRow(t.rowIdx, 100)
+          // 2026-09-11 用户裁决「状态要实时」：完成事件随带 wavPath/时长，渲染层即时
+          // 回写该行（此前 wavPath 只在整批返回后统一回写 → 已合成行整批期间仍显示未生成）
+          emitRow(t.rowIdx, 100, undefined, { wavPath: t.outWavPath, durSec: durations[t.videoPath] })
         } catch (err) {
-          emitRow(t.rowIdx, 0)
+          emitRow(t.rowIdx, 0, undefined, { failed: true })
           failures.push({ rowIdx: t.rowIdx, msg: err.message })
           emitStage(`注意： 第 ${t.rowIdx + 1} 个声音克隆失败，已跳过继续...`)
         }
@@ -459,18 +461,32 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── textfx:keywordsSave — 服务端全局常用关键词词表全量保存 ──
-  // 2026-09-10 实测发现：服务端新增 GET/POST /text_templates/keywords
-  // （V-FANCY-3 决策3/10：纯文本词表；POST 全量覆盖保存）。
-  // 用户裁决：关键词走服务端接口，不用客户端本地私有状态；
-  // 关键词密度档位调节/文案变化后经此同步，需要合成的文字模板以服务端词表为准。
-  // 注：配套 GET handler（textfx:keywordsGet）已废弃——渲染层无消费者被 IPC 审计
-  // 门禁（IRON-10）拦下；未来做「全局关键词管理」面板时随 UI 一并接回。
-  ipcMain.handle('textfx:keywordsSave', async (_e, keywords) => {
+  // ── textfx:matchKeywords — 关键词命中判定（POST /text_templates/match）──
+  // 2026-09-11 服务端新增（/guide：合成之前自查「这个视频命中几个关键词、合成时会加
+  // 几个动画」；与 /montage/concat 命中模式共用计划选择逻辑 → 预览所见即合成所做）。
+  // 不建任务/不出片/不碰队列；空字幕/非法行 → 400（错误上抛渲染层呈空轨，不造数）。
+  ipcMain.handle('textfx:matchKeywords', async (_e, payload) => {
     try {
-      const list = Array.isArray(keywords) ? keywords.map((k) => String(k || '').trim()).filter(Boolean) : []
-      await httpRequest('POST', '/text_templates/keywords', { body: { keywords: list }, timeout: 10000 })
-      return { ok: true, count: list.length }
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const body = {}
+      if (Array.isArray(p.rows) && p.rows.length) {
+        body.subtitle_rows = p.rows.map((r) => ({
+          text: String((r && r.text) || ''),
+          start: Number(r && r.start) || 0,
+          end: Number(r && r.end) || 0,
+        }))
+      } else if (typeof p.srt === 'string' && p.srt.trim()) {
+        body.srt = p.srt
+      } else {
+        return { error: '缺少字幕（rows/srt 二选一）' }
+      }
+      if (Array.isArray(p.keywords) && p.keywords.length) body.keywords = p.keywords.map((k) => String(k))
+      if (typeof p.density === 'string' && p.density) body.density = p.density
+      if (Number.isFinite(Number(p.duration)) && Number(p.duration) > 0) body.duration = Number(p.duration)
+      body.llm_fill = !!p.llmFill
+      // LLM 补足服务端最长 15s，30s 覆盖网络往返
+      const res = await httpRequest('POST', '/text_templates/match', { body, timeout: 30000 })
+      return res.data
     } catch (err) {
       if (isExpectedOfflineError(err)) return null
       return { error: err.message }

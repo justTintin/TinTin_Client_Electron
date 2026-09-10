@@ -160,7 +160,7 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
       if (p.lut) fields.lut = filePathField(p.lut)
       // 特效烧制字段（2026-09-10 在线实测全套生效且单镜头约束已放开：
       // 字幕 burn_subtitle/subtitle_*、花字 fancy_*、文字模板 text_template_*；
-      // 当前特效烧制走 final:mix serverFxBurnOne 直连不经此 IPC，白名单补全
+      // 当前 Step4 服务端合成走 final:mix serverComposeOne 直连不经此 IPC，白名单补全
       // 供多镜头确认合成未来场景使用；putField 非空才收，缺省无副作用）
       putField(fields, 'burn_subtitle', p.burn_subtitle)
       putField(fields, 'font_id', p.font_id)

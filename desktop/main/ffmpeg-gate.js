@@ -77,6 +77,55 @@ function probeDurationViaFfmpeg(ffmpegPath, file) {
 }
 
 /**
+ * ffmpeg -i stderr 解析视频基础信息（打包环境无 ffprobe.exe 的兜底探测，纯函数可单测）。
+ * 实测本仓库 resources/bin/ffmpeg.exe 输出（2026-09-11）：
+ *   Duration: 00:00:01.00, start: 0.000000, bitrate: 104 kb/s
+ *   Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive),
+ *     480x854 [SAR 1:1 DAR 240:427], 12 kb/s, 29.97 fps, 29.97 tbr, 11988 tbn (default)
+ *   Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, mono, fltp
+ * 已知局限（同一实测）：该版本 ffmpeg 不在 -i 输出里打印 rotate/display matrix，
+ * 故兜底路径拿不到旋转 → 宽高为编码尺寸（不做 ±90/270 互换，ffprobe 路径才做）。
+ * 手机竖拍横存素材在打包环境可能给出反向画幅，属已知降级（有 ffprobe 即准确）。
+ */
+function parseFfmpegInfo(stderr) {
+  const out = { duration: 0, width: 0, height: 0, fps: 0, video: '', audio: '' }
+  const s = String(stderr || '')
+  const d = /Duration:\s*(\d+):(\d{2}):(\d{2})\.(\d+)/.exec(s)
+  if (d) out.duration = Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]) + Number('0.' + d[4])
+  for (const line of s.split(/\r?\n/)) {
+    let m = /Stream #\d+:\d+.*?:\s*Video:\s*([A-Za-z0-9_]+)/.exec(line)
+    if (m) {
+      out.video = m[1].toLowerCase()
+      // 宽高：\b 界定避免命中 fourcc 里的 "0x31637661"（x 前仅 1 位数字，不足 2 位）
+      const sz = /\b(\d{2,5})x(\d{2,5})\b/.exec(line)
+      if (sz && !out.width) { out.width = Number(sz[1]); out.height = Number(sz[2]) }
+      // "29.97 fps, 29.97 tbr"：取 fps 字段（首个 "数字 fps"），不取 tbr
+      const f = /([\d.]+)\s+fps/.exec(line)
+      if (f && !out.fps) out.fps = Number(f[1])
+      continue
+    }
+    m = /Stream #\d+:\d+.*?:\s*Audio:\s*([A-Za-z0-9_]+)/.exec(line)
+    if (m && !out.audio) out.audio = m[1].toLowerCase()
+  }
+  return out
+}
+
+/** ffmpeg 兜底探测（永不 reject）：解析不到视频流尺寸返回 null。 */
+function probeViaFfmpeg(ffmpegPath, file) {
+  return new Promise((resolve) => {
+    if (!file || !fs.existsSync(file)) return resolve(null)
+    const proc = spawn(ffmpegPath, ['-hide_banner', '-i', file], { windowsHide: true })
+    let stderr = ''
+    proc.stderr.on('data', (d) => { stderr += d })
+    proc.on('error', () => resolve(null))
+    proc.on('close', () => {
+      const info = parseFfmpegInfo(stderr)
+      resolve(info.width > 0 ? info : null)
+    })
+  })
+}
+
+/**
  * 执行 ffprobe，返回结构化视频信息
  */
 function probe(ffprobePath, file) {
@@ -525,7 +574,20 @@ function createFfmpegGate(ipcMain, studioRoot) {
   const ffprobePath = getFfprobePath(studioRoot)
 
   ipcMain.handle('ffmpeg:probe', async (event, file) => {
-    return await probe(ffprobePath, file)
+    try {
+      return await probe(ffprobePath, file)
+    } catch (err) {
+      // 打包环境 resources/bin 不带 ffprobe.exe（仅 ffmpeg.exe/yt-dlp.exe），PATH 上也
+      // 通常没有 → ffprobe 必然失败，此前该 IPC 直接报错。2026-09-11 补 ffmpeg -i 兜底：
+      // Step2「输出帧率=跟随原片」与原片分辨率列都依赖此探测，无兜底则正式包恒拿不到
+      // fps/宽高，静默降级（帧率回退 30、画幅回退 1080x1920）。
+      const fb = await probeViaFfmpeg(ffmpegPath, file)
+      if (!fb) throw err
+      return {
+        duration: fb.duration, width: fb.width, height: fb.height,
+        fps: fb.fps, codec: fb.video, audio_bitrate: 0, via: 'ffmpeg',
+      }
+    }
   })
 
   // ── ffmpeg:probeDuration — 仅取时长（2026-09-09 用户裁决：素材列表加时长列）──
@@ -586,4 +648,4 @@ function createFfmpegGate(ipcMain, studioRoot) {
   })
 }
 
-module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize, extractFramesBatch, parseCodecsViaFfmpeg, isStreamPlayable }
+module.exports = { createFfmpegGate, getStreamRotationDeg, applyRotationSize, extractFramesBatch, parseCodecsViaFfmpeg, isStreamPlayable, parseFfmpegInfo, probeViaFfmpeg }

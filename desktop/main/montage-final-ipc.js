@@ -171,6 +171,189 @@ function findSrtForVideo(videoPath) {
 
 const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v'])
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** 句级时间轴 → SRT 字符串（timing.json 优先，回退字数比例均分；与本地
+ *  buildSubtitleLines 同口径，供服务端统一合成 subtitle_srt 字段） */
+function buildSrtFromTiming(text, timing, videoDur) {
+  let lines, starts, ends
+  if (Array.isArray(timing) && timing.length && timing.every((t) => t && t.text)) {
+    lines = timing.map((t) => String(t.text).trim())
+    starts = timing.map((t) => Number(t.start ?? 0))
+    ends = timing.map((t) => Number(t.end ?? 0))
+  } else {
+    lines = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    if (!lines.length) return ''
+    const weights = lines.map((l) => Math.max(1, l.length))
+    const total = weights.reduce((a, b) => a + b, 0)
+    let cum = 0
+    starts = []
+    ends = []
+    for (const w of weights) {
+      starts.push(cum)
+      cum += (videoDur > 0 ? videoDur : lines.length * 5) * w / total
+      ends.push(cum)
+    }
+  }
+  const ts = (s) => {
+    const ms = Math.max(0, Math.round(s * 1000))
+    const h = String(Math.floor(ms / 3600000)).padStart(2, '0')
+    const m = String(Math.floor((ms % 3600000) / 60000)).padStart(2, '0')
+    const sec = String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')
+    const mmm = String(ms % 1000).padStart(3, '0')
+    return `${h}:${m}:${sec},${mmm}`
+  }
+  return lines.map((l, i) => `${i + 1}\n${ts(starts[i])} --> ${ts(Math.max(starts[i] + 0.2, ends[i]))}\n${l}`).join('\n')
+}
+
+/** 特效配置 → 服务端统一合成表单字段（2026-09-10 在线契约；口径对照原版
+ *  _submit_concat_to_server：subtitle_style=JSON{box_opacity}；fancy_timing='subtitle_sync'
+ *  服务端自动按字幕同步提前 0.3s，客户端不提供时间轴；文案服务端自动提取。
+ *  text_template_match_*：2026-09-10 服务端新增 match_density（low/mid/high，默认
+ *  high，非法退 high）；模板 id 为 random（未指定）→ match_enabled=true 走全局词表
+ *  自动匹配（/text_templates/keywords 为取数源）；text_template_timing 缺省
+ *  subtitle_sync 与服务端默认一致不传） */
+function buildServerFxFields(fx, srt) {
+  const fields = {}
+  if (fx.addSubtitles) {
+    fields.burn_subtitle = 'true'
+    if (fx.subtitleFont) fields.fontname = String(fx.subtitleFont)
+    const op = Math.min(1, Math.max(0, Number(fx.subtitleBoxOpacity ?? 0.5)))
+    fields.subtitle_style = JSON.stringify({ box_opacity: Number.isFinite(op) ? op : 0.5 })
+    if (srt) fields.subtitle_srt = srt
+  }
+  if (fx.fancyText) {
+    fields.fancy_enabled = 'true'
+    fields.fancy_style = String(fx.fancyStyle || 'gold')
+    fields.fancy_position = String(fx.fancyPosition || 'upper_middle')
+    fields.fancy_timing = 'subtitle_sync'
+    let tpl = fx.fancyTemplate
+    if (tpl && typeof tpl === 'string') { try { tpl = JSON.parse(tpl) } catch (_) { tpl = null } }
+    if (tpl && typeof tpl === 'object') {
+      fields.fancy_template = JSON.stringify(tpl)
+      if (tpl.template_id) fields.fancy_template_id = String(tpl.template_id)
+    }
+  }
+  if (fx.textFxEnabled) {
+    fields.text_template_enabled = 'true'
+    if (fx.textTemplateId && fx.textTemplateId !== 'random') {
+      fields.text_template_id = String(fx.textTemplateId)
+    } else {
+      // 随机样式（未指定模板）→ 按全局词表自动匹配模板
+      fields.text_template_match_enabled = 'true'
+    }
+    if (Array.isArray(fx.textTemplateWords) && fx.textTemplateWords.length) {
+      fields.text_template_words = JSON.stringify(fx.textTemplateWords)
+    }
+    const md = String(fx.matchDensity || '').trim().toLowerCase()
+    if (md === 'low' || md === 'mid' || md === 'high') fields.text_template_match_density = md
+  }
+  return fields
+}
+
+/** multipart 组装（单文件 files 字段 + 文本字段；boundary 随机） */
+function buildFxMultipart(fields, filePath) {
+  const boundary = '----TintinFx' + Math.random().toString(16).substring(2)
+  const parts = []
+  for (const [k, v] of Object.entries(fields || {})) {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`))
+  }
+  const fname = path.basename(filePath).replace(/"/g, '')
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${fname}"\r\nContent-Type: video/mp4\r\n\r\n`))
+  parts.push(fs.readFileSync(filePath))
+  parts.push(Buffer.from('\r\n'))
+  parts.push(Buffer.from(`--${boundary}--\r\n`))
+  return { body: Buffer.concat(parts), contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
+/** 服务端统一合成特效烧制（单视频）：提交 → 轮询结果端点 → 下载落盘 → moov 校验。
+ *  任一环节失败抛错由调用方回退本地 ffmpeg。产物校验防两处实测坑：
+ *  未就绪 200+0B 空体、就绪产物截断 moov 缺失。 */
+async function serverFxBurnOne({ httpRequest, videoPath, fxOut, fx, sub, videoDur }) {
+  let timing = null
+  try {
+    const sidecar = String(sub.timingPath || '')
+    if (sidecar && fs.existsSync(sidecar)) {
+      const arr = JSON.parse(fs.readFileSync(sidecar, 'utf-8'))
+      if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
+    }
+  } catch (_) { timing = null }
+  const fields = buildServerFxFields(fx, buildSrtFromTiming(sub.text, timing, videoDur))
+  const { body, contentType } = buildFxMultipart(fields, videoPath)
+  const res = await httpRequest('POST', '/montage/concat', {
+    body,
+    headers: { 'Content-Type': contentType },
+    timeout: 600000,
+  })
+  const r = res.data
+  if (!r || typeof r !== 'object') throw new Error('统一合成提交未返回 JSON')
+  const id = r.id ?? r.task_id ?? r.job_id
+  if (id === undefined || id === null || id === '') throw new Error('统一合成提交未返回任务 id')
+  const resultPath = `/montage/concat/result/${encodeURIComponent(String(id))}`
+  const deadline = Date.now() + 15 * 60 * 1000
+  let buf = null
+  while (Date.now() < deadline) {
+    await sleep(3000)
+    let resp
+    try {
+      resp = await httpRequest('GET', resultPath, { timeout: 120000 })
+    } catch (err) {
+      if (err && (err.status === 404 || err.status === 202)) continue // 未就绪
+      throw err
+    }
+    const raw = Buffer.from(resp.raw || '')
+    if (!raw.length) continue // 未就绪口径：200+0B 空体（实测契约）
+    const ct = String((resp.headers && resp.headers['content-type']) || '')
+    if (raw.length < 1024 && !ct.includes('video')) continue
+    buf = raw
+    break
+  }
+  if (!buf) throw new Error('统一合成结果轮询超时（15 分钟）')
+  fs.writeFileSync(fxOut, buf)
+  const dur = getMediaDuration(fxOut)
+  if (!(dur > 0)) {
+    try { fs.unlinkSync(fxOut) } catch (_) { /* 忽略 */ }
+    throw new Error('服务端特效产物无法读取（moov 缺失/截断）')
+  }
+}
+
+/** 服务端 BGM 混音（2026-09-10 用户裁决：统一合成主按钮走服务端）：
+ *  POST /montage/bgm 同步返回 {ok, video_url, task_id}（实测，无 result 轮询端点），
+ *  bgm_volume 为 volume 系数口径（默认 0.6，与客户端 bgmVolume/100 同口径）→
+ *  video_url 下载落盘 → 时长校验。任一环节失败抛错由调用方回退本地混音。
+ *  实测注意：①视频必须带音轨，无声视频服务端内部 ffmpeg 500（dubbed 视频均有音轨）；
+ *  ②2026-09-10 实测 video_url=/output/... 死链（404，API 未挂载静态产物目录）——
+ *  契约矛盾已上报，服务端修复前该函数实际恒回退本地混音，修复后零改动生效。 */
+async function serverBgmMix({ httpRequest, videoPath, outPath, bgmPath, bgmVol }) {
+  const boundary = '----TintinBgm' + Math.random().toString(16).substring(2)
+  const parts = []
+  const filePart = (name, filePath, ctype) => {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"; filename="${path.basename(filePath).replace(/"/g, '')}"\r\nContent-Type: ${ctype}\r\n\r\n`))
+    parts.push(fs.readFileSync(filePath))
+    parts.push(Buffer.from('\r\n'))
+  }
+  filePart('file', videoPath, 'video/mp4')
+  filePart('bgm', bgmPath, 'audio/mpeg')
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="bgm_volume"\r\n\r\n${Number(bgmVol).toFixed(2)}\r\n`))
+  parts.push(Buffer.from(`--${boundary}--\r\n`))
+  const res = await httpRequest('POST', '/montage/bgm', {
+    body: Buffer.concat(parts),
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+    timeout: 600000,
+  })
+  const r = res.data
+  if (!r || !r.ok || !r.video_url) throw new Error('服务端混音未返回产物地址')
+  const url = String(r.video_url).startsWith('/') ? String(r.video_url) : '/' + String(r.video_url)
+  const dl = await httpRequest('GET', url, { timeout: 300000 })
+  const buf = Buffer.from(dl.raw || '')
+  if (!buf.length) throw new Error('服务端混音产物为空')
+  fs.writeFileSync(outPath, buf)
+  if (!(getMediaDuration(outPath) > 0)) {
+    try { fs.unlinkSync(outPath) } catch (_) { /* 忽略 */ }
+    throw new Error('服务端混音产物无法读取（moov 缺失/截断）')
+  }
+}
+
 function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl }) {
 
   // ── final:mix — 最终混音合成（FinalMixWorker.run L662-746 一比一）──
@@ -193,7 +376,14 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       // ── 特效烧制前置阶段（同 dubVideos 字体/模板解析口径）──
       const fx = p.effects || null
       const subTexts = Array.isArray(p.subtitleTexts) ? p.subtitleTexts : []
-      const hasFx = !!(fx && (fx.addSubtitles || fx.fancyText) && subTexts.length)
+      // 服务端统一合成特效烧制：2026-09-10 在线实测单镜头约束已放开（单 files 提交
+      // 200 clip_count:1，字幕烧制抽帧验证生效，产物 moov 完整）→ 渲染层服务端模式
+      // 传 serverFx===true 时启用 serverFxBurnOne；失败自动回退本地 ffmpeg
+      // （字幕动画仅本地链路支持，服务端 subtitle_style 契约只有 box_opacity；
+      // 渲染层在字幕动画开启时已直接选本地，此回退为网络/服务端异常兑底）。
+      // 已验证：files×2 提交 200 产物 6s 字幕正确；单 files 提交 200 产物 1s 字幕正确。
+      const useServerFx = p.serverFx === true && typeof httpRequest === 'function'
+      const hasFx = !!(fx && (fx.addSubtitles || fx.fancyText || fx.textFxEnabled) && subTexts.length)
       let fontPathEsc = ''
       let fancyFontPath = ''
       let fancyTemplate = null
@@ -246,12 +436,32 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           } catch (_) { timing = null }
           const ext = path.extname(t.outPath) || '.mp4'
           const fxOut = t.outPath.replace(/\.[^.]+$/, '') + '.fx' + ext
+          // fxOut 与最终成品同目录（final/），该目录在混音阶段才创建；ffmpeg 不会
+          // 自动建输出目录，缺失时报 "No such file or directory"（2026-09-10 实锤根因：
+          // 新任务首次合成必炸，两条链路共用此烧制前置）→ 烧制前先建目录
+          fs.mkdirSync(path.dirname(fxOut), { recursive: true })
+          // 服务端统一合成优先；失败回退本地 ffmpeg（字幕动画仅本地链路支持，
+          // 服务端 subtitle_style 契约只有 box_opacity，无动画/预设色板字段）
+          if (useServerFx) {
+            try {
+              await serverFxBurnOne({
+                httpRequest, videoPath: t.videoPath,
+                fxOut, fx, sub, videoDur,
+              })
+              fxPaths.set(t.videoPath, fxOut)
+              continue
+            } catch (e) {
+              console.warn(`[final:mix] 服务端特效烧制失败，回退本地: ${e.message}`)
+              try { if (fs.existsSync(fxOut)) fs.unlinkSync(fxOut) } catch (_) { /* 忽略 */ }
+            }
+          }
           const args = L.buildEffectBurnArgs({
             videoPath: t.videoPath,
             outputVideoPath: fxOut,
             text: String(sub.text || ''),
             timing,
             videoDur,
+            videoIdx: i, // 样式轮换序号（与效果预览 (视频序+句序) 同口径）
             addSubtitles: !!fx.addSubtitles,
             subtitleFontPath: fontPathEsc,
             subtitleStyle: String(fx.subtitleStyle || 'white'),
@@ -265,6 +475,11 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             fancyTemplate,
             fancySoundPath,
             fancySoundGainDb,
+            // 文字模板关键词（2026-09-10 用户裁决：本地合成同烧；词表+模板样式由渲染层传；
+            // textFxCount=每视频随机选 N 个（随机样式模式），漏传会导致全量轮换）
+            textFxWords: Array.isArray(fx.textTemplateWords) ? fx.textTemplateWords : [],
+            textFxStyles: Array.isArray(fx.textFxStyles) ? fx.textFxStyles : [],
+            textFxCount: Number(fx.textFxCount) || 0,
           })
           if (!args) continue // 无特效可烧（构建器判定）→ 直通
           const r = await runFfmpeg(args)
@@ -278,6 +493,11 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       // 混音进度分段：有特效烧制时烧制占 0-55、混音占 60-100；无特效保持 0-100
       const mixBase = hasFx ? 60 : 0
       const mixSpan = hasFx ? 40 : 100
+      // 2026-09-10 用户裁决：主按钮「统一合成」混音走服务端 /montage/bgm（mixMode
+      // 缺省 server）；「本地合成」按钮传 mixMode='local' 全本地。特效烧制两端一致
+      // 走本地 ffmpeg（服务端 concat ≥2 镜头约束收不了单视频，实测 400）。服务端
+      // 混音失败自动回退本地。
+      const serverMix = p.mixMode !== 'local' && typeof httpRequest === 'function' && hasBgm
 
       const results = []
       const total = tasks.length
@@ -286,6 +506,23 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         const srcVideo = fxPaths.get(videoPath) || videoPath
         emit(`正在进行最终合成配乐 (${index + 1}/${total})...`, mixBase + Math.floor(index / total * mixSpan))
         fs.mkdirSync(path.dirname(outPath), { recursive: true })
+
+        // 服务端混音优先（仅 BGM 环节；失败回退本地 ffmpeg）
+        if (serverMix) {
+          try {
+            await serverBgmMix({
+              httpRequest, videoPath: srcVideo, outPath,
+              bgmPath: p.bgmPath, bgmVol,
+            })
+            const fxTmpS = fxPaths.get(videoPath)
+            if (fxTmpS) { try { fs.unlinkSync(fxTmpS) } catch (_) { /* 忽略 */ } }
+            results.push(outPath)
+            continue
+          } catch (e) {
+            console.warn(`[final:mix] 服务端混音失败，回退本地: ${e.message}`)
+            try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath) } catch (_) { /* 忽略 */ }
+          }
+        }
 
         let args
         if (hasBgm) {
@@ -376,6 +613,40 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
+  // ── final:readTiming — 读句级时间轴 timing.json（2026-09-10 用户裁决：文字模板
+  //  效果预览按视频分行时间轴，关键词需真实时间点；纯本地文件读取，结构对照
+  //  buildSrtFromTiming 输入：[{text, start秒, end秒}]）──
+  ipcMain.handle('final:readTiming', async (_e, payload) => {
+    try {
+      const timingPath = String((payload || {}).timingPath || '')
+      if (!timingPath) return { items: [] }
+      const raw = JSON.parse(fs.readFileSync(timingPath, 'utf-8'))
+      const items = (Array.isArray(raw) ? raw : [])
+        .filter((t) => t && t.text)
+        .map((t) => ({ text: String(t.text).trim(), start: Number(t.start ?? 0), end: Number(t.end ?? 0) }))
+      return { items }
+    } catch (err) {
+      return { items: [], error: err.message }
+    }
+  })
+
+  // ── final:listResults — 回扫 final 目录已合成成片（2026-09-10 用户报障修复：
+  //  刷新/重启后 finalDone=false 三按钮全禁用，「一键导出到剪映」点击无反应；
+  //  排除 .fx. 烧制中间产物，名称排序与合成序号一致）──
+  ipcMain.handle('final:listResults', async (_e, payload) => {
+    try {
+      const dirPath = String((payload || {}).dirPath || '')
+      if (!dirPath || !fs.existsSync(dirPath)) return { files: [] }
+      const files = fs.readdirSync(dirPath)
+        .filter((f) => VIDEO_EXTS.has(path.extname(f).toLowerCase()) && !f.includes('.fx.'))
+        .sort()
+        .map((f) => path.join(dirPath, f))
+      return { files, outDir: dirPath }
+    } catch (err) {
+      return { files: [], error: err.message }
+    }
+  })
+
   // ── jianying:export — 剪映专业版草稿导出（_export_to_jianying_draft / _export_all）──
   // mode 'single'：单视频（export_to_draft）；mode 'multi'：多片段时间轴（export_multi_to_draft，
   // transitions 沿用第②步转场下拉 key，默认 fade）。
@@ -390,6 +661,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             bgmPath: p.bgmPath,
             bgmVolume: Number(p.bgmVolume) || 50,
             srtPaths: p.srtPaths,
+            fxWords: p.fxWords,
+            fxKinds: p.fxKinds,
             draftName: p.draftName,
             deps,
           })
@@ -398,6 +671,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             bgmPath: p.bgmPath,
             bgmVolume: Number(p.bgmVolume) || 50,
             srtPath: p.srtPath,
+            fxWords: p.fxWords,
+            fxKinds: p.fxKinds,
             draftName: p.draftName,
             deps,
           })
@@ -429,4 +704,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   })
 }
 
-module.exports = { createMontageFinalIpc, getOutFinalDir, getOutMontageDir, findSrtForVideo }
+module.exports = {
+  createMontageFinalIpc, getOutFinalDir, getOutMontageDir, findSrtForVideo,
+  buildSrtFromTiming, buildServerFxFields,
+}

@@ -823,6 +823,86 @@ function buildFancyDrawtextList(o, fancyEvents) {
 }
 
 /**
+ * 文字模板关键词 drawtext 段构建（2026-09-10 用户裁决：本地合成也烧制文字模板
+ * 动画——此前 textFxEnabled 只透传服务端 text_template_* 字段，本地链路啥也不烧）。
+ * 口径与效果预览 buildTextFxTracks 同源：句文本命中全局词表 → 该句时间窗内顶部
+ * 居中显示命中词（多词空格拼接）；样式池先按视频序确定性洗牌取随机子集
+ * （textFxCount 个，随机数量对每条视频独立生效），再按 (视频序+命中序) 轮换；
+ * 动画 fade/slide/pulse（drawtext 能力边界，其余模板动画本地近似 fade，
+ * 完整动画走剪映导出 appendKeywordTrack）。
+ * o: { textFxWords: string[], textFxStyles: Array<{color,effectColor,anim}>, textFxCount, fancyFontPath }
+ */
+// 确定性种子洗牌（LCG；与渲染层 videoMontageLogic.seededShuffle 逐行同款——
+// 跨端无共享模块，两边同步改，保证预览与烧制同视频同子集）
+function textFxSeedShuffle(arr, seed) {
+  const a = [...arr]
+  let s = ((Number(seed) || 0) + 1) * 2654435761 >>> 0
+  for (let i = a.length - 1; i > 0; i--) {
+    s = (s * 1664525 + 1013904223) >>> 0
+    const j = s % (i + 1)
+    const tmp = a[i]; a[i] = a[j]; a[j] = tmp
+  }
+  return a
+}
+
+function buildTextFxDrawtextList(o, subLines, subStarts, subEnds, videoIdx) {
+  const words = (Array.isArray(o.textFxWords) ? o.textFxWords : [])
+    .map((w) => String(w).trim()).filter(Boolean)
+  const allStyles = Array.isArray(o.textFxStyles) ? o.textFxStyles : []
+  if (!words.length || !allStyles.length) return []
+  // 每视频独立随机子集（2026-09-10 用户裁决：随机数量 N 对应每条视频；
+  // textFxCount<=0 或池≤1 → 全量轮换）
+  const count = Number(o.textFxCount) || 0
+  const styles = (count > 0 && allStyles.length > 1)
+    ? textFxSeedShuffle(allStyles, Number(videoIdx) || 0).slice(0, Math.min(count, allStyles.length))
+    : allStyles
+  const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
+  const drawtexts = []
+  let hitIdx = 0 // 命中条目序：与预览 (视频序+词序) 轮换同口径（非句序，避免跳样）
+  for (let i = 0; i < subLines.length; i++) {
+    const line = String(subLines[i] || '')
+    if (!line) continue
+    // 命中词（按词长降序去重，避免短词在长词内重复计入）
+    const sorted = [...words].sort((a, b) => b.length - a.length)
+    const hits = []
+    for (const w of sorted) {
+      if (line.includes(w) && !hits.some((h) => h.toLowerCase().includes(w.toLowerCase()))) hits.push(w)
+    }
+    if (!hits.length) continue
+    const st = styles[(videoIdx + hitIdx) % styles.length] // 与预览 (视频序+词序) 轮换同口径
+    hitIdx += 1
+    const color = String(st.color || '#FFFFFF').replace('#', '0x')
+    const effect = String(st.effectColor || st.color || '#FFD24D').replace('#', '0x')
+    const startT = Math.max(0, subStarts[i])
+    const endT = Math.max(startT + 0.2, subEnds[i])
+    const s = startT.toFixed(3)
+    const animDur = 0.3
+    // 动画（写法对照字幕/花字 fade/slide 先例；pulse=持续脉动；x/y 含逗号必须引号包裹）
+    let xExpr = '(w-text_w)/2'
+    let yExpr = 'h*0.08' // 顶部居中（与花字中上/字幕底部不重叠）
+    const animParts = []
+    if (st.anim === 'slide') {
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+      xExpr = `(w-text_w)/2+(1-min((t-${s})/${animDur},1))*w*0.10`
+    } else if (st.anim === 'pulse') {
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.65+0.35*abs(sin((t-${s})*6)))'`)
+    } else {
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
+    }
+    drawtexts.push(
+      `drawtext=fontfile='${fontPath}':`
+      + `text='${escapeDrawText(hits.join(' '))}':`
+      + `fontsize=h*0.055:fontcolor=${color}:`
+      + `borderw=3:bordercolor=${effect}@0.9:`
+      + `x='${xExpr}':y='${yExpr}':`
+      + `enable='between(t,${startT.toFixed(3)},${endT.toFixed(3)})'`
+      + (animParts.length ? ':' + animParts.join(':') : ''),
+    )
+  }
+  return drawtexts
+}
+
+/**
  * 构建 Step4 特效烧制 ffmpeg 参数（2026-09-09 用户裁决：字幕/花字特效自配音链迁至
  * 特效包装统一烧制；复用与配音链同一构建器保证样式/时机一致；无配音替换，音频 copy）。
  * opts: { videoPath, outputVideoPath, text, timing, videoDur,
@@ -839,7 +919,9 @@ function buildEffectBurnArgs(opts) {
   let subLines = []
   let subStarts = []
   let subEnds = []
-  if ((o.addSubtitles || o.fancyText) && o.text) {
+  const hasTextFx = Array.isArray(o.textFxWords) && o.textFxWords.length
+    && Array.isArray(o.textFxStyles) && o.textFxStyles.length
+  if ((o.addSubtitles || o.fancyText || hasTextFx) && o.text) {
     const built = buildSubtitleLines({
       timing: o.timing, text: o.text, displayDur: videoDur,
       needAudioSpeed: false, videoDur, audioDur: videoDur,
@@ -884,6 +966,15 @@ function buildEffectBurnArgs(opts) {
       })
       videoFilters.push(`${amixIn}amix=inputs=${soundSpecs.length + 1}:normalize=0:duration=longest[a_mix]`)
       audioLabel = 'a_mix'
+    }
+  }
+  // 文字模板关键词叠加（2026-09-10 用户裁决：本地合成同烧；接在字幕/花字链尾，
+  // 输出标 vtx 恒唯一；videoIdx 供样式轮换与预览同源）
+  if (Array.isArray(o.textFxWords) && o.textFxWords.length && Array.isArray(o.textFxStyles) && o.textFxStyles.length && subLines.length) {
+    const txd = buildTextFxDrawtextList(o, subLines, subStarts, subEnds, Number(o.videoIdx) || 0)
+    if (txd.length) {
+      videoFilters.push(`[${videoLabel}]${txd.join(',')}[vtx]`)
+      videoLabel = 'vtx'
     }
   }
   if (!videoFilters.length) return null
@@ -1086,4 +1177,5 @@ module.exports = {
   buildSubtitleLines,
   buildDubFFmpegArgs,
   buildEffectBurnArgs,
+  buildTextFxDrawtextList,
 }

@@ -14,11 +14,13 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VideoPreview from '@/components/common/VideoPreview.vue'
-import VideoPlayer from '@/components/common/VideoPlayer.vue'
+// import VideoPlayer 已移除：Step4 成片预览由统一右栏 StepPreviewPane 接管（2026-09-10 界面统一）
 import { useVideoMontage } from '@/composables/useVideoMontage'
 import { useAudioGen } from '@/composables/useAudioGen'
 import { useFilePicker } from '@/composables/useFilePicker'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
+import StepPreviewPane, { type StepPreviewItem, type StepPreviewKeyword } from './StepPreviewPane.vue'
+import VdStepBar from './VdStepBar.vue'
 import { markdownListLines } from '@/composables/opsProductLibraryLogic'
 import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/videoMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
@@ -71,7 +73,8 @@ const {
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立；随机样式默认 3 个）
   textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
-  textRandomCount, TEXT_RANDOM_COUNT_OPTIONS, textFxPreviewItems, textFxStyleSamples,
+  textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
+  textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
   voiceProgress,
   fancyTemplateId, fancyTemplates, fancyPreviews,
   loadFancyTemplates,
@@ -83,17 +86,17 @@ const {
     voiceBusy, rewriteBusy,
   scanVoiceDir, enterStepVoice,
     batchAiRewrite, startSynthesizeVoice,
-  regenVoice, exportVoice, playVoice, playRowVideo, playDubbedVideo,
+  regenVoice, exportVoice, playVoice, playDubbedVideo,
   toggleLengthMode, lengthModeTip,
   voiceStatusText, voiceStatusClass, pathBasename,
   // Step4 特效包装（对照 step4_final_view.py 逐控件）
-  bgmPath, bgmName, bgmVolume, finalBusy, finalDone, finalProgress,
-  finalVideoList, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
+  bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
+  finalVideoList, finalSelIdx,
   bgmSource,
   bgmPlaying, bgmPosMs, bgmDurMs,
   pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
   enterStep4, startFinalMix, openFinalDir,
-  exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo,
+  exportJianyingDraft, exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
   fmtBgmTime,
   selectRefAudio,
   fmtDur,
@@ -101,6 +104,105 @@ const {
   // 景别分类
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = useVideoMontage()
+
+// ── 界面统一+联动预览（2026-09-10 用户需求）：Step2/3/4 右栏统一多块视频预览 ──
+/** 本地路径 → file URL（previewFinalVideo 同口径） */
+function toFileUrl(p: string): string {
+  return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23')
+}
+
+/** Step2 右栏：每条方案一块——确认成片直播；未确认给镜头连播序列（激活块内连播） */
+const step2PreviewItems = computed<StepPreviewItem[]>(() => assemblePlans.value.map((p, i) => {
+  if (p.confirmed && p.outputPath) {
+    return { badge: `第 ${i + 1} 条`, src: toFileUrl(p.outputPath), tip: p.outputName || '' }
+  }
+  const seq = p.clips.filter((_, ci) => !p.deletedFlags[ci]).map((c) => vdToAbsolute(c.clipUrl))
+  return {
+    badge: `第 ${i + 1} 条`,
+    seqList: seq,
+    placeholder: seq.length ? `${seq.length} 个镜头 · 待确认合成` : '待确认合成',
+    tip: planRowText(i),
+  }
+}))
+
+/** Step3 右栏：每条待配音视频一块——配音完成切换配音后视频并点亮，进行中显进度 */
+const step3PreviewItems = computed<StepPreviewItem[]>(() => voiceRows.value.map((r, i) => {
+  const target = (r.dubbedPath && r.dubbedPath.endsWith('.mp4')) ? r.dubbedPath : r.path
+  const generating = r.status === 'generating'
+  return {
+    badge: `第 ${i + 1} 条`,
+    src: target ? toFileUrl(target) : '',
+    placeholder: '待确认合成产物',
+    tag: generating ? `配音中 ${r.progress}%` : (r.dubbedPath ? '已配音' : (r.wavPath ? '声音已克隆' : '待配音')),
+    tagClass: r.dubbedPath ? 'ok' : (generating ? 'busy' : ''),
+    tip: r.name,
+  }
+}))
+
+/** Step4 右栏：合成完成→成片直播；否则候选视频 + 特效叠加预览（样式随左侧配置实时联动） */
+const step4PreviewItems = computed<StepPreviewItem[]>(() => {
+  if (finalDone.value && finalVideoList.value.length) {
+    return finalVideoList.value.map((it, i) => ({
+      badge: `第 ${i + 1} 条`, src: toFileUrl(it.path), tag: '成片', tagClass: 'ok', tip: it.name,
+    }))
+  }
+  const kwStyle = textFxStyleSamples.value[0]?.style as Record<string, string | number> | undefined
+  return step4Candidates.value.map((c, i) => {
+    const row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c)
+    const sub = addSubtitles.value ? String(row?.text || '').split(/\r?\n/)[0]?.trim().slice(0, 20) : ''
+    const track = textFxPreviewTracks.value[i]
+    let keywords: StepPreviewKeyword[] = []
+    if (textFxEnabled.value && track?.items?.length) {
+      keywords = track.items.slice(0, 2).map((t) => ({ text: t.word, style: kwStyle }))
+    } else if (fancyEnabled.value) {
+      keywords = [{ text: FANCY_PREVIEW_TEXT, style: fancyCustomPreviewStyle.value }]
+    }
+    return {
+      badge: `第 ${i + 1} 条`,
+      src: toFileUrl(c),
+      subtitle: sub || undefined,
+      subtitleStyle: subtitlePreviewStyle.value,
+      keywords: keywords.length ? keywords : undefined,
+      tag: row?.dubbedPath ? '已配音' : '待配音',
+      tagClass: row?.dubbedPath ? 'ok' : '',
+      tip: pathBasename(c),
+    }
+  })
+})
+
+/** Step4 选中联动：右栏点块 = 左列表选中（成片预览由块内 video 直播） */
+function onStep4Select(i: number): void {
+  finalSelIdx.value = i
+}
+
+// 文字模板样式预览两端箭头滚动（2026-09-10 用户裁决：不用横向滚动条）
+const textFxCanvasEl = ref<HTMLElement | null>(null)
+function scrollTextFxStyles(dir: number): void {
+  textFxCanvasEl.value?.scrollBy({ left: dir * 260, behavior: 'smooth' })
+}
+
+// ── 左右分栏手动调整（2026-09-10 用户需求）：拖拽分隔条改左右比例，默认 6:4，localStorage 记忆 ──
+const VD_SPLIT_KEY = 'vd-split-pct'
+const vdSplitPct = ref(Math.min(80, Math.max(35, Number(localStorage.getItem(VD_SPLIT_KEY)) || 60)))
+/** 左栏宽度由分隔条拖拽控制（右栏吃剩余全部，三步共享同一比例 → 右栏位置切步不变） */
+const vdLeftStyle = computed(() => ({ flex: `0 0 calc(${vdSplitPct.value}% - 6px)` }))
+
+function onSplitDown(e: MouseEvent): void {
+  e.preventDefault()
+  const pane = (e.currentTarget as HTMLElement).parentElement
+  if (!pane) return
+  const rect = pane.getBoundingClientRect()
+  const onMove = (ev: MouseEvent) => {
+    vdSplitPct.value = Math.min(80, Math.max(35, Math.round(((ev.clientX - rect.left) / rect.width) * 100)))
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    localStorage.setItem(VD_SPLIT_KEY, String(vdSplitPct.value))
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
 
 /** TTS 引擎下拉选项（2026-09-09 用户裁决：默认 idexttts，对齐声音克隆页裁决；
  *  QwenTTS 待服务端实现，禁用占位） */
@@ -162,7 +264,14 @@ const bgmPickDlg = ref<{ show: boolean; pickedMid: string; busy: boolean; error:
 function openBgmPickDlg(): void {
   bgmPickDlg.value.show = true
   bgmPickDlg.value.error = ''
-  if (!listRows.value.length && !listLoading.value) doSearch()
+  // 2026-09-10 用户裁决：BGM 选择弹窗默认分类「音乐」（列表状态与音频生成页共享，
+  // 仅在打开弹窗时置分类并刷新，不影响音频生成页自身默认「全部」）
+  if (listKind.value !== 'music') {
+    listKind.value = 'music'
+    doSearch()
+  } else if (!listRows.value.length && !listLoading.value) {
+    doSearch()
+  }
   void loadBgmTags()
 }
 function confirmBgmPick(): void {
@@ -363,21 +472,15 @@ function scoreClass(score: number | undefined): string {
 <template>
   <div class="montage" style="display: flex; flex-direction: column; gap: var(--space-5);">
 
-    <!-- 顶部步骤条（原版 step_labels 是 QLabel 不可点击，仅通过按钮切换；本端保留可点击但加门控：仅允许跳转到已完成或当前步骤） -->
-    <div class="step-bar">
-      <template v-for="(s, i) in STEPS" :key="s">
-        <div class="step-pill" :class="{ active: step === i, done: step > i, disabled: i > step }" @click="i <= step && go(i)">
-          <span class="step-dot" v-if="step > i">✓</span>{{ s }}
-        </div>
-        <span v-if="i < STEPS.length - 1" class="step-arrow">›</span>
-      </template>
-    </div>
+    <!-- 顶部全宽步骤条已删（2026-09-10 用户裁决：四个 tab 步骤统一放操作区/卡片内，
+         各步骤 card 顶部各一份 VdStepBar，预览区不受影响；门控保留在组件内） -->
 
     <!-- 共享任务状态条移至页尾（原版底部 stage_label + progress_bar 同位置） -->
 
     <!-- Step 1: 镜头智能分割（布局对照原版 gui/montage/step1_split_view.py L27-181） -->
     <template v-if="step === 0">
       <section class="card">
+        <VdStepBar :step="step" @go="go" />
         <div class="dropzone" @click="selectFolder" @drop.prevent="onDrop" @dragover.prevent>
           <span class="dz-main">拖入素材文件夹（自动遍历子文件夹内全部视频） 或 点击选择文件夹</span>
           <span class="dz-hint">支持 mp4 / mov / avi / mkv / flv / webm / m4v，服务端完成分割与逐镜分析</span>
@@ -485,9 +588,13 @@ function scoreClass(score: number | undefined): string {
       </div>
     </template>
 
-    <!-- Step 2: 镜头重组（布局逐控件对照原版 gui/montage/step2_concat_view.py setup_ui） -->
+    <!-- Step 2: 镜头重组（布局逐控件对照原版 gui/montage/step2_concat_view.py setup_ui）；
+         2026-09-10 用户需求「界面统一+联动预览」：左操作区 + 右多块预览两栏 -->
     <template v-else-if="step === 1">
       <section class="card">
+        <div class="vd-unified">
+        <div class="vd-unified-left" :style="vdLeftStyle">
+        <VdStepBar :step="step" @go="go" />
         <!-- 参数设置组（原版 params_group：统一边框背景内两行参数） -->
         <div class="params-group">
           <!-- Parameters row 1（原版 L45-106：排列逻辑|输出画幅+原片画幅|时长限制|生成视频数量+推荐；混编随机度隐藏） -->
@@ -560,7 +667,8 @@ function scoreClass(score: number | undefined): string {
           </table>
           <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
 
-          <!-- 下半区：左=分割镜头详情表（10行高度），右=视频预览（等高） -->
+          <!-- 下半区：分割镜头详情表（10行高度；连播预览已迁右侧统一预览栏，
+               2026-09-10 用户需求：单击预览块联动选中方案） -->
           <div class="result-bottom">
             <div class="detail-col">
               <span class="sec-label">视频组成镜头详情 (拖动把手调序，右键删除/恢复镜头):</span>
@@ -568,7 +676,7 @@ function scoreClass(score: number | undefined): string {
                 <table class="tbl detail-tbl">
                   <thead><tr>
                     <th class="w48">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
-                    <th>时长</th><th>景别</th><th style="min-width:180px">描述文案</th><th>评分</th>
+                    <th>时长</th><th>景别</th><th>位置</th><th style="min-width:180px">描述文案</th><th>评分</th>
                   </tr></thead>
                   <tbody v-if="currentPlan">
                     <tr v-for="(c, ri) in currentPlan.clips" :key="ri"
@@ -588,53 +696,67 @@ function scoreClass(score: number | undefined): string {
                         </span>
                         <span v-else class="muted">—</span>
                       </td>
+                      <!-- 位置：入场/出场（同 Step1 口径：服务端 enter/exit 优先，路径命名兑底；tooltip 标来源）。
+                           重组排序即按此列：入场头/出场尾/其余居中（applyShotLayoutOrder） -->
+                      <td class="ta-c shot-source-cell" :title="c.positionSource || ''">
+                        <span v-if="c.position" class="shot-type-badge"
+                          :style="{ color: SHOT_TYPE_COLORS[c.position] || '#888', borderColor: SHOT_TYPE_COLORS[c.position] || '#888' }">
+                          {{ SHOT_TYPE_LABELS[c.position] || c.position }}
+                        </span>
+                        <span v-else class="muted">—</span>
+                      </td>
                       <td class="clip-desc" :title="c.description">{{ c.description || '—' }}</td>
                       <td class="ta-c" :class="scoreClass(c.score)">{{ c.score ? c.score.toFixed(1) : '—' }}</td>
                     </tr>
                     <!-- 不足 10 行时占位 -->
-                    <tr v-for="n in Math.max(0, 10 - (currentPlan?.clips.length || 0))" :key="'dph'+n" class="detail-placeholder-row"><td colspan="7"></td></tr>
+                    <tr v-for="n in Math.max(0, 10 - (currentPlan?.clips.length || 0))" :key="'dph'+n" class="detail-placeholder-row"><td colspan="8"></td></tr>
                   </tbody>
                   <tbody v-else>
-                    <tr><td colspan="7" class="muted">单击上方预合成项查看镜头详情</td></tr>
+                    <tr><td colspan="7" class="muted">单击右侧预览块或上方预合成项查看镜头详情</td></tr>
                   </tbody>
                 </table>
               </div>
             </div>
-            <div class="player-col">
-              <span class="sec-label">视频播放预览:</span>
-              <div class="player-wrap">
-                <VideoPlayer v-if="seqSrc" :src="seqSrc" autoplay class="player-video" @ended="onSeqEnded" />
-                <div v-else class="player-empty">单击预合成项预览序列</div>
-              </div>
-            </div>
           </div>
         </div>
+
+        <!-- 确认行（原版 confirm_row L268-286：确认合成视频 + 生成口播文案，初始禁用；
+             2026-09-10 界面统一：属执行步骤，归左栏底部） -->
+        <div class="row confirm-row">
+          <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!hasUnconfirmed" @click="confirmAllPrecompose" />
+          <!-- 2026-09-09 用户裁决：合成完成后生成口播文案要标明可点击状态（可用时切 primary 高亮） -->
+          <TButton label="生成口播文案" :variant="confirmedPaths.length ? 'primary' : 'secondary'" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
+        </div>
+        <template v-if="confirmBusy">
+          <div class="concat-status-line">{{ statusText }}</div>
+          <progress class="vd-progress split-progress" :value="concatProgress" max="100" />
+        </template>
+
+        <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区，归左栏底部；原版 nav_row L288-301） -->
+        <div class="row between">
+          <TButton label="上一步：镜头分割" plain @click="go(0)" />
+          <TButton label="下一步：口播配音" icon="right" :disabled="!confirmedPaths.length" @click="go(2)" />
+        </div>
+        </div><!-- /vd-unified-left -->
+
+<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
+
+        <!-- 右栏：每条方案一块预览（确认成片直播；未确认单击块连播镜头序列，并联动左栏镜头表） -->
+        <div class="vd-unified-right">
+          <StepPreviewPane title="方案预览" :items="step2PreviewItems" :active-index="currentPlanIdx"
+            empty-text="尚无预合成方案，勾选镜头后点击「镜头重组」" @select="selectPlan" />
+        </div>
+        </div><!-- /vd-unified -->
       </section>
-
-      <!-- 确认行（原版 confirm_row L268-286：确认合成视频 + 生成口播文案，初始禁用） -->
-      <div class="row confirm-row">
-        <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!hasUnconfirmed" @click="confirmAllPrecompose" />
-        <!-- 2026-09-09 用户裁决：合成完成后生成口播文案要标明可点击状态（可用时切 primary 高亮） -->
-        <TButton label="生成口播文案" :variant="confirmedPaths.length ? 'primary' : 'secondary'" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
-      </div>
-      <!-- 确认合成进度（样式对齐 Step1 split-progress，同卡片内按钮行下方呈现；
-        阶段值对照原版 montage_concat_server_worker progress：提交 30/轮询钳 48/完成 100）；
-        状态文案置于进度条上方（用户裁决：文字在进度条上面） -->
-      <template v-if="confirmBusy">
-        <div class="concat-status-line">{{ statusText }}</div>
-        <progress class="vd-progress split-progress" :value="concatProgress" max="100" />
-      </template>
-
-      <!-- 导航行（原版 nav_row L288-301：上一步：镜头分割 / 下一步：克隆口播） -->
-      <div class="row between">
-        <TButton label="上一步：镜头分割" plain @click="go(0)" />
-        <TButton label="下一步：克隆口播" icon="right" :disabled="!confirmedPaths.length" @click="go(2)" />
-      </div>
     </template>
 
-    <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一） -->
+    <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一）；
+         2026-09-10 用户需求「界面统一+联动预览」：左操作区 + 右逐条点亮预览 -->
     <template v-else-if="step === 2">
       <section class="card">
+        <div class="vd-unified">
+        <div class="vd-unified-left" :style="vdLeftStyle">
+        <VdStepBar :step="step" @go="go" />
         <!-- 1. 视频输入目录行：2026-09-08 用户裁决删除——口播配音无视频输入功能，
              配音对象自动取 Step2 已确认合成产物所在目录 -->
 
@@ -656,17 +778,9 @@ function scoreClass(score: number | undefined): string {
         <!-- TTS API 与推理参数行：2026-09-08 用户裁决删除（TTS 地址自动跟随系统设置，
              ttsSteps/ttsCfg 存而不用；ttsSpeedMin/Max 保留默认值 0.9~1.2 随克隆请求发送） -->
 
-        <!-- 4. 表格标题行（L177-196） -->
-        <div class="row between">
+        <!-- 4. 表格标题行（L177-196；2026-09-10 用户裁决：TTS 引擎/克隆/文案设置组移到「开始批量克隆」前面） -->
+        <div class="row">
           <span class="card-title"> 待合成视频列表与配音文案映射 (在配音文案栏直接输入):</span>
-          <div class="row">
-            <!-- 2026-09-09 用户裁决：文案生成设置左边加 TTS 选择下拉（默认 idexttts）
-                 + 设置声音克隆按钮（弹窗配置克隆参数，克隆时随请求发送） -->
-            <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
-            <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
-            <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
-            <TButton label="一键AI修改全部文案" size="small" :loading="rewriteBusy" @click="batchAiRewrite" />
-          </div>
         </div>
 
         <!-- 5. 待合成视频表（L198-208 两列：序号 | 视频/配音/文案/状态/操作；行结构对照 dialogs.py VoiceRowDetailWidget L392-459） -->
@@ -682,10 +796,9 @@ function scoreClass(score: number | undefined): string {
               <td class="ta-c">{{ i + 1 }}</td>
               <td>
                 <div class="vd-detail">
-                  <!-- 行 1：文件名 + 播放视频（配音后优先） + 状态 + 操作 -->
+                  <!-- 行 1：文件名 + 状态 + 操作（2026-09-10 用户裁决：删行内 ▶ 播放按钮，视频预览已在右侧统一预览栏） -->
                   <div class="vd-top">
                     <span class="vd-name" :title="row.path">视频: {{ row.name }}</span>
-                    <button class="icon-btn" title="播放视频（配音后优先）" @click="playRowVideo(i)">▶</button>
                     <span class="spacer"></span>
                     <span v-if="row.status === 'generating'" class="vd-progress-text">{{ row.progress }}%</span>
                     <span class="vd-status" :class="voiceStatusClass(row)">{{ voiceStatusText(row) }}</span>
@@ -722,10 +835,17 @@ function scoreClass(score: number | undefined): string {
         </table>
         <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
 
-        <!-- 6. 声音克隆动作外框（2026-09-09 用户裁决：烧制字幕/添加花字属配音设置，
-             移入下方「视频配音设置」分组，此处仅保留克隆按钮独立成框） -->
-        <div class="action-box voice-clone-box">
-          <TButton label="开始批量克隆人声合成" class="clone-btn" :loading="voiceBusy" @click="startSynthesizeVoice" />
+        <!-- 2026-09-10 用户裁决：克隆按钮变短，与设置组（TTS 引擎/声音克隆/文案生成/AI 改文案）同行、
+             整行靠右（克隆=主操作居最右）；原独立 voice-clone-box 全宽框取消 -->
+        <!-- 2026-09-10 用户裁决：声音设置组靠左、克隆主操作靠右（两端对齐） -->
+        <div class="row between clone-row">
+          <div class="row">
+            <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
+            <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
+            <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
+            <TButton label="一键AI修改全部文案" size="small" :loading="rewriteBusy" @click="batchAiRewrite" />
+          </div>
+          <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
         </div>
 
         <!-- 7. 配音动作已迁 Step4 统一合成（2026-09-09 用户裁决：Step3 只合成口播声音，
@@ -736,14 +856,24 @@ function scoreClass(score: number | undefined): string {
           <div class="concat-status-line">{{ statusText }}</div>
           <progress class="vd-progress split-progress" :value="voiceProgress" max="100" />
         </template>
-      </section>
 
-      <!-- 导航行（L284-297；2026-09-09 用户裁决：合成声音即可跳转第四步，配音在第四步统一处理） -->
-      <div class="row between">
-        <TButton label="上一步：镜头重组" plain @click="go(1)" />
-        <TButton label="下一步：特效包装" icon="right" title="生成口播声音后即可进入；配音/特效/混音在第四步统一合成"
-          :disabled="!voiceRows.some(r => r.wavPath)" @click="go(3)" />
-      </div>
+        <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；2026-09-09 裁决：合成声音即可跳第四步） -->
+        <div class="row between">
+          <TButton label="上一步：镜头重组" plain @click="go(1)" />
+          <TButton label="下一步：特效包装" icon="right" title="生成口播声音后即可进入；配音/特效/混音在第四步统一合成"
+            :disabled="!voiceRows.some(r => r.wavPath)" @click="go(3)" />
+        </div>
+        </div><!-- /vd-unified-left -->
+
+<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
+
+        <!-- 右栏：每条待配音视频一块（配音完成切换配音后视频并点亮；进行中显进度，实时联动） -->
+        <div class="vd-unified-right">
+          <StepPreviewPane title="配音预览" :items="step3PreviewItems"
+            empty-text="确认合成完成后，Step2 的成片视频会出现在这里逐条预览配音效果" />
+        </div>
+        </div><!-- /vd-unified -->
+      </section>
     </template>
 
     <!-- Step 4: 特效包装（step4_final_view.py L14-196 逐控件；另保留本端 AI 生成 BGM）；
@@ -751,6 +881,10 @@ function scoreClass(score: number | undefined): string {
          字幕文案按视频从 Step3 文案表带过去 -->
     <template v-else>
       <section class="card">
+        <!-- 2026-09-10 界面统一：左操作区 + 右统一预览两栏（右栏与 Step2/3 同位置同宽） -->
+        <div class="vd-unified">
+        <div class="vd-unified-left" :style="vdLeftStyle">
+        <VdStepBar :step="step" @go="go" />
         <!-- 特效包装分组：烧制字幕 + 花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
           <div class="fx-pack-title">特效包装</div>
@@ -839,11 +973,16 @@ function scoreClass(score: number | undefined): string {
               <label class="param-label">随机数量:</label>
               <TSelect v-model="textRandomCount" :options="TEXT_RANDOM_COUNT_OPTIONS" class="w80"
                 title="随机模式下从全部文字模板样式中选取的个数（默认 3 个）" />
+              <label class="param-label">关键词密度:</label>
+              <TSelect v-model="textKeywordDensity" :options="TEXT_KEYWORD_DENSITY_OPTIONS" class="w80"
+                title="关键词密度档位：低=3 个/中=8 个/高=12 个提取上限。&#10;调节后重新提取口播文案关键词并重新生成需要合成的文字模板。" />
             </template>
           </div>
           <div v-if="textFxEnabled" class="row">
             <label class="param-label">样式预览:</label>
-            <div class="style-preview-canvas">
+            <!-- 2026-09-10 用户裁决：样式多不用横向滚动条，两端箭头点击滚动 -->
+            <button class="icon-btn textfx-arrow" title="向左滚动" @click="scrollTextFxStyles(-1)">‹</button>
+            <div ref="textFxCanvasEl" class="style-preview-canvas textfx-canvas">
               <template v-if="textFxStyleSamples.length">
                 <span v-for="s in textFxStyleSamples" :key="'ts' + s.id" class="textfx-sample"
                   :title="`模板：${s.name}`">
@@ -853,15 +992,30 @@ function scoreClass(score: number | undefined): string {
               </template>
               <span v-else class="muted">{{ textTemplates.length ? '未命中模板' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
             </div>
+            <button class="icon-btn textfx-arrow" title="向右滚动" @click="scrollTextFxStyles(1)">›</button>
           </div>
+          <!-- 2026-09-10 用户终裁：本行不设「效果预览:」标签字，每行左侧=视频名；
+               时间轴条内词条只显示关键词本体（模板名小字废止，区域=纯文字模板展示区，
+               模板名仅保留在 hover 提示里） -->
           <div v-if="textFxEnabled" class="row">
-            <label class="param-label">效果预览:</label>
-            <div class="style-preview-canvas">
-              <template v-if="textFxPreviewItems.length">
-                <span v-for="(w, i) in textFxPreviewItems" :key="'tw' + i" class="textfx-word"
-                  :title="`模板：${w.tplName}`">{{ w.word }}<small class="textfx-word-tpl">{{ w.tplName }}</small></span>
+            <!-- 上一步合成几条就几条轨，轨名=视频名，背景条本身即时长，词条按真实时间点定位 -->
+            <div class="style-preview-canvas textfx-tracks">
+              <template v-if="textFxPreviewTracks.length">
+                <div v-for="(tr, ti) in textFxPreviewTracks" :key="'tt' + ti" class="textfx-track">
+                  <span class="textfx-track-name" :title="tr.name">{{ tr.name }}</span>
+                  <div class="textfx-track-bar">
+                    <span v-for="(it, ii) in tr.items" :key="'ti' + ii" class="textfx-track-item"
+                      :style="{ left: (tr.durationSec > 0 ? Math.min(92, (it.start / tr.durationSec) * 100) : 0) + '%' }"
+                      :title="`${it.word} · ${it.tplName} · ${fmtDur(it.start)} / ${fmtDur(tr.durationSec)}`">
+                      <!-- 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与烧制同源，
+                           不再写死黄色）；关键词颜色由模板决定不可改；动画类绑内层
+                           避免覆盖词条定位 transform -->
+                      <b :class="it.anim ? `textfx-anim-${it.anim}` : ''" :style="it.tplStyle">{{ it.word }}</b>
+                    </span>
+                  </div>
+                </div>
               </template>
-              <span v-else class="muted">{{ textTemplates.length ? '提取不到关键词（需口播文案含价格/数字/关键词）' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
+              <span v-else class="muted">{{ textTemplates.length ? '上一步合成的视频将在此逐条预览关键词效果' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
             </div>
           </div>
         </div>
@@ -870,10 +1024,9 @@ function scoreClass(score: number | undefined): string {
         <div class="row">
           <label class="label"> 背景音乐 (BGM):</label>
           <input :value="bgmPath" placeholder="选择混剪背景音乐 (mp3/wav)，选空则无BGM..." readonly class="input grow" @click="pickBgm" />
-          <!-- 2026-09-09 用户裁决：选择背景音乐前加「选择BGM」按钮，弹音频库选择框 -->
+          <!-- 2026-09-10 用户裁决：删「选择背景音乐」按钮（点击输入框已可上传）；保留「选择BGM」弹音频库 -->
           <TButton label="选择BGM" size="small" variant="secondary" @click="openBgmPickDlg" />
-          <TButton label="选择背景音乐" size="small" variant="secondary" @click="pickBgm" />
-          <!-- 本端保留功能：AI 生成 BGM（生成后自动归档本地，走同一本地混音链路） -->
+          <!-- 本端保留功能：AI 生成 BGM（生成后自动归档本地，自动填入输入框作为已选 BGM） -->
           <TButton label="AI 生成 BGM" size="small" :variant="bgmSource === 'ai' ? 'primary' : 'secondary'" @click="bgmSource = bgmSource === 'ai' ? 'local' : 'ai'" />
         </div>
         <div v-if="bgmSource === 'ai'" class="ai-bgm-panel">
@@ -903,23 +1056,26 @@ function scoreClass(score: number | undefined): string {
           </div>
         </div>
 
-        <!-- BGM 增益（0-200%，100%=原音量；拖动实时改变试听音量） -->
-        <div class="row">
-          <label class="label"> BGM 增益 (0-200%, 100%=原音量):</label>
-          <input v-model.number="bgmVolume" type="range" min="0" max="200" step="1" class="vd4-gain" @input="onBgmVolumeInput" />
-          <span class="vd4-gain-label">{{ bgmVolume }} %</span>
-        </div>
-
-        <!-- BGM 试听播放器：播放/暂停 ⏹ + 进度条 + 时间标签 -->
+        <!-- BGM 试听一行（2026-09-10 用户裁决：播放控制在 前、设置在后）：
+             播放/暂停 ⏹ + 进度条 + 时间 + BGM 增益（0-200%，100%=原音量，拖动实时改变试听音量） -->
         <div class="row vd4-player">
           <button class="icon-btn vd4-pbtn" :title="bgmPlaying ? '暂停' : '播放/暂停'" @click="toggleBgmPlay">{{ bgmPlaying ? '⏸' : '▶' }}</button>
           <button class="icon-btn vd4-pbtn" title="停止播放" :disabled="!bgmPlaying" @click="stopBgmPlay">⏹</button>
           <input class="vd4-seek grow" type="range" min="0" :max="bgmDurMs" step="1" :value="bgmPosMs" @input="seekBgm" />
           <span class="vd4-time">{{ fmtBgmTime(bgmPosMs) }} / {{ fmtBgmTime(bgmDurMs) }}</span>
+          <label class="label" title="BGM 增益 0-200%，100%=原音量；拖动实时改变试听音量">BGM 增益:</label>
+          <input v-model.number="bgmVolume" type="range" min="0" max="200" step="1" class="vd4-gain" @input="onBgmVolumeInput" />
+          <span class="vd4-gain-label">{{ bgmVolume }} %</span>
         </div>
 
-        <!-- 开始混音合成（action_button 高 40 全宽） -->
-        <TButton label="开始混音合成" class="vd4-run" :loading="finalBusy" @click="startFinalMix" />
+        <!-- 2026-09-10 用户裁决：双按钮同行；改名「服务端合成」；各自独立 loading
+             （finalMode 记录本次链路，点本地合成时服务端按钮不再转圈） -->
+        <div class="row between" style="gap: var(--space-2)">
+          <TButton label="服务端合成" class="vd4-run vd4-grow" :loading="finalBusy && finalMode === 'server'"
+            :disabled="finalBusy" title="混音走服务端；特效本地烧制" @click="startFinalMix()" />
+          <TButton label="本地合成" class="vd4-run vd4-grow" plain :loading="finalBusy && finalMode === 'local'"
+            :disabled="finalBusy" title="特效+混音全本地 ffmpeg（字幕动画全功能）" @click="startFinalMix('local')" />
+        </div>
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
 
         <!-- 结果区：左 成片列表 + 三按钮；右 视频预览 -->
@@ -930,10 +1086,9 @@ function scoreClass(score: number | undefined): string {
               <li
                 v-for="(it, i) in finalVideoList" :key="i"
                 :class="{ picked: finalSelIdx === i }"
-                @click="finalSelIdx = i"
-                @dblclick="previewFinalVideo(i)"
+                @click="onStep4Select(i)"
               >{{ it.name }}</li>
-              <li v-if="!finalVideoList.length" class="muted">暂无成片，点击「开始混音合成」后此处展示结果</li>
+              <li v-if="!finalVideoList.length" class="muted">暂无成片，点击「服务端合成」或「本地合成」后此处展示结果</li>
             </ul>
             <div class="vd4-btns">
               <TButton label="打开视频输出目录" variant="secondary" :disabled="!finalDone" class="grow" @click="openFinalDir" />
@@ -943,18 +1098,23 @@ function scoreClass(score: number | undefined): string {
                 @click="exportAllToJianyingDraft" />
             </div>
           </div>
-          <div class="vd4-right">
-            <div class="vd4-preview-title">{{ finalPreviewTitle }}</div>
-            <VideoPlayer v-if="finalPreviewUrl" :src="finalPreviewUrl" autoplay class="vd4-video" />
-            <div v-else class="vd4-video vd4-video-empty"></div>
-          </div>
-        </div>
-      </section>
+        </div><!-- /vd4-result -->
 
-      <!-- 导航行（原版 Step4 仅「上一步：口播配音」，文案逐字 L190） -->
-      <div class="row left">
-        <TButton label="上一步：口播配音" plain @click="go(2)" />
-      </div>
+        <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；原版 Step4 仅上一步，文案逐字 L190） -->
+        <div class="row left">
+          <TButton label="上一步：口播配音" plain @click="go(2)" />
+        </div>
+        </div><!-- /vd-unified-left -->
+
+<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
+
+        <!-- 右栏：统一预览（成片直播/候选+特效叠加层，点击块切列表选中） -->
+        <div class="vd-unified-right">
+          <StepPreviewPane title="成片预览" :items="step4PreviewItems" :active-index="finalSelIdx"
+            empty-text="完成配音后进入本步，点击「服务端合成」或「本地合成」生成成片" @select="onStep4Select" />
+        </div>
+        </div><!-- /vd-unified -->
+      </section>
     </template>
 
     <!-- 页尾状态区（原版底部共享：stage_label + progress_bar；
@@ -1223,13 +1383,7 @@ function scoreClass(score: number | undefined): string {
 </template>
 
 <style scoped>
-.step-bar { display: flex; align-items: center; gap: var(--space-2); padding: 6px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); }
-.step-pill { flex: 1; padding: 4px 0; border-radius: var(--radius-sm); font-size: 13px; color: var(--muted-foreground); cursor: pointer; text-align: center; transition: background var(--duration-fast), color var(--duration-fast); }
-.step-pill.disabled { cursor: not-allowed; opacity: .5; }
-.step-pill.active { background: rgba(96, 165, 250, 0.12); color: var(--info, #60a5fa); font-weight: 700; padding: 4px 8px; }
-.step-pill.done { background: rgba(52, 211, 153, 0.1); color: var(--success); padding: 4px 8px; }
-.step-dot { margin-right: 4px; font-weight: 700; }
-.step-arrow { color: rgba(255, 255, 255, 0.2); font-weight: bold; }
+/* 顶部步骤条 .step-bar 系样式已迁入 VdStepBar.vue（2026-09-10 tab 入操作区） */
 
 .sec-label { font-size: 13px; font-weight: 600; color: var(--foreground); }
 .param-label { font-size: 13px; color: var(--foreground); white-space: nowrap; }
@@ -1366,29 +1520,7 @@ function scoreClass(score: number | undefined): string {
 }
 .detail-scroll-wrap .tbl { border-radius: 0; }
 .detail-placeholder-row td { height: 30px; border-bottom: 1px solid var(--border); }
-/* 右侧播放器（高度匹配左侧详情表 10 行） */
-.player-col { flex: 2; min-width: 220px; display: flex; flex-direction: column; gap: 6px; }
-.player-wrap {
-  height: 332px; background: #000; border: 1px solid var(--border); border-radius: var(--radius-md);
-  display: flex; align-items: center; justify-content: center; overflow: hidden;
-}
-.player-video { width: 100%; height: 100%; object-fit: contain; }
-/* 预览区 contain 约束（视频播放器尺寸规范）：Plyr wrapper 默认按视频比例撑高，
-   竖屏/大分辨率镜头会被 overflow:hidden 裁到只剩一角且超出预览区；
-   覆写为 wrapper 填满预览框 + 视频 object-fit: contain，完整帧恒可见且不越界 */
-.player-wrap :deep(.plyr),
-.player-wrap :deep(.plyr__video-wrapper) {
-  height: 100%;
-}
-.player-wrap :deep(.plyr__video-wrapper) {
-  aspect-ratio: auto !important;
-}
-.player-wrap :deep(video) {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-.player-empty { color: var(--muted-foreground); font-size: 12px; }
+/* 右侧播放器 .player-col/.player-wrap 系已删：连播预览迁右侧统一预览栏 StepPreviewPane（2026-09-10） */
 .detail-tbl td { height: 30px; }
 .grip-cell { cursor: grab; color: var(--muted-foreground); user-select: none; }
 .row-deleted td {
@@ -1476,7 +1608,10 @@ function scoreClass(score: number | undefined): string {
 .ns-err { color: var(--error, var(--destructive, #e5484d)); }
 .ns-ok { color: var(--success, #2e9e5b); }
 
-.voice-table { margin-top: var(--space-3); }
+/* 2026-09-10 用户报障：左栏折叠时操作按钮被截断隐藏、文本不能缩短 →
+   table-layout:fixed 强制列宽受容器约束（序号 48px 定宽 + 详情列吃剩余），
+   列内按钮 flex-wrap 换行、长文本省略，窄宽度不再把操作列挤出可视区 */
+.voice-table { margin-top: var(--space-3); width: 100%; table-layout: fixed; }
 .voice-table .w-idx { width: 48px; }
 .vd-detail { display: flex; flex-direction: column; gap: 6px; }
 .vd-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -1521,7 +1656,8 @@ function scoreClass(score: number | undefined): string {
   padding: var(--space-4); background: var(--surface-container);
   border: 1px solid var(--border); border-radius: var(--radius-md);
 }
-.voice-clone-box .clone-btn { width: 100%; }
+/* 2026-09-10 用户裁决：设置组靠左、克隆主操作居最右（两端对齐） */
+.clone-row { align-items: center; }
 .chk {
   display: flex; align-items: center; gap: 6px; cursor: pointer;
   font-size: 13px; font-weight: 600; color: var(--foreground);
@@ -1680,9 +1816,45 @@ function scoreClass(score: number | undefined): string {
   border-radius: var(--radius-sm); font-size: 16px; font-weight: 700; color: #ffd24d;
   text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
 }
-.textfx-word-tpl { font-size: 10px; font-weight: 400; color: #9aa; max-width: 120px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 2026-09-10 用户终裁：词条只显示关键词本体（textfx-word-tpl 模板名小字废止） */
+/* 效果预览时间轴（2026-09-10 用户裁决：每视频一条，背景条=视频时长，
+   词条按 timing 真实时间点绝对定位；hover 提示词/模板/时间点） */
+/* 2026-09-10 用户报障：多轨被共用画布 52px 固定高+overflow:hidden 裁到只剩一条 →
+   效果预览容器放开高度（约 3 轨可视，更多纵向滚动） */
+.textfx-tracks { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px; height: auto; max-height: 168px; overflow-y: auto; overflow-x: hidden; }
+.textfx-track { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.textfx-track-name {
+  flex: 0 0 190px; font-size: 11px; color: var(--muted-foreground);
+  /* 2026-09-10 用户裁决终态：轨名=完整视频名，过长换行（「第 N 条」角标废止） */
+  word-break: break-all; white-space: normal; text-align: right; line-height: 1.3;
+}
+.textfx-track-bar {
+  position: relative; flex: 1; height: 44px; min-width: 0;
+  background: repeating-linear-gradient(90deg, #262626 0 46px, #2e2e2e 46px 47px);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
+}
+.textfx-track-item {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  display: inline-flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 2px 7px; background: #2a2a2a; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 14px; font-weight: 700;
+  /* 2026-09-10 用户裁决：词条颜色由命中模板决定（tplStyle 行内注入，
+     与烧制主色同源）；默认色=白（烧制缺省主色），写死黄色废止 */
+  color: #fff;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.8); white-space: nowrap; cursor: default;
+}
 /* 文字模板样式预览：按模板 variables 默认色本地渲染示例（服务端无预览接口，2026-09-10） */
+/* 文字模板行样式预览（2026-09-10 二次裁决：展示模板库全部样式——橱窗式横向滚动；
+ * 共用画布居中裁切不适合全量展示，仅此行放开滚动并左对齐） */
+.style-preview-canvas.textfx-canvas {
+  justify-content: flex-start;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 0 8px;
+  /* 2026-09-10 用户裁决：不用滚动条，两端箭头控制滚动 */
+  scrollbar-width: none;
+}
+.style-preview-canvas.textfx-canvas::-webkit-scrollbar { display: none; }
+.textfx-arrow { flex: none; width: 26px; height: 52px; font-size: 18px; color: var(--muted-foreground); }
 .textfx-sample {
   display: inline-flex; flex-direction: column; align-items: center; gap: 2px;
   margin: 0 6px; padding: 4px 10px; background: #2a2a2a; border: 1px solid var(--border);
@@ -1767,7 +1939,7 @@ function scoreClass(score: number | undefined): string {
 .w80 { width: 80px; flex: none; }
 
 /* Step4 特效包装（对照 step4_final_view.py L80-196 同布局；颜色走 V3 design tokens） */
-.vd4-gain { width: 200px; flex: none; accent-color: var(--primary); }
+.vd4-gain { width: 140px; flex: none; accent-color: var(--primary); }
 .vd4-gain-label { width: 50px; flex: none; font-size: 13px; color: var(--foreground); }
 /* 播放/暂停、停止按钮（原版 ▶ 56x28，L80-88） */
 .vd4-pbtn { width: 56px; height: 28px; font-size: 13px; }
@@ -1783,6 +1955,7 @@ function scoreClass(score: number | undefined): string {
 .vd4-time { width: 90px; flex: none; font-size: 12px; color: var(--muted-foreground); text-align: center; }
 /* 开始混音合成（原版 action_button 高 40 全宽，L116） */
 .vd4-run { width: 100%; height: 40px; margin-top: var(--space-2); }
+.vd4-grow { flex: 1; width: auto; }
 /* 结果区（原版 result_box：rgba(255,255,255,0.03) + border rgba(255,255,255,0.1)，L116 → token 化） */
 .vd4-result {
   display: flex; gap: 15px; padding: 10px; margin-top: var(--space-2);
@@ -1793,17 +1966,19 @@ function scoreClass(score: number | undefined): string {
 .vd4-list { max-height: 150px; overflow-y: auto; }
 .vd4-btns { display: flex; gap: 8px; }
 .vd4-btns > .t-button { flex: 1; padding: 0 6px; }
-/* 右预览（原版 #000000 + border #27272a，L161-167 → token 化） */
-.vd4-right {
-  flex: 2; min-width: 220px; display: flex; flex-direction: column; gap: 6px;
-  background: #000; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 6px;
+/* 界面统一两栏（2026-09-10 用户需求「二三四步界面统一+联动预览」）：
+   左=操作区（自适应），右=统一预览栏（拖拽调比例）；
+   2026-09-10 用户报障「口播配音界面重叠」：左栏表格 min-content 撑破盒子溢出绘制
+   进右栏区 → 左栏 overflow:hidden 截断 + 右栏 border-left 明确分界 */
+.vd-unified { display: flex; gap: 0; align-items: stretch; min-height: 0; }
+.vd-unified-left { min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); padding-right: 12px; overflow: hidden; }
+.vd-unified-right { flex: 1 1 0; min-width: 260px; display: flex; flex-direction: column; min-height: 0; padding-left: 12px; border-left: 1px solid var(--border); }
+/* 可拖拽分隔条：左右比例手动调整（默认 6:4，拖后 localStorage 记忆） */
+.vd-split {
+  flex: 0 0 6px; cursor: col-resize; border-radius: 3px;
+  background: transparent; transition: background 0.15s;
 }
-.vd4-preview-title { font-size: 11px; font-weight: bold; color: var(--muted-foreground); }
-.vd4-video {
-  width: 100%; min-height: 150px; flex: 1; object-fit: contain;
-  border-radius: var(--radius-sm); background: #000;
-}
-.vd4-video-empty { min-height: 150px; }
+.vd-split:hover { background: var(--primary); opacity: 0.35; }
 
 /* 状态标签样式 */
 .st-pending { color: var(--muted-foreground); font-size: 12px; }

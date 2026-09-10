@@ -44,8 +44,13 @@ import {
   type SubtitleStylePreset,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立）
   TEXT_RANDOM_COUNT_OPTIONS,
+  TEXT_KEYWORD_DENSITY_OPTIONS,
+  TEXT_KEYWORD_DENSITY_MAX,
   pickRandomItems,
   extractFancyWordsFromText,
+  buildTextFxTracks,
+  textFxStyleOf,
+  type TextFxTrack,
   // Step4 特效包装（对照 step4_final_view.py / FinalMixWorker / JianyingExporter）
   buildBgmGenPayload,
   parseBgmGenResponse,
@@ -1190,6 +1195,7 @@ export function useVideoMontage() {
   const bgmName = ref('')
   const bgmVolume = ref(100)       // BGM 增益 0-200（原版 slider 默认 100=原音量）
   const finalBusy = ref(false)
+  const finalMode = ref<'' | 'server' | 'local'>('') // 进行中的链路（双按钮独立 loading）
   const finalDone = ref(false)     // 三按钮启用开关（原版 btn_open_final_dir 等初始 disabled）
   const finalProgress = ref(-1)    // 混音进度 0-100（-1=隐藏；原版共享 progress_bar 口径）
   const finalVideoList = ref<Array<{ name: string; path: string }>>([])
@@ -1366,20 +1372,49 @@ export function useVideoMontage() {
     finalProgress.value = -1
     // 2026-09-09 裁决：特效配置迁入 Step4，进入时拉取服务端文字模板库（空库仅随机项）
     void loadTextTemplates()
+    // 效果预览轨（2026-09-10 二次裁决）：进入时按合成候选刷新一次（候选列表独立于 voiceRows）
+    void refreshTextFxTracks()
     try {
-      const n = (await collectCandidates()).length
+      const cands = await collectCandidates()
+      step4Candidates.value = cands // 联动预览候选（不依赖 textFx 开关，进入即刷）
+      const n = cands.length
       statusText.value = n > 0
-        ? `准备就绪：待混音合成 ${n} 个视频，点击「开始混音合成」`
+        ? `准备就绪：待混音合成 ${n} 个视频，点击「服务端合成」或「本地合成」`
         : '暂无待合成视频，请先完成「口播配音」'
     } catch (_) { /* 原版 except pass */ }
+    // 历史成片恢复（2026-09-10 用户报障：刷新/重启后 finalDone=false 三按钮全禁用，
+    // 「一键导出到剪映」点击无反应——按候选视频推导 final 目录回扫已合成产物）
+    if (!finalVideoList.value.length) {
+      try {
+        const first = (await collectCandidates())[0]
+        if (first) {
+          const r = await window.tintin?.server?.finalListResults?.({ dirPath: resolveOutFinalDir(first) })
+          const files = r && 'files' in r ? r.files : []
+          if (files.length) {
+            finalVideoList.value = files.map((p) => ({ name: pathBasename(p), path: p }))
+            finalVideoPath.value = files[0]
+            finalDone.value = true
+            finalProgress.value = 100
+            statusText.value = `已恢复上次合成结果（${files.length} 个成片），可直接导出剪映草稿或重新合成`
+          }
+        }
+      } catch (_) { /* 恢复失败静默，不阻断进入 */ }
+    }
   }
 
   /** 开始混音合成（_start_final_mix 一比一；FinalMixWorker 在主进程 final:mix）。
    *  2026-09-09 用户裁决：口播声音带到第四步统一合成处理——一键链=①给有声音未配音的
    *  视频替换原声 → ②特效烧制 → ③BGM 混音；无声音行沿用原视频直通 */
-  async function startFinalMix(): Promise<void> {
+  /** 启动最终合成（2026-09-10 用户裁决双链路）：mode='server'（缺省）混音走
+   *  服务端 /montage/bgm，mode='local' 全本地 ffmpeg；特效烧制随 mode：
+   *  2026-09-10 在线实测服务端 concat 单镜头约束已放开（200 clip_count:1 +
+   *  字幕烧制抽帧验证）→ 服务端模式特效走 serverFxBurnOne（失败自动回退本地）；
+   *  唯字幕动画（服务端 subtitle_style 契约无动画字段）开启时保留本地烧制保动画 */
+  async function startFinalMix(mode: 'server' | 'local' = 'server'): Promise<void> {
     if (finalBusy.value) return
     finalBusy.value = true
+    // 2026-09-10 用户裁决：双按钮同行独立转圈——记录本次链路，只让对应按钮 loading
+    finalMode.value = mode
     finalDone.value = false
     finalVideoList.value = []
     finalVideoPath.value = ''
@@ -1412,12 +1447,18 @@ export function useVideoMontage() {
           return { videoPath: c, text: row.text.trim(), timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '' }
         })
         .filter((x): x is { videoPath: string; text: string; timingPath: string } => !!x)
-      const hasFx = addSubtitles.value || fancyEnabled.value
+      const hasFx = addSubtitles.value || fancyEnabled.value || textFxEnabled.value
+      // serverFx：特效烧制走服务端（仅服务端模式；字幕动画开启时保留本地——
+      // 服务端 subtitle_style 契约只有 box_opacity，烧不出 fade/rise/slide/pop）
+      const subtitleAnimOn = addSubtitles.value && subtitleAnimKey.value !== 'none'
+      const serverFx = mode === 'server' && !subtitleAnimOn
       // 展开为纯对象：computed 从响应式数组 find 出的是 Proxy，直传 IPC 会报
       //   「An object could not be cloned」（同 scanVoiceDir selectedFiles 教训）
       const fxTpl = selectedFancyTemplate.value
       const fxTplPlain = fxTpl ? { ...fxTpl } : null
       const res = await window.tintin?.server?.finalMix?.({
+        mixMode: mode,
+        serverFx,
         tasks,
         bgmPath: bgmPath.value,
         bgmVolume: bgmVolume.value,
@@ -1432,6 +1473,16 @@ export function useVideoMontage() {
             fancyStyle: fancyStyle.value,
             fancyPosition: fancyPosition.value,
             fancyTemplate: fxTplPlain,
+            // 文字模板随统一合成提交服务端（text_template_* 字段；words=按密度档位提取；
+            // random 模板→match_enabled 自动匹配 + match_density 透传密度档位）
+            textFxEnabled: textFxEnabled.value,
+            textTemplateId: textTemplateId.value,
+            textTemplateWords: extractTextFxWords(),
+            matchDensity: textKeywordDensity.value,
+            // 本地烧制样式池（2026-09-10 用户二次裁决：传全量库+随机个数，每视频在烧制端
+            // 确定性洗牌取子集，与效果预览同源；提炼主色/效果色/动画同预览口径）
+            textFxStyles: activeTextPool.value.map((t) => textFxStyleOf(t)),
+            textFxCount: activeTextCount.value,
           },
           subtitleTexts,
         } : {}),
@@ -1444,6 +1495,7 @@ export function useVideoMontage() {
       onMixError(errText(e))
     } finally {
       finalBusy.value = false
+      finalMode.value = ''
       offVoiceProgress?.(); offVoiceProgress = null
     }
   }
@@ -1483,9 +1535,14 @@ export function useVideoMontage() {
       notify('文件不存在', `无法定位该视频的物理文件：\n${videoPath}`)
       return
     }
+    // 2026-09-10 缺陷修复：单段导出此前漏传 srtPath（剪映草稿缺字幕轨），与多段同口径找配套 SRT
+    const fr = await window.tintin?.server?.finalFindSrt?.({ videoPath })
+    const srtPath = fr && 'srtPath' in fr && fr.srtPath ? fr.srtPath : ''
     await doJianyingExport({
       mode: 'single',
       videoPath,
+      srtPath,
+      ...jianyingFxParams(),
       draftName: `螺丝钉剪辑_${pathBasename(videoPath).replace(/\.[^.]+$/, '')}`,
       successBody: (name) => `混剪工程导出完成！\n\n项目名称：${name}\n\n请直接打开您的电脑「剪映专业版」客户端进行精修编辑。\n系统已为您在资源管理器中定位到该草稿文件夹。`,
     })
@@ -1507,9 +1564,23 @@ export function useVideoMontage() {
       videoPaths: paths,
       srtPaths,
       transitions: transition,
+      ...jianyingFxParams(),
       draftName: `螺丝钉剪辑_多片段时间轴(${paths.length}段)`,
       successBody: (name) => `已将 ${paths.length} 个片段导出为剪映时间轴（转场：${transition}）！\n\n项目名称：${name}\n\n请直接打开您的电脑「剪映专业版」客户端进行精修编辑。\n系统已为您在资源管理器中定位到该草稿文件夹。`,
     })
+  }
+
+  /** 剪映导出随行特效（2026-09-10 用户裁决：花字/文字模板数据格式进草稿）。
+   *  关键词取口播文案同口径（extractTextFxWords）；轨道随 Step4 开关：
+   *  fancyEnabled→花字轨（金色加粗）、textFxEnabled→文字模板轨（蓝色加粗）。 */
+  function jianyingFxParams(): { fxWords?: string[]; fxKinds?: Array<'fancy' | 'tpl'> } {
+    const kinds: Array<'fancy' | 'tpl'> = []
+    if (fancyEnabled.value) kinds.push('fancy')
+    if (textFxEnabled.value) kinds.push('tpl')
+    if (!kinds.length) return {}
+    const words = extractTextFxWords()
+    if (!words.length) return {}
+    return { fxWords: words, fxKinds: kinds }
   }
 
   /** 剪映导出公共体：BGM/音量随当前选择；成功弹窗逐字 + 打开草稿目录；失败长错误 */
@@ -1517,8 +1588,11 @@ export function useVideoMontage() {
     mode: 'single' | 'multi'
     videoPath?: string
     videoPaths?: string[]
+    srtPath?: string
     srtPaths?: Array<string | null>
     transitions?: string
+    fxWords?: string[]
+    fxKinds?: Array<'fancy' | 'tpl'>
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {
@@ -1587,43 +1661,128 @@ export function useVideoMontage() {
   const fancyTemplatesLoading = ref(false)
   // ── 文字模板（2026-09-09 用户裁决：服务端 textfx 体系，与花字独立概念）──
   // textTemplateId 首项 'random'（随机样式，默认）：每次合成从全部模板随机选 N 个（默认 3）；
-  // 烧制待服务端成片链路文字模板烧制接口上线（契约缺口已上报），本轮仅配置+预览。
+  // 2026-09-10 在线契约纠偏：服务端统一合成 POST /montage/concat（multipart）已支持全套
+  // text_template_* 字段（enabled/id/words/timing/match_enabled/match_ids），不存在也不需要
+  // 独立「文字模板烧制」接口——所有素材统一合成（用户裁决口径）；待把字段接入确认合成请求。
   const textFxEnabled = ref(false)
   const textTemplateId = ref('random')
   const textRandomCount = ref(3)
+  // 关键词密度档位（2026-09-10 用户裁决：低/中/高；调节后重新提取关键词并重新掷模板）
+  const textKeywordDensity = ref('mid')
   const textTemplates = ref<Array<Record<string, unknown> & { template_id: string; name: string }>>([])
   const textTemplatesLoading = ref(false)
-  /** 随机/指定模板当前生效集合（random 模式下 watch 重掷，保证预览与合成同池） */
-  const textRandomPick = ref<Array<Record<string, unknown> & { template_id: string; name: string }>>([])
-  function rerollTextPick(): void {
+  /** 生效模板池（2026-09-10 用户二次裁决：随机数量 N 对应每条视频各自随机选——
+   *  池恒为全量库，逐视频在烧制/预览端确定性洗牌取子集；指定模板则池=单模板） */
+  const activeTextPool = computed(() => {
     if (textTemplateId.value !== 'random') {
       const one = textTemplates.value.find((t) => t.template_id === textTemplateId.value)
-      textRandomPick.value = one ? [one] : []
-      return
+      return one ? [one] : []
     }
-    textRandomPick.value = pickRandomItems(textTemplates.value, textRandomCount.value)
-  }
-  watch([textTemplateId, textRandomCount, textTemplates], rerollTextPick)
+    return textTemplates.value
+  })
+  /** 随机模式生效个数（指定模板=1；每视频从 activeTextPool 独立随机选 N 个） */
+  const activeTextCount = computed(() => textTemplateId.value === 'random' ? textRandomCount.value : 1)
   /** 文字模板下拉：首项随机样式（默认），其余为服务端库条目 */
   const textTemplateOptions = computed(() => [
     { label: '随机样式', value: 'random' },
     ...textTemplates.value.map((t) => ({ label: String(t.name || t.template_id), value: t.template_id })),
   ])
-  /** 效果预览：按口播文案关键词（价格/数字参数/关键词提取）逐词轮换套用随机模板 */
-  const textFxPreviewItems = computed(() => {
-    if (!textFxEnabled.value || !textRandomPick.value.length) return []
+  /** 按密度档位从口播文案提取关键词（效果预览与服务端词表同步共用同一口径；
+   *  上限随档位：低=3/中=8/高=12，TEXT_KEYWORD_DENSITY_MAX） */
+  function extractTextFxWords(): string[] {
     const joined = voiceRows.value.map((r) => r.text).join('\n')
-    const words = [...new Set(extractFancyWordsFromText(joined, 8))]
-    return words.map((word, i) => ({
-      word,
-      tplName: String(textRandomPick.value[i % textRandomPick.value.length]?.name || ''),
+    return [...new Set(extractFancyWordsFromText(
+      joined,
+      TEXT_KEYWORD_DENSITY_MAX[textKeywordDensity.value] ?? 8,
+    ))]
+  }
+  /** 效果预览：按视频分行时间轴（2026-09-10 用户裁决终态：轨数=上一步确认成片条数
+   *  （assemblePlans confirmed 产物，不走 collectCandidates 配音优先口径——
+   *  3 条成片只配 1 条音时也必须显示 3 条轨）；轨名列=视频名（用户明确要求显示视频名）；
+   *  背景条=视频时长（probeDuration 实测），词条=文字模板（词+模板名小字），
+   *  文案按 voiceRows 行（path 匹配成片）命中 timing.json 真实时间点；
+   *  无命中行仍保留空轨）。异步组装（seq 过期响应丢弃）。 */
+  const textFxPreviewTracks = ref<TextFxTrack[]>([])
+  /** Step4 合成候选路径（界面统一联动预览 2026-09-10：右栏预览块数据源；
+   *  与 textFxPreviewTracks 同批刷新，另在 enterStep4 主动刷一次不依赖 textFx 开关） */
+  const step4Candidates = ref<string[]>([])
+  let textFxTrackSeq = 0
+  async function refreshTextFxTracks(): Promise<void> {
+    const seq = ++textFxTrackSeq
+    if (!textFxEnabled.value) { textFxPreviewTracks.value = []; return }
+    const tplNames = activeTextPool.value.map((t) => String(t.name || ''))
+    if (!tplNames.length) { textFxPreviewTracks.value = []; return }
+    // Step4 右栏候选仍走混音口径（配音优先回退成片），与效果预览轨数据源分离
+    void collectCandidates().then((cands) => { if (seq === textFxTrackSeq) step4Candidates.value = cands })
+    const outputs = assemblePlans.value
+      .map((p) => (p.confirmed && p.outputPath ? p.outputPath : ''))
+      .filter(Boolean)
+    if (!outputs.length) { textFxPreviewTracks.value = []; return }
+    const rows = await Promise.all(outputs.map(async (c) => {
+      const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
+      const dur = await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)
+      return {
+        name: pathBasename(c), // 2026-09-10 用户裁决：轨名=视频文件名（「第 N 条」角标废止）
+        text: String(row?.text || '').trim(),
+        durationSec: Number(dur) || 0,
+        timingPath: row?.wavPath ? `${row.wavPath}.timing.json` : '',
+      }
     }))
+    const timed = await Promise.all(rows.map(async (r) => {
+      if (!r.timingPath) return { ...r, timing: [] }
+      const res = await window.tintin?.server?.finalReadTiming?.({ timingPath: r.timingPath })
+      return { ...r, timing: res && 'items' in res ? res.items : [] }
+    }))
+    if (seq !== textFxTrackSeq) return // 过期响应丢弃（连续触发只保留最新）
+    // 2026-09-10 用户终裁：轨名列显示视频名（模板名拼接方案废止）
+    // 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与样式橱窗 textFxStyleSamples
+    //  同源同构，去除 fontSize 只取颜色/渐变；不命中模板的词条走 CSS 默认色）
+    const sampleByName = new Map(textFxStyleSamples.value.map((s) => [s.name, s]))
+    textFxPreviewTracks.value = buildTextFxTracks({
+      rows: timed,
+      maxWords: TEXT_KEYWORD_DENSITY_MAX[textKeywordDensity.value] ?? 8,
+      tplNames,
+      count: activeTextCount.value, // 每视频独立随机选 N 个（2026-09-10 用户二次裁决）
+    }).map((tr) => ({
+      ...tr,
+      items: tr.items.map((it) => {
+        const s = sampleByName.get(it.tplName)
+        if (!s) return it
+        const { fontSize: _fs, ...tplStyle } = s.style
+        return { ...it, anim: s.anim, tplStyle }
+      }),
+    }))
+  }
+  watch([textFxEnabled, textTemplateId, textRandomCount, textTemplates, textKeywordDensity, voiceRows, assemblePlans], () => { void refreshTextFxTracks() }, { deep: true })
+  // 2026-09-10 用户裁决：关键词走服务端接口（/text_templates/keywords 全局词表，
+  // POST 全量覆盖，V-FANCY-3 决策3/10），不留在客户端私有状态——密度档位调节或
+  // 口播文案变化后重新生成并同步到服务端（防抖 800ms；离线失败静默不阻塞预览）
+  const textKeywordsSyncing = ref(false)
+  let textKwSyncTimer: ReturnType<typeof setTimeout> | null = null
+  async function syncTextKeywords(): Promise<void> {
+    const words = extractTextFxWords()
+    if (!words.length) return
+    textKeywordsSyncing.value = true
+    try {
+      await window.tintin?.server?.textfxKeywordsSave?.(words)
+    } catch (_) { /* 词表同步失败不阻塞预览/配置 */ } finally {
+      textKeywordsSyncing.value = false
+    }
+  }
+  const voiceJoinedText = computed(() => voiceRows.value.map((r) => r.text).join('\n'))
+  watch([textKeywordDensity, voiceJoinedText], () => {
+    if (textKwSyncTimer) clearTimeout(textKwSyncTimer)
+    textKwSyncTimer = setTimeout(() => { void syncTextKeywords() }, 800)
   })
-  /** 样式预览样本：按命中模板 variables 默认值本地渲染（2026-09-10 服务端
-   *  /text_templates/templates/{id}/preview 实测 404 无预览图，取色/字号/文案
+  /** 样式预览样本：按命中模板 variables 默认值本地渲染（服务端
+   *  /text_templates/templates/{id}/preview 静态预览图 2026-09-10 复测已可用（200 png），
+   *  但为单帧静态图无动画，与「文字模板预览要有动画」裁决不符，故预览仍走本地 CSS 动画；
+   *  render-preview 动画预览接口实测 500（服务端内部错误，契约缺口已上报）。
    *  从 variables 推导：颜色收集≥2 个做渐变字，fontSize 按比例缩到预览口径） */
   const textFxStyleSamples = computed(() => {
-    return textRandomPick.value.slice(0, 6).map((t) => {
+    // 2026-09-10 用户二次裁决：样式预览显示模板库全部样式（橱窗）；
+    // 随机数量是每条视频各自随机选 N 个，在效果预览/烧制端逐视频应用，不在此处裁剪
+    return textTemplates.value.map((t) => {
       const vars = (t.variables && typeof t.variables === 'object' ? t.variables : {}) as Record<string, { default?: unknown }>
       const colors: string[] = []
       let fontSize = 0
@@ -1765,7 +1924,7 @@ export function useVideoMontage() {
       // 展开为纯数组：ref([]) 的 .value 是响应式 Proxy，ipcRenderer.invoke 结构化克隆
       //   不支持 Proxy，直接传会批「An object could not be cloned」致扫描永远失败
       //   （2026-09-08 实测：Step3 视频列表从未建成的真正根因）
-      const allFiles: Array<{ path: string; name: string; originalText: string; wavPath?: string; durationSec?: number }> = []
+      const allFiles: Array<{ path: string; name: string; originalText: string; wavPath?: string; durationSec?: number; voiceDurSec?: number }> = []
       let voicesDirFirst = ''
       for (let i = 0; i < dirs.length; i++) {
         const dirPath = dirs[i]
@@ -1793,7 +1952,8 @@ export function useVideoMontage() {
         wavPath: f.wavPath || '',
         lengthMode: 'video' as const,
         durationSec: f.durationSec || 0,
-        voiceDurSec: 0,
+        // 克隆音频时长（2026-09-10 报障修复：重建行时从扫描结果恢复，不再恒 0 → --:--）
+        voiceDurSec: f.voiceDurSec || 0,
       }))
     } catch (e) {
       statusText.value = `扫描失败： ${errText(e)}`
@@ -2438,7 +2598,9 @@ export function useVideoMontage() {
     selectedFancyTemplate, loadFancyTemplates,
     // 文字模板（textfx；与花字独立；随机样式默认 3 个）
     textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
-    textRandomCount, TEXT_RANDOM_COUNT_OPTIONS, textFxPreviewItems, textFxStyleSamples, loadTextTemplates,
+    textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
+    textKeywordsSyncing,
+        textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
     FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
     aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
@@ -2455,7 +2617,7 @@ export function useVideoMontage() {
     voiceStatusText, voiceStatusClass, fmtDur, pathBasename,
     planDurText,
     // Step4 特效包装
-    bgmPath, bgmName, bgmVolume, finalBusy, finalDone, finalProgress,
+    bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
     finalVideoList, finalVideoPath, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
     bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration,
     bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl,
@@ -2463,7 +2625,7 @@ export function useVideoMontage() {
     generateBgm,
     pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
     enterStep4, startFinalMix, openFinalDir,
-    exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo,
+    exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
     fmtBgmTime,
     // 景别分类（UI 展示用）
     SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,

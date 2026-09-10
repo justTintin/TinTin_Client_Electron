@@ -886,6 +886,127 @@ export const TEXT_KEYWORD_DENSITY_MAX: Record<string, number> = {
   high: 12,
 }
 
+// ── 文字模板效果预览时间轴（2026-09-10 用户裁决：每视频一条、背景条=视频时长、
+//    关键词按真实时间点定位、每视频独立轮换随机模板）──
+
+/** 单模板烧制/预览共用样式提炼（从 variables 提取主色/效果色/动画语义，
+ *  与样式预览 textFxStyleSamples 同口径；本地烧制 buildTextFxDrawtextList 消费） */
+export interface TextFxStyle {
+  name: string
+  color: string
+  effectColor: string
+  anim: string
+}
+export function textFxStyleOf(t: { template_id?: string; name?: string; variables?: unknown }): TextFxStyle {
+  const vars = (t.variables && typeof t.variables === 'object' ? t.variables : {}) as Record<string, { default?: unknown }>
+  const colors: string[] = []
+  for (const v of Object.values(vars)) {
+    const d = v && typeof v === 'object' ? v.default : v
+    if (typeof d === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(d) && colors.length < 3) colors.push(d)
+  }
+  const key = `${t.template_id || ''}${t.name || ''}`
+  const anim = /bounce|pop|弹/.test(key) ? 'bounce'
+    : /flip|翻转/.test(key) ? 'flip'
+    : /gradient|渐变/.test(key) ? 'flow'
+    : /neon|glow|霓虹/.test(key) ? 'neon'
+    : /shimmer|闪|扫/.test(key) ? 'shine'
+    : /slide|滑/.test(key) ? 'slide'
+    : /typewriter|打字/.test(key) ? 'type'
+    : /pulse|zoom|脉冲|缩放/.test(key) ? 'pulse'
+    : 'fade'
+  const mainColor = String((vars.color && typeof vars.color === 'object' ? vars.color.default : '') || '#FFFFFF')
+  const effectColor = colors.find((c) => c.toLowerCase() !== mainColor.toLowerCase()) || mainColor
+  return { name: String(t.name || ''), color: mainColor, effectColor, anim }
+}
+
+/** 单视频效果预览词条（时间单位=秒，相对该视频开头）；
+ *  anim/tplStyle 由编排层附加（2026-09-10 用户裁决：预览词条按命中模板的
+ *  颜色+动画渲染，与样式橱窗/烧制同源，不再写死黄色） */
+export interface TextFxTrackItem {
+  word: string
+  tplName: string
+  start: number
+  end: number
+  /** 命中模板的动画语义键（textfx-anim-{anim} CSS 类） */
+  anim?: string
+  /** 命中模板的预览样式（颜色/渐变，不含 fontSize） */
+  tplStyle?: Record<string, string>
+}
+
+/** 确定性种子洗牌（LCG；seed 相同结果相同 → 预览与烧制同源不漂移）。
+ *  主进程 voice-tts-logic.js 内有逐行同款实现（跨端无共享模块），改这里必须同步改那边 */
+export function seededShuffle<T>(arr: readonly T[], seed: number): T[] {
+  const a = [...arr]
+  let s = ((Number(seed) || 0) + 1) * 2654435761 >>> 0
+  for (let i = a.length - 1; i > 0; i--) {
+    s = (s * 1664525 + 1013904223) >>> 0
+    const j = s % (i + 1)
+    const tmp = a[i]; a[i] = a[j]; a[j] = tmp
+  }
+  return a
+}
+
+/** 每视频独立随机样式子集（2026-09-10 用户裁决：随机数量 N 对应每条视频各自
+ *  从全量池随机选 N 个；seed=视频序 → 预览与烧制同视频同子集）。
+ *  count<=0 或池≤1 → 原样返回全量（不限个数/指定单模板） */
+export function pickVideoStyles<T>(pool: readonly T[], count: number, videoIdx: number): T[] {
+  if (!(count > 0) || pool.length <= 1) return [...pool]
+  return seededShuffle(pool, Number(videoIdx) || 0).slice(0, Math.min(count, pool.length))
+}
+
+/** 单视频效果预览轨（背景条即 durationSec 全长） */
+export interface TextFxTrack {
+  name: string
+  durationSec: number
+  items: TextFxTrackItem[]
+}
+
+/**
+ * 组装效果预览时间轴：逐视频从文案提取关键词，命中句级时间轴（timing 优先，
+ * 缺失回退字数占比均分视频时长——与主进程 buildSrtFromTiming 兑底同口径）；
+ * 模板分配按 (视频序号 + 词序号) 对模板池取模轮换，使不同视频的随机样式错开。
+ * 纯函数可单测。
+ */
+export function buildTextFxTracks(opts: {
+  rows: Array<{ name: string; text: string; durationSec: number; timing?: Array<{ text: string; start: number; end: number }> }>
+  maxWords: number
+  tplNames: string[]
+  /** 每视频随机样式个数（2026-09-10 用户裁决；缺省 0=全量池轮换） */
+  count?: number
+}): TextFxTrack[] {
+  return (opts.rows || []).map((row, vi) => {
+    const videoPool = pickVideoStyles(opts.tplNames, opts.count ?? 0, vi) // 每视频独立随机子集
+    const dur = Math.max(0, Number(row.durationSec) || 0)
+    let sents = (row.timing || [])
+      .map((t) => ({ text: String(t.text || '').trim(), start: Number(t.start) || 0, end: Number(t.end) || 0 }))
+      .filter((s) => s.text)
+    if (!sents.length) {
+      const lines = String(row.text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+      const weights = lines.map((l) => Math.max(1, l.length))
+      const total = weights.reduce((a, b) => a + b, 0)
+      let cum = 0
+      sents = lines.map((l, i) => {
+        const s = cum
+        cum += (dur > 0 ? dur : lines.length * 5) * weights[i] / total
+        return { text: l, start: s, end: cum }
+      })
+    }
+    const words = [...new Set(extractFancyWordsFromText(row.text, opts.maxWords))]
+    const items: TextFxTrackItem[] = []
+    for (const w of words) {
+      const hit = sents.find((s) => s.text.includes(w))
+      if (!hit) continue
+      items.push({
+        word: w,
+        tplName: videoPool.length ? videoPool[(vi + items.length) % videoPool.length] : '',
+        start: hit.start,
+        end: hit.end,
+      })
+    }
+    return { name: row.name, durationSec: dur, items }
+  })
+}
+
 /** 从池中随机取 n 个（Fisher-Yates 部分洗牌；n≥池长时全量乱序返回；
  *  供文字模板「随机样式」与效果预览逐词轮换使用，纯函数可单测） */
 export function pickRandomItems<T>(pool: readonly T[], n: number): T[] {

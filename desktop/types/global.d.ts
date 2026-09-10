@@ -260,7 +260,7 @@ declare interface TintinBridgeServer {
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   /** 扫描视频输入目录（对照 _do_scan_voice_video_dir：无 .flv，自动检测 voices/voice_N.wav 与伴随 .txt） */
   voiceScanDir(payload: { dirPath: string; selectedFiles?: string[]; keepFiles?: string[] }): Promise<{
-    files: Array<{ path: string; name: string; wavPath: string; originalText: string; durationSec: number }>
+    files: Array<{ path: string; name: string; wavPath: string; originalText: string; durationSec: number; voiceDurSec: number }>
     voicesDir: string
   } | { error: string }>
   /** 批量克隆人声（TTS 逐句 + wav 拼接 + 变速 + .timing.json；对照 VoiceCloneWorker api 模式） */
@@ -308,8 +308,11 @@ declare interface TintinBridgeServer {
   fancyEnsurePreviews(payload?: { templates?: Array<Record<string, unknown> & { template_id: string; name: string; style?: string }> }): Promise<{ previews: Record<string, string>; generated: number } | { error: string }>
   /** 服务端花字模板库（GET /fancy/templates，响应 {items,total}；离线 null） */
   fancyServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
-  /** 服务端文字模板库（GET /textfx/templates，响应 {items,total}；与花字独立体系；离线 null） */
+  /** 服务端文字模板库（GET /text_templates/templates，响应 {items,total}；与花字独立体系；离线 null） */
   textfxServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
+  /** 全量保存全局常用关键词（POST /text_templates/keywords，覆盖旧值；离线 null）；
+   *  配套 GET textfxKeywordsGet 已废弃（渲染层无消费者，IRON-10 门禁） */
+  textfxKeywordsSave(keywords: string[]): Promise<{ ok: boolean; count: number } | { error: string } | null>
   /** 订阅模板预览图生成进度 */
   fancyOnPreviewProgress(cb: (d: { idx: number; total: number }) => void): () => void
   /** 服务端字体列表（GET /config/fonts） */
@@ -326,6 +329,11 @@ declare interface TintinBridgeServer {
    *  2026-09-09 裁决：特效配置迁 Step4，可带 effects + subtitleTexts（混音前逐视频烧制
    *  字幕/花字到中间文件再混音；无特效配置零开销直通） */
   finalMix(payload: {
+    /** 合成模式（2026-09-10 用户裁决）：'server'（缺省）混音走 /montage/bgm；'local' 全本地 */
+    mixMode?: 'server' | 'local'
+    /** 特效烧制走服务端（2026-09-10 接线：服务端 concat 单镜头约束已放开；
+     *  serverFxBurnOne 失败自动回退本地；字幕动画开启时渲染层传 false 保动画） */
+    serverFx?: boolean
     tasks: Array<{ videoPath: string; outPath: string }>
     bgmPath: string
     bgmVolume: number
@@ -334,8 +342,18 @@ declare interface TintinBridgeServer {
       subtitleFont: string
       subtitleStyle: string
       subtitleBoxOpacity: number
-      /** 字幕入场动画（fade/rise/slide/pop/none；2026-09-10 用户裁决，预览与烧制同源） */
+      /** 字幕入场动画（fade/rise/slide/pop/none；2026-09-10 用户裁决，预览与烧制同源；仅本地烧制链） */
       subtitleAnim: string
+      /** 文字模板随统一合成提交服务端（/montage/concat text_template_* 字段；2026-09-10） */
+      textFxEnabled?: boolean
+      textTemplateId?: string
+      textTemplateWords?: string[]
+      /** 匹配密度档位透传 text_template_match_density（low/mid/high；服务端默认 high） */
+      matchDensity?: string
+      /** 本地烧制样式池（2026-09-10 用户裁决：本地合成同烧文字模板；主色/效果色/动画与预览同源） */
+      textFxStyles?: Array<{ name: string; color: string; effectColor: string; anim: string }>
+      /** 随机模式每视频随机选样个数（2026-09-10 二次裁决；<=0 或池≤1 → 全量轮换） */
+      textFxCount?: number
       fancyText: boolean
       fancyStyle: string
       fancyPosition: string
@@ -348,6 +366,10 @@ declare interface TintinBridgeServer {
   finalCollectOutputs(payload: { dirPath: string }): Promise<{ files: string[]; outDir?: string } | { error: string }>
   /** 查找视频同目录配套 .srt（_find_srt_for_video：兼容 dubbed_/final_ 前缀） */
   finalFindSrt(payload: { videoPath: string }): Promise<{ srtPath: string } | { error: string }>
+  /** 读句级时间轴 timing.json（[{text,start秒,end秒}]；文字模板效果预览时间轴用） */
+  finalReadTiming(payload: { timingPath: string }): Promise<{ items: Array<{ text: string; start: number; end: number }> } | { error: string }>
+  /** 回扫 final 目录已合成成片（2026-09-10 报障修复：刷新/重启后恢复列表；排除 .fx. 中间产物） */
+  finalListResults(payload: { dirPath: string }): Promise<{ files: string[]; outDir?: string } | { error: string }>
   /** 剪映专业版草稿导出（JianyingExporter 一比一；mode single=单视频 / multi=多片段时间轴带转场） */
   jianyingExport(payload: {
     mode: 'single' | 'multi'
@@ -358,6 +380,9 @@ declare interface TintinBridgeServer {
     bgmVolume?: number
     srtPath?: string
     srtPaths?: Array<string | null>
+    /** 关键词命中行随导出（2026-09-10 裁决：花字/文字模板数据格式进剪映草稿，独立文本轨） */
+    fxWords?: string[]
+    fxKinds?: Array<'fancy' | 'tpl'>
     draftName?: string
   }): Promise<{ success: boolean; message: string }>
   /** AI 生成 BGM 服务端 URL 下载落盘（本端扩展：本地混音需本地文件） */

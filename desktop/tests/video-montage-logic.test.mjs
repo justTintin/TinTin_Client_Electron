@@ -489,3 +489,99 @@ test('pickRandomItems：取 n 个不重复；n≥池长全量乱序；池空/非
   assert.deepEqual(R.pickRandomItems(pool, 0), [])
   assert.deepEqual(R.pickRandomItems(pool, NaN), [])
 })
+
+// ── buildTextFxTracks（2026-09-10 用户裁决：效果预览按视频分行时间轴）──
+
+test('buildTextFxTracks：timing 优先定位时间点；每视频独立轮换模板；未命中词不生成条目', () => {
+  const tracks = R.buildTextFxTracks({
+    rows: [
+      {
+        name: 'a.mp4', text: '这款充电宝持久续航，电量持久不虚标', durationSec: 30,
+        timing: [
+          { text: '这款充电宝持久续航，', start: 2, end: 6 },
+          { text: '电量持久不虚标', start: 6, end: 10 },
+        ],
+      },
+      {
+        name: 'b.mp4', text: '持久续航超长待机', durationSec: 20,
+        timing: [{ text: '持久续航超长待机', start: 1, end: 5 }],
+      },
+    ],
+    maxWords: 8,
+    tplNames: ['霓虹发光', '弹跳', '打字机'],
+  })
+  assert.equal(tracks.length, 2)
+  assert.equal(tracks[0].durationSec, 30)
+  // 词命中句：start 取句级时间点
+  const track0 = tracks[0]
+  assert.ok(track0.items.length >= 1)
+  for (const it of track0.items) {
+    assert.ok(it.start === 2 || it.start === 6, `start 应为命中句起点，实为 ${it.start}`)
+    assert.ok(it.tplName, '模板名不为空')
+  }
+  // 视频间模板错开：(vi+ii)%len 轮换，b 视频首词模板 ≠ a 视频首词模板（池>1 时）
+  assert.equal(tracks[1].items[0].start, 1)
+  assert.notEqual(tracks[0].items[0].tplName, tracks[1].items[0].tplName)
+})
+
+test('buildTextFxTracks：无 timing 回退字数均分；空池模板名空串；空行返回空 items', () => {
+  const tracks = R.buildTextFxTracks({
+    rows: [{ name: 'c.mp4', text: '第一句文案\n第二句更长一点的文案', durationSec: 10 }],
+    maxWords: 8,
+    tplNames: [],
+  })
+  assert.equal(tracks.length, 1)
+  assert.equal(tracks[0].items.length, 0) // 无关键词命中（无价格/数字词）
+  const tracks2 = R.buildTextFxTracks({
+    rows: [{ name: 'd.mp4', text: '限时 99 元特价', durationSec: 10 }],
+    maxWords: 3,
+    tplNames: [],
+  })
+  // 均分兑底：命中句 start>0 且 <duration
+  for (const it of tracks2[0].items) {
+    assert.ok(it.start >= 0 && it.start < 10)
+    assert.equal(it.tplName, '')
+  }
+  assert.deepEqual(R.buildTextFxTracks({ rows: [], maxWords: 8, tplNames: ['x'] }), [])
+})
+
+// ── 每视频独立随机样式子集（2026-09-10 二次裁决：样式预览=全量库；随机数量 N 每视频各自生效）──
+
+test('seededShuffle/pickVideoStyles：确定性（同 seed 同结果）；count<=0 或池≤1 返回全量；子集不超 count', () => {
+  const pool = ['甲', '乙', '丙', '丁', '戊']
+  // 确定性：同 seed 结果相同且是原元素重排
+  const s1 = R.seededShuffle(pool, 3)
+  const s2 = R.seededShuffle(pool, 3)
+  assert.deepEqual(s1, s2)
+  assert.deepEqual([...s1].sort(), [...pool].sort())
+  assert.notDeepEqual(s1, pool) // 5 元素下碰撞概率可忽略
+  // 不同 seed 结果不同（大概率）
+  assert.notDeepEqual(R.seededShuffle(pool, 0), R.seededShuffle(pool, 1))
+  // count 边界
+  assert.deepEqual(R.pickVideoStyles(pool, 0, 1), pool)
+  assert.deepEqual(R.pickVideoStyles(pool, -1, 1), pool)
+  assert.deepEqual(R.pickVideoStyles(['唯一'], 3, 1), ['唯一'])
+  const sub = R.pickVideoStyles(pool, 2, 1)
+  assert.equal(sub.length, 2)
+  for (const x of sub) assert.ok(pool.includes(x))
+})
+
+test('buildTextFxTracks count：每视频条目模板收敛到各自随机子集内；同输入确定性可重现', () => {
+  const rows = [
+    { name: 'a.mp4', text: '限时 99 元特价，持久续航不虚标', durationSec: 20 },
+    { name: 'b.mp4', text: '真的便宜，电量持久', durationSec: 20 },
+  ]
+  const tplNames = ['霓虹发光', '弹跳', '打字机', '霓虹灯牌']
+  const run = () => R.buildTextFxTracks({ rows, maxWords: 8, tplNames, count: 2 })
+  const tracks = run()
+  assert.deepEqual(run(), tracks) // 确定性：预览与烧制同源不漂移
+  for (const t of tracks) {
+    const names = new Set(t.items.map((it) => it.tplName))
+    for (const n of names) assert.ok(tplNames.includes(n), `模板名应在全量池内：${n}`)
+  }
+  // 视频子集=seededShuffle(pool, vi).slice(0,2)：直接对拍轮换上限
+  tracks.forEach((t, vi) => {
+    const subset = new Set(R.pickVideoStyles(tplNames, 2, vi))
+    for (const it of t.items) assert.ok(subset.has(it.tplName), `条目模板应在该视频子集内：${it.tplName}`)
+  })
+})

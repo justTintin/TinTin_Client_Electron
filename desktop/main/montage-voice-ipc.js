@@ -171,6 +171,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           originalText,
           // 原版行构建时逐行 get_media_duration(filepath)（dialogs.py L1850 口径）
           durationSec: getMediaDuration(filepath),
+          // 克隆音频时长（voice_audio_durations 口径）：已生成 wav 顺带探测，
+          // 返回 Step3 重建行时绿字不再回退 --:--（2026-09-10 用户报障修复）
+          voiceDurSec: fs.existsSync(expectedWav) ? getMediaDuration(expectedWav) : 0,
         }
       })
       return { files: items, voicesDir }
@@ -434,8 +437,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   // 2026-09-10 实测纠偏：服务端真实路由为 /text_templates/templates（本地契约快照
   // 记录的 /textfx/templates 在服务端从未存在、恒 404，宽容解析误显示为空库）；
   // 返回字段为 id（渲染层口径 template_id），在此归一化，渲染层零改动。
-  // 注：文字模板动画仅服务端可渲染，本 handler 仅供选择/预览，
-  // 烧制待服务端成片链路文字模板烧制接口上线后接线。
+  // 注：2026-09-10 在线契约纠偏：统一合成 POST /montage/concat（multipart）已支持全套
+  // text_template_* 字段，不存在也不需要独立「文字模板烧制」接口（所有素材统一合成）；
+  // 本 handler 仅供选择/预览，烧制走统一合成字段接入。
   ipcMain.handle('textfx:serverTemplates', async () => {
     try {
       const res = await httpRequest('GET', '/text_templates/templates', { timeout: 10000 })
@@ -449,6 +453,24 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         })
         .filter(Boolean)
       return { templates: items, total: data?.total ?? items.length }
+    } catch (err) {
+      if (isExpectedOfflineError(err)) return null
+      return { error: err.message }
+    }
+  })
+
+  // ── textfx:keywordsSave — 服务端全局常用关键词词表全量保存 ──
+  // 2026-09-10 实测发现：服务端新增 GET/POST /text_templates/keywords
+  // （V-FANCY-3 决策3/10：纯文本词表；POST 全量覆盖保存）。
+  // 用户裁决：关键词走服务端接口，不用客户端本地私有状态；
+  // 关键词密度档位调节/文案变化后经此同步，需要合成的文字模板以服务端词表为准。
+  // 注：配套 GET handler（textfx:keywordsGet）已废弃——渲染层无消费者被 IPC 审计
+  // 门禁（IRON-10）拦下；未来做「全局关键词管理」面板时随 UI 一并接回。
+  ipcMain.handle('textfx:keywordsSave', async (_e, keywords) => {
+    try {
+      const list = Array.isArray(keywords) ? keywords.map((k) => String(k || '').trim()).filter(Boolean) : []
+      await httpRequest('POST', '/text_templates/keywords', { body: { keywords: list }, timeout: 10000 })
+      return { ok: true, count: list.length }
     } catch (err) {
       if (isExpectedOfflineError(err)) return null
       return { error: err.message }

@@ -158,6 +158,33 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
       putField(fields, 'edge_speedup', p.edge_speedup)
       putField(fields, 'clip_shot_types', p.clip_shot_types)
       if (p.lut) fields.lut = filePathField(p.lut)
+      // 特效烧制字段（2026-09-10 在线实测全套生效且单镜头约束已放开：
+      // 字幕 burn_subtitle/subtitle_*、花字 fancy_*、文字模板 text_template_*；
+      // 当前特效烧制走 final:mix serverFxBurnOne 直连不经此 IPC，白名单补全
+      // 供多镜头确认合成未来场景使用；putField 非空才收，缺省无副作用）
+      putField(fields, 'burn_subtitle', p.burn_subtitle)
+      putField(fields, 'font_id', p.font_id)
+      putField(fields, 'fontname', p.fontname)
+      putField(fields, 'subtitle_srt', p.subtitle_srt)
+      putField(fields, 'subtitle_srt_file', p.subtitle_srt_file)
+      putField(fields, 'subtitle_rows', p.subtitle_rows)
+      putField(fields, 'subtitle_style', p.subtitle_style)
+      putField(fields, 'fancy_enabled', p.fancy_enabled)
+      putField(fields, 'fancy_words', p.fancy_words)
+      putField(fields, 'fancy_style', p.fancy_style)
+      putField(fields, 'fancy_position', p.fancy_position)
+      putField(fields, 'fancy_timing', p.fancy_timing)
+      putField(fields, 'fancy_font_size_scale', p.fancy_font_size_scale)
+      putField(fields, 'fancy_template', p.fancy_template)
+      putField(fields, 'fancy_template_id', p.fancy_template_id)
+      putField(fields, 'text_template_enabled', p.text_template_enabled)
+      putField(fields, 'text_template_id', p.text_template_id)
+      putField(fields, 'text_template_words', p.text_template_words)
+      putField(fields, 'text_template_timing', p.text_template_timing)
+      putField(fields, 'text_template_position', p.text_template_position)
+      putField(fields, 'text_template_match_enabled', p.text_template_match_enabled)
+      putField(fields, 'text_template_match_ids', p.text_template_match_ids)
+      putField(fields, 'text_template_match_density', p.text_template_match_density)
     },
   ))
 

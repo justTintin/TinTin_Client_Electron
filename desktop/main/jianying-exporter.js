@@ -45,7 +45,7 @@ function getDefaultDraftRoot() {
 }
 
 /** 单视频导出（兼容旧入口，内部走多片段时间轴导出；export_to_draft L43-64） */
-function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', deps }) {
+function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, deps }) {
   if (!videoPath || !fs.existsSync(videoPath)) return { success: false, message: '视频文件不存在' }
   if (!draftName) {
     draftName = `螺丝钉智能混剪_${path.basename(videoPath, path.extname(videoPath))}`
@@ -57,12 +57,17 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
     bgmVolume,
     srtPaths: srtPath ? [srtPath] : null,
     draftName,
+    fxWords,
+    fxKinds,
     deps,
   })
 }
 
-/** 多个视频按顺序导出为一条剪映时间轴（export_multi_to_draft L67-234） */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', deps }) {
+/** 多个视频按顺序导出为一条剪映时间轴（export_multi_to_draft L67-234）。
+ *  2026-09-10 用户裁决扩展：fxWords（关键词）+ fxKinds（['fancy','tpl']）→
+ *  把关键词命中的字幕行导出为独立文本轨（花字/文字模板各一条，样式色区分），
+ *  供剪映内直接套样式精修（timing=subtitle_sync 同口径）。 */
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -118,6 +123,10 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const materials = { videos: [], audios: [], texts: [], transitions: [] }
     const videoTrack = { id: newId(), type: 'video', segments: [] }
     const tracks = [videoTrack]
+    // 关键词轨引用缓存（fancy/tpl 各一条独立文本轨；不入 JSON 的局部引用）
+    const fxTrackCache = {}
+    const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []
+    const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
 
     const transitionSpecs = normalizeTransitions(transitions, clips.length - 1)
     let cursorUs = 0
@@ -147,6 +156,9 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       }
       if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
         appendSubtitleTrack(tracks, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs)
+        for (const kind of kwKinds) {
+          appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache)
+        }
       }
       cursorUs += clip.durationUs
     }
@@ -270,6 +282,48 @@ function appendSubtitleTrack(tracks, materials, srtPath, offsetUs = 0, limitEndU
   }
 }
 
+/** 关键词命中行 → 独立文本轨（2026-09-10 用户裁决：文字模板/花字数据格式随剪映导出）。
+ *  SRT 行文本命中任一关键词 → 生成条目（content=命中词去重拼接，样式按 kind 区分），
+ *  时间轴与该行字幕一致（offset/limit 同 appendSubtitleTrack 口径）；同一 kind 复用
+ *  cache[kind] 缓存的轨道引用，避免在 tracks 上写自拟字段。 */
+const KEYWORD_TRACK_STYLES = {
+  fancy: { color: '#FFD700' },  // 花字：金色加粗
+  tpl:   { color: '#4FC3F7' },  // 文字模板：蓝色加粗
+}
+function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 0, limitEndUs = null, cache = {}) {
+  const hitWords = (Array.isArray(words) ? words : []).map((w) => String(w).trim()).filter(Boolean)
+  if (!hitWords.length) return
+  const st = KEYWORD_TRACK_STYLES[kind] || KEYWORD_TRACK_STYLES.tpl
+  for (const [startSec, endSec, textContent] of parseSrt(srtPath)) {
+    const lower = textContent.toLowerCase()
+    const hits = hitWords.filter((w) => lower.includes(w.toLowerCase()))
+    if (!hits.length) continue
+    const startUs = Math.floor(startSec * 1000000) + offsetUs
+    let durUs = Math.floor((endSec - startSec) * 1000000)
+    if (durUs <= 0) continue
+    if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = Math.max(0, limitEndUs - startUs)
+    if (durUs <= 0) continue
+    let textTrack = cache[kind]
+    if (!textTrack) {
+      textTrack = { id: newId(), type: 'text', segments: [] }
+      tracks.push(textTrack)
+      cache[kind] = textTrack
+    }
+    const safeText = hits.join(' ').split('\\').join('\\\\').split('"').join('\\"')
+    const textMaterialId = newId()
+    materials.texts.push({
+      id: textMaterialId,
+      content: `[{"text":"${safeText}","style":{"bold":true,"color":"${st.color}","font":""}}]`,
+      type: 'text',
+    })
+    textTrack.segments.push({
+      id: newId(),
+      material_id: textMaterialId,
+      target_timerange: { start: startUs, duration: durUs },
+    })
+  }
+}
+
 /** BGM 音频轨覆盖整条时间轴（_append_bgm_track L375-425） */
 function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, deps) {
   let bgmDurationSec = 0.0
@@ -359,4 +413,6 @@ module.exports = {
   normalizeOneTransition,
   parseSrt,
   timestampToSec,
+  appendKeywordTrack,
+  KEYWORD_TRACK_STYLES,
 }

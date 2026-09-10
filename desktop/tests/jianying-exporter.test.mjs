@@ -21,6 +21,7 @@ const {
   normalizeOneTransition,
   parseSrt,
   timestampToSec,
+  appendKeywordTrack,
 } = await import('../main/jianying-exporter.js')
 
 // ── TRANSITION_MAP（对照原版 8 项资源 ID，禁止自拟）──
@@ -195,4 +196,40 @@ test('exportMultiToDraft：横屏素材 → canvas ratio 16:9；BGM 不存在时
   const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
   assert.equal(content.canvas_config.ratio, '16:9')
   assert.equal(content.tracks.filter((t) => t.type === 'audio').length, 0)
+})
+
+// ── appendKeywordTrack（2026-09-10 用户裁决：花字/文字模板数据格式随剪映导出）──
+
+test('appendKeywordTrack：命中行生成独立文本轨，命中词拼接+样式区分；同 kind 复用同一轨', () => {
+  const srt = path.join(tmpRoot, 'kw.srt')
+  fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:02,000\n爆款好物限时上新\n\n2\n00:00:03,000 --> 00:00:05,000\n普通行没有关键词\n', 'utf-8')
+  const tracks = [], materials = { texts: [] }, cache = {}
+  appendKeywordTrack(tracks, materials, srt, ['爆款', '上新'], 'fancy', 0, null, cache)
+  assert.equal(tracks.length, 1)             // 仅一条花字文本轨
+  assert.equal(tracks[0].segments.length, 1) // 仅命中行生成条目
+  assert.equal(materials.texts.length, 1)
+  const mat = materials.texts[0]
+  assert.equal(mat.type, 'text')
+  assert.ok(mat.content.includes('爆款 上新'))
+  assert.ok(mat.content.includes('"bold":true'))
+  assert.ok(mat.content.includes('#FFD700'))  // 花字金色
+  assert.equal(tracks[0].segments[0].target_timerange.start, 0)
+  assert.equal(tracks[0].segments[0].target_timerange.duration, 2000000)
+})
+
+test('appendKeywordTrack：fancy/tpl 各一条独立轨；空词/无命中不生轨；offset 偏移生效', () => {
+  const srt = path.join(tmpRoot, 'kw2.srt')
+  fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:01,000\n限时上新\n', 'utf-8')
+  const tracks = [], materials = { texts: [] }, cache = {}
+  appendKeywordTrack(tracks, materials, srt, [], 'fancy', 0, null, cache)      // 空词不生轨
+  assert.equal(tracks.length, 0)
+  appendKeywordTrack(tracks, materials, srt, ['不存在的词'], 'tpl', 0, null, cache) // 无命中不生轨
+  assert.equal(tracks.length, 0)
+  appendKeywordTrack(tracks, materials, srt, ['上新'], 'fancy', 5000000, null, cache)
+  appendKeywordTrack(tracks, materials, srt, ['上新'], 'tpl', 5000000, null, cache)
+  assert.equal(tracks.length, 2)              // fancy/tpl 各一条
+  assert.notEqual(tracks[0].id, tracks[1].id)
+  assert.equal(tracks[0].segments[0].target_timerange.start, 5000000) // offset 生效
+  const tplMat = materials.texts[1]
+  assert.ok(tplMat.content.includes('#4FC3F7')) // 模板蓝色
 })

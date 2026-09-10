@@ -192,8 +192,11 @@ const server = {
   fancyListTemplates:   () => ipcRenderer.invoke('fancy:listTemplates'),
   // 服务端花字模板库（GET /fancy/templates；CLIENT-FANCY-ACCESS：模板管理与渲染在服务端）
   fancyServerTemplates: () => ipcRenderer.invoke('fancy:serverTemplates'),
-    // 服务端文字模板库（GET /textfx/templates；与花字独立体系，仅供选择/预览，烧制待服务端接口）
+    // 服务端文字模板库（GET /text_templates/templates；与花字独立体系，仅供选择/预览，烧制待服务端接口）
     textfxServerTemplates: () => ipcRenderer.invoke('textfx:serverTemplates'),
+      // 服务端全局常用关键词词表（POST /text_templates/keywords 全量覆盖；V-FANCY-3 决策3/10；
+      // 配套 GET 桥接已废弃——渲染层无消费者被 IRON-10 拦下，未来接关键词管理面板时再接回）
+      textfxKeywordsSave: (keywords) => ipcRenderer.invoke('textfx:keywordsSave', keywords),
   fancyEnsurePreviews:  (p) => ipcRenderer.invoke('fancy:ensurePreviews', p),
   fancyOnPreviewProgress: (cb) => {
     const listener = (_e, d) => cb(d)
@@ -205,6 +208,8 @@ const server = {
   finalMix:             (p) => ipcRenderer.invoke('final:mix', p),
   finalCollectOutputs:  (p) => ipcRenderer.invoke('final:collectOutputs', p),
   finalFindSrt:         (p) => ipcRenderer.invoke('final:findSrt', p),
+  finalReadTiming:      (p) => ipcRenderer.invoke('final:readTiming', p),
+  finalListResults:     (p) => ipcRenderer.invoke('final:listResults', p),
   jianyingExport:       (p) => ipcRenderer.invoke('jianying:export', p),
   bgmDownloadUrl:       (p) => ipcRenderer.invoke('bgm:downloadUrl', p),
   /** 订阅 voice 域进度事件（cloneBatch/dubVideos），返回取消订阅函数 */

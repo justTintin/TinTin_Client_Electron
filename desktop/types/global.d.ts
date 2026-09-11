@@ -375,6 +375,8 @@ declare interface TintinBridgeServer {
     durSec?: number
     /** 该条失败终结标记（渲染层复位为未生成） */
     failed?: boolean
+    /** final:mix 逐条完成事件随带成片绝对路径（渲染层增量上表；2026-09-12） */
+    donePath?: string
   }) => void): () => void
 
   // ---------- 智能混剪 Step4 特效包装（FinalMixWorker 主进程化 + 剪映草稿导出）----------

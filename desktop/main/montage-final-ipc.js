@@ -25,6 +25,7 @@ const JY = require('./jianying-exporter')
 const L = require('./voice-tts-logic')
 const FT = require('./fancy-templates')
 const VI = require('./montage-voice-ipc')
+const { logInfo } = require('./logger')
 
 // ── ffmpeg/ffprobe 路径（同 ffmpeg-gate.js getBinDir 口径，未导出故本地等价实现）──
 function getBinDir() {
@@ -442,7 +443,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const tasks = Array.isArray(p.tasks) ? p.tasks : []
       if (!tasks.length) throw new Error('final:mix requires tasks[]')
       const channel = p.progressChannel || ''
-      const emit = (stage, value) => { if (channel) event.sender.send(channel, { stage, value }) }
+      // extra（2026-09-12）：donePath=逐条完成事件随带成片路径，渲染层增量上表
+      // （此前列表只在整批返回后填充，合成期间已落盘的成片不可见）
+      const emit = (stage, value, extra) => { if (channel) event.sender.send(channel, { stage, value, ...(extra || {}) }) }
 
       const ffmpegPath = getFfmpegPath()
       const hasBgm = !!(p.bgmPath && fs.existsSync(p.bgmPath))
@@ -502,10 +505,21 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         for (let i = 0; i < tasks.length; i++) {
           const t = tasks[i]
           const sub = subTexts.find((s) => s.videoPath === t.videoPath)
-          if (!sub || !String(sub.text || '').trim()) continue
+          if (!sub || !String(sub.text || '').trim()) {
+            // 跳过留痕（2026-09-11 文字模板动画排查教训：静默 continue 无迹可查）
+            try { logInfo('final-mix', `特效烧制跳过（无匹配文案行）: ${path.basename(t.videoPath)}`) } catch (_) {}
+            continue
+          }
           emit(`正在烧制字幕/花字特效 (${i + 1}/${tasks.length})...`, Math.floor(i / tasks.length * 55))
+          // 文字模板命中行/样式池计数留痕：为 0 时仅勾文字模板的视频会整块直通（排查入口）
+          try {
+            logInfo('final-mix', `特效烧制 #${i + 1} ${path.basename(t.videoPath)}: textFxHits=${Array.isArray(sub.fxLines) ? sub.fxLines.length : 0} textFxStyles=${Array.isArray(fx.textFxStyles) ? fx.textFxStyles.length : 0} sub=${!!fx.addSubtitles} fancy=${!!fx.fancyText}`)
+          } catch (_) {}
           const videoDur = getMediaDuration(t.videoPath)
-          if (videoDur <= 0) continue // 时长读不出 → 无法定位时间轴，跳过烧制直通混音
+          if (videoDur <= 0) {
+            try { logInfo('final-mix', `特效烧制跳过（时长不可读）: ${path.basename(t.videoPath)}`) } catch (_) {}
+            continue // 时长读不出 → 无法定位时间轴，跳过烧制直通混音
+          }
           // .timing.json 句级时间轴（voice-tts-logic buildSubtitleLines 既有口径）
           let timing = null
           try {
@@ -550,7 +564,10 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             textFxStyles: Array.isArray(fx.textFxStyles) ? fx.textFxStyles : [],
             textFxCount: Number(fx.textFxCount) || 0,
           })
-          if (!args) continue // 无特效可烧（构建器判定）→ 直通
+          if (!args) {
+            try { logInfo('final-mix', `特效烧制直通（构建器判定无可烧特效，多为命中行/样式池为空）: ${path.basename(t.videoPath)}`) } catch (_) {}
+            continue // 无特效可烧（构建器判定）→ 直通
+          }
           const r = await runFfmpeg(args)
           if (r.code !== 0) {
             throw new Error(`字幕/花字特效烧制失败：\n${r.stderr || '(无输出)'}`)
@@ -587,6 +604,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
               bgmPath: hasBgm ? p.bgmPath : '', bgmVol,
             })
             results.push(outPath)
+            // 逐条完成即推送（渲染层增量上表，不等整批返回）
+            emit(`服务端统一合成完成 (${index + 1}/${total})...`, Math.floor((index + 1) / total * 95), { donePath: outPath })
             continue
           } catch (e) {
             try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath) } catch (_) { /* 忽略 */ }
@@ -646,6 +665,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         const fxTmp = fxPaths.get(videoPath)
         if (fxTmp) { try { fs.unlinkSync(fxTmp) } catch (_) { /* 忽略 */ } }
         results.push(outPath)
+        // 逐条完成即推送（渲染层增量上表，不等整批返回）
+        emit(`最终合成完成 (${index + 1}/${total})...`, mixBase + Math.floor((index + 1) / total * mixSpan), { donePath: outPath })
       }
       emit('所有视频及配乐最终合成完成！', 100)
       return { results }

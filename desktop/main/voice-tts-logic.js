@@ -830,8 +830,8 @@ function buildFancyDrawtextList(o, fancyEvents) {
  * 渲染文案与效果预览 buildTextFxTracks 同款：命中词优先（"/" 拼接），
  * 无词行（LLM 补足/等距兜底）整行截断；样式池先按视频序确定性洗牌取随机子集
  * （textFxCount 个，随机数量对每条视频独立生效），再按 (视频序+命中行序) 轮换；
- * 动画 fade/slide/pulse（drawtext 能力边界，其余模板动画本地近似 fade，
- * 完整动画走剪映导出 appendKeywordTrack）。
+ * 动画 fade/slide/pulse/bounce/neon/shine（drawtext 能力边界：flip/flow/type 无旋转/
+ * 渐变/逐字能力近似 fade，完整动画走剪映导出 appendKeywordTrack）。
  * o: { textFxStyles: Array<{color,effectColor,anim}>, textFxCount, fancyFontPath }
  * hits: Array<{ text, start, end, keywords }>（服务端 match 选中行；空 → 不烧）
  */
@@ -875,16 +875,30 @@ function buildTextFxDrawtextList(o, hits, videoIdx) {
     const endT = Math.max(startT + 0.2, Number(h.end) || 0)
     const s = startT.toFixed(3)
     const animDur = 0.3
-    // 动画（写法对照字幕/花字 fade/slide 先例；pulse=持续脉动；x/y 含逗号必须引号包裹）
+    // 动画（写法对照字幕/花字 fade/slide/pop 先例；x/y/alpha 含逗号必须引号包裹）。
+    // 2026-09-11 用户反馈「本地合成没有文字模板动画」根因：textFxStyleOf 产出 9 种
+    // 动画语义（bounce/flip/flow/neon/shine/slide/type/pulse/fade）而此处只认
+    // slide/pulse，其余全退化 0.3s 淡入（肉眼≈直接出现）→ 补齐 bounce/neon/shine。
     let xExpr = '(w-text_w)/2'
     let yExpr = 'h*0.08' // 顶部居中（与花字中上/字幕底部不重叠）
     const animParts = []
     if (st.anim === 'slide') {
       animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
       xExpr = `(w-text_w)/2+(1-min((t-${s})/${animDur},1))*w*0.10`
+    } else if (st.anim === 'bounce') {
+      // 弹入：快速淡入 + y 弹跳衰减（对照花字 pop 表达式）
+      animParts.push(`alpha='if(lt(t,${s}+0.15),(t-${s})/0.15,1)'`)
+      yExpr = `(${yExpr})-abs(sin((t-${s})*14))*h*0.012*(1-min((t-${s})/0.7,1))`
+    } else if (st.anim === 'neon') {
+      // 霓虹：入场后全程呼吸闪烁（不衰减）
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.55+0.45*abs(sin((t-${s})*5)))'`)
+    } else if (st.anim === 'shine') {
+      // 闪烁：高频明暗（流光扫过需渐变色能力，drawtext 无 → 以闪烁近似）
+      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.55+0.45*abs(sin((t-${s})*9)))'`)
     } else if (st.anim === 'pulse') {
       animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.65+0.35*abs(sin((t-${s})*6)))'`)
     } else {
+      // fade（含 flip/flow/type 能力边界近似）：0.3s 淡入
       animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
     }
     drawtexts.push(

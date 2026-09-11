@@ -494,6 +494,28 @@ test('buildTextFxDrawtextList: 服务端命中行时间窗顶部叠加 + 样式�
   assert.ok(drawtexts[2].includes('fontcolor=0xFFD24D') && drawtexts[2].includes('between(t,6.000,9.000)'))
 })
 
+test('buildTextFxDrawtextList: 动画语义 bounce/neon/shine 本地可见（不再全量退化 fade）', () => {
+  // 2026-09-11 用户反馈「本地合成没有文字模板动画」：textFxStyleOf 产出 9 种动画
+  // 语义，烧制端此前只认 slide/pulse，其余全退化 0.3s 淡入（肉眼≈直接出现）
+  const mk = (anim) => L.buildTextFxDrawtextList(
+    { textFxStyles: [{ name: anim, color: '#FFD24D', effectColor: '#FF8800', anim }] },
+    [{ text: '持久续航', start: 0, end: 3, keywords: ['持久'] }],
+    0,
+  )[0]
+  assert.ok(mk, '单命中行应生成 drawtext')
+  // bounce：y 弹跳衰减（对照花字 pop 表达式）
+  assert.ok(mk('bounce').includes('abs(sin((t-0.000)*14))*h*0.012'))
+  // neon/shine：入场后全程闪烁（sin 项在尾帧仍生效，非纯淡入）
+  assert.ok(mk('neon').includes('0.55+0.45*abs(sin((t-0.000)*5))'))
+  assert.ok(mk('shine').includes('0.55+0.45*abs(sin((t-0.000)*9))'))
+  // fade/flip/flow/type：drawtext 能力边界近似淡入（无 sin，尾帧恒亮）
+  for (const a of ['fade', 'flip', 'flow', 'type']) {
+    const d = mk(a)
+    assert.ok(d.includes("alpha='if(lt(t,0.000+0.3),(t-0.000)/0.3,1)'"), `${a} 应为 0.3s 淡入`)
+    assert.ok(!d.includes('sin'), `${a} 不应含闪烁表达式`)
+  }
+})
+
 test('buildTextFxDrawtextList textFxCount：每视频确定性洗牌取子集；count<=0 全量轮换', () => {
   const styles = [
     { name: '甲', color: '#111111', effectColor: '#222222', anim: 'fade' },

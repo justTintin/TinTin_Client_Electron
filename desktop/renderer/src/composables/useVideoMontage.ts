@@ -1515,10 +1515,20 @@ export function useVideoMontage() {
       // 离线/失败 → 空数组（不烧，与预览空轨口径一致，不造数）
       if (mode === 'local' && textFxEnabled.value && subtitleTexts.length) {
         statusText.value = '正在获取文字模板命中...'
-        await Promise.all(subtitleTexts.map(async (st) => {
+        // 串行取数 + 失败归集（2026-09-12 日志实锤：并行 3 连击期间服务端 match
+        // 500/ECONNRESET 全灭 → textFxHits=0 → 成片既无关键词也无动画且无提示；
+        // 串行+单点重试降连击压力，失败不再静默）
+        const failed: string[] = []
+        for (const st of subtitleTexts) {
           const r = await fetchTextFxHits(st.videoPath, st.text, st.timingPath)
           st.fxLines = r.lines
-        }))
+          if (!r.ok) failed.push(pathBasename(st.videoPath))
+        }
+        if (failed.length) {
+          // 如实透出（铁律：服务端 5xx 定性归因服务端）：不静默产出无文字模板的成片
+          clientError('video-montage', '文字模板关键词获取失败', `服务端 /text_templates/match 异常（500/连接中断），以下视频本次未烧文字模板：${failed.join('、')}`)
+          notify('文字模板未生效', `服务端关键词命中接口异常（500/连接中断），以下视频本次合成不含文字模板：\n${failed.join('\n')}\n\n可稍后重试「本地合成」。`)
+        }
       }
       const hasFx = addSubtitles.value || fancyEnabled.value || textFxEnabled.value
       // 2026-09-11 用户终裁：按钮决定链路，开了哪些特效、是否选 BGM 都只是参数——
@@ -1577,6 +1587,9 @@ export function useVideoMontage() {
       finalBusy.value = false
       finalMode.value = ''
       offVoiceProgress?.(); offVoiceProgress = null
+      // 合成结束重刷效果预览（合成期间 refreshTextFxTracks 被 finalBusy 短路跳过；
+      // setTimeout 让 finalBusy=false 先生效，2026-09-12）
+      setTimeout(() => { void refreshTextFxTracks() }, 0)
     }
   }
 
@@ -1797,12 +1810,13 @@ export function useVideoMontage() {
   let textFxTrackSeq = 0
   /** 逐视频取服务端 /text_templates/match 命中行（效果预览与本地合成共用同一口径：
    *  rows 由 buildSubtitleRows 组装，density 透传，llm_fill=true 按合成口径保底；
-   *  离线/失败 → 空（不造数）。返回 { dur, lines }——dur 供预览轨背景条复用 */
+   *  离线/失败 → 空（不造数）。返回 { dur, lines, ok }——dur 供预览轨背景条复用，
+   *  ok=false 区分「接口失败」与「合法零命中」（失败不再静默） */
   async function fetchTextFxHits(
     videoPath: string,
     text: string,
     timingPath: string,
-  ): Promise<{ dur: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }> }> {
+  ): Promise<{ dur: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }>; ok: boolean }> {
     const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(videoPath).catch?.(() => 0)) || 0
     let timing: Array<{ text: string; start: number; end: number }> = []
     if (timingPath) {
@@ -1810,27 +1824,56 @@ export function useVideoMontage() {
       timing = res && 'items' in res ? res.items : []
     }
     const rows = buildSubtitleRows(String(text || '').trim(), timing, dur)
-    if (!rows.length) return { dur, lines: [] }
-    const res = await window.tintin?.server?.textfxMatchKeywords?.({
-      rows,
-      density: textKeywordDensity.value,
-      llmFill: true,
-    })
-    const lines = res && 'lines' in res && Array.isArray(res.lines)
-      ? res.lines
-        .filter((l) => l.selected)
-        .map((l) => ({
-          text: String(l.text || ''),
-          start: Number(l.start) || 0,
-          end: Number(l.end) || 0,
-          keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
-        }))
-      : []
-    return { dur, lines }
+    if (!rows.length) return { dur, lines: [], ok: true }
+    // 缓存复用（预览与合成共享同一份命中行，不再二次调服务端；密度或行内容变化 → key 变 → 重取）
+    const cacheKey = textFxHitsKey(rows)
+    const cached = textFxHitsCache.get(cacheKey)
+    if (cached) return { dur, lines: cached, ok: true }
+    // 重试口径（2026-09-12 实锤：服务端 match 偶发 500/ECONNRESET，单次失败曾致
+    // 本地烧制 textFxHits=0 → 成片无文字模板；400/900ms 退避共 3 次）
+    let ok = false
+    let lines: Array<{ text: string; start: number; end: number; keywords: string[] }> = []
+    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+      const res = await window.tintin?.server?.textfxMatchKeywords?.({
+        rows,
+        density: textKeywordDensity.value,
+        llmFill: true,
+      })
+      if (res && 'lines' in res && Array.isArray(res.lines)) {
+        ok = true
+        lines = res.lines
+          .filter((l) => l.selected)
+          .map((l) => ({
+            text: String(l.text || ''),
+            start: Number(l.start) || 0,
+            end: Number(l.end) || 0,
+            keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
+          }))
+      } else if (attempt < 3) {
+        console.warn(`[textfx] match 第 ${attempt}/3 次失败，重试...`, res)
+        await new Promise((r) => setTimeout(r, attempt === 1 ? 400 : 900))
+      }
+    }
+    if (!ok) console.warn('[textfx] match 三次均失败（服务端 500/离线），本次不烧文字模板', videoPath)
+    if (ok) textFxHitsCache.set(cacheKey, lines) // 成功才入缓存（失败不污染，下次重取）
+    return { dur, lines, ok }
+  }
+  /** 命中行缓存（2026-09-12 用户质询：预览已调过 match，合成为何再调——match 的唯一
+   *  业务输入就是 rows（文案+时间轴的实际组装结果），不发也不依赖视频文件；rows 已涵盖
+   *  「timing.json 优先」与「无 timing 按时长占比估算」两种口径 → 直接以 密度+rows 为 key：
+   *  timing 存在时预览/合成 rows 完全一致必命中（不再二次调服务端）；无 timing 时两链
+   *  时长不同（源视频 vs 配音后视频）rows 即不同 → 自动重取，避免用源视频时间窗烧配音后
+   *  视频的错位。二次调用放大服务端 match 压力正是 500 全灭致文字模板整块消失的诱因） */
+  const textFxHitsCache = new Map<string, Array<{ text: string; start: number; end: number; keywords: string[] }>>()
+  function textFxHitsKey(rows: Array<{ text: string; start: number; end: number }>): string {
+    return `${textKeywordDensity.value}\u0000${JSON.stringify(rows)}`
   }
   async function refreshTextFxTracks(): Promise<void> {
     const seq = ++textFxTrackSeq
     if (!textFxEnabled.value) { textFxPreviewTracks.value = []; return }
+    // 合成期间跳过预览刷新（2026-09-12）：与本地预取并发连击服务端 match 是 500
+    // 诱因之一；合成完成后由 startFinalMix finally 统一重刷
+    if (finalBusy.value) return
     const tplNames = activeTextPool.value.map((t) => String(t.name || ''))
     if (!tplNames.length) { textFxPreviewTracks.value = []; return }
     // Step4 右栏候选仍走混音口径（配音优先回退成片），与效果预览轨数据源分离
@@ -1840,14 +1883,15 @@ export function useVideoMontage() {
       .filter(Boolean)
     if (!outputs.length) { textFxPreviewTracks.value = []; return }
     // 逐视频取服务端命中判定（与本地合成同一取数函数 fetchTextFxHits；
-    // 离线/失败 → 空轨）
-    const matched = await Promise.all(outputs.map(async (c) => {
+    // 离线/失败 → 空轨）；串行取数（2026-09-12：并发连击曾致服务端 match 500）
+    const matched: Array<{ name: string; durationSec: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }> }> = []
+    for (const c of outputs) {
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
       const { dur, lines } = await fetchTextFxHits(
         c, String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '',
       )
-      return { name: pathBasename(c), durationSec: dur, lines }
-    }))
+      matched.push({ name: pathBasename(c), durationSec: dur, lines })
+    }
     if (seq !== textFxTrackSeq) return // 过期响应丢弃（连续触发只保留最新）
     // 2026-09-10 用户终裁：轨名列显示视频名（模板名拼接方案废止；name 字段自此=文件名）
     // 2026-09-11 用户二次裁决：展示层改「第N条」序号，见 VideoMontage.vue .textfx-track-name
@@ -1998,6 +2042,18 @@ export function useVideoMontage() {
           if (d.value >= 100 || d.failed) voiceDone++ // 失败行同样终结，计入完成数（否则总进度到不了 100）
           const frac = d.value < 100 ? d.value / 100 : 0
           voiceProgress.value = Math.min(100, Math.round(((voiceDone + frac) / voiceTotal) * 100))
+        }
+      }
+      // Step4 统一合成：进度接通 + 成片增量上表（2026-09-12 用户反馈：服务端已合成完
+      // 列表仍空——此前 final:mix 的 value 无 rowIdx 分支被丢弃致进度条不动，列表只在
+      // 整批返回后填充；现 donePath 逐条追加、进度实时回写。条件排除克隆/配音链
+      // （带 rowIdx / wavPath），避免 Step4 一键链本地配音段误写合成进度）
+      if (finalBusy.value && d.rowIdx === undefined && !d.wavPath) {
+        if (d.value !== undefined) finalProgress.value = d.value
+        if (d.donePath && !finalVideoList.value.some((it) => it.path === d.donePath)) {
+          finalVideoList.value = [...finalVideoList.value, { name: pathBasename(d.donePath), path: d.donePath }]
+          if (!finalVideoPath.value) finalVideoPath.value = d.donePath
+          finalDone.value = true
         }
       }
       if (d.stage) statusText.value = d.stage

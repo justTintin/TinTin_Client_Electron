@@ -535,6 +535,24 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           // 自动建输出目录，缺失时报 "No such file or directory"（2026-09-10 实锤根因：
           // 新任务首次合成必炸，两条链路共用此烧制前置）→ 烧制前先建目录
           fs.mkdirSync(path.dirname(fxOut), { recursive: true })
+          // R3 方案A：jy_ 前缀文字模板 → 本地装饰图标解析（R2 公式，分辨率无关占比）；
+          // 仅存在 jy_ 样式时才探测画布尺寸，避免多余 ffprobe
+          let videoW = 0, videoH = 0
+          let stylesForBurn = Array.isArray(fx.textFxStyles) ? fx.textFxStyles : []
+          try {
+            if (stylesForBurn.some((s) => s && String(s.templateId || '').startsWith('jy_'))) {
+              const dims = probeMedia(t.videoPath)
+              videoW = dims.width; videoH = dims.height
+              const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
+              stylesForBurn = stylesForBurn.map((s) => {
+                const tid = String((s && s.templateId) || '')
+                if (!tid.startsWith('jy_')) return s
+                try { return { ...s, decorations: L.buildTextTemplateDecorations(presetDir, tid.slice(3), videoW, videoH) } } catch (_) { return s }
+              })
+            }
+          } catch (decoErr) {
+            try { logInfo('final-mix', '装饰图标解析失败（降级纯文字）: ' + (decoErr && decoErr.message || decoErr)) } catch (_) {}
+          }
           const args = L.buildEffectBurnArgs({
             videoPath: t.videoPath,
             outputVideoPath: fxOut,
@@ -561,7 +579,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             // 旧实现在无卖点词文案上提取为空会导致文字模板整块不烧））
             textFxHits: Array.isArray(sub.fxLines) ? sub.fxLines : [],
             // textFxCount=每视频随机选 N 个（随机样式模式），漏传会导致全量轮换
-            textFxStyles: Array.isArray(fx.textFxStyles) ? fx.textFxStyles : [],
+            textFxStyles: stylesForBurn,
+            videoW: videoW,
+            videoH: videoH,
             textFxCount: Number(fx.textFxCount) || 0,
           })
           if (!args) {
@@ -757,6 +777,10 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             srtPaths: p.srtPaths,
             fxWords: p.fxWords,
             fxKinds: p.fxKinds,
+            // M2a：文字入场动画/花字效果随剪映导出（textAnim=入场动画名，fancyEffectId/tplEffectId=花字效果 id）
+            textAnim: p.textAnim,
+            fancyEffectId: p.fancyEffectId,
+            tplEffectId: p.tplEffectId,
             draftName: p.draftName,
             deps,
           })
@@ -767,9 +791,32 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             srtPath: p.srtPath,
             fxWords: p.fxWords,
             fxKinds: p.fxKinds,
+            textAnim: p.textAnim,
+            fancyEffectId: p.fancyEffectId,
+            tplEffectId: p.tplEffectId,
             draftName: p.draftName,
             deps,
           })
+      // M1：首页索引登记 + 封面（2026-09-12 实测：登记后剪映首页免刷新可见；失败不阻断导出）
+      if (res && res.success) {
+        try {
+          const firstVideo = (Array.isArray(p.videoPaths) && p.videoPaths[0]) || p.videoPath || ''
+          let durUs = 0
+          for (const vp of (Array.isArray(p.videoPaths) && p.videoPaths.length ? p.videoPaths : [firstVideo])) {
+            durUs += Math.round((probeMedia(vp).durationSec || 0) * 1e6)
+          }
+          let cover = ''
+          try {
+            cover = path.join(res.message, 'draft_cover.jpg')
+            const r = spawnSync(getFfmpegPath(), ['-y', '-ss', '1', '-i', firstVideo, '-frames:v', '1', '-q:v', '3', cover], { timeout: 15000, windowsHide: true })
+            if (r.status !== 0 || !fs.existsSync(cover)) cover = ''
+          } catch (_) { cover = '' }
+          const reg = JY.registerInRootMeta({ draftFolder: res.message, draftName: res.draftName || p.draftName || path.basename(res.message), durationUs: durUs, coverPath: cover })
+          res.registered = reg.ok
+        } catch (regErr) {
+          try { logInfo('jianying-export', '首页索引登记失败（不影响草稿本身）: ' + (regErr && regErr.message || regErr)) } catch (_) {}
+        }
+      }
       return res
     } catch (err) {
       return { success: false, message: err.message }

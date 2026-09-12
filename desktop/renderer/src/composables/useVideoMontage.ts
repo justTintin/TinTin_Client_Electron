@@ -1665,15 +1665,34 @@ export function useVideoMontage() {
 
   /** 剪映导出随行特效（2026-09-10 用户裁决：花字/文字模板数据格式进草稿）。
    *  关键词取口播文案同口径（extractTextFxWords）；轨道随 Step4 开关：
-   *  fancyEnabled→花字轨（金色加粗）、textFxEnabled→文字模板轨（蓝色加粗）。 */
-  function jianyingFxParams(): { fxWords?: string[]; fxKinds?: Array<'fancy' | 'tpl'> } {
+   *  fancyEnabled→花字轨（金色加粗）、textFxEnabled→文字模板轨（蓝色加粗）。
+   *  2026-09-12 M2a：选中花字模板带 jy_effect_id/jy_intro_anim → 剪映原生效果/入场动画随行；
+   *  文字模板下拉选中 jy_ 前缀（剪映同步）模板 → tplEffectId 随行（剪映端还原原生效果）。 */
+  function jianyingFxParams(): {
+    fxWords?: string[]
+    fxKinds?: Array<'fancy' | 'tpl'>
+    textAnim?: string
+    fancyEffectId?: string
+    tplEffectId?: string
+  } {
     const kinds: Array<'fancy' | 'tpl'> = []
     if (fancyEnabled.value) kinds.push('fancy')
     if (textFxEnabled.value) kinds.push('tpl')
     if (!kinds.length) return {}
     const words = extractTextFxWords()
     if (!words.length) return {}
-    return { fxWords: words, fxKinds: kinds }
+    const out: { fxWords: string[]; fxKinds: Array<'fancy' | 'tpl'>; textAnim?: string; fancyEffectId?: string; tplEffectId?: string } = { fxWords: words, fxKinds: kinds }
+    const ftpl = selectedFancyTemplate.value as Record<string, unknown> | null
+    if (fancyEnabled.value && ftpl) {
+      const eff = String(ftpl.jy_effect_id || '').trim()
+      const anim = String(ftpl.jy_intro_anim || '').trim()
+      if (eff) out.fancyEffectId = eff
+      if (anim) out.textAnim = anim
+    }
+    if (textFxEnabled.value && textTemplateId.value.startsWith('jy_')) {
+      out.tplEffectId = textTemplateId.value.slice(3)
+    }
+    return out
   }
 
   /** 剪映导出公共体：BGM/音量随当前选择；成功弹窗逐字 + 打开草稿目录；失败长错误 */
@@ -1686,16 +1705,32 @@ export function useVideoMontage() {
     transitions?: string
     fxWords?: string[]
     fxKinds?: Array<'fancy' | 'tpl'>
+    textAnim?: string
+    fancyEffectId?: string
+    tplEffectId?: string
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {
-    const res = await window.tintin?.server?.jianyingExport?.({
-      ...base,
-      bgmPath: bgmPath.value,
-      bgmVolume: bgmVolume.value,
-    })
+    // 2026-09-12 缺陷修复（用户报「两导出按钮点击毫无反应」，日志仅一条
+    // Error: An object could not be cloned.）：successBody 是渲染层本地回调，此前经
+    // ...base 整体展开混入 IPC payload——结构化克隆无法序列化函数 → invoke 直接
+    // reject → 链路无 catch → 无弹窗无日志的完全静默。解构剔除回调后 IPC 只收纯数据，
+    // 并对 invoke 兜底 catch：任何异常都 clientError + 弹窗透出，不再「没反应」。
+    const { successBody, ...ipcBase } = base
+    let res: { success: boolean; message: string } | undefined
+    try {
+      res = await window.tintin?.server?.jianyingExport?.({
+        ...ipcBase,
+        bgmPath: bgmPath.value,
+        bgmVolume: bgmVolume.value,
+      })
+    } catch (e) {
+      clientError('video-montage', '导出剪映草稿失败', errText(e))
+      notify('导出失败', `导出剪映草稿时发生错误：\n${errText(e)}`)
+      return
+    }
     if (res && res.success) {
-      notify('草稿导出成功', base.successBody(base.draftName))
+      notify('草稿导出成功', successBody(base.draftName))
       try { window.tintin.shell.openItem(res.message) } catch (_) {}
     } else {
       clientError('video-montage', '导出剪映草稿失败', res ? res.message : '主进程不可达')
@@ -1776,10 +1811,13 @@ export function useVideoMontage() {
   })
   /** 随机模式生效个数（指定模板=1；每视频从 activeTextPool 独立随机选 N 个） */
   const activeTextCount = computed(() => textTemplateId.value === 'random' ? textRandomCount.value : 1)
-  /** 文字模板下拉：首项随机样式（默认），其余为服务端库条目 */
+  /** 文字模板下拉：首项随机样式（默认），其余为服务端库条目；jy_ 前缀=剪映同步模板（§0.1 命名规范） */
   const textTemplateOptions = computed(() => [
     { label: '随机样式', value: 'random' },
-    ...textTemplates.value.map((t) => ({ label: String(t.name || t.template_id), value: t.template_id })),
+    ...textTemplates.value.map((t) => ({
+      label: String(t.name || t.template_id) + (String(t.template_id).startsWith('jy_') ? '（剪映）' : ''),
+      value: t.template_id,
+    })),
   ])
   /** 按密度档位从口播文案提取卖点词（2026-09-11 起仅剩一个消费者：剪映导出随行
    *  特效——效果预览与本地合成均已改走服务端 /text_templates/match 命中行，服务端

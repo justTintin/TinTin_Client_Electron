@@ -929,6 +929,8 @@ export interface TextFxStyle {
   color: string
   effectColor: string
   anim: string
+  /** M2a/R3：剪映同步模板 id（jy_<resource_id>），本地烧制据此解析装饰图标 */
+  templateId?: string
 }
 export function textFxStyleOf(t: { template_id?: string; name?: string; variables?: unknown }): TextFxStyle {
   const vars = (t.variables && typeof t.variables === 'object' ? t.variables : {}) as Record<string, { default?: unknown }>
@@ -937,8 +939,10 @@ export function textFxStyleOf(t: { template_id?: string; name?: string; variable
     const d = v && typeof v === 'object' ? v.default : v
     if (typeof d === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(d) && colors.length < 3) colors.push(d)
   }
+  // M2a/R3：显式 anim 变量优先（同步 jy_ 模板可声明），名称正则仅兜底
+  const varsAnim = vars.anim && typeof vars.anim === 'object' ? String(vars.anim.default || '') : ''
   const key = `${t.template_id || ''}${t.name || ''}`
-  const anim = /bounce|pop|弹/.test(key) ? 'bounce'
+  const anim = varsAnim || (/bounce|pop|弹/.test(key) ? 'bounce'
     : /flip|翻转/.test(key) ? 'flip'
     : /gradient|渐变/.test(key) ? 'flow'
     : /neon|glow|霓虹/.test(key) ? 'neon'
@@ -946,10 +950,10 @@ export function textFxStyleOf(t: { template_id?: string; name?: string; variable
     : /slide|滑/.test(key) ? 'slide'
     : /typewriter|打字/.test(key) ? 'type'
     : /pulse|zoom|脉冲|缩放/.test(key) ? 'pulse'
-    : 'fade'
+    : 'fade')
   const mainColor = String((vars.color && typeof vars.color === 'object' ? vars.color.default : '') || '#FFFFFF')
   const effectColor = colors.find((c) => c.toLowerCase() !== mainColor.toLowerCase()) || mainColor
-  return { name: String(t.name || ''), color: mainColor, effectColor, anim }
+  return { name: String(t.name || ''), color: mainColor, effectColor, anim, templateId: String(t.template_id || '') }
 }
 
 /** 单视频效果预览词条（时间单位=秒，相对该视频开头）；

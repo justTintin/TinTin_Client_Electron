@@ -465,7 +465,7 @@ test('buildEffectBurnArgs: 无特效/时长不可读 → null（调用方直通�
 // 与服务端 /text_templates/match 命中同源，行/词/时间取渲染层预取的 fxLines）──
 
 test('buildTextFxDrawtextList: 服务端命中行时间窗顶部叠加 + 样式轮换 + 颜色 0x 化（与预览同口径）', () => {
-  const drawtexts = L.buildTextFxDrawtextList(
+  const { drawtexts } = L.buildTextFxDrawtextList(
     {
       textFxStyles: [
         { name: '脉冲', color: '#FFD24D', effectColor: '#FF8800', anim: 'pulse' },
@@ -497,11 +497,14 @@ test('buildTextFxDrawtextList: 服务端命中行时间窗顶部叠加 + 样式�
 test('buildTextFxDrawtextList: 动画语义 bounce/neon/shine 本地可见（不再全量退化 fade）', () => {
   // 2026-09-11 用户反馈「本地合成没有文字模板动画」：textFxStyleOf 产出 9 种动画
   // 语义，烧制端此前只认 slide/pulse，其余全退化 0.3s 淡入（肉眼≈直接出现）
-  const mk = (anim) => L.buildTextFxDrawtextList(
-    { textFxStyles: [{ name: anim, color: '#FFD24D', effectColor: '#FF8800', anim }] },
-    [{ text: '持久续航', start: 0, end: 3, keywords: ['持久'] }],
-    0,
-  )[0]
+  const mk = (anim) => {
+    const { drawtexts } = L.buildTextFxDrawtextList(
+      { textFxStyles: [{ name: anim, color: '#FFD24D', effectColor: '#FF8800', anim }] },
+      [{ text: '持久续航', start: 0, end: 3, keywords: ['持久'] }],
+      0,
+    )
+    return drawtexts[0]
+  }
   assert.ok(mk, '单命中行应生成 drawtext')
   // bounce：y 弹跳衰减（对照花字 pop 表达式）
   assert.ok(mk('bounce').includes('abs(sin((t-0.000)*14))*h*0.012'))
@@ -529,7 +532,7 @@ test('buildTextFxDrawtextList textFxCount：每视频确定性洗牌取子集；
     { text: '依然持久', start: 3, end: 6, keywords: ['持久'] },
     { text: '还是持久', start: 6, end: 9, keywords: ['持久'] },
   ]
-  const run = (vi) => L.buildTextFxDrawtextList(o, hits, vi)
+  const run = (vi) => L.buildTextFxDrawtextList(o, hits, vi).drawtexts
   const v0 = run(0); const v0b = run(0)
   assert.equal(v0.length, 3)
   assert.deepEqual(v0, v0b) // 确定性：同视频同子集（预览/烧制同源）
@@ -541,9 +544,52 @@ test('buildTextFxDrawtextList textFxCount：每视频确定性洗牌取子集；
   }
   assert.ok(pool0.size <= 2, `count=2 时视频 0 至多 2 种主色，实为 ${pool0.size}`)
   // count=0 → 全量轮换（4 样式均可能出现在同视频）
-  const all = L.buildTextFxDrawtextList({ textFxStyles: styles }, hits, 0)
+  const all = L.buildTextFxDrawtextList({ textFxStyles: styles }, hits, 0).drawtexts
   const poolAll = new Set(all.map((d) => (d.match(/fontcolor=0x([0-9A-F]{6})/) || [])[1]))
   assert.ok(poolAll.size > 2, `count=0 应全量轮换，实为 ${poolAll.size} 种`)
+})
+
+test('buildTextFxDrawtextList/buildEffectBurnArgs：装饰图标 overlay（R3 方案A，jy_ 同步模板）', () => {
+  const style = {
+    name: '剪映同步', color: '#FDFBFB', effectColor: '#FDFBFB', anim: 'fade',
+    templateId: 'jy_7575772843741580569',
+    decorations: [{ file: 'D:/x/dec.png', cx: 0.6, cy: 0.4, wf: 0.3, aspect: 21.4, rot: -5 }],
+  }
+  const o = { textFxStyles: [style], videoW: 1080, videoH: 1920 }
+  const { drawtexts, overlays } = L.buildTextFxDrawtextList(
+    o,
+    [{ text: '只要199元', start: 0.5, end: 2.5, keywords: ['199元'] }],
+    0,
+  )
+  assert.equal(drawtexts.length, 1)
+  assert.equal(overlays.length, 1)
+  const ov = overlays[0]
+  assert.equal(ov.w, Math.round(0.3 * 1080)) // wf × 画布宽
+  assert.equal(ov.x, Math.round(0.6 * 1080 - ov.w / 2)) // cx 居中锚定
+  assert.equal(ov.y, Math.round(0.4 * 1920 - ov.h / 2)) // cy 相对画布高
+  assert.equal(ov.rot, -5)
+  // buildEffectBurnArgs：装饰输入 + overlay 链（format=rgba → rotate → scale → overlay）
+  const args = L.buildEffectBurnArgs({
+    videoPath: 'D:\\v\\a.mp4', outputVideoPath: 'D:\\v\\final\\a.mp4', videoDur: 6,
+    textFxHits: [{ text: '只要199元', start: 0.5, end: 2.5, keywords: ['199元'] }],
+    textFxStyles: [style], videoW: 1080, videoH: 1920,
+  })
+  assert.ok(Array.isArray(args))
+  const joined = args.join(' ')
+  assert.ok(joined.includes('format=rgba,rotate=-5*(PI/180)'), '旋转链（透明底）')
+  assert.ok(joined.includes(`scale=${ov.w}:${ov.h}`), '装饰缩放到 wf×画布宽')
+  assert.ok(joined.includes(`overlay=x=${ov.x}:y=${ov.y}`), 'overlay 位置')
+  assert.ok(joined.includes("enable='between(t,0.500,2.500)'"), '窗口与文字同源')
+  const iCount = args.filter((a) => a === '-i').length
+  assert.equal(iCount, 2, '装饰图标作为独立输入（视频+装饰）')
+  // 无装饰文件 → 不生成 overlay 输入
+  const args2 = L.buildEffectBurnArgs({
+    videoPath: 'D:\\v\\a.mp4', outputVideoPath: 'D:\\v\\final\\a.mp4', videoDur: 6,
+    textFxHits: [{ text: '只要199元', start: 0.5, end: 2.5, keywords: ['199元'] }],
+    textFxStyles: [{ name: '无装饰', color: '#FFFFFF', effectColor: '#FFFFFF', anim: 'fade' }],
+    videoW: 1080, videoH: 1920,
+  })
+  assert.equal(args2.filter((a) => a === '-i').length, 1, '无装饰时仅视频输入')
 })
 
 test('buildEffectBurnArgs: 仅勾文字模板（无字幕/花字）也生烧制参数；字幕+文字模板链式叠加 vtx', () => {

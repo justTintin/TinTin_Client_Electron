@@ -149,27 +149,38 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
   // canvas 取第 0 段 1080x1920 → 9:16
   assert.deepEqual(content.canvas_config, { width: 1080, height: 1920, ratio: '9:16' })
-  // 素材库：2 视频 + 1 音频 + 1 字幕 + 1 转场
+  // v2 schema 来源三元组（防版本漂移）
+  assert.deepEqual(r.schemaVersion, { source: 'pyJianYingDraft 0.3.0 assets/draft_content_template.json', new_version: '110.0.0', version: 360000, generator_app_version: '5.9.0' })
+  assert.equal(content.new_version, '110.0.0')
+  assert.equal(content.version, 360000)
+  // 素材库：2 视频 + 1 音频 + 1 字幕 + 1 转场 + speeds（每媒体片段 1 条）
   assert.equal(content.materials.videos.length, 2)
   assert.equal(content.materials.audios.length, 1)
   assert.equal(content.materials.texts.length, 1)
   assert.equal(content.materials.transitions.length, 1)
   assert.equal(content.materials.transitions[0].name, '推近')
   assert.equal(content.materials.transitions[0].resource_id, '6724226861666144779')
-  // 视频轨 2 段顺序排布；转场挂「前一个」片段 extra_material_refs
+  assert.equal(content.materials.speeds.length, 4) // 视频2 + 字幕1 + BGM1
+  // 视频轨 2 段顺序排布；转场挂「前一个」片段 extra_material_refs（[speed, 转场]）
   const videoTrack = content.tracks.find((t) => t.type === 'video')
   assert.equal(videoTrack.segments.length, 2)
-  assert.equal(videoTrack.segments[0].extra_material_refs.length, 1)
-  assert.equal(videoTrack.segments[1].extra_material_refs.length, 0)
+  assert.equal(videoTrack.segments[0].extra_material_refs.length, 2)
+  assert.equal(videoTrack.segments[1].extra_material_refs.length, 1)
   assert.deepEqual(videoTrack.segments[0].target_timerange, { start: 0, duration: 4000000 })
   assert.deepEqual(videoTrack.segments[1].target_timerange, { start: 4000000, duration: 4000000 })
+  // v2 片段完整字段（pyJianYingDraft segment.py / video_segment.py）
+  assert.equal(videoTrack.segments[0].render_index, 0)
+  assert.deepEqual(videoTrack.segments[0].clip, { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } })
+  assert.deepEqual(videoTrack.segments[0].hdr_settings, { intensity: 1.0, mode: 1, nits: 1000 })
+  assert.deepEqual(videoTrack.segments[0].source_timerange, { start: 0, duration: 4000000 })
+  assert.equal(videoTrack.segments[0].visible, true)
   // 字幕轨：整体偏移到第 0 段内
   const textTrack = content.tracks.find((t) => t.type === 'text')
   assert.equal(textTrack.segments[0].target_timerange.start, 0)
-  // BGM 音轨：volume=30/100、volume_db=(30/50-1)*12=-4.8、覆盖整条时间轴
+  // BGM 音轨：volume=30/100、覆盖整条时间轴、clip=null（audio_segment.py）
   const audioTrack = content.tracks.find((t) => t.type === 'audio')
   assert.equal(audioTrack.segments[0].volume, 0.3)
-  assert.ok(Math.abs(audioTrack.segments[0].volume_db - -4.8) < 1e-9) // (30/50-1)*12 浮点精度
+  assert.equal(audioTrack.segments[0].clip, null)
   assert.equal(audioTrack.segments[0].target_timerange.duration, 8000000)
 })
 
@@ -212,7 +223,9 @@ test('appendKeywordTrack：命中行生成独立文本轨，命中词拼接+样�
   assert.equal(mat.type, 'text')
   assert.ok(mat.content.includes('爆款 上新'))
   assert.ok(mat.content.includes('"bold":true'))
-  assert.ok(mat.content.includes('#FFD700'))  // 花字金色
+  // v2：样式色为 [r,g,b] 0-1 浮点（#FFD700 → [1, 0.843..., 0]，text_segment.py 格式）
+  const parsed = JSON.parse(mat.content)
+  assert.deepEqual(parsed.styles[0].fill.content.solid.color, [1, 0.8431372549019608, 0])
   assert.equal(tracks[0].segments[0].target_timerange.start, 0)
   assert.equal(tracks[0].segments[0].target_timerange.duration, 2000000)
 })
@@ -231,5 +244,51 @@ test('appendKeywordTrack：fancy/tpl 各一条独立轨；空词/无命中不生
   assert.notEqual(tracks[0].id, tracks[1].id)
   assert.equal(tracks[0].segments[0].target_timerange.start, 5000000) // offset 生效
   const tplMat = materials.texts[1]
-  assert.ok(tplMat.content.includes('#4FC3F7')) // 模板蓝色
+  // v2：#4FC3F7 → [0.30980392156862746, 0.7647058823529411, 0.9686274509803922]
+  const tplParsed = JSON.parse(tplMat.content)
+  assert.deepEqual(tplParsed.styles[0].fill.content.solid.color, [0.30980392156862746, 0.7647058823529411, 0.9686274509803922])
+})
+
+test('exportMultiToDraft：textAnim/fancyEffectId → 入场动画 + 花字效果随行（M2a 剪映原生通道）', () => {
+  const v = path.join(tmpRoot, 'fx.mp4')
+  fs.writeFileSync(v, 'x')
+  const srt = path.join(tmpRoot, 'fx.srt')
+  fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:02,000\n只要199元就买它\n', 'utf-8')
+  const r = exportMultiToDraft({
+    videoPaths: [v],
+    srtPaths: [srt],
+    fxWords: ['199元'],
+    fxKinds: ['fancy'],
+    textAnim: '复古打字机',
+    fancyEffectId: '7495312625169911065',
+    draftName: '动画测试',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  // 入场动画进 materials.material_animations，片段挂引用（字幕1 + fancy关键词1 = 2）
+  assert.equal(content.materials.material_animations.length, 2)
+  const anim = content.materials.material_animations[0]
+  assert.equal(anim.type, 'sticker_animation')
+  assert.equal(anim.animations[0].type, 'in')
+  assert.equal(anim.animations[0].name, '复古打字机')
+  assert.equal(anim.animations[0].resource_id, '7253888335163167291')
+  assert.equal(anim.animations[0].id, '17639720')
+  // 花字效果进 materials.effects，content.effectStyle 引用
+  assert.equal(content.materials.effects.length, 1)
+  assert.equal(content.materials.effects[0].type, 'text_effect')
+  assert.equal(content.materials.effects[0].resource_id, '7495312625169911065')
+  const kwText = content.materials.texts
+    .map((t) => JSON.parse(t.content))
+    .find((c) => c.text === '199元' && c.styles[0].bold) // 关键词轨文本（加粗）
+  assert.ok(kwText, '关键词轨文本应存在')
+  assert.deepEqual(kwText.styles[0].effectStyle, { id: '7495312625169911065', path: 'C:' })
+  // 片段引用：动画/效果 id 均在文本轨 extra_material_refs（effect 仅在 fancy 关键词轨）
+  const refs = content.tracks.filter((t) => t.type === 'text').flatMap((s) => s.segments.flatMap((x) => x.extra_material_refs))
+  assert.ok(refs.includes(content.materials.material_animations[0].id))
+  assert.ok(refs.includes(content.materials.effects[0].id))
+  // 未命中的动画名不生成动画素材（不造假）
+  const r2 = exportMultiToDraft({ videoPaths: [v], srtPaths: [srt], textAnim: '不存在的动画', draftName: '动画测试2', deps: DEPS })
+  const c2 = JSON.parse(fs.readFileSync(path.join(r2.message, 'draft_content.json'), 'utf-8'))
+  assert.equal(c2.materials.material_animations.length, 0)
 })

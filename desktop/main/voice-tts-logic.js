@@ -22,6 +22,11 @@
 
 'use strict'
 
+// R3 方案A（2026-09-12）：文字模板装饰图标 overlay 需要 fs/path（扫描本地
+// textpreset/缓存 PNG）。仍为主进程纯函数层：仅内置模块，可单测，不碰 electron。
+const fs = require('node:fs')
+const path = require('node:path')
+
 // ── TTS 文本预处理（voice_workers.py L74-138 逐行移植）──────────────
 // 解决："8000 DPI"→"八千 D P I"；"LIGHTSPEED"逐字母；"Type-C"→"Type C"
 
@@ -852,7 +857,10 @@ function buildTextFxDrawtextList(o, hits, videoIdx) {
   const rows = (Array.isArray(hits) ? hits : [])
     .filter((h) => h && typeof h === 'object' && String(h.text || '').trim())
   const allStyles = Array.isArray(o.textFxStyles) ? o.textFxStyles : []
-  if (!rows.length || !allStyles.length) return []
+  if (!rows.length || !allStyles.length) return { drawtexts: [], overlays: [] }
+  // R3 方案A：装饰图标 overlay 需要（styles[].decorations 由主进程按 R2 公式解析随行）
+  const vw = Number(o.videoW) || 0
+  const vh = Number(o.videoH) || 0
   // 每视频独立随机子集（2026-09-10 用户裁决：随机数量 N 对应每条视频；
   // textFxCount<=0 或池≤1 → 全量轮换）
   const count = Number(o.textFxCount) || 0
@@ -861,6 +869,7 @@ function buildTextFxDrawtextList(o, hits, videoIdx) {
     : allStyles
   const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
   const drawtexts = []
+  const overlays = []
   rows.forEach((h, hitIdx) => {
     const kws = (Array.isArray(h.keywords) ? h.keywords : [])
       .map((k) => String(k).trim()).filter(Boolean)
@@ -901,6 +910,21 @@ function buildTextFxDrawtextList(o, hits, videoIdx) {
       // fade（含 flip/flow/type 能力边界近似）：0.3s 淡入
       animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
     }
+    // R3 方案A：装饰图标 overlay（style.decorations：{file,cx,cy,wf,aspect,rot}，
+    // cx/wf 为画布宽占比、cy 为画布高占比——R2 公式的分辨率无关形态）
+    for (const d of (Array.isArray(st.decorations) ? st.decorations : [])) {
+      if (!d || !d.file || !(Number(d.wf) > 0) || !vw || !vh || !(Number(d.aspect) > 0)) continue
+      const w = Math.round(Number(d.wf) * vw)
+      const h = Math.round(w / Number(d.aspect))
+      if (w < 4 || h < 4) continue
+      overlays.push({
+        file: d.file, w, h,
+        x: Math.round(Number(d.cx) * vw - w / 2),
+        y: Math.round(Number(d.cy) * vh - h / 2),
+        rot: Number(d.rot) || 0,
+        start: startT, end: Math.max(startT + 0.2, endT),
+      })
+    }
     drawtexts.push(
       `drawtext=fontfile='${fontPath}':`
       + `text='${escapeDrawText(shown)}':`
@@ -911,7 +935,7 @@ function buildTextFxDrawtextList(o, hits, videoIdx) {
       + (animParts.length ? ':' + animParts.join(':') : ''),
     )
   })
-  return drawtexts
+  return { drawtexts, overlays }
 }
 
 /**
@@ -951,6 +975,8 @@ function buildEffectBurnArgs(opts) {
   let videoLabel = '0:v'
   let audioLabel = '0:a:0'
   const soundInputPaths = []
+  // R3 方案A：文字模板装饰图标输入（编号接在音效之后；与 filter_complex 引用顺序一致）
+  const overlayInputPaths = []
   if (o.addSubtitles && o.text && subLines.length) {
     const drawtexts = buildSubtitleDrawtextList(o, subLines, subStarts, subEnds)
     if (drawtexts.length) {
@@ -989,17 +1015,30 @@ function buildEffectBurnArgs(opts) {
   // 输出标 vtx 恒唯一；videoIdx 供样式轮换与预览同源；2026-09-11 起命中行直接
   // 用服务端 match 结果，不依赖 subLines——仅勾文字模板（无字幕/花字）也不影响）
   if (hasTextFx) {
-    const txd = buildTextFxDrawtextList(o, o.textFxHits, Number(o.videoIdx) || 0)
+    const { drawtexts: txd, overlays: txOverlays } = buildTextFxDrawtextList(o, o.textFxHits, Number(o.videoIdx) || 0)
     if (txd.length) {
       videoFilters.push(`[${videoLabel}]${txd.join(',')}[vtx]`)
       videoLabel = 'vtx'
     }
+    // R3 方案A：装饰图标 overlay（R2 公式定位；输入索引接在音效输入之后；rot=0 免 rotate）
+    txOverlays.forEach((ov, oi) => {
+      const inIdx = 1 + soundInputPaths.length + oi
+      const dLabel = `deco${oi}`
+      const chain = [`[${inIdx}:v]format=rgba`]
+      if (ov.rot) chain.push(`rotate=${ov.rot}*(PI/180):c=black@0:ow=rotw(iw):oh=roth(ih)`)
+      chain.push(`scale=${ov.w}:${ov.h}`)
+      videoFilters.push(chain.join(',') + `[${dLabel}]`)
+      videoFilters.push(`[${videoLabel}][${dLabel}]overlay=x=${ov.x}:y=${ov.y}:enable='between(t,${ov.start.toFixed(3)},${ov.end.toFixed(3)})'[tfo${oi}]`)
+      videoLabel = `tfo${oi}`
+      overlayInputPaths.push(ov.file)
+    })
   }
   if (!videoFilters.length) return null
   // 滤镜输出标签（无冒号）需要 [] 包裹；裸输入流（如 0:a:0）不加
   const audioMap = audioLabel.includes(':') ? audioLabel : `[${audioLabel}]`
   const cmd = ['-y', '-i', o.videoPath]
   for (const sp of soundInputPaths) cmd.push('-i', sp)
+  for (const ip of overlayInputPaths) cmd.push('-i', ip)
   cmd.push(
     '-filter_complex', videoFilters.join(';'),
     '-map', `[${videoLabel}]`, '-map', audioMap,
@@ -1148,6 +1187,92 @@ function buildDubFFmpegArgs(opts) {
   ]
 }
 
+/**
+ * 加载剪映文字模板的装饰图标（R2 标定公式：设计画布 720x720、中心原点、y 向上）。
+ * 纯函数（dir 参数化可单测）；rid 不匹配/无装饰 → []。
+ * 返回 [{file, cx, cy, wf, aspect, rot}]：
+ *   cx/wf = 相对画布宽的占比（0-1）、cy = 相对画布高的占比、rot = 度。
+ */
+// R3 polish：装饰簇竖直锚点 = 文字中心占画布高比例（drawtext y=h*0.08 + 字号 h*0.055/2）
+const TEXT_CENTER_CY = 0.108
+function buildTextTemplateDecorations(dir, rid, videoW, videoH) {
+  if (!dir || !rid || !(videoW > 0) || !(videoH > 0) || !fs.existsSync(dir)) return []
+  const out = []
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith('.textpreset')) continue
+    let p = null
+    try { p = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8')) } catch (_) { continue }
+    const eff = p && p.effect
+    if (!eff || String(eff.resource_id || eff.effect_id || '') !== String(rid)) continue
+    // PNG↔元素两遍配对：精确尺寸 → 宽高比就近（与 test/sync-textpresets.cjs 同口径）
+    const decorations = []
+    const seen = new Set()
+    for (const r of p.resources || []) {
+      try {
+        for (const f2 of fs.readdirSync(r.file_path)) {
+          if (!f2.endsWith('.png')) continue
+          const fp = path.join(r.file_path, f2)
+          const b = fs.readFileSync(fp)
+          const nw = b.readUInt32BE(16), nh = b.readUInt32BE(20)
+          const key = nw + 'x' + nh + ':' + b.length
+          if (seen.has(key)) continue
+          seen.add(key)
+          decorations.push({ file: fp, nw, nh })
+        }
+      } catch (_) {}
+    }
+    decorations.forEach((d) => { d.used = false })
+    const elements = (p.elements || []).filter((e) => e && e.type === 'sticker')
+    const assign = new Array(elements.length).fill(null)
+    elements.forEach((e, i) => {
+      const c = (e.attach_info && e.attach_info.clip) || {}
+      const ow = Number(e.attach_info.original_size_width || 0), oh = Number(e.attach_info.original_size_height || 0)
+      const d = decorations.find((x) => !x.used && x.nw === ow && x.nh === oh)
+      if (d) { d.used = true; assign[i] = d }
+    })
+    elements.forEach((e, i) => {
+      if (assign[i]) return
+      const c = (e.attach_info && e.attach_info.clip) || {}
+      const ow = Number(e.attach_info.original_size_width || 1), oh = Number(e.attach_info.original_size_height || 1)
+      let bestD = null, bestDiff = 1e9
+      for (const d of decorations) {
+        if (d.used) continue
+        const diff = Math.abs(d.nw / d.nh - ow / oh)
+        if (diff < bestDiff) { bestDiff = diff; bestD = d }
+      }
+      if (bestD) { bestD.used = true; assign[i] = bestD }
+    })
+    // R2 公式 → 分辨率无关占比：cx = 0.5 + tx/720；cy = 文字中心 − ty*(W/720)/H；wf = natural*scale/720
+    // R3 polish：装饰簇锚定文字位置（本地烧制文字在 h*0.08、字号 h*0.055 → 文字中心≈0.108H）；
+    // 全画幅效果层（wf>0.8）保持画布居中；可见性钳制：装饰不得越出画面
+    elements.forEach((e, i) => {
+      const d = assign[i]
+      const c = (e.attach_info && e.attach_info.clip) || {}
+      if (!d) return
+      const tx = Number(c.transform_x || 0), ty = Number(c.transform_y || 0)
+      const sc = Number(c.scale_x || 1)
+      const wf = (d.nw * sc) / 720
+      const isFullLayer = wf > 0.8
+      const dw = wf * videoW
+      const dhFrac = (dw / Number(d.aspect || 1)) / videoH
+      let cx = 0.5 + tx / 720
+      let cy = TEXT_CENTER_CY - (ty * videoW / 720) / videoH
+      cx = Math.min(Math.max(cx, wf / 2), 1 - wf / 2)
+      cy = Math.min(Math.max(cy, dhFrac / 2), 1 - dhFrac / 2)
+      out.push({
+        file: d.file,
+        cx: isFullLayer ? 0.5 : cx,
+        cy: isFullLayer ? 0.5 : cy,
+        wf,
+        aspect: d.nw / d.nh,
+        rot: Number(c.rotation || 0),
+      })
+    })
+    break
+  }
+  return out
+}
+
 module.exports = {
   preprocessTtsText,
   intToCn,
@@ -1196,4 +1321,5 @@ module.exports = {
   buildDubFFmpegArgs,
   buildEffectBurnArgs,
   buildTextFxDrawtextList,
+  buildTextTemplateDecorations,
 }

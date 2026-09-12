@@ -23,6 +23,8 @@ interface ToolItem {
   kind: ToolKind
   /** 建设中：卡片带角标，点击进入建设中占位页（不加载真实组件） */
   wip?: boolean
+  /** 角标文案（默认「建设中」；可传「调研中」等区分状态） */
+  badge?: string
   /** kind=comp：真实组件 */
   comp?: Component
   /** kind=route：目标路由 */
@@ -58,6 +60,7 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     { id: 'video-transcribe',  title: '视频转文字',   desc: '视频语音自动转写',       group: '视频', emoji: '📄', accent: 'linear-gradient(135deg,#6366F1 0%,#A855F7 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoTranscribe.vue')) },
     { id: 'subtitle-removal',  title: '视频去水印字幕', desc: '去除字幕 / 台标水印',  group: '视频', emoji: '🔤', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/SubtitleRemoval.vue')) },
     { id: 'video-download',   title: '参考视频下载', desc: '粘贴 YouTube/B站 链接选档位下载', group: '视频', emoji: '⬇️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#6366F1 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoDownload.vue')) },
+    { id: 'jianying-assets', title: '剪映素材接入', desc: '从剪映读取预设/文字模板/花字/音效库/音乐库', group: '视频', emoji: '🎞️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#6366F1 100%)', kind: 'comp', wip: true, badge: '调研中' },
   ],
   音频: [
     { id: 'audio-gen',   title: '音频生成', desc: 'AI 生成 BGM / 音效，一键入库', group: '音频', emoji: '🔊', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/AudioGen.vue')) },
@@ -108,7 +111,7 @@ function backToGrid() {
         <div v-if="activeTool.wip" class="tool-note">
           <div class="note-icon">🚧</div>
           <h2 class="note-title">{{ activeTool.title }}</h2>
-          <p class="note-desc">该功能正在建设中，敬请期待。</p>
+          <p class="note-desc">该功能正在{{ activeTool.badge || '建设中' }}，敬请期待。</p>
           <p class="note-tip">可返回媒体工具使用其他功能。</p>
         </div>
         <!-- 真实组件（KeepAlive 缓存实例，切走不销毁，回来状态保留） -->
@@ -143,7 +146,7 @@ function backToGrid() {
             :style="{ animationDelay: `${idx * 35}ms`, '--card-accent': t.accent }"
             @click="openTool(t)"
           >
-            <span v-if="t.wip" class="wip-badge">建设中</span>
+            <span v-if="t.wip" class="wip-badge">{{ t.badge || '建设中' }}</span>
             <div class="card-top">
               <div class="tool-icon" :style="{ background: t.accent }">
                 <span>{{ t.emoji }}</span>

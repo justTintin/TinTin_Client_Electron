@@ -1,15 +1,18 @@
 // ═══════════════════════════════════════════════════════════════
 // jianying-exporter.js — 剪映专业版草稿（DRT）导出器
-// 对照原客户端 studio/utils/jianying_exporter.py 一比一移植：
-//   · TRANSITION_MAP 8 项（UI 转场 key → 剪映转场名/资源ID/效果ID/is_overlap/时长微秒）
-//   · get_default_draft_root        → getDefaultDraftRoot
-//   · export_to_draft（单段，兼容旧入口）→ exportToDraft
-//   · export_multi_to_draft（多片段时间轴）→ exportMultiToDraft
-//   · _probe_video/_normalize_transitions/_build_transition_material/
-//     _append_subtitle_track/_append_bgm_track/_parse_srt/_timestamp_to_sec
-// 结构逐字段对齐（draft_meta_info.json + draft_content.json 的 canvas_config/
-// materials{videos,audios,texts,transitions}/tracks），禁止自拟字段。
-// ffprobe 探测以 deps 注入（montage-final-ipc.js 提供），本文件不碰进程，
+// ── v2（2026-09-12 M1）：完整字段 schema ──
+//   M0 闸门实测（附录 D）：旧极简字段集被剪映 11.5.5 判定「草稿内容已损坏」
+//   拒开。v2 以 pyJianYingDraft 0.3.0 的已知可用明文结构为字段基准重写：
+//   · 骨架骨架：jianying-draft-template.js（new_version 110.0.0 / version 360000 /
+//     platform app_version 5.9.0，顶层 29 字段全量）
+//   · segment 字段：segment.py（BaseSegment/MediaSegment/VisualSegment）+
+//     video_segment.py（hdr_settings）+ audio_segment.py（clip:null）
+//   · 素材字段：local_materials.py（VideoMaterial/AudioMaterial）+
+//     text_segment.py（texts.content 富样式 JSON 串）
+//   来源版本三元组见 DRAFT_SCHEMA（防版本漂移，素材同步同契约）。
+// 保留自原 studio/utils/jianying_exporter.py 一比一移植的工具层：
+//   TRANSITION_MAP（8 项转场资源 ID）/ get_default_draft_root /
+//   _normalize_transitions / _parse_srt / _timestamp_to_sec，均对照原版。
 // 纯逻辑可单测（tests/jianying-exporter.test.mjs）。
 // ═══════════════════════════════════════════════════════════════
 
@@ -18,23 +21,45 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
+const TEMPLATE = require('./jianying-draft-template.js')
+const { findTextIntroAnimation } = require('./jianying-text-animations.js')
 
 // UI 转场 key -> (剪映转场名, resource_id, effect_id, is_overlap, 默认时长(微秒))
 // 资源 ID 来自剪映内置转场元数据（pyJianYingDraft，2024 版剪映专业版）
 const TRANSITION_MAP = {
-  fade:       { name: '模糊',     resourceId: '6911569618171597320', effectId: '4212596', isOverlap: true,  duration: 500000 },
-  dissolve:   { name: '叠化',     resourceId: '6724845717472416269', effectId: '322577',  isOverlap: true,  duration: 500000 },
-  slideleft:  { name: '向左擦除', resourceId: '6724849999336706573', effectId: '2917283', isOverlap: true,  duration: 500000 },
-  slideright: { name: '向右擦除', resourceId: '6724849898857959950', effectId: '2917284', isOverlap: true,  duration: 500000 },
-  slideup:    { name: '向上擦除', resourceId: '6724849456891564557', effectId: '2917281', isOverlap: true,  duration: 500000 },
-  slidedown:  { name: '向下擦除', resourceId: '6724849752921346573', effectId: '2917282', isOverlap: true,  duration: 500000 },
-  zoomin:     { name: '推近',     resourceId: '6724226861666144779', effectId: '359359',  isOverlap: false, duration: 1000000 },
-  zoomout:    { name: '拉远',     resourceId: '6724226338418332167', effectId: '359365',  isOverlap: false, duration: 1000000 },
+  fade:       { name: '模糊',     resourceId: '6911569618171597320', effectId: '4212596',  isOverlap: true,  duration: 500000 },
+  dissolve:   { name: '叠化',     resourceId: '6724845717472416269', effectId: '322577',   isOverlap: true,  duration: 500000 },
+  slideleft:  { name: '向左擦除', resourceId: '6724849999336706573', effectId: '2917283',  isOverlap: true,  duration: 500000 },
+  slideright: { name: '向右擦除', resourceId: '6724849898857959950', effectId: '2917284',  isOverlap: true,  duration: 500000 },
+  slideup:    { name: '向上擦除', resourceId: '6724849456891564557', effectId: '2917281',  isOverlap: true,  duration: 500000 },
+  slidedown:  { name: '向下擦除', resourceId: '6724849752921346573', effectId: '2917282',  isOverlap: true,  duration: 500000 },
+  zoomin:     { name: '推近',     resourceId: '6724226861666144779', effectId: '359359',   isOverlap: false, duration: 1000000 },
+  zoomout:    { name: '拉远',     resourceId: '6724226338418332167', effectId: '359365',   isOverlap: false, duration: 1000000 },
 }
 
-/** 大写无连字符 uuid（对照 str(uuid.uuid4()).upper()） */
+// 草稿 schema 来源版本三元组（同步/排障时对版本用）
+const DRAFT_SCHEMA = Object.freeze({
+  source: 'pyJianYingDraft 0.3.0 assets/draft_content_template.json',
+  new_version: '110.0.0',
+  version: 360000,
+  generator_app_version: '5.9.0',
+})
+
+/** 大写无连字符 uuid（draft_meta_info.draft_id 用，对照 str(uuid.uuid4()).upper()） */
 function newId() {
   return randomUUID().replace(/-/g, '').toUpperCase()
+}
+
+/** 32 位小写 hex（草稿内 track/segment/素材 id，对照 pyJianYingDraft uuid4().hex） */
+function hexId() {
+  return randomUUID().replace(/-/g, '')
+}
+
+/** '#RRGGBB' → [r,g,b] 0-1 浮点（剪映 texts.content 样式色格式） */
+function hexToRgbFloats(hex) {
+  const m = /^#?([0-9a-fA-F]{6})/.exec(String(hex || ''))
+  if (!m) return [1.0, 1.0, 1.0]
+  return [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) / 255)
 }
 
 /** Windows 默认的剪映专业版草稿根目录（get_default_draft_root） */
@@ -44,8 +69,213 @@ function getDefaultDraftRoot() {
   return path.join(appdata, 'JianyingPro', 'User Data', 'Projects', 'com.lveditor.draft')
 }
 
+// ── v2 字段构建器（字段对照 pyJianYingDraft：segment.py / local_materials.py / text_segment.py）──
+
+/** 播放速度素材（materials.speeds 成员；segment.extra_material_refs 引用其 id） */
+function speedMaterial(speed) {
+  return { curve_speed: null, id: hexId(), mode: 0, speed, type: 'speed' }
+}
+
+/** 通用片段字段（segment.py BaseSegment.export_json） */
+function baseSegmentFields(materialId, start, dur) {
+  return {
+    enable_adjust: true,
+    enable_color_correct_adjust: false,
+    enable_color_curves: true,
+    enable_color_match_adjust: false,
+    enable_color_wheels: true,
+    enable_lut: true,
+    enable_smart_color_adjust: false,
+    last_nonzero_volume: 1.0,
+    reverse: false,
+    track_attribute: 0,
+    track_render_index: 0,
+    visible: true,
+    id: hexId(),
+    material_id: materialId,
+    target_timerange: { start, duration: dur },
+    common_keyframes: [],
+    keyframe_refs: [],
+  }
+}
+
+/** 媒体片段字段（segment.py MediaSegment.export_json；speedId 进 extra_material_refs） */
+function mediaSegmentFields(dur, speedId, { speed = 1.0, volume = 1.0 } = {}) {
+  return {
+    source_timerange: { start: 0, duration: dur },
+    speed,
+    volume,
+    extra_material_refs: [speedId],
+    is_tone_modify: false,
+  }
+}
+
+/** 视觉片段字段（segment.py VisualSegment.export_json） */
+function visualSegmentFields() {
+  return {
+    clip: {
+      alpha: 1.0,
+      flip: { horizontal: false, vertical: false },
+      rotation: 0.0,
+      scale: { x: 1.0, y: 1.0 },
+      transform: { x: 0.0, y: 0.0 },
+    },
+    uniform_scale: { on: true, value: 1.0 },
+  }
+}
+
+/** 轨道（track.py Track.export_json） */
+function newTrack(type) {
+  return { attribute: 0, flag: 0, id: hexId(), is_default_name: true, name: '', segments: [], type }
+}
+
+/** 文字入场动画素材（materials.material_animations 成员；animation.py SegmentAnimations/Text_animation）。
+ *  按 TEXT_INTRO_ANIMATIONS 表（pyJianYingDraft text_intro.py 免费档）查名；未命中返回 null。
+ *  时长取 min(动画默认时长, 片段时长)。 */
+function textIntroAnimationMaterial(animName, segDurUs) {
+  const meta = findTextIntroAnimation(animName)
+  if (!meta) return null
+  const material = {
+    id: hexId(),
+    type: 'sticker_animation',
+    multi_language_current: 'none',
+    animations: [
+      {
+        anim_adjust_params: null,
+        platform: 'all',
+        panel: '',
+        material_type: 'sticker',
+        name: meta.name,
+        id: meta.effect_id,
+        type: 'in',
+        resource_id: meta.resource_id,
+        start: 0,
+        duration: Math.min(meta.duration, segDurUs),
+      },
+    ],
+  }
+  return { material, animId: material.id }
+}
+
+/** 文字花字效果素材（materials.effects 成员；text_segment.py TextEffect.export_json——
+ *  pyJianYingDraft 将气泡/花字导出到 materials.effects，segment 挂引用 + content.effectStyle）。 */
+function textEffectMaterial(effectId) {
+  return {
+    apply_target_type: 0,
+    effect_id: effectId,
+    id: hexId(),
+    resource_id: effectId,
+    type: 'text_effect',
+    value: 1.0,
+    source_platform: 1,
+  }
+}
+
+/** 为文本片段挂入场动画 + 花字效果引用（无命中静默跳过，不造假） */
+function decorateTextSegment(seg, materials, { anim, effectId } = {}) {
+  if (anim) {
+    const r = textIntroAnimationMaterial(anim, seg.target_timerange.duration)
+    if (r) {
+      if (!Array.isArray(materials.material_animations)) materials.material_animations = []
+      materials.material_animations.push(r.material)
+      seg.extra_material_refs.push(r.animId)
+    }
+  }
+  if (effectId) {
+    if (!Array.isArray(materials.effects)) materials.effects = []
+    materials.effects.push(textEffectMaterial(effectId))
+    seg.extra_material_refs.push(materials.effects[materials.effects.length - 1].id)
+  }
+}
+
+/** 文本素材（materials.texts 成员；text_segment.py TextSegment.export_material）。
+ *  effectStyleId：剪映花字效果 id（jy_effect_id）→ content.effectStyle 引用（path 'C:' 为原版占位）。 */
+function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, effectStyleId = '' } = {}) {
+  const contentJson = {
+    styles: [
+      {
+        fill: {
+          alpha: 1.0,
+          content: { render_type: 'solid', solid: { alpha: 1.0, color: hexToRgbFloats(colorHex) } },
+        },
+        range: [0, text.length],
+        size,
+        bold: !!bold,
+        italic: false,
+        underline: false,
+        strokes: [],
+      },
+    ],
+    text,
+  }
+  if (effectStyleId) contentJson.styles[0].effectStyle = { id: effectStyleId, path: 'C:' }
+  return {
+    id: hexId(),
+    content: JSON.stringify(contentJson),
+    typesetting: 0,
+    alignment: 0,
+    letter_spacing: 0,
+    line_spacing: 0.02,
+    line_feed: 1,
+    force_apply_line_max_width: false,
+    check_flag: 7,
+    type: 'text',
+    global_alpha: 1.0,
+  }
+}
+
+/** 视频素材（materials.videos 成员；local_materials.py VideoMaterial.export_json） */
+function videoMaterialFields(clip) {
+  return {
+    audio_fade: null,
+    category_id: '',
+    category_name: 'local',
+    check_flag: 63487,
+    crop: {
+      upper_left_x: 0.0, upper_left_y: 0.0,
+      upper_right_x: 1.0, upper_right_y: 0.0,
+      lower_left_x: 0.0, lower_left_y: 1.0,
+      lower_right_x: 1.0, lower_right_y: 1.0,
+    },
+    crop_ratio: 'free',
+    crop_scale: 1.0,
+    duration: clip.durationUs,
+    height: clip.height,
+    id: clip.materialId,
+    local_material_id: '',
+    material_id: clip.materialId,
+    material_name: clip.name,
+    media_path: '',
+    path: clip.path,
+    type: 'video',
+    width: clip.width,
+  }
+}
+
+/** 音频素材（materials.audios 成员；local_materials.py AudioMaterial.export_json） */
+function audioMaterialFields(bgmPath, durationUs) {
+  return {
+    app_id: 0,
+    category_id: '',
+    category_name: 'local',
+    check_flag: 3,
+    copyright_limit_type: 'none',
+    duration: durationUs,
+    effect_id: '',
+    formula_id: '',
+    id: hexId(),
+    local_material_id: '',
+    music_id: '',
+    name: path.basename(bgmPath),
+    path: bgmPath,
+    source_platform: 0,
+    type: 'extract_music',
+    wave_points: [],
+  }
+}
+
 /** 单视频导出（兼容旧入口，内部走多片段时间轴导出；export_to_draft L43-64） */
-function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, deps }) {
+function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', deps }) {
   if (!videoPath || !fs.existsSync(videoPath)) return { success: false, message: '视频文件不存在' }
   if (!draftName) {
     draftName = `螺丝钉智能混剪_${path.basename(videoPath, path.extname(videoPath))}`
@@ -59,15 +289,17 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
     draftName,
     fxWords,
     fxKinds,
+    textAnim,
+    fancyEffectId,
+    tplEffectId,
     deps,
   })
 }
 
-/** 多个视频按顺序导出为一条剪映时间轴（export_multi_to_draft L67-234）。
- *  2026-09-10 用户裁决扩展：fxWords（关键词）+ fxKinds（['fancy','tpl']）→
- *  把关键词命中的字幕行导出为独立文本轨（花字/文字模板各一条，样式色区分），
- *  供剪映内直接套样式精修（timing=subtitle_sync 同口径）。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, deps }) {
+/** 多个视频按顺序导出为一条剪映时间轴（v2 完整 schema）。
+ *  fxWords（关键词）+ fxKinds（['fancy','tpl']）→ 关键词命中的字幕行导出为
+ *  独立文本轨（花字/文字模板各一条，样式色区分），供剪映内直接套样式精修。 */
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -75,24 +307,24 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
   }
 
   try {
-    // 1. 探测每个视频的时长与分辨率（_probe_video；失败兜底 10s / 1080x1920）
+    // 1. 探测每个视频的时长与分辨率（失败兜底 10s / 1080x1920）
     const clips = []
     let totalDurationUs = 0
     for (const p of paths) {
       const [durationUs, width, height] = probeVideo(p, deps)
       clips.push({
-        path: p,
+        path: p.split('\\').join('/'),
+        name: path.basename(p),
         durationUs: durationUs > 0 ? durationUs : 10000000,
         width: width || 1080,
         height: height || 1920,
       })
       totalDurationUs += clips[clips.length - 1].durationUs
     }
-
     const canvasWidth = clips[0].width
     const canvasHeight = clips[0].height
 
-    // 2. 准备草稿目录与 UUID
+    // 2. 草稿目录
     const draftRoot = getDefaultDraftRoot()
     fs.mkdirSync(draftRoot, { recursive: true })
     const projectUuid = newId()
@@ -104,7 +336,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const draftFolder = path.join(draftRoot, projectUuid)
     fs.mkdirSync(draftFolder, { recursive: true })
 
-    // 3. draft_meta_info.json（L128-139 字段一比一）
+    // 3. draft_meta_info.json（原版字段保留；列表可见性由 registerInRootMeta 保证）
     const nowMs = Date.now()
     const metaInfo = {
       id: projectUuid,
@@ -119,70 +351,117 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     }
     fs.writeFileSync(path.join(draftFolder, 'draft_meta_info.json'), JSON.stringify(metaInfo, null, 2), 'utf-8')
 
-    // 4. 素材库 + 轨道（视频轨顺序排布；转场挂「前一个」片段；字幕按时间轴偏移）
-    const materials = { videos: [], audios: [], texts: [], transitions: [] }
-    const videoTrack = { id: newId(), type: 'video', segments: [] }
-    const tracks = [videoTrack]
-    // 关键词轨引用缓存（fancy/tpl 各一条独立文本轨；不入 JSON 的局部引用）
-    const fxTrackCache = {}
-    const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []
-    const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
+    // 4. 内容骨架（pyJianYingDraft 已知可用模板）+ 覆写身份/画布字段
+    const content = JSON.parse(JSON.stringify(TEMPLATE))
+    content.id = newId()
+    content.name = draftName
+    content.fps = 30
+    content.duration = totalDurationUs
+    content.create_time = Math.floor(nowMs / 1000)
+    content.update_time = Math.floor(nowMs / 1000)
+    let ratio = '9:16'
+    if (canvasWidth > canvasHeight) ratio = '16:9'
+    else if (canvasWidth === canvasHeight) ratio = '1:1'
+    content.canvas_config = { width: canvasWidth, height: canvasHeight, ratio }
 
+    const materials = content.materials
+    const speeds = Array.isArray(materials.speeds) ? materials.speeds : (materials.speeds = [])
+
+    // 5. 视频轨（order 0）：全片段 + 转场挂「前一个」片段
     const transitionSpecs = normalizeTransitions(transitions, clips.length - 1)
+    const videoTrack = newTrack('video')
     let cursorUs = 0
-    for (let i = 0; i < clips.length; i++) {
-      const clip = clips[i]
-      const videoMaterialId = newId()
-      materials.videos.push({
-        id: videoMaterialId,
-        local_material_path: clip.path.split('\\').join('/'),
-        duration: clip.durationUs,
-        type: 'video',
-        width: clip.width,
-        height: clip.height,
-      })
-      videoTrack.segments.push({
-        id: newId(),
-        material_id: videoMaterialId,
-        target_timerange: { start: cursorUs, duration: clip.durationUs },
-        source_timerange: { start: 0, duration: clip.durationUs },
-        speed: 1.0,
-        volume: 1.0,
-        extra_material_refs: [],
-      })
+    clips.forEach((clip, i) => {
+      const materialId = hexId()
+      materials.videos.push(videoMaterialFields({ ...clip, materialId }))
+      const sp = speedMaterial(1.0)
+      speeds.push(sp)
+      const seg = {
+        ...baseSegmentFields(materialId, cursorUs, clip.durationUs),
+        ...mediaSegmentFields(clip.durationUs, sp.id),
+        ...visualSegmentFields(),
+        hdr_settings: { intensity: 1.0, mode: 1, nits: 1000 },
+      }
+      videoTrack.segments.push(seg)
       if (i > 0) {
         const spec = transitionSpecs[i - 1]
         if (spec) videoTrack.segments[videoTrack.segments.length - 2].extra_material_refs.push(buildTransitionMaterial(materials, spec))
       }
-      if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
-        appendSubtitleTrack(tracks, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs)
-        for (const kind of kwKinds) {
-          appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache)
-        }
-      }
       cursorUs += clip.durationUs
+    })
+    const tracks = [videoTrack]
+
+    // 6. 字幕轨（order 1）+ 关键词轨（fancy/tpl）；textAnim=文字入场动画名，fancyEffectId=花字效果 id
+    if (srtPaths) {
+      const subtitleTrack = newTrack('text')
+      tracks.push(subtitleTrack)
+      const fxTrackCache = {}
+      const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []
+      const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
+      cursorUs = 0
+      clips.forEach((clip, i) => {
+        if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
+          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: textAnim })
+          for (const kind of kwKinds) {
+            appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache, {
+              anim: textAnim,
+              effectId: kind === 'fancy' ? fancyEffectId : tplEffectId,
+            })
+          }
+        }
+        cursorUs += clip.durationUs
+      })
+      if (!subtitleTrack.segments.length) tracks.splice(tracks.indexOf(subtitleTrack), 1)
     }
 
-    // 5. BGM（覆盖整条时间轴）
+    // 7. BGM 轨（最后一条）：覆盖整条时间轴
     if (bgmPath && fs.existsSync(bgmPath)) {
       appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, deps)
     }
 
-    // 6. canvas_config 比例
-    let ratio = '9:16'
-    if (canvasWidth > canvasHeight) ratio = '16:9'
-    else if (canvasWidth === canvasHeight) ratio = '1:1'
+    // 8. render_index = 轨道顺序（pyJianYingDraft script_file.dumps：主轨 0，叠加轨依次递增）
+    tracks.forEach((track, order) => {
+      for (const seg of track.segments) seg.render_index = order
+    })
+    content.tracks = tracks
 
-    const contentInfo = {
-      canvas_config: { width: canvasWidth, height: canvasHeight, ratio },
-      materials,
-      tracks,
-    }
-    fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(contentInfo, null, 2), 'utf-8')
-    return { success: true, message: draftFolder }
+    fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(content, null, 2), 'utf-8')
+    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA }
   } catch (e) {
     return { success: false, message: e && e.message ? e.message : String(e) }
   }
+}
+
+/** 把导出的草稿登记进 root_meta_info.json 首页索引（2026-09-12 M1）。
+ *  条目 schema 克隆索引现有首条（保真本机剪映版本字段集）；写前备份；
+ *  按 draft_fold_path 去重合并。 */
+function registerInRootMeta({ draftFolder, draftName, durationUs = 0, coverPath = '' }) {
+  const draftRoot = getDefaultDraftRoot()
+  const rootMetaPath = path.join(draftRoot, 'root_meta_info.json')
+  const fwd = (p) => p.split('\\').join('/')
+  const rootMeta = JSON.parse(fs.readFileSync(rootMetaPath, 'utf-8'))
+  const store = Array.isArray(rootMeta.all_draft_store) ? rootMeta.all_draft_store : []
+  const backupPath = rootMetaPath + '.tintin-backup'
+  if (!fs.existsSync(backupPath)) fs.copyFileSync(rootMetaPath, backupPath)
+
+  const templateEntry = store[0] || {}
+  const entry = JSON.parse(JSON.stringify(templateEntry))
+  const nowUs = Date.now() * 1000
+  Object.assign(entry, {
+    draft_name: draftName,
+    draft_fold_path: fwd(draftFolder),
+    draft_json_file: fwd(draftFolder) + '/draft_content.json',
+    draft_root_path: fwd(draftRoot),
+    draft_id: newId(),
+    draft_new_version: '',
+    tm_draft_create: nowUs,
+    tm_draft_modified: nowUs,
+    tm_duration: Math.round(durationUs),
+    draft_cover: coverPath ? fwd(coverPath) : (templateEntry.draft_cover ?? ''),
+  })
+  rootMeta.all_draft_store = [entry, ...store.filter((e) => e && e.draft_fold_path !== entry.draft_fold_path)]
+  fs.writeFileSync(rootMetaPath, JSON.stringify(rootMeta, null, 2), 'utf-8')
+  return { ok: true, backupPath, entry }
 }
 
 /** 探测 (时长微秒, 宽, 高)；无 deps 或失败返回 [0, 1080, 1920]（_probe_video L241-270） */
@@ -230,9 +509,10 @@ function normalizeOneTransition(spec) {
   return null
 }
 
-/** 转场写入 materials.transitions，返回素材 id（_build_transition_material L317-332） */
+/** 转场写入 materials.transitions，返回素材 id（_build_transition_material L317-332；
+ *  字段与 pyJianYingDraft Transition.export_json 一致） */
 function buildTransitionMaterial(materials, spec) {
-  const transId = newId()
+  const transId = hexId()
   materials.transitions.push({
     category_id: '',
     category_name: '',
@@ -248,49 +528,36 @@ function buildTransitionMaterial(materials, spec) {
   return transId
 }
 
-/** 一个 .srt 写入字幕轨（不存在则新建），时间整体偏移 offset（_append_subtitle_track L335-372） */
-function appendSubtitleTrack(tracks, materials, srtPath, offsetUs = 0, limitEndUs = null) {
-  const srtSegments = parseSrt(srtPath)
-  if (!srtSegments.length) return
-  let textTrack = null
-  for (const t of tracks) {
-    if (t.type === 'text') { textTrack = t; break }
-  }
-  if (textTrack === null) {
-    textTrack = { id: newId(), type: 'text', segments: [] }
-    tracks.push(textTrack)
-  }
-  for (const [startSec, endSec, textContent] of srtSegments) {
+/** 一条 SRT 的 cue 追加到文本轨（v2：segments 带完整视觉片段字段；opts.anim=入场动画名） */
+function appendSubtitleTrack(track, materials, srtPath, offsetUs = 0, limitEndUs = null, opts = {}) {
+  for (const [startSec, endSec, textContent] of parseSrt(srtPath)) {
     const startUs = Math.floor(startSec * 1000000) + offsetUs
     let durUs = Math.floor((endSec - startSec) * 1000000)
     if (durUs <= 0) continue
     if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = Math.max(0, limitEndUs - startUs)
     if (durUs <= 0) continue
-    const textMaterialId = newId()
-    // 转义字幕文本中的引号/反斜杠，避免破坏 content 的 JSON 结构
-    const safeText = textContent.split('\\').join('\\\\').split('"').join('\\"')
-    materials.texts.push({
-      id: textMaterialId,
-      content: `[{"text":"${safeText}","style":{"bold":false,"color":"#FFFFFF","font":""}}]`,
-      type: 'text',
-    })
-    textTrack.segments.push({
-      id: newId(),
-      material_id: textMaterialId,
-      target_timerange: { start: startUs, duration: durUs },
-    })
+    const mat = textMaterial(textContent)
+    materials.texts.push(mat)
+    const sp = speedMaterial(1.0)
+    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
+    const seg = {
+      ...baseSegmentFields(mat.id, startUs, durUs),
+      ...mediaSegmentFields(durUs, sp.id),
+      ...visualSegmentFields(),
+    }
+    decorateTextSegment(seg, materials, opts)
+    track.segments.push(seg)
   }
 }
 
-/** 关键词命中行 → 独立文本轨（2026-09-10 用户裁决：文字模板/花字数据格式随剪映导出）。
- *  SRT 行文本命中任一关键词 → 生成条目（content=命中词去重拼接，样式按 kind 区分），
- *  时间轴与该行字幕一致（offset/limit 同 appendSubtitleTrack 口径）；同一 kind 复用
- *  cache[kind] 缓存的轨道引用，避免在 tracks 上写自拟字段。 */
+/** 关键词命中行 → 独立文本轨（花字金/文字模板蓝；同 kind 复用 cache 轨道）。
+ *  v2：轨道/片段/素材均按 pyJianYingDraft 结构构建；opts.anim=入场动画名、
+ *  opts.effectId=花字效果 id（jy_effect_id，挂 materials.effects + content.effectStyle）。 */
 const KEYWORD_TRACK_STYLES = {
-  fancy: { color: '#FFD700' },  // 花字：金色加粗
-  tpl:   { color: '#4FC3F7' },  // 文字模板：蓝色加粗
+  fancy: { color: '#FFD700' },
+  tpl:   { color: '#4FC3F7' },
 }
-function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 0, limitEndUs = null, cache = {}) {
+function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 0, limitEndUs = null, cache = {}, opts = {}) {
   const hitWords = (Array.isArray(words) ? words : []).map((w) => String(w).trim()).filter(Boolean)
   if (!hitWords.length) return
   const st = KEYWORD_TRACK_STYLES[kind] || KEYWORD_TRACK_STYLES.tpl
@@ -303,28 +570,27 @@ function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 
     if (durUs <= 0) continue
     if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = Math.max(0, limitEndUs - startUs)
     if (durUs <= 0) continue
-    let textTrack = cache[kind]
-    if (!textTrack) {
-      textTrack = { id: newId(), type: 'text', segments: [] }
-      tracks.push(textTrack)
-      cache[kind] = textTrack
+    let track = cache[kind]
+    if (!track) {
+      track = newTrack('text')
+      tracks.push(track)
+      cache[kind] = track
     }
-    const safeText = hits.join(' ').split('\\').join('\\\\').split('"').join('\\"')
-    const textMaterialId = newId()
-    materials.texts.push({
-      id: textMaterialId,
-      content: `[{"text":"${safeText}","style":{"bold":true,"color":"${st.color}","font":""}}]`,
-      type: 'text',
-    })
-    textTrack.segments.push({
-      id: newId(),
-      material_id: textMaterialId,
-      target_timerange: { start: startUs, duration: durUs },
-    })
+    const mat = textMaterial(hits.join(' '), { colorHex: st.color, bold: true, effectStyleId: opts.effectId || '' })
+    materials.texts.push(mat)
+    const sp = speedMaterial(1.0)
+    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
+    const seg = {
+      ...baseSegmentFields(mat.id, startUs, durUs),
+      ...mediaSegmentFields(durUs, sp.id),
+      ...visualSegmentFields(),
+    }
+    decorateTextSegment(seg, materials, opts)
+    track.segments.push(seg)
   }
 }
 
-/** BGM 音频轨覆盖整条时间轴（_append_bgm_track L375-425） */
+/** BGM 音轨覆盖整条时间轴（_append_bgm_track L375-425；v2 素材/片段结构） */
 function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, deps) {
   let bgmDurationSec = 0.0
   if (deps && typeof deps.probeMedia === 'function') {
@@ -335,26 +601,22 @@ function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, 
   }
   if (bgmDurationSec <= 0) bgmDurationSec = totalDurationUs / 1000000.0 + 60.0 // 足够长
 
-  const bgmMaterialId = newId()
-  materials.audios.push({
-    id: bgmMaterialId,
-    local_material_path: bgmPath.split('\\').join('/'),
-    duration: Math.floor(bgmDurationSec * 1000000),
-    type: 'audio',
+  const materialId = hexId()
+  materials.audios.push(audioMaterialFields(bgmPath.split('\\').join('/'), Math.floor(bgmDurationSec * 1000000)))
+  const sp = speedMaterial(1.0)
+  materials.speeds.push(sp)
+  const track = newTrack('audio')
+  track.segments.push({
+    ...baseSegmentFields(materialId, 0, totalDurationUs),
+    source_timerange: { start: 0, duration: totalDurationUs },
+    speed: 1.0,
+    volume: bgmVolume / 100.0,
+    extra_material_refs: [sp.id],
+    is_tone_modify: false,
+    clip: null,
+    hdr_settings: null,
   })
-  const volDb = (bgmVolume / 50.0 - 1.0) * 12.0 // 粗略的分贝转换
-  tracks.push({
-    id: newId(),
-    type: 'audio',
-    segments: [{
-      id: newId(),
-      material_id: bgmMaterialId,
-      target_timerange: { start: 0, duration: totalDurationUs },
-      source_timerange: { start: 0, duration: totalDurationUs },
-      volume: bgmVolume / 100.0,
-      volume_db: volDb,
-    }],
-  })
+  tracks.push(track)
 }
 
 /** 解析 srt 为 [startSec, endSec, text] 列表（_parse_srt L428-466） */
@@ -406,9 +668,11 @@ function timestampToSec(ts) {
 
 module.exports = {
   TRANSITION_MAP,
+  DRAFT_SCHEMA,
   getDefaultDraftRoot,
   exportToDraft,
   exportMultiToDraft,
+  registerInRootMeta,
   normalizeTransitions,
   normalizeOneTransition,
   parseSrt,

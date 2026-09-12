@@ -60,7 +60,9 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     { id: 'video-transcribe',  title: '视频转文字',   desc: '视频语音自动转写',       group: '视频', emoji: '📄', accent: 'linear-gradient(135deg,#6366F1 0%,#A855F7 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoTranscribe.vue')) },
     { id: 'subtitle-removal',  title: '视频去水印字幕', desc: '去除字幕 / 台标水印',  group: '视频', emoji: '🔤', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/SubtitleRemoval.vue')) },
     { id: 'video-download',   title: '参考视频下载', desc: '粘贴 YouTube/B站 链接选档位下载', group: '视频', emoji: '⬇️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#6366F1 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoDownload.vue')) },
-    { id: 'jianying-assets', title: '剪映素材接入', desc: '从剪映读取预设/文字模板/花字/音效库/音乐库', group: '视频', emoji: '🎞️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#6366F1 100%)', kind: 'comp', wip: true, badge: '调研中' },
+  ],
+  模板: [
+    { id: 'jianying-templates', title: '剪映模板', desc: '从剪映同步的预设/文字模板/花字/贴纸/转场/音频，按分类浏览', group: '模板', emoji: '🎞️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#8B5CF6 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/JianYingTemplates.vue')) },
   ],
   音频: [
     { id: 'audio-gen',   title: '音频生成', desc: 'AI 生成 BGM / 音效，一键入库', group: '音频', emoji: '🔊', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/AudioGen.vue')) },

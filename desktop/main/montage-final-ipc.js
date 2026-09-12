@@ -25,6 +25,7 @@ const JY = require('./jianying-exporter')
 const L = require('./voice-tts-logic')
 const FT = require('./fancy-templates')
 const VI = require('./montage-voice-ipc')
+const JT = require('./jianying-templates')
 const { logInfo } = require('./logger')
 
 // ── ffmpeg/ffprobe 路径（同 ffmpeg-gate.js getBinDir 口径，未导出故本地等价实现）──
@@ -820,6 +821,26 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       return res
     } catch (err) {
       return { success: false, message: err.message }
+    }
+  })
+
+  // ── jytpl:list — 剪映素材模板聚合列表（六大分类）──
+  ipcMain.handle('jytpl:list', async () => {
+    try {
+      const jyRoot = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data')
+      const result = JT.scanAll({ jianyingRoot: jyRoot })
+      // 为特效/贴纸 PNG 生成 base64 预览（截断到 50KB 以下的文件）
+      for (const item of result['特效']) {
+        if (item.preview && fs.existsSync(item.preview)) {
+          try {
+            const buf = fs.readFileSync(item.preview)
+            if (buf.length < 51200) item.previewDataUri = 'data:image/png;base64,' + buf.toString('base64')
+          } catch (_) {}
+        }
+      }
+      return { ok: true, categories: result }
+    } catch (err) {
+      return { error: err.message }
     }
   })
 

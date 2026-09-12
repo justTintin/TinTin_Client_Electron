@@ -211,6 +211,7 @@ const server = {
   finalReadTiming:      (p) => ipcRenderer.invoke('final:readTiming', p),
   finalListResults:     (p) => ipcRenderer.invoke('final:listResults', p),
   jianyingExport:       (p) => ipcRenderer.invoke('jianying:export', p),
+  jyTemplatesList:      () => ipcRenderer.invoke('jytpl:list'),
   bgmDownloadUrl:       (p) => ipcRenderer.invoke('bgm:downloadUrl', p),
   /** 订阅 voice 域进度事件（cloneBatch/dubVideos），返回取消订阅函数 */
   onVoiceProgress:      (channel, cb) => {

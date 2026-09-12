@@ -447,15 +447,15 @@ declare interface TintinBridgeServer {
     bgmVolume?: number
     srtPath?: string
     srtPaths?: Array<string | null>
-    /** 关键词命中行随导出（2026-09-10 裁决：花字/文字模板数据格式进剪映草稿，独立文本轨） */
     fxWords?: string[]
     fxKinds?: Array<'fancy' | 'tpl'>
-    /** M2a：文字入场动画名（剪映 text_intro 表命中才生效）与花字效果 id（剪映原生还原） */
     textAnim?: string
     fancyEffectId?: string
     tplEffectId?: string
     draftName?: string
   }): Promise<{ success: boolean; message: string; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
+  /** 剪映素材模板聚合列表（六大分类：文本/特效/贴纸/转场/字幕/音频） */
+  jyTemplatesList(): Promise<{ ok: boolean; categories: Record<string, Array<Record<string, unknown>>> } | { error: string }>
   /** AI 生成 BGM 服务端 URL 下载落盘（本端扩展：本地混音需本地文件） */
   bgmDownloadUrl(payload: { url: string; destDir: string }): Promise<{ path: string } | { error: string } | null>
 

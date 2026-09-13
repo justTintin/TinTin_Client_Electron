@@ -75,12 +75,6 @@
               <option value="特效">特效</option>
             </select>
           </div>
-          <div class="jytpl-dlg-row">
-            <label class="jytpl-dlg-checkbox">
-              <input type="checkbox" v-model="syncDlg.alsoServer" />
-              同时同步到服务端
-            </label>
-          </div>
           <div class="jytpl-dlg-list">
             <div v-if="syncLocalItems.length === 0" class="jytpl-empty">本机剪映未发现该类目素材</div>
             <label v-for="it in syncLocalItems" :key="it.effectId || it.id" class="jytpl-dlg-item">
@@ -94,7 +88,7 @@
         <div class="jytpl-dlg-foot">
           <button class="jytpl-btn" @click="syncDlg.show = false">取消</button>
           <button class="jytpl-btn primary" :disabled="!pickedCount || syncDlg.busy" @click="doSyncFromJianying">
-            开始同步（{{ pickedCount }}{{ syncDlg.alsoServer ? '，含服务端' : '' }}）
+            开始同步（{{ pickedCount }}）
           </button>
         </div>
       </div>
@@ -165,7 +159,7 @@ function absUrl(p: string): string {
 
 // ── 从剪映同步弹窗 ──
 const syncDlg = reactive({
-  show: false, category: '花字库', alsoServer: true, busy: false, progress: '', force: false,
+  show: false, category: '花字库', busy: false, progress: '', force: false,
   localItems: [] as LocalItem[],
 })
 const syncLocalItems = computed(() => {
@@ -195,7 +189,7 @@ async function doSyncFromJianying() {
   syncDlg.busy = true
   syncDlg.progress = `正在同步 ${ids.length} 个素材…`
   try {
-    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids, alsoServer: syncDlg.alsoServer })
+    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids })
     if (res && 'ok' in res && res.ok) {
       const okN = (res.results || []).filter((r) => r.ok).length
       const fails = (res.results || []).filter((r) => !r.ok)
@@ -234,7 +228,7 @@ async function syncSelectedById() {
   // 服务端已同步的模板勾选同步 = 重新上传本机预设覆盖（等价于从剪映同步该项）
   busy.value = true
   try {
-    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids: [...selection], alsoServer: true })
+    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids: [...selection] })
     if (res && 'ok' in res && res.ok) {
       const okN = (res.results || []).filter((r) => r.ok).length
       const fails = (res.results || []).filter((r) => !r.ok)

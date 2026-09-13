@@ -874,15 +874,10 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── jytpl:sync — 批量同步选中文本模板到服务端（打包+上传，buildSyncPackage 内联版）──
+  // ── jytpl:sync — 批量同步选中模板到服务端（打包+上传；§0.0 同步目标即服务端）──
   ipcMain.handle('jytpl:sync', async (_e, payload) => {
     const ids = Array.isArray((payload || {}).ids) ? payload.ids : []
-    const alsoServer = (payload || {}).alsoServer !== false
     if (!ids.length) return { error: '未选择模板' }
-    // §0.0 单一数据源：同步目标即服务端；alsoServer=false 无意义，明确提示
-    if (!alsoServer) {
-      return { ok: true, results: ids.map((id) => ({ id: String(id), ok: false, error: '未勾选「同时同步到服务端」——同步目标即服务端，请勾选后重试' })) }
-    }
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     const outDir = path.join(process.env.TEMP || process.env.LOCALAPPDATA, 'tintin-jytpl-sync')
     fs.mkdirSync(outDir, { recursive: true })

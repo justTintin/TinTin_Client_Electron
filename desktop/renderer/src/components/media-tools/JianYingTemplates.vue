@@ -1,15 +1,33 @@
 <template>
   <div class="jytpl-page">
-    <!-- 顶部：分类 tabs + 右上角「从剪映同步」 -->
+    <!-- 顶部：组/子类目两级 tabs + 右上角「从剪映同步」 -->
     <div class="jytpl-toolbar">
       <div class="jytpl-tabs">
-        <button v-for="cat in categories" :key="cat" class="jytpl-tab"
-          :class="{ active: activeTab === cat }" @click="activeTab = cat; selection.clear()">{{ cat }}
-          <span class="jytpl-count">{{ (serverTemplates[cat] || []).length }}</span>
-        </button>
+        <template v-for="g in groups" :key="g.group">
+          <!-- 单 lane 组：一个 tab -->
+          <button v-if="(g.lanes || []).length === 1" class="jytpl-tab"
+            :class="{ active: activeLane === (g.group + '/' + g.lanes[0].lane) }"
+            @click="switchLane(g.lanes[0], g.group)">
+            {{ g.lanes[0].lane }} <span class="jytpl-count">{{ g.lanes[0].total }}</span>
+          </button>
+          <!-- 多 lane 组（文本）：组 tab + 子类目下拉 -->
+          <template v-else>
+            <button class="jytpl-tab jytpl-tab-group"
+              :class="{ active: activeGroup === g.group }" @click="switchGroup(g)">
+              {{ g.group }} <span class="jytpl-count">{{ (g.lanes || []).reduce((s, l) => s + (l.total || 0), 0) }}</span>
+              <span class="jytpl-caret">▾</span>
+            </button>
+            <div v-if="activeGroup === g.group" class="jytpl-sublanes">
+              <button v-for="l in g.lanes" :key="l.lane" class="jytpl-tab jytpl-tab-sub"
+                :class="{ active: activeLane === g.group + '/' + l.lane }" @click="switchLane(l, g.group)">
+                {{ l.lane }} <span class="jytpl-count">{{ l.total }}</span>
+              </button>
+            </div>
+          </template>
+        </template>
       </div>
       <div class="jytpl-actions">
-        <template v-if="isTextTab">
+        <template v-if="isTextLane">
           <label class="jytpl-checkall">
             <input type="checkbox" :checked="allChecked" @change="toggleAll($event)" /> 全选
           </label>
@@ -27,35 +45,36 @@
       <p class="muted">请确认服务端可访问。</p>
     </div>
 
-    <!-- 卡片网格：数据源=服务端 -->
+    <!-- 卡片网格：数据源=服务端 catalog lanes -->
     <template v-else>
-      <div v-for="cat in categories" v-show="activeTab === cat" :key="cat" class="jytpl-grid">
-        <div v-for="item in (serverTemplates[cat] || [])" :key="item.id" class="jytpl-card"
-          :class="{ checked: selection.has(item.id) }" @click="isTextTab ? toggleSel(item.id) : undefined">
-          <label v-if="isTextTab" class="jytpl-check" @click.stop>
-            <input type="checkbox" :checked="selection.has(item.id)" @change="toggleSel(item.id)" />
+      <div v-if="activeLaneData" class="jytpl-grid">
+        <div v-for="item in activeLaneData.items" :key="String(item.id)" class="jytpl-card"
+          :class="{ checked: selection.has(String(item.id)) }" @click="isTextLane ? toggleSel(String(item.id)) : undefined">
+          <label v-if="isTextLane" class="jytpl-check" @click.stop>
+            <input type="checkbox" :checked="selection.has(String(item.id))" @change="toggleSel(String(item.id))" />
           </label>
-          <span class="jytpl-kind-badge" :class="cat === '花字库' ? 'fancy' : 'tpl'">{{ cat }}</span>
+          <span class="jytpl-kind-badge" :class="activeLaneData.lane === '花字库' ? 'fancy' : 'tpl'">{{ activeLaneData.lane }}</span>
           <div class="jytpl-card-preview">
-            <img v-if="item.preview" :src="absUrl(item.preview)" :alt="item.name" class="jytpl-preview-img"
+            <img v-if="String(item.preview)"  :src="absUrl(String(item.preview))" :alt="String(item.name)" class="jytpl-preview-img"
               loading="lazy" @error="($event) => { ($event.target as HTMLImageElement).style.display = 'none' }" />
-            <div v-else class="jytpl-preview-anim" :class="'anim-' + (item.anim || 'fade')">
-              <span class="jytpl-preview-text" :style="{ color: item.color }">{{ item.text || item.name }}</span>
+            <div v-else class="jytpl-preview-anim" :class="'anim-' + String(item.anim || 'fade')">
+              <span class="jytpl-preview-text" :style="{ color: String(item.color || '#fff') }">{{ String(item.text || item.name) }}</span>
             </div>
           </div>
           <div class="jytpl-card-body">
-            <div class="jytpl-card-name" :title="item.name">{{ item.name }}</div>
+            <div class="jytpl-card-name" :title="String(item.name)">{{ String(item.name) }}</div>
             <div class="jytpl-card-meta">
               <span v-if="item.category" class="tag">{{ item.category }}</span>
-              <span v-if="item.anim" class="tag anim-tag">{{ animLabel(item.anim) }}</span>
-              <span class="tag">{{ item.id.slice(0, 14) }}</span>
+              <span v-if="item.anim" class="tag anim-tag">{{ animLabel(String(item.anim)) }}</span>
+              <span v-if="item.durationSec" class="tag">{{ item.durationSec }}s</span>
             </div>
           </div>
         </div>
-        <div v-if="!(serverTemplates[cat] || []).length" class="jytpl-empty">
-          该分类暂无模板——点右上角「从剪映同步」上传
+        <div v-if="!activeLaneData.items.length" class="jytpl-empty">
+          该子类目暂无模板——点右上角「从剪映同步」上传
         </div>
       </div>
+      <div v-else class="jytpl-empty">请选择类目</div>
     </template>
 
     <!-- 从剪映同步弹窗 -->
@@ -68,16 +87,14 @@
         <div class="jytpl-dlg-body">
           <div class="jytpl-dlg-row">
             <label class="jytpl-dlg-label">同步类目:</label>
-            <select v-model="syncDlg.category" class="jytpl-dlg-select">
-              <option value="花字库">花字库</option>
-              <option value="文字模板">文字模板</option>
-              <option value="音频">音频</option>
-              <option value="特效">特效</option>
+            <select v-model="syncDlg.lane" class="jytpl-dlg-select">
+              <option value="花字库">文本 / 花字库</option>
+              <option value="文字模板">文本 / 文字模板</option>
             </select>
           </div>
           <div class="jytpl-dlg-list">
             <div v-if="syncLocalItems.length === 0" class="jytpl-empty">本机剪映未发现该类目素材</div>
-            <label v-for="it in syncLocalItems" :key="it.effectId || it.id" class="jytpl-dlg-item">
+            <label v-for="it in syncLocalItems" :key="String(it.effectId || it.id)" class="jytpl-dlg-item">
               <input type="checkbox" v-model="it.picked" :disabled="it.syncedToServer && !syncDlg.force" />
               <span class="jytpl-dlg-item-name">{{ it.name }}</span>
               <span class="tag" :class="it.syncedToServer ? 'ok' : ''">{{ it.syncedToServer ? '已在服务端' : '未同步' }}</span>
@@ -99,45 +116,57 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 
-interface ServerTpl {
-  id: string
-  name: string
-  color: string
-  text: string
-  anim: string
-  animSignature: string
-  category: string
-  preview: string
-  previewWebm: string
-  synced: boolean
+interface Lane {
+  lane: string
+  total: number
+  endpoint: string
+  tags: Array<{ name: string; count: number }>
+  items: Array<Record<string, unknown>>
 }
-interface LocalItem {
-  id: string
-  name: string
-  effectId: string
-  effectName?: string
-  color?: string
-  stickerCount?: number
-  syncedToServer?: boolean
-  serverId?: string
-  picked?: boolean
-  group?: string
-  [key: string]: unknown
+interface Group {
+  group: string
+  lanes: Lane[]
 }
 
-const serverUrl = ref('')
-const categories = ['花字库', '文字模板', '特效', '贴纸', '转场', '字幕', '音频']
+const groups = ref<Group[]>([])
+const activeGroup = ref('文本')
+const activeLane = ref('文本/花字库')
 const loading = ref(true)
 const errorMsg = ref('')
-const activeTab = ref('花字库')
 const busy = ref(false)
-const serverTemplates = ref<Record<string, ServerTpl[]>>({ 花字库: [], 文字模板: [], 特效: [], 贴纸: [], 转场: [], 字幕: [], 音频: [] })
+const serverUrl = ref('')
 const selection = reactive(new Set<string>())
 
-const isTextTab = computed(() => activeTab.value === '花字库' || activeTab.value === '文字模板')
+const activeGroupData = computed(() => groups.value.find((g) => g.group === activeGroup.value) || null)
+const activeLaneData = computed<Lane | null>(() => {
+  for (const g of groups.value) {
+    for (const l of g.lanes || []) {
+      if (activeGroup.value + '/' + l.lane === activeLane.value) return l
+    }
+  }
+  return null
+})
+const isTextLane = computed(() => {
+  const l = activeLaneData.value
+  return !!l && (l.lane === '花字库' || l.lane === '文字模板')
+})
+
+function switchGroup(g: Group) {
+  activeGroup.value = g.group
+  const first = (g.lanes || [])[0]
+  if (first) activeLane.value = g.group + '/' + first.lane
+  selection.clear()
+}
+function switchLane(l: Lane, groupName?: string) {
+  const gn = groupName || activeGroup.value
+  activeGroup.value = gn
+  activeLane.value = gn + '/' + l.lane
+  selection.clear()
+}
+
 const allChecked = computed(() => {
-  const items = serverTemplates.value[activeTab.value] || []
-  return items.length > 0 && items.every((it) => selection.has(it.id))
+  const items = activeLaneData.value?.items || []
+  return items.length > 0 && items.every((it) => selection.has(String(it.id)))
 })
 function toggleSel(id: string) {
   if (selection.has(id)) selection.delete(id)
@@ -146,7 +175,7 @@ function toggleSel(id: string) {
 function toggleAll(e: Event) {
   const on = (e.target as HTMLInputElement).checked
   selection.clear()
-  if (on) for (const it of (serverTemplates.value[activeTab.value] || [])) selection.add(it.id)
+  if (on) for (const it of (activeLaneData.value?.items || [])) selection.add(String(it.id))
 }
 function animLabel(a: string): string {
   return ({ bounce: '弹入', pulse: '律动', slide: '滑入', fade: '淡入' })[a] || a
@@ -159,24 +188,22 @@ function absUrl(p: string): string {
 
 // ── 从剪映同步弹窗 ──
 const syncDlg = reactive({
-  show: false, category: '花字库', busy: false, progress: '', force: false,
-  localItems: [] as LocalItem[],
+  show: false, lane: '花字库', busy: false, progress: '', force: false,
+  localItems: [] as Array<Record<string, unknown> & { picked?: boolean; group?: string; syncedToServer?: boolean; effectId?: string; name?: string }>,
 })
 const syncLocalItems = computed(() => {
-  const cat = syncDlg.category
-  if (cat === '花字库') return syncDlg.localItems.filter((i) => i.group === '花字库')
-  if (cat === '文字模板') return syncDlg.localItems.filter((i) => i.group === '文字模板')
-  return [] // 音频/特效走 sync-audio 通道，弹窗内提示
+  if (syncDlg.lane === '花字库') return syncDlg.localItems.filter((i) => i.group === '花字库')
+  if (syncDlg.lane === '文字模板') return syncDlg.localItems.filter((i) => i.group === '文字模板')
+  return []
 })
 const pickedCount = computed(() => syncLocalItems.value.filter((i) => i.picked).length)
 
 async function openSyncDlg() {
   syncDlg.show = true
   syncDlg.progress = ''
-  // 拉本机可同步清单
   const res = await window.tintin?.server?.jyTemplatesList?.()
   if (res && 'ok' in res && res.ok) {
-    syncDlg.localItems = (res.localAvailable || []) as LocalItem[]
+    syncDlg.localItems = (res.localAvailable || []) as Array<Record<string, unknown> & { picked?: boolean; group?: string; syncedToServer?: boolean; effectId?: string; name?: string }>
   } else {
     syncDlg.localItems = []
     syncDlg.progress = '本机剪映目录扫描失败'
@@ -211,8 +238,11 @@ async function reload() {
   try {
     const res = await window.tintin?.server?.jyTemplatesList?.()
     if (res && 'ok' in res && res.ok) {
-      serverTemplates.value = { ...serverTemplates.value, ...(res.serverTemplates || {}) } as Record<string, ServerTpl[]>
-      serverUrl.value = String((res as Record<string, unknown>).serverUrl || window.location.origin)
+      groups.value = (res.groups || []) as Group[]
+      serverUrl.value = String((res as Record<string, unknown>).serverUrl || '')
+      // 默认选中「文本/花字库」
+      if (!groups.value.find((g) => g.group === activeGroup.value)) activeGroup.value = '文本'
+      if (!activeLaneData.value) activeLane.value = '文本/花字库'
     } else if (res && 'error' in res) {
       errorMsg.value = res.error
     }
@@ -225,14 +255,15 @@ async function reload() {
 onMounted(reload)
 
 async function syncSelectedById() {
-  // 服务端已同步的模板勾选同步 = 重新上传本机预设覆盖（等价于从剪映同步该项）
   busy.value = true
   try {
-    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids: [...selection] })
+    // 文本 lane 内勾选的 jy_ 模板 → 重新上传本机预设覆盖（服务端为唯一数据源，重传即更新）
+    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids: [...selection].filter((id) => id.startsWith('jy_')) })
     if (res && 'ok' in res && res.ok) {
       const okN = (res.results || []).filter((r) => r.ok).length
       const fails = (res.results || []).filter((r) => !r.ok)
       if (fails.length) window.alert(`成功 ${okN}，失败 ${fails.length}\n` + fails.map((f) => `${f.id}: ${f.error}`).join('\n'))
+      else if (okN) window.alert(`已重新同步 ${okN} 个模板`)
       await reload()
     } else if (res && 'error' in res) {
       window.alert('同步失败：' + res.error)
@@ -263,11 +294,15 @@ async function deleteSelected() {
 
 <style scoped>
 .jytpl-page { padding: 0; }
-.jytpl-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.jytpl-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.jytpl-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.jytpl-tabs { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .jytpl-tab { padding: 6px 14px; border: 1px solid #333; border-radius: 6px; background: transparent; cursor: pointer; font-size: 13px; color: #ccc; transition: all .15s; }
 .jytpl-tab.active { background: #409eff; color: #fff; border-color: #409eff; }
 .jytpl-tab:hover:not(.active) { background: rgba(255,255,255,.06); }
+.jytpl-tab-group { font-weight: 600; }
+.jytpl-caret { font-size: 10px; opacity: .6; margin-left: 2px; }
+.jytpl-sublanes { display: flex; gap: 4px; }
+.jytpl-tab-sub { padding: 5px 10px; font-size: 12px; }
 .jytpl-count { font-size: 11px; opacity: .6; margin-left: 4px; }
 .jytpl-actions { display: flex; gap: 8px; align-items: center; }
 .jytpl-checkall { font-size: 12px; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 4px; }
@@ -303,7 +338,6 @@ async function deleteSelected() {
 .jytpl-card-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jytpl-card-meta { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: rgba(255,255,255,.08); color: #999; }
-.tag.ok { color: #67c23a; }
 .anim-tag { color: #8ab4f8; }
 .muted { color: #666; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #409eff; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; margin-right: 8px; vertical-align: middle; }
@@ -316,8 +350,7 @@ async function deleteSelected() {
 .jytpl-dlg-body { padding: 14px 16px; overflow-y: auto; }
 .jytpl-dlg-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .jytpl-dlg-label { font-size: 13px; color: #ccc; }
-.jytpl-dlg-select { flex: 0 0 180px; padding: 5px 8px; background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 6px; }
-.jytpl-dlg-checkbox { font-size: 13px; color: #ccc; cursor: pointer; display: flex; gap: 6px; align-items: center; }
+.jytpl-dlg-select { flex: 0 0 220px; padding: 5px 8px; background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 6px; }
 .jytpl-dlg-list { max-height: 300px; overflow-y: auto; border: 1px solid #333; border-radius: 6px; }
 .jytpl-dlg-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #2a2a2a; }
 .jytpl-dlg-item:hover { background: rgba(255,255,255,.04); }

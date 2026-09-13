@@ -836,39 +836,79 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   //    localAvailable=本机剪映可同步预设清单，仅供「从剪映同步」弹窗使用）──
   ipcMain.handle('jytpl:list', async () => {
     try {
-      // 1) 主数据：服务端模板库（分组按剪映语义：花字库=有效果引用非「文字模板」类目；文字模板=类目含「文字模板」）
-      const res = await httpRequest('GET', '/text_templates/templates', { timeout: 10000 })
-      const data = res && res.data
-      const list = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
-      const fancy = [], tpl = []
-      for (const t of list) {
-        const vars = t.variables || {}
-        const sig = String((vars.animSignature && vars.animSignature.default) || '')
-        const desc = String(t.description || '')
-        const isTpl = /类目:.*文字模板/.test(desc) || /文字模板/.test(String(t.category || ''))
-        const item = {
-          id: String(t.id), name: String(t.name || t.id),
-          color: String((vars.color && vars.color.default) || '#FFFFFF'),
-          text: String((vars.text && vars.text.default) || t.name || ''),
-          anim: String((vars.anim && vars.anim.default) || '') || (sig ? '' : 'fade'),
-          animSignature: sig,
-          category: String(t.category || ''),
-          preview: String(t.preview || ''),
-          previewWebm: String(t.preview_webm || ''),
-          synced: true,
-        }
-        ;(isTpl ? tpl : fancy).push(item)
+      // 1) 类目结构 = GET /templates/catalog（服务端唯一权威）：groups → lanes（花字库/文字模板/音频…各带 endpoint+tags）
+      const catRes = await httpRequest('GET', '/templates/catalog', { timeout: 10000 }).catch(() => null)
+      const catalog = catRes && catRes.data && Array.isArray(catRes.data.groups) ? catRes.data.groups : []
+      // 2) 按 catalog lane 的 endpoint 拉各子类目数据
+      const fetched = {}
+      const fetchLane = async (lane) => {
+        if (!lane.endpoint || fetched[lane.endpoint]) return
+        try {
+          const r = await httpRequest('GET', lane.endpoint, { timeout: 10000 })
+          const d = r && r.data
+          fetched[lane.endpoint] = Array.isArray(d) ? d : (Array.isArray(d?.items) ? d.items : (Array.isArray(d?.templates) ? d.templates : []))
+        } catch (_) { fetched[lane.endpoint] = [] }
       }
-      // 2) 本机可同步清单（弹窗用；不作为卡片数据源）
+      for (const g of catalog) for (const lane of g.lanes || []) await fetchLane(lane)
+      // 3) 归一化到组件结构：groups[{group,lanes:[{lane,total,tags,items}]}]
+      const groups = []
+      for (const g of catalog) {
+        const lanes = []
+        for (const lane of g.lanes || []) {
+          const items = (fetched[lane.endpoint] || []).map((t) => {
+            if (lane.endpoint === '/fancy/templates') {
+              // 花字：fancy 模板结构（template_id/name/category/style/anim/preview?）
+              const name = String(t.name || t.template_id || '')
+              return {
+                id: String(t.template_id || t.id || name),
+                name,
+                color: '',
+                text: name,
+                anim: String(t.anim || ''),
+                animSignature: '',
+                category: String(t.category || ''),
+                preview: String(t.preview || ''),
+                previewWebm: String(t.preview_webm || t.preview || ''),
+                raw: t,
+              }
+            }
+            if (lane.endpoint === '/audio/library') {
+              return {
+                id: String(t.id || ''),
+                name: String(t.filename || t.name || ''),
+                category: String(t.category || ''),
+                durationSec: Number(t.duration_s || 0),
+                tags: Array.isArray(t.tags) ? t.tags : [],
+                raw: t,
+              }
+            }
+            // /text_templates/templates
+            const vars = t.variables || {}
+            const sig = String((vars.animSignature && vars.animSignature.default) || '')
+            return {
+              id: String(t.id || ''),
+              name: String(t.name || t.id),
+              color: String((vars.color && vars.color.default) || '#FFFFFF'),
+              text: String((vars.text && vars.text.default) || t.name || ''),
+              anim: String((vars.anim && vars.anim.default) || '') || (sig ? '' : 'fade'),
+              animSignature: sig,
+              category: String(t.category || ''),
+              preview: String(t.preview || ''),
+              previewWebm: String(t.preview_webm || ''),
+              raw: t,
+            }
+          })
+          lanes.push({ lane: lane.lane, total: items.length, endpoint: lane.endpoint || '', tags: lane.tags || [], items })
+        }
+        groups.push({ group: g.group, lanes })
+      }
+      // 4) 本机可同步清单（同步弹窗用）
       const jyRoot = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data')
       const local = JT.scanTextPresets(path.join(jyRoot, 'Presets', 'Text_V2'))
-      const serverIds = new Set(list.map((t) => String(t.id)))
-      const localItems = [...local.textItems, ...local.tplItems].map((it) => ({
-        ...it,
-        serverId: 'jy_' + it.effectId,
-        syncedToServer: serverIds.has('jy_' + it.effectId),
-      }))
-      return { ok: true, serverUrl: getServerUrl(), serverTemplates: { 花字库: fancy, 文字模板: tpl }, localAvailable: localItems }
+      const textLane = (catalog.find((g) => g.group === '文本')?.lanes || []).find((l) => l.lane === '文字模板')
+      void textLane
+      const localItems = [...local.textItems, ...local.tplItems].map((it) => ({ ...it }))
+      return { ok: true, serverUrl: getServerUrl(), groups, localAvailable: localItems }
     } catch (err) {
       return { error: err.message }
     }

@@ -458,8 +458,8 @@ declare interface TintinBridgeServer {
     videoEffectName?: string
     draftName?: string
   }): Promise<{ success: boolean; message: string; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
-  /** 剪映模板卡片数据源（§0.0 单一数据源：serverTemplates=服务端库；localAvailable=本机可同步清单） */
-  jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; serverTemplates: Record<string, Array<Record<string, unknown>>>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>
+  /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */
+  jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; groups: Array<{ group: string; lanes: Array<{ lane: string; total: number; endpoint: string; tags: Array<{ name: string; count: number }>; items: Array<Record<string, unknown>> }> }>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>
   /** 批量同步选中模板到服务端（§0.0 同步目标即服务端） */
   jyTemplatesSync(payload: { ids: string[] }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; name?: string; error?: string }> } | { error: string }>
   /** 从服务端模板库删除 */

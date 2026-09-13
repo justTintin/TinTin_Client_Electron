@@ -458,8 +458,12 @@ declare interface TintinBridgeServer {
     videoEffectName?: string
     draftName?: string
   }): Promise<{ success: boolean; message: string; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
-  /** 剪映素材模板聚合列表（六大分类：文本/特效/贴纸/转场/字幕/音频） */
+  /** 剪映素材模板聚合列表（六大分类：文本/特效/贴纸/转场/字幕/音频；文本项带 syncedToServer/serverAnim） */
   jyTemplatesList(): Promise<{ ok: boolean; categories: Record<string, Array<Record<string, unknown>>> } | { error: string }>
+  /** 批量同步选中文本模板到服务端 */
+  jyTemplatesSync(payload: { ids: string[] }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; name?: string; error?: string }> } | { error: string }>
+  /** 从服务端模板库删除 */
+  jyTemplatesDeleteServer(payload: { ids: string[] }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; error?: string }> } | { error: string }>
   /** AI 生成 BGM 服务端 URL 下载落盘（本端扩展：本地混音需本地文件） */
   bgmDownloadUrl(payload: { url: string; destDir: string }): Promise<{ path: string } | { error: string } | null>
 

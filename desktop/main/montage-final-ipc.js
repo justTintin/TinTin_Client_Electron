@@ -832,12 +832,12 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── jytpl:list — 剪映素材模板聚合列表（六大分类）──
+  // ── jytpl:list — 剪映素材模板聚合列表（六大分类；文本类带服务端同步状态）──
   ipcMain.handle('jytpl:list', async () => {
     try {
       const jyRoot = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data')
-      const result = JT.scanAll({ jianyingRoot: jyRoot })
-      // 为特效/贴纸 PNG 生成 base64 预览（截断到 50KB 以下的文件）
+      const result = await JT.scanAllAsync({ jianyingRoot: jyRoot, httpRequest })
+      // 为特效 PNG 生成 base64 预览（<50KB）
       for (const item of result['特效']) {
         if (item.preview && fs.existsSync(item.preview)) {
           try {
@@ -850,6 +850,67 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     } catch (err) {
       return { error: err.message }
     }
+  })
+
+  // ── jytpl:sync — 批量同步选中文本模板到服务端（打包+上传，buildSyncPackage 内联版）──
+  ipcMain.handle('jytpl:sync', async (_e, payload) => {
+    const ids = Array.isArray((payload || {}).ids) ? payload.ids : []
+    if (!ids.length) return { error: '未选择模板' }
+    const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
+    const outDir = path.join(process.env.TEMP || process.env.LOCALAPPDATA, 'tintin-jytpl-sync')
+    fs.mkdirSync(outDir, { recursive: true })
+    const { execFileSync } = require('node:child_process')
+    const results = []
+    for (const id of ids) {
+      try {
+        const built = JT.buildSyncPackage(presetDir, String(id))
+        if (!built) throw new Error('未找到该预设或无有效效果资源')
+        const dir = path.join(outDir, String(id))
+        fs.rmSync(dir, { recursive: true, force: true })
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(built.meta, null, 1))
+        fs.writeFileSync(path.join(dir, 'template.html'), built.html)
+        const zip = path.join(outDir, String(id) + '.zip')
+        fs.rmSync(zip, { force: true })
+        execFileSync('powershell', ['-NoProfile', '-Command', `Push-Location '${dir}'; Compress-Archive -Force -Path '.\\*' -DestinationPath '${zip}'; Pop-Location`], { stdio: 'pipe' })
+        // multipart 组装（文件根级在 zip 内；直接传 zip 文件）
+        const boundary = '----TinTinJySync' + Date.now()
+        const zbuf = fs.readFileSync(zip)
+        const body = Buffer.concat([
+          Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${String(id)}.zip"\r\nContent-Type: application/zip\r\n\r\n`),
+          zbuf,
+          Buffer.from(`\r\n--${boundary}--\r\n`),
+        ])
+        const up = await httpRequest('POST', '/text_templates/templates', {
+          body,
+          headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
+          timeout: 60000,
+        }).catch((e) => ({ error: e.message }))
+        if (up && up.error) throw new Error(up.error)
+        const txt = Buffer.from(up.raw || '').toString('utf-8')
+        if (!txt.includes('"ok":true')) throw new Error(txt.slice(0, 80))
+        results.push({ id, ok: true, name: built.meta.name })
+      } catch (e) {
+        results.push({ id, ok: false, error: String(e.message).slice(0, 80) })
+      }
+    }
+    return { ok: true, results }
+  })
+
+  // ── jytpl:deleteServer — 从服务端模板库删除（jy_<rid>）──
+  ipcMain.handle('jytpl:deleteServer', async (_e, payload) => {
+    const ids = Array.isArray((payload || {}).ids) ? payload.ids : []
+    if (!ids.length) return { error: '未选择模板' }
+    const results = []
+    for (const id of ids) {
+      try {
+        await httpRequest('DELETE', '/text_templates/templates/' + encodeURIComponent(String(id)), { timeout: 15000 })
+        results.push({ id, ok: true })
+      } catch (e) {
+        results.push({ id, ok: false, error: String(e.message).slice(0, 80) })
+      }
+    }
+    return { ok: true, results }
   })
 
   // ── bgm:downloadUrl — AI 生成 BGM 落盘（本端扩展：本地混音需本地文件，见头注）──

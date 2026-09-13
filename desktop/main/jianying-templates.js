@@ -279,10 +279,17 @@ function buildSyncPackage(presetDir, rid) {
     bounceIn: '@keyframes bounceIn{0%{transform:scale(.3);opacity:0}60%{transform:scale(1.08);opacity:1}100%{transform:scale(1)}}',
     slideIn: '@keyframes slideIn{0%{transform:translateX(-24px);opacity:0}100%{transform:translateX(0);opacity:1}}',
   }
-  // 装饰图标
+  // 装饰图标（2026-09-13 用户裁决：只收 panel==='default' 的 infoSticker 贴图 art——
+  //   singleImage.png/SequenceMap.png。resource.panel 标资源角色：'flower'=花字库
+  //   （cover_icon 是烤进像素的样例字位图，如"眼前一亮"包里 4856B 的"花字"图）、
+  //   'text'=文字特效、'sticker'=动效 prefab——这些目录里的 PNG 一律禁入装饰层：
+  //   服务端渲染只能替换 {{text}} 文本占位符，改不了图片像素，混入会跟关键词
+  //   文字双重叠加。示例文字走 text.default（预设原文），不落图。）
+  const DECORATION_PANELS = new Set(['default'])
   const decorations = []
   const seen = new Set()
   for (const r of p.resources || []) {
+    if (!DECORATION_PANELS.has(String(r.panel || ''))) continue
     try {
       for (const f of safeReaddir(r.file_path)) {
         if (!f.endsWith('.png')) continue
@@ -334,10 +341,13 @@ function buildSyncPackage(presetDir, rid) {
     '.t{font-family:"Microsoft YaHei",sans-serif;font-weight:900;color:' + color + ';font-size:' + fsVw + 'vw;letter-spacing:2px;text-shadow:0 3px 10px rgba(0,0,0,.45);white-space:nowrap}' +
     '.d{position:absolute}' + (kfMap[kfName] || '') +
     '</style></head><body><div class="wrap">' + imgs + '<div class="t" style="transform:rotate(' + textRot + 'deg)">{{text}}</div></div></body></html>'
+  const category = eff.category_name && /^(好物种草|美食|穿搭|科技数码|综艺|强调|热门)$/.test(eff.category_name) ? eff.category_name : (eff.category_name === '文字模板' ? '好物种草' : '热门')
   const meta = {
     id: 'jy_' + rid,
     name: eff.effect_name || ('剪映模板_' + rid),
-    category: eff.category_name && /^(好物种草|美食|穿搭|科技数码|综艺|强调|热门)$/.test(eff.category_name) ? eff.category_name : (eff.category_name === '文字模板' ? '好物种草' : '热门'),
+    category,
+    // 场景/溯源标签（2026-09-13 服务端对接清单：tags 数组随模板入库）
+    tags: [category, '剪映同步', 'source=jianying-cache'],
     description: '来源:剪映文字模板 resource_id=' + rid + ' | 剪映11.5.5.14461 | textpreset v' + (p.version || 5) + ' | tintin同步 | 原始类目:' + (eff.category_name || ''),
     variables: {
       text: { type: 'string', default: text, label: '标题文字' },

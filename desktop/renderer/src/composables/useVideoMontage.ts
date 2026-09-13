@@ -2059,13 +2059,28 @@ export function useVideoMontage() {
       } else {
         style.color = mainColor
       }
-      // M2a：服务端真实效果预览（上传时自动生成，贴纸+文字合成图）——有则优先用图，
-      // 无则回退本地近似画法
-      const previewUrl = String((t as Record<string, unknown>).preview || '')
-      const previewWebmUrl = String((t as Record<string, unknown>).preview_webm || '')
+      // M2a：服务端真实效果预览（上传时自动生成，贴纸+文字合成图）——有则优先用，
+      // 无则回退本地近似画法。相对路径需绝对化（file:// origin 下 / 开头路径 404 → 碎图），
+      // 基址经 env:serverPing 取一次缓存（ensureSrvBase，loadTextTemplates 时触发）
+      const previewUrl = srvAbs(String((t as Record<string, unknown>).preview || ''))
+      const previewWebmUrl = srvAbs(String((t as Record<string, unknown>).preview_webm || ''))
       return { id: String(t.template_id), name: String(t.name || t.template_id), text, anim, style, previewUrl, previewWebmUrl }
     })
   })
+  /** 服务端基址缓存（预览 URL 绝对化用；loadTextTemplates 时经 env:serverPing 取一次） */
+  let srvBase = ''
+  async function ensureSrvBase(): Promise<void> {
+    if (srvBase) return
+    try {
+      const bridge = window.tintin as unknown as { env?: { serverPing?: () => Promise<{ url?: string }> } } | undefined
+      const ping = await bridge?.env?.serverPing?.()
+      srvBase = String(ping?.url || '')
+    } catch (_) { /* 无 env 桥（预览环境） */ }
+  }
+  function srvAbs(p: string): string {
+    if (!p || /^https:\/\//.test(p)) return p
+    return srvBase ? srvBase.replace(/\/$/, '') + (p.startsWith('/') ? p : '/' + p) : p
+  }
   /** 拉取服务端文字模板库（GET /text_templates/templates，2026-09-10 纠偏；进入 Step4 时调用；空库时下拉仅随机项） */
   async function loadTextTemplates(): Promise<void> {
     if (textTemplatesLoading.value) return
@@ -2074,6 +2089,7 @@ export function useVideoMontage() {
       const sr = await window.tintin?.server?.textfxServerTemplates?.()
       const items = sr && !('error' in sr) && Array.isArray(sr.templates) ? sr.templates : []
       textTemplates.value = items.filter((t) => t && t.template_id)
+      void ensureSrvBase() // 预览 URL 绝对化基址（异步不阻塞下拉）
       void loadCatalogLanes() // 二期：catalog 类目分组（异步不阻塞下拉）
     } catch (_) {
       textTemplates.value = []

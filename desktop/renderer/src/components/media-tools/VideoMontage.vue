@@ -975,44 +975,9 @@ function scoreClass(score: number | undefined): string {
         <div class="vd-unified">
         <div class="vd-unified-left" :style="vdLeftStyle">
         <VdStepBar :step="step" @go="go" />
-        <!-- 特效包装分组：烧制字幕 + 花字 + 文字模板 -->
+        <!-- 特效包装分组（2026-09-13 用户裁决：字幕拆出单独成组、置于背景音乐上方）：花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
           <div class="fx-pack-title">特效包装</div>
-
-          <!-- 烧制字幕（原 Step3 三行原样迁入：行1 勾选 / 行2 字体+背景+预设样式色板 / 行3 效果预览；
-               样式 key 与主进程 SUBTITLE_STYLES 同表） -->
-          <div class="row">
-            <label class="chk" title="字幕字体取自服务端字体库（GET /config/fonts）。&#10;本地 ffmpeg 烧制：预设样式以 drawtext 描边（borderw=3）实现；&#10;服务端合成时随 subtitle_style 一并提交。">
-              <input v-model="addSubtitles" type="checkbox" />
-              烧制字幕（逐行按时间显示，字号随视频高度自适应）
-            </label>
-          </div>
-          <div v-if="addSubtitles" class="row">
-            <label class="param-label">字幕字体:</label>
-            <TSelect v-model="subtitleFont" :options="fontOptions" class="w230" :option-style="fontOptionStyle"
-              title="字体列表来自服务端 /config/fonts，各选项按自身字体渲染" />
-            <TButton label="刷新字体" variant="secondary" size="small" :loading="fontsLoading" title="重新从服务端拉取字体列表" @click="refreshFonts" />
-            <label class="param-label">背景:</label>
-            <TSelect v-model="subtitleBgOpacity" :options="subtitleBgOptions" class="w130"
-              title="字幕背景色为黑色，此项调背景不透明度（0=无背景框）。&#10;值越高背景越实。" />
-            <label class="param-label">动画:</label>
-            <TSelect v-model="subtitleAnimKey" :options="subtitleAnimOptions" class="w130"
-              title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
-            <label class="param-label">预设样式:</label>
-            <div class="sub-style-grid" title="字幕文字样式预设（烧制时以 ffmpeg drawtext 描边实现，效果以成品为准）">
-              <button v-for="p in SUBTITLE_STYLE_PRESETS" :key="p.key" type="button" class="sub-style-tile"
-                :class="{ active: subtitleStyleKey === p.key }" :title="p.label" @click="subtitleStyleKey = p.key">
-                <span class="sub-style-tile-text" :style="subtitlePresetTileStyle(p)">字幕</span>
-              </button>
-            </div>
-          </div>
-          <div v-if="addSubtitles" class="row">
-            <label class="param-label">效果预览:</label>
-            <div class="style-preview-canvas">
-              <span class="style-preview-text" :class="subtitleAnimKey !== 'none' ? 'sub-anim-' + subtitleAnimKey : ''"
-                :style="subtitlePreviewStyle">这是字幕预览效果 ABC123</span>
-            </div>
-          </div>
 
           <!-- 花字（原 Step3 三行原样迁入） -->
           <div class="row">
@@ -1077,9 +1042,12 @@ function scoreClass(score: number | undefined): string {
               <template v-if="textFxStyleSamples.length">
                 <span v-for="s in textFxStyleSamples" :key="'ts' + s.id" class="textfx-sample"
                   :title="`模板：${s.name}`">
-                  <!-- M2a：服务端真实效果预览图优先（上传时自动生成，贴纸+文字合成）；无则回退本地近似画法 -->
-                  <img v-if="s.previewUrl" class="textfx-sample-img" :src="s.previewUrl" :alt="s.name" />
-                  <span v-else class="textfx-sample-text" :class="`textfx-anim-${s.anim}`" :style="s.style">{{ s.text }}</span>
+                  <!-- 2026-09-13 用户裁决：要不播真实动画（服务端 preview.webm，与成片同渲染器），
+                       要不只是文字/静态图——CSS 近似动画废止 -->
+                  <video v-if="s.previewWebmUrl" class="textfx-sample-video" :src="s.previewWebmUrl"
+                    autoplay loop muted playsinline />
+                  <img v-else-if="s.previewUrl" class="textfx-sample-img" :src="s.previewUrl" :alt="s.name" />
+                  <span v-else class="textfx-sample-text" :style="s.style">{{ s.text }}</span>
                   <small class="textfx-word-tpl">{{ s.name }}</small>
                 </span>
               </template>
@@ -1105,15 +1073,54 @@ function scoreClass(score: number | undefined): string {
                     <span v-for="(it, ii) in tr.items" :key="'ti' + ii" class="textfx-track-item"
                       :style="{ left: (tr.durationSec > 0 ? Math.min(92, (it.start / tr.durationSec) * 100) : 0) + '%' }"
                       :title="`${it.fullText || it.word} · ${it.tplName} · ${fmtDur(it.start)} / ${fmtDur(tr.durationSec)}`">
-                      <!-- 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与烧制同源，
-                           不再写死黄色）；关键词颜色由模板决定不可改；动画类绑内层
-                           避免覆盖词条定位 transform -->
-                      <b :class="it.anim ? `textfx-anim-${it.anim}` : ''" :style="it.tplStyle">{{ it.word }}</b>
+                      <!-- 2026-09-13 用户裁决：词条要不播真实动画（render-preview alpha
+                           webm，与成片同渲染器），要不只是文字——CSS 近似动画废止；
+                           素材未就绪/失败显示纯文字 -->
+                      <video v-if="it.clipUrl" class="textfx-clip" :src="it.clipUrl" autoplay loop muted playsinline />
+                      <b v-else>{{ it.word }}</b>
                     </span>
                   </div>
                 </div>
               </template>
               <span v-else class="muted">{{ textTemplates.length ? '上一步合成的视频将在此逐条预览关键词效果' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 字幕分组（2026-09-13 用户裁决：字幕单独一组，置于背景音乐上方；自特效包装组拆出。
+             行1 勾选 / 行2 字体+背景+动画+预设样式色板 / 行3 效果预览；样式 key 与主进程 SUBTITLE_STYLES 同表） -->
+        <div class="action-box fx-pack-box">
+          <div class="fx-pack-title">字幕</div>
+          <div class="row">
+            <label class="chk" title="字幕字体取自服务端字体库（GET /config/fonts）。&#10;本地 ffmpeg 烧制：预设样式以 drawtext 描边（borderw=3）实现；&#10;服务端合成时随 subtitle_style 一并提交。">
+              <input v-model="addSubtitles" type="checkbox" />
+              烧制字幕（逐行按时间显示，字号随视频高度自适应）
+            </label>
+          </div>
+          <div v-if="addSubtitles" class="row">
+            <label class="param-label">字幕字体:</label>
+            <TSelect v-model="subtitleFont" :options="fontOptions" class="w230" :option-style="fontOptionStyle"
+              title="字体列表来自服务端 /config/fonts，各选项按自身字体渲染" />
+            <TButton label="刷新字体" variant="secondary" size="small" :loading="fontsLoading" title="重新从服务端拉取字体列表" @click="refreshFonts" />
+            <label class="param-label">背景:</label>
+            <TSelect v-model="subtitleBgOpacity" :options="subtitleBgOptions" class="w130"
+              title="字幕背景色为黑色，此项调背景不透明度（0=无背景框）。&#10;值越高背景越实。" />
+            <label class="param-label">动画:</label>
+            <TSelect v-model="subtitleAnimKey" :options="subtitleAnimOptions" class="w130"
+              title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
+            <label class="param-label">预设样式:</label>
+            <div class="sub-style-grid" title="字幕文字样式预设（烧制时以 ffmpeg drawtext 描边实现，效果以成品为准）">
+              <button v-for="p in SUBTITLE_STYLE_PRESETS" :key="p.key" type="button" class="sub-style-tile"
+                :class="{ active: subtitleStyleKey === p.key }" :title="p.label" @click="subtitleStyleKey = p.key">
+                <span class="sub-style-tile-text" :style="subtitlePresetTileStyle(p)">字幕</span>
+              </button>
+            </div>
+          </div>
+          <div v-if="addSubtitles" class="row">
+            <label class="param-label">效果预览:</label>
+            <div class="style-preview-canvas">
+              <span class="style-preview-text" :class="subtitleAnimKey !== 'none' ? 'sub-anim-' + subtitleAnimKey : ''"
+                :style="subtitlePreviewStyle">这是字幕预览效果 ABC123</span>
             </div>
           </div>
         </div>
@@ -1948,7 +1955,8 @@ function scoreClass(score: number | undefined): string {
 }
 .ai-bgm-panel audio { flex: 1; min-width: 200px; height: 36px; }
 
-/* Step4 特效包装分组（2026-09-09 裁决：字幕/花字/文字模板自 Step3 迿入） */
+/* Step4 特效包装/字幕分组（2026-09-09 裁决：花字/文字模板自 Step3 迁入；
+   2026-09-13 裁决：字幕拆出单独成组置于背景音乐上方，两盒共用本样式） */
 .fx-pack-box { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-4); }
 .fx-pack-title {
   font-size: 13px; font-weight: var(--font-weight-semibold); color: var(--foreground);
@@ -2028,74 +2036,11 @@ function scoreClass(score: number | undefined): string {
 /* 样式预览循环动画（2026-09-10 按服务端模板定义全量对齐 10 个动画模板：
    服务端以 id/name 语义 + variables 效果色变量约定动画，效果色经 --fx-color 注入；
    本地 CSS 近似演示，与服务端烧制效果非逐帧一致） */
-@keyframes textfx-slide-in {
-  0%   { opacity: 0; transform: translateX(-22px); }
-  18%  { opacity: 1; transform: translateX(0); }
-  82%  { opacity: 1; transform: translateX(0); }
-  100% { opacity: 0; transform: translateX(-22px); }
-}
-@keyframes textfx-shine-sweep {
-  0%   { background-position: 100% 0; }
-  60%  { background-position: 0% 0; }
-  100% { background-position: 0% 0; }
-}
-@keyframes textfx-bounce-in {
-  0%   { opacity: 0; transform: scale(0.3); }
-  25%  { opacity: 1; transform: scale(1.15); text-shadow: 0 0 10px var(--fx-color); }
-  38%  { transform: scale(0.92); }
-  50%  { transform: scale(1.05); text-shadow: 0 0 10px var(--fx-color); }
-  62%  { transform: scale(1); }
-  85%  { opacity: 1; transform: scale(1); }
-  100% { opacity: 0; transform: scale(0.3); }
-}
-@keyframes textfx-flip-in {
-  0%   { opacity: 0; transform: perspective(300px) rotateY(-90deg); }
-  35%  { opacity: 1; transform: perspective(300px) rotateY(0deg); text-shadow: 0 0 10px var(--fx-color); }
-  80%  { opacity: 1; transform: perspective(300px) rotateY(0deg); text-shadow: 0 0 10px var(--fx-color); }
-  100% { opacity: 0; transform: perspective(300px) rotateY(-90deg); }
-}
-@keyframes textfx-pulse-soft {
-  0%, 100% { transform: scale(1); text-shadow: 0 0 2px transparent; }
-  50%      { transform: scale(1.12); text-shadow: 0 0 12px var(--fx-color); }
-}
-@keyframes textfx-fade-io {
-  0%   { opacity: 0; }
-  25%  { opacity: 1; }
-  80%  { opacity: 1; }
-  100% { opacity: 0; }
-}
-@keyframes textfx-flow {
-  0%   { background-position: 0% 50%; }
-  100% { background-position: 200% 50%; }
-}
-@keyframes textfx-neon {
-  0%, 100% { text-shadow: 0 0 3px var(--fx-color); }
-  50%      { text-shadow: 0 0 14px var(--fx-color), 0 0 26px var(--fx-color); }
-}
-@keyframes textfx-type {
-  0%   { clip-path: inset(0 100% 0 0); }
-  60%  { clip-path: inset(0 0 0 0); }
-  100% { clip-path: inset(0 0 0 0); }
-}
-@keyframes textfx-caret {
-  0%, 49%  { opacity: 1; }
-  50%, 100% { opacity: 0; }
-}
-.textfx-anim-slide  { animation: textfx-slide-in 2.4s ease infinite; }
-.textfx-anim-shine  { animation: textfx-shine-sweep 2.2s linear infinite; }
-.textfx-anim-bounce { animation: textfx-bounce-in 2.6s ease infinite; }
-.textfx-anim-flip   { animation: textfx-flip-in 2.8s ease infinite; }
-.textfx-anim-pulse  { animation: textfx-pulse-soft 1.8s ease-in-out infinite; }
-.textfx-anim-fade   { animation: textfx-fade-io 2.4s ease infinite; }
-.textfx-anim-flow   { animation: textfx-flow 3s linear infinite; }
-.textfx-anim-neon   { animation: textfx-neon 1.6s ease-in-out infinite; }
-/* 打字机：逐字裁切显现 + 光标色竖线闪烁（cursorColor → --fx-color） */
-.textfx-anim-type   { animation: textfx-type 2.6s steps(10, end) infinite; }
-.textfx-anim-type::after {
-  content: ''; display: inline-block; width: 2px; height: 1em;
-  margin-left: 2px; vertical-align: -0.12em;
-  background: var(--fx-color); animation: textfx-caret 1s steps(1) infinite;
-}
+/* 2026-09-13 用户裁决：文字模板预览要不播真实动画（render-preview/服务端 webm），
+   要不只显示文字/静态图——CSS 近似模板动画整体废止（原 keyframes + textfx-anim-* 已删） */
+.textfx-sample-video { height: 100%; width: auto; display: block; border-radius: var(--radius-sm); }
+/* 时间轴词条真实动画素材（alpha webm）：高度撑满轨条，宽度按素材比例 */
+.textfx-clip { height: 100%; width: auto; display: block; border-radius: 3px; }
 .w80 { width: 80px; flex: none; }
 
 /* Step4 特效包装（对照 step4_final_view.py L80-196 同布局；颜色走 V3 design tokens） */

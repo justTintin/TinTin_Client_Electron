@@ -539,66 +539,40 @@ export function buildPrecomposePlans(opts: {
   return plans
 }
 
-// ── Step2 口播文案（对照 gui/montage/workers/script_workers.py SceneCopyWorker L235-266）──
+// ── Step2 口播文案（2026-09-13 改调 POST /copywriting/voiceover：服务端自持 prompt，
+//    按 duration_s 控字数（30s → budget 135 字）；客户端只组 payload + 解析响应）──
 
 /**
- * 构建口播文案 LLM 消息（逐字对照 SceneCopyWorker system/user prompt）：
- * 每行对应一个镜头画面、字数按镜头时长估算（3.5 字/秒，夹 5-40）。
+ * 组 voiceover 请求体（契约 VoiceoverIn：product_desc 必填、duration_s (0,600]、hint 可选）：
+ * 品牌/品类/型号 → product_desc（「，」连接），补充卖点 → hint；
+ * 仅填了补充卖点时兜底进 product_desc（服务端 product_desc 缺失 400）。
+ * duration_s 取成片实测总时长（四舍五入到 0.1s，夹 0.1-600），无有效时长回退 30s 默认值。
  */
-export function buildSceneCopyMessages(opts: {
-  sceneDescriptions: string[]
+export function buildVoiceoverPayload(opts: {
   brand?: string
   product?: string
   modelName?: string
   extra?: string
   totalDuration?: number
-}): { system: string; user: string; temperature: number } {
-  const n = (opts.sceneDescriptions || []).length
-  if (n === 0) throw new Error('该视频没有可用的画面镜头描述，无法按画面生成文案')
-  let maxCharsPerLine = 22
-  let durationHint = ''
-  const totalDuration = Number(opts.totalDuration) || 0
-  if (totalDuration > 0) {
-    const secPerShot = totalDuration / n
-    maxCharsPerLine = Math.max(5, Math.min(Math.floor(secPerShot * 3.5), 40))
-    durationHint = (
-      `\n本条视频总时长约 ${totalDuration.toFixed(1)} 秒，共 ${n} 个镜头，平均每个镜头约 ${secPerShot.toFixed(1)} 秒，` +
-      `每行文案请控制在 ${maxCharsPerLine} 字以内，确保能在对应镜头时长内以正常语速读完。`
-    )
-  }
-  const system = (
-    '你是资深电商短视频口播文案撰稿人。用户会给出一个产品的共同背景信息（品牌/品类/型号/卖点），' +
-    '以及该条组合视频按顺序排列的每一个镜头画面描述。\n' +
-    '请为这条视频撰写一段用于电商带货的口播文案（旁白），要求：\n' +
-    `1. 严格输出 ${n} 行，第 i 行对应第 i 个镜头画面，顺序不可打乱。\n` +
-    '2. 每行文案贴合对应镜头画面内容（如产品外观、特写、使用场景、价格对比等），' +
-    `口语化、有节奏、有卖点和号召力，每行约 5-${maxCharsPerLine} 字。${durationHint}\n` +
-    '3. 所有行围绕同一款产品（同一型号）展开，整体文案在逻辑与情感上连贯、朗朗上口。\n' +
-    '4. 若不确定具体参数，用准确的通用描述，切勿编造虚假数字。\n' +
-    '5. 不要 markdown、不要标题、不要编号、不要解释说明，只输出文案本身，每句独占一行。'
-  )
-  const scenesStr = (opts.sceneDescriptions || []).map((d, i) =>
-    `${i + 1}. ${(d || '').trim() || '（无画面描述，请根据上下文合理发挥）'}`).join('\n')
-  const user = (
-    '产品共同背景：\n' +
-    `品牌：${opts.brand || '未提供'}\n` +
-    `产品/品类：${opts.product || '未提供'}\n` +
-    `型号：${opts.modelName || '未提供'}\n` +
-    `补充卖点：${opts.extra || '无'}\n\n` +
-    `本条视频共有 ${n} 个镜头画面，按顺序如下：\n${scenesStr}\n\n` +
-    `请按要求生成口播文案，严格输出 ${n} 行。`
-  )
-  return { system, user, temperature: 0.6 }
+}): { product_desc: string; duration_s: number; hint?: string } {
+  const s = (v: unknown) => String(v ?? '').trim()
+  const parts = [s(opts.brand), s(opts.product), s(opts.modelName)].filter(Boolean)
+  const extra = s(opts.extra)
+  const product_desc = parts.join('，') || extra
+  if (!product_desc) throw new Error('产品描述为空：请至少填写品牌/产品/型号之一')
+  let duration_s = Number(opts.totalDuration)
+  if (!Number.isFinite(duration_s) || duration_s <= 0) duration_s = 30
+  duration_s = Math.min(600, Math.max(0.1, Math.round(duration_s * 10) / 10))
+  const payload: { product_desc: string; duration_s: number; hint?: string } = { product_desc, duration_s }
+  if (extra && parts.length) payload.hint = extra
+  return payload
 }
 
-/** 解析 LLM 文案响应（choices[0].message.content） */
-export function parseLlmCopyResponse(resp: unknown): string {
-  const r = (resp || {}) as Record<string, unknown>
-  const choices = r.choices as Array<Record<string, unknown>> | undefined
-  const msg = choices?.[0]?.message as Record<string, unknown> | undefined
-  const content = String(msg?.content || '').trim()
-  if (!content) throw new Error('大模型未返回文案内容')
-  return content
+/** 解析 voiceover 响应（实测契约 {text,chars,budget,retried}），空文案报错 */
+export function parseVoiceoverResponse(resp: unknown): string {
+  const text = String((resp as { text?: unknown } | null | undefined)?.text ?? '').trim()
+  if (!text) throw new Error('服务端未返回口播文案')
+  return text
 }
 
 // ── Step2 预合成列表行文案（对照 _add_assembled_row L5383-5410）────────

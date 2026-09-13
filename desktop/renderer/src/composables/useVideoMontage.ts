@@ -34,8 +34,8 @@ import {
   buildPrecomposePlans,
   planActiveDurationSec,
   type PrecomposePlan,
-  buildSceneCopyMessages,
-  parseLlmCopyResponse,
+  buildVoiceoverPayload,
+  parseVoiceoverResponse,
   assembledRowText,
   copyPreviewText,
   // Step3 字幕样式预设（2026-09-09 裁决：样式属字幕配置，字幕新增自有预设色板）
@@ -1107,7 +1107,8 @@ export function useVideoMontage() {
     }
   }
   
-  // ── 口播文案（对照 _batch_gen_copy_by_scene：产品信息弹窗 → 逐条 SceneCopyWorker）──
+  // ── 口播文案（2026-09-13 改调 POST /copywriting/voiceover：产品信息弹窗 → 逐条
+  //    传 product_desc + duration_s，服务端自持 prompt 按时长控字数；客户端不再拼 prompt）──
   const sharedProductInfo = ref({ brand: '', product: '', model: '', extra: '' })
   const productDlg = ref<{
     show: boolean; target: 'all' | number
@@ -1130,27 +1131,19 @@ export function useVideoMontage() {
   }
   function closeProductDlg(): void { productDlg.value.show = false }
   
-  /** 为单条方案按画面生成口播文案（对照 SceneCopyWorker：镜头描述序列 + 产品背景） */
+  /** 为单条方案生成口播文案（POST /copywriting/voiceover：product_desc + duration_s） */
   async function genCopyForPlan(p: PrecomposePlan): Promise<void> {
     const clips = p.clips.filter((_, i) => !p.deletedFlags[i])
-    const descs = clips.map((c) => c.description)
     const totalDur = clips.reduce((a, c) => a + (Number(c.duration) || 0), 0)
-    const msgs = buildSceneCopyMessages({
-      sceneDescriptions: descs,
+    const payload = buildVoiceoverPayload({
       brand: sharedProductInfo.value.brand,
       product: sharedProductInfo.value.product,
       modelName: sharedProductInfo.value.model,
       extra: sharedProductInfo.value.extra,
       totalDuration: totalDur,
     })
-    const res = unwrapIpc(await window.tintin.server.llmChat({
-      messages: [
-        { role: 'system', content: msgs.system },
-        { role: 'user', content: msgs.user },
-      ],
-      temperature: msgs.temperature,
-    }), '生成口播文案')
-    p.copy = parseLlmCopyResponse(res)
+    const res = unwrapIpc(await window.tintin.server.copywritingVoiceover(payload), '生成口播文案')
+    p.copy = parseVoiceoverResponse(res)
     // 旁车落盘（对照原版 on_ok L7027-7030：写 <成片路径>.txt；Step3 voice:scanDir
     //   按同一约定读原文，不落盘则口播配音页原文恒为空）
     if (p.outputPath) {
@@ -1172,10 +1165,9 @@ export function useVideoMontage() {
     }
     const info = sharedProductInfo.value
     if (!info.brand && !info.product && !info.model && !info.extra) {
-      const go = window.confirm(
-        '你没有填写任何产品信息（品牌/产品/型号/卖点）。\n\n' +
-        '确定 = 仍然生成（AI 仅根据画面自由发挥，可能不够精准）\n取消 = 返回填写')
-      if (!go) return
+      // 服务端 /copywriting/voiceover 契约：product_desc 必填（缺失 400），不再支持无产品信息自由发挥
+      notify('请填写产品信息', '生成口播文案需要至少填写一项产品信息（品牌/产品/型号/卖点）。\n服务端按产品描述 + 目标时长生成文案。')
+      return
     }
     const targets = d.target === 'all'
       ? assemblePlans.value.map((p, i) => ({ p, i }))
@@ -1189,7 +1181,7 @@ export function useVideoMontage() {
     try {
       for (let k = 0; k < targets.length; k++) {
         const { p, i } = targets[k]
-        statusText.value = `正在按画面生成文案 (${k + 1}/${targets.length})：${p.outputName || `预合成 ${i + 1}`}`
+        statusText.value = `正在生成口播文案 (${k + 1}/${targets.length})：${p.outputName || `预合成 ${i + 1}`}`
         try {
           await genCopyForPlan(p)
           ok++
@@ -1204,9 +1196,9 @@ export function useVideoMontage() {
     if (failures.length) {
       statusText.value = `注意： 批量文案生成完成：成功 ${ok}，失败 ${failures.length}`
       clientError('video-montage', `批量文案生成部分失败 成功${ok}失败${failures.length}`, failures.join('\n'))
-      notify('部分失败', `批量按画面生成文案完成。\n成功 ${ok} 个，失败 ${failures.length} 个：\n${failures.join('\n')}`)
+      notify('部分失败', `批量口播文案生成完成。\n成功 ${ok} 个，失败 ${failures.length} 个：\n${failures.join('\n')}`)
     } else {
-      statusText.value = ` 已为全部 ${ok} 个视频按画面生成口播文案`
+      statusText.value = ` 已为全部 ${ok} 个视频生成口播文案`
       notify('全部完成', `已根据画面为全部 ${ok} 个组合视频生成口播文案并保存。\n进入下一步「口播配音」会自动载入。`)
     }
   }
@@ -1216,7 +1208,7 @@ export function useVideoMontage() {
     const p = assemblePlans.value[i]
     if (!p) return
     if (!p.copy) {
-      concatError.value = '该视频尚未生成口播文案。\n\n请点击底部「生成口播文案」按钮，选择产品信息后由 AI 根据画面生成口播文案。'
+      concatError.value = '该视频尚未生成口播文案。\n\n请点击底部「生成口播文案」按钮，选择产品信息后由 AI 生成口播文案（按产品信息与视频时长）。'
       return
     }
     copyViewDlg.value = { show: true, title: `口播文案 - 预合成 ${i + 1}`, content: p.copy }

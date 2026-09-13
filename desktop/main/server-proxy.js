@@ -122,6 +122,7 @@ const API_ENDPOINTS = {
   health: { capabilities: '/health/capabilities', check: '/health/check' },
   stats:  { workbench: '/stats/workbench' },
   llm:    { chatCompletions: '/llm/chat/completions', adjustCopywriting: '/script/adjust-copywriting', list: '/script/list', models: '/llm/models' },
+  copywriting: { voiceover: '/copywriting/voiceover' },
   asr:    { transcribe: '/whisper/transcribe' },
   // 2026-09-05：声音克隆与智能混剪口播配音均恒走 /indextts/tts（服务端将删全部 /voxcpm/*）
   tts:    { indextts: '/indextts/tts', voicesList: '/voice/samples', voicesSamples: '/voice/samples' },
@@ -785,6 +786,22 @@ function createServerProxy(ipcMain, ctx) {
       const p = payload || {}
       if (!p.script_id && !p.text) throw new Error('llm:adjustCopywriting requires script_id or text')
       const res = await httpRequest('POST', API_ENDPOINTS.llm.adjustCopywriting, { body: p })
+      return res.data
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
+  // --- copywriting（智能混剪口播文案：服务端自持 prompt，按 duration_s 控字数）---
+  ipcMain.handle('copywriting:voiceover', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      // 契约 VoiceoverIn：product_desc 必填（缺失 400）；duration_s (0,600]；hint 可选
+      if (!p.product_desc || !String(p.product_desc).trim()) throw new Error('copywriting:voiceover requires product_desc')
+      const body = {
+        product_desc: String(p.product_desc),
+        duration_s: Number(p.duration_s) > 0 ? Number(p.duration_s) : 30,
+      }
+      if (p.hint && String(p.hint).trim()) body.hint = String(p.hint)
+      const res = await httpRequest('POST', API_ENDPOINTS.copywriting.voiceover, { body, timeout: 180000 })
       return res.data
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })

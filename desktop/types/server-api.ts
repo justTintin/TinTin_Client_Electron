@@ -153,6 +153,10 @@ export const API_PATHS = {
     adjustCopywriting: '/script/adjust-copywriting',
     list:  '/script/list',
   },
+  copywriting: {
+    // 智能混剪口播文案（服务端自持 prompt：product_desc + duration_s → 按目标时长控字数）
+    voiceover: '/copywriting/voiceover',
+  },
   asr: {
     transcribe: '/whisper/transcribe',
   },
@@ -375,6 +379,32 @@ export namespace LLMAPI {
   /** GET /llm/providers 响应 */
   export interface LlmProvidersResponse {
     providers: Record<string, LlmProvider>
+  }
+}
+
+export namespace CopywritingAPI {
+  /**
+   * POST /copywriting/voiceover（2026-09-13 实测线上契约，openapi VoiceoverIn）：
+   * 服务端自持 prompt 按目标时长控字数（30s → budget 135 字），替代客户端本地拼 prompt。
+   */
+  export interface VoiceoverRequest {
+    /** 产品描述（必填，缺失 400） */
+    product_desc: string
+    /** 目标时长（秒），(0, 600] */
+    duration_s: number
+    /** 补充要求（可选） */
+    hint?: string
+  }
+  /** 响应 openapi 未定 schema，以下为实测结构 */
+  export interface VoiceoverResponse {
+    /** 口播文案正文（单段纯文本） */
+    text: string
+    /** 实际字数 */
+    chars: number
+    /** 目标字数预算（≈ duration_s × 4.5） */
+    budget: number
+    /** 服务端是否因超字数重试过 */
+    retried: boolean
   }
 }
 

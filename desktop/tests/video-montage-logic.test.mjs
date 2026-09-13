@@ -469,32 +469,32 @@ test('buildPrecomposePlans：空输入 → 空数组', () => {
   assert.deepEqual(R.buildPrecomposePlans({ clips: [], batchCount: 2, durationLimitSec: 30, randomness: 'medium' }), [])
 })
 
-// ── Step2 口播文案 prompt（对照 script_workers.py SceneCopyWorker L235-266）──
+// ── Step2 口播文案（2026-09-13 改调 POST /copywriting/voiceover，服务端自持 prompt）──
 
-test('buildSceneCopyMessages：字数按 3.5 字/秒夹 5-40；temperature 0.6；背景信息入 user', () => {
-  // 2 镜头总 20s → 每镜 10s → 35 字（< 40 不截顶）
-  const m1 = R.buildSceneCopyMessages({ sceneDescriptions: ['特写', '使用场景'], brand: '罗技', product: '鼠标', modelName: 'GPW', extra: '无线', totalDuration: 20 })
-  assert.equal(m1.temperature, 0.6)
-  assert.match(m1.system, /严格输出 2 行/)
-  assert.match(m1.system, /每行约 5-35 字/)
-  assert.match(m1.user, /品牌：罗技/)
-  assert.match(m1.user, /型号：GPW/)
-  assert.match(m1.user, /补充卖点：无线/)
-  assert.match(m1.user, /1\. 特写/)
-  // 每镜 0.5s → 1.75 字 → 夹下限 5
-  const m2 = R.buildSceneCopyMessages({ sceneDescriptions: ['a', 'b'], totalDuration: 1 })
-  assert.match(m2.system, /每行约 5-5 字/)
-  // 无时长 → 默认 22 字
-  const m3 = R.buildSceneCopyMessages({ sceneDescriptions: ['a'] })
-  assert.match(m3.system, /每行约 5-22 字/)
-  // 空描述 → 报错
-  assert.throws(() => R.buildSceneCopyMessages({ sceneDescriptions: [] }), /没有可用的画面镜头描述/)
+test('buildVoiceoverPayload：品牌/品类/型号→product_desc，补充卖点→hint；时长夹 0.1-600，空回退 30', () => {
+  const p1 = R.buildVoiceoverPayload({ brand: '罗技', product: '鼠标', modelName: 'GPW', extra: '无线', totalDuration: 30.44 })
+  assert.equal(p1.product_desc, '罗技，鼠标，GPW')
+  assert.equal(p1.hint, '无线')
+  assert.equal(p1.duration_s, 30.4)
+  // 时长夹上限 600 / 下限 0.1；非法回退 30
+  assert.equal(R.buildVoiceoverPayload({ product: 'a', totalDuration: 9999 }).duration_s, 600)
+  assert.equal(R.buildVoiceoverPayload({ product: 'a', totalDuration: 0.01 }).duration_s, 0.1)
+  assert.equal(R.buildVoiceoverPayload({ product: 'a' }).duration_s, 30)
+  assert.equal(R.buildVoiceoverPayload({ product: 'a', totalDuration: -3 }).duration_s, 30)
+  // 无 hint 位（仅 brand/product/model 有值时 hint 不传）
+  assert.deepEqual(R.buildVoiceoverPayload({ brand: '罗技', totalDuration: 30 }), { product_desc: '罗技', duration_s: 30 })
+  // 仅填补充卖点 → 兜底进 product_desc（服务端 product_desc 缺失 400）
+  const p2 = R.buildVoiceoverPayload({ extra: '轻薄长续航' })
+  assert.equal(p2.product_desc, '轻薄长续航')
+  assert.equal(p2.hint, undefined)
+  // 全空 → 报错
+  assert.throws(() => R.buildVoiceoverPayload({}), /产品描述为空/)
 })
 
-test('parseLlmCopyResponse：choices[0].message.content；空内容报错', () => {
-  assert.equal(R.parseLlmCopyResponse({ choices: [{ message: { content: ' 轻量化设计\n' } }] }), '轻量化设计')
-  assert.throws(() => R.parseLlmCopyResponse({ choices: [] }), /未返回文案内容/)
-  assert.throws(() => R.parseLlmCopyResponse(null), /未返回文案内容/)
+test('parseVoiceoverResponse：取 text；空内容报错', () => {
+  assert.equal(R.parseVoiceoverResponse({ text: ' 清晨来一杯现榨果汁。\n', chars: 9, budget: 135 }), '清晨来一杯现榨果汁。')
+  assert.throws(() => R.parseVoiceoverResponse({ chars: 0 }), /未返回口播文案/)
+  assert.throws(() => R.parseVoiceoverResponse(null), /未返回口播文案/)
 })
 
 // ── Step2 预合成列表行文案（对照 _add_assembled_row L5383-5410）──

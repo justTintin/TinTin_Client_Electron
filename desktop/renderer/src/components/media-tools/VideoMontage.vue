@@ -1302,7 +1302,8 @@ function scoreClass(score: number | undefined): string {
     <!-- 产品信息弹窗（原版 ProductCopyInputDialog，dialogs.py L347-388 文案逐字；
       2026-09-08 用户裁决：产品选择区与填写区合二为一不再二次弹窗——左侧内嵌
       WbPickProductPanel，选中自动回填右侧表单，仍可手改；填写区高度加高。
-      2026-09-11 用户裁决：三块（产品列表｜产品详情｜填写表单）宽度 1:1:1） -->
+      2026-09-11 用户裁决：三块（产品列表｜产品详情｜填写表单）宽度 1:1:1。
+      2026-09-13 改调 /copywriting/voiceover：时长不再手填，逐条按成片时长 duration_s 传入） -->
     <teleport to="body">
       <div v-if="productDlg.show" class="modal-mask" @click.self="closeProductDlg">
         <div class="modal modal-pick">

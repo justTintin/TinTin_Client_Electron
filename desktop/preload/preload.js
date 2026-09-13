@@ -230,6 +230,8 @@ const server = {
   llmAdjustCopywriting:  (payload) => ipcRenderer.invoke('llm:adjustCopywriting', payload),
   // 设置页 LLM 对接（P5）：模型列表（服务端持有凭证，用户裁决 2026-08-28 废弃 Provider 回显）
   llmModels:             () => ipcRenderer.invoke('llm:models'),
+  // ---------- copywriting（智能混剪口播文案：服务端自持 prompt）----------
+  copywritingVoiceover:  (payload) => ipcRenderer.invoke('copywriting:voiceover', payload),
 
   // ---------- material ----------
   materialList:       (params)  => ipcRenderer.invoke('material:list', params),

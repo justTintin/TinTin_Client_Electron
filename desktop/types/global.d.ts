@@ -4,6 +4,7 @@ import type {
   HealthAPI,
   StatsAPI,
   LLMAPI,
+  CopywritingAPI,
   ASRAPI,
   TTSAPI,
   MaterialAPI,
@@ -484,6 +485,11 @@ declare interface TintinBridgeServer {
   }): Promise<IpcError<any>>
   /** GET /llm/models → 设置页「默认模型」下拉数据源（离线返回 null 或 {error}） */
   llmModels(): Promise<IpcError<LLMAPI.LlmModelsResponse>>
+
+  // ---------- copywriting（智能混剪口播文案：服务端自持 prompt，product_desc + duration_s）----------
+  copywritingVoiceover(
+    payload: CopywritingAPI.VoiceoverRequest
+  ): Promise<IpcError<CopywritingAPI.VoiceoverResponse>>
 
   // ---------- material ----------
   materialList(

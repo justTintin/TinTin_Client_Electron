@@ -1482,7 +1482,9 @@ export function useVideoMontage() {
       // 2026-09-09 裁决：特效配置迁 Step4，混音前统一烧制字幕/花字。
       // subtitleTexts 按候选视频映射 Step3 文案行：无对应行（如 outputs
       // 未配音排列视频）不烧字幕/花字，直通混音。
-      // fxLines：文字模板命中行（服务端 match 结果，仅本地烧制消费，见下方预取）
+      // fxLines：文字模板命中行（服务端 match 结果，本地烧制素材下载与 drawtext 兜底消费）
+      // matchId（2026-09-13 接口对齐）：match 响应回执，服务端 concat 按它直接复用
+      //   已保存 events 烧制（不重算）→ 预览所见即成片所做
       // voicePath：配音 wav（2026-09-11 voice 接线：仅服务端链路消费，随 concat
       //   voice 轨上传；本地链路已由 dubVideos 替换进视频，不消费）
       const subtitleTexts = candidates
@@ -1495,31 +1497,38 @@ export function useVideoMontage() {
             text: row.text.trim(),
             timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '',
             voicePath: row.wavPath || '',
-            fxLines: [] as Array<{ text: string; start: number; end: number; keywords: string[] }>,
+            fxLines: [] as Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>,
+            matchId: '',
           }
         })
         .filter((x): x is {
           videoPath: string; text: string; timingPath: string; voicePath: string
-          fxLines: Array<{ text: string; start: number; end: number; keywords: string[] }>
+          fxLines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>
+          matchId: string
         } => !!x)
-      // 2026-09-11 用户裁决：本地合成文字模板与服务端 match、效果预览同源（预览所见即
-      // 合成所做）——仅本地链路预取命中行（服务端链路由 concat 自行从字幕命中）；
-      // 离线/失败 → 空数组（不烧，与预览空轨口径一致，不造数）
-      if (mode === 'local' && textFxEnabled.value && subtitleTexts.length) {
+      // 文字模板命中预取（2026-09-13 接口对齐：两种链路都预取——本地用 events/clips
+      // 下素材+兜底；服务端把 match 回执 match_id 随 concat 下发，服务端直接用保存的
+      // events 烧制不重算 → 预览=成片一致。离线/失败 → 本地空数组不烧 / 服务端无
+      // match_id 退回旧口径由 concat 自行命中）
+      if (textFxEnabled.value && subtitleTexts.length) {
         statusText.value = '正在获取文字模板命中...'
+        // 勾选模板随 match 下发（与 concat text_template_match_ids 同源）：
+        // 随机=当次随机池子集；指定=该模板自身
+        const matchTemplateIds = currentMatchTemplateIds()
         // 串行取数 + 失败归集（2026-09-12 日志实锤：并行 3 连击期间服务端 match
         // 500/ECONNRESET 全灭 → textFxHits=0 → 成片既无关键词也无动画且无提示；
         // 串行+单点重试降连击压力，失败不再静默）
         const failed: string[] = []
         for (const st of subtitleTexts) {
-          const r = await fetchTextFxHits(st.videoPath, st.text, st.timingPath)
+          const r = await fetchTextFxHits(st.videoPath, st.text, st.timingPath, matchTemplateIds)
           st.fxLines = r.lines
+          st.matchId = r.matchId
           if (!r.ok) failed.push(pathBasename(st.videoPath))
         }
         if (failed.length) {
           // 如实透出（铁律：服务端 5xx 定性归因服务端）：不静默产出无文字模板的成片
           clientError('video-montage', '文字模板关键词获取失败', `服务端 /text_templates/match 异常（500/连接中断），以下视频本次未烧文字模板：${failed.join('、')}`)
-          notify('文字模板未生效', `服务端关键词命中接口异常（500/连接中断），以下视频本次合成不含文字模板：\n${failed.join('\n')}\n\n可稍后重试「本地合成」。`)
+          notify('文字模板未生效', `服务端关键词命中接口异常（500/连接中断），以下视频本次合成不含文字模板：\n${failed.join('\n')}\n\n可稍后重试合成。`)
         }
       }
       const hasFx = addSubtitles.value || fancyEnabled.value || textFxEnabled.value
@@ -1555,8 +1564,10 @@ export function useVideoMontage() {
             textTemplateId: textTemplateId.value,
             // match 模式必填（/guide text_template_match_ids）：每次合成从模板库随机
             // 取 N 个 id 作模板池，命中行从池中随机选一（与「随机数量」UI 语义一致）
+            // 2026-09-13 对齐：兜底池与 match 预取同源（currentMatchTemplateIds），
+            // 预取失败退回 concat 自行命中时也保持同一候选集
             textTemplateMatchIds: textTemplateId.value === 'random'
-              ? pickRandomItems(activeTextPool.value, textRandomCount.value).map((t) => String(t.template_id))
+              ? currentMatchTemplateIds()
               : [],
             matchDensity: textKeywordDensity.value,
             // 本地烧制样式池（2026-09-10 用户二次裁决：传全量库+随机个数，每视频在烧制端
@@ -1792,7 +1803,8 @@ export function useVideoMontage() {
   // 2026-09-10 在线契约纠偏：服务端统一合成 POST /montage/concat（multipart）已支持全套
   // text_template_* 字段（enabled/id/words/timing/match_enabled/match_ids），不存在也不需要
   // 独立「文字模板烧制」接口——所有素材统一合成（用户裁决口径）；待把字段接入确认合成请求。
-  const textFxEnabled = ref(false)
+  // 2026-09-13 用户裁决：文字模板默认勾选（模板池/命中均由服务端承担，默认开不增本地负担）
+  const textFxEnabled = ref(true)
   const textTemplateId = ref('random')
   const textRandomCount = ref(3)
   // 关键词密度档位（2026-09-10 用户裁决：低/中/高；调节后重新提取关键词并重新掷模板）
@@ -1889,7 +1901,13 @@ export function useVideoMontage() {
     videoPath: string,
     text: string,
     timingPath: string,
-  ): Promise<{ dur: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }>; ok: boolean }> {
+    templateIds: string[] = [],
+  ): Promise<{
+    dur: number
+    lines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>
+    matchId: string
+    ok: boolean
+  }> {
     const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(videoPath).catch?.(() => 0)) || 0
     let timing: Array<{ text: string; start: number; end: number }> = []
     if (timingPath) {
@@ -1897,39 +1915,60 @@ export function useVideoMontage() {
       timing = res && 'items' in res ? res.items : []
     }
     const rows = buildSubtitleRows(String(text || '').trim(), timing, dur)
-    if (!rows.length) return { dur, lines: [], ok: true }
-    // 缓存复用（预览与合成共享同一份命中行，不再二次调服务端；密度或行内容变化 → key 变 → 重取）
-    const cacheKey = textFxHitsKey(rows)
+    if (!rows.length) return { dur, lines: [], matchId: '', ok: true }
+    // 缓存复用（预览与合成共享同一份命中行+match_id，不再二次调服务端；
+    // 密度/模板池/行内容变化 → key 变 → 重取）
+    const cacheKey = textFxHitsKey(rows) + '|' + templateIds.join(',')
     const cached = textFxHitsCache.get(cacheKey)
-    if (cached) return { dur, lines: cached, ok: true }
+    if (cached) return { dur, lines: cached.lines, matchId: cached.matchId, ok: true }
     // 重试口径（2026-09-12 实锤：服务端 match 偶发 500/ECONNRESET，单次失败曾致
     // 本地烧制 textFxHits=0 → 成片无文字模板；400/900ms 退避共 3 次）
     let ok = false
-    let lines: Array<{ text: string; start: number; end: number; keywords: string[] }> = []
+    let matchId = ''
+    let lines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
     for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
       const res = await window.tintin?.server?.textfxMatchKeywords?.({
         rows,
         density: textKeywordDensity.value,
         llmFill: true,
+        templateIds,
       })
       if (res && 'lines' in res && Array.isArray(res.lines)) {
         ok = true
-        lines = res.lines
-          .filter((l) => l.selected)
-          .map((l) => ({
-            text: String(l.text || ''),
-            start: Number(l.start) || 0,
-            end: Number(l.end) || 0,
-            keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
-          }))
+        matchId = String((res as Record<string, unknown>).match_id || '')
+        // 2026-09-13 接口对齐：textfx_clips = 服务端按候选模板逐事件指派的权威结果
+        // （template_id+text+start+end），本地素材下载/预览直接消费；缺失回退 lines
+        const clips = Array.isArray((res as Record<string, unknown>).textfx_clips)
+          ? ((res as Record<string, unknown>).textfx_clips as Array<Record<string, unknown>>)
+          : []
+        if (clips.length) {
+          lines = clips
+            .filter((c) => c && String(c.template_id || ''))
+            .map((c) => ({
+              text: String(c.text || ''),
+              start: Number(c.start) || 0,
+              end: Number(c.end) || 0,
+              keywords: [String(c.text || '')],
+              templateId: String(c.template_id || ''),
+            }))
+        } else {
+          lines = (res.lines as Array<Record<string, unknown>>)
+            .filter((l) => l.selected)
+            .map((l) => ({
+              text: String(l.text || ''),
+              start: Number(l.start) || 0,
+              end: Number(l.end) || 0,
+              keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
+            }))
+        }
       } else if (attempt < 3) {
         console.warn(`[textfx] match 第 ${attempt}/3 次失败，重试...`, res)
         await new Promise((r) => setTimeout(r, attempt === 1 ? 400 : 900))
       }
     }
     if (!ok) console.warn('[textfx] match 三次均失败（服务端 500/离线），本次不烧文字模板', videoPath)
-    if (ok) textFxHitsCache.set(cacheKey, lines) // 成功才入缓存（失败不污染，下次重取）
-    return { dur, lines, ok }
+    if (ok) textFxHitsCache.set(cacheKey, { lines, matchId }) // 成功才入缓存（失败不污染，下次重取）
+    return { dur, lines, matchId, ok }
   }
   /** 命中行缓存（2026-09-12 用户质询：预览已调过 match，合成为何再调——match 的唯一
    *  业务输入就是 rows（文案+时间轴的实际组装结果），不发也不依赖视频文件；rows 已涵盖
@@ -1937,9 +1976,16 @@ export function useVideoMontage() {
    *  timing 存在时预览/合成 rows 完全一致必命中（不再二次调服务端）；无 timing 时两链
    *  时长不同（源视频 vs 配音后视频）rows 即不同 → 自动重取，避免用源视频时间窗烧配音后
    *  视频的错位。二次调用放大服务端 match 压力正是 500 全灭致文字模板整块消失的诱因） */
-  const textFxHitsCache = new Map<string, Array<{ text: string; start: number; end: number; keywords: string[] }>>()
+  const textFxHitsCache = new Map<string, { lines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>; matchId: string }>()
   function textFxHitsKey(rows: Array<{ text: string; start: number; end: number }>): string {
     return `${textKeywordDensity.value}\u0000${JSON.stringify(rows)}`
+  }
+  /** 当前勾选模板随 match 下发的候选池（与 concat text_template_match_ids 同源）：
+   *  随机=当次随机池子集；指定=该模板自身。预览与合成共用 → 同 match_id 同 events */
+  function currentMatchTemplateIds(): string[] {
+    return textTemplateId.value === 'random'
+      ? pickRandomItems(activeTextPool.value, textRandomCount.value).map((t) => String(t.template_id))
+      : [textTemplateId.value]
   }
   async function refreshTextFxTracks(): Promise<void> {
     const seq = ++textFxTrackSeq
@@ -1962,6 +2008,7 @@ export function useVideoMontage() {
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
       const { dur, lines } = await fetchTextFxHits(
         c, String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '',
+        currentMatchTemplateIds(),
       )
       matched.push({ name: pathBasename(c), durationSec: dur, lines })
     }
@@ -1970,20 +2017,55 @@ export function useVideoMontage() {
     // 2026-09-11 用户二次裁决：展示层改「第N条」序号，见 VideoMontage.vue .textfx-track-name
     // 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与样式橱窗 textFxStyleSamples
     //  同源同构，去除 fontSize 只取颜色/渐变；不命中模板的词条走 CSS 默认色）
-    const sampleByName = new Map(textFxStyleSamples.value.map((s) => [s.name, s]))
     textFxPreviewTracks.value = buildTextFxTracks({
       rows: matched,
       tplNames,
       count: activeTextCount.value, // 每视频独立随机选 N 个（2026-09-10 用户二次裁决）
-    }).map((tr) => ({
-      ...tr,
-      items: tr.items.map((it) => {
-        const s = sampleByName.get(it.tplName)
-        if (!s) return it
-        const { fontSize: _fs, ...tplStyle } = s.style
-        return { ...it, anim: s.anim, tplStyle }
-      }),
-    }))
+    })
+    // 2026-09-13 用户裁决：词条要不播真实动画（render-preview alpha webm，与成片同
+    // 渲染器），要不只是文字——CSS 近似动画废止。素材按 (模板,词) 渐进填充 blob URL，
+    // 并发限 3；未就绪/失败显示纯文字（无任何模拟模板动画）
+    for (const tr of textFxPreviewTracks.value) {
+      for (const it of tr.items) {
+        if (!it.templateId || !it.word) continue
+        void ensureTextFxClipUrl(it.templateId, it.word).then((url) => { if (url) it.clipUrl = url })
+      }
+    }
+  }
+
+  // ── 文字模板词条真实动画素材（方案B 同源：render-preview 小尺寸 alpha WebM）──
+  const textFxClipUrlCache = new Map<string, string>()
+  const textFxClipQueue: Array<() => Promise<unknown>> = []
+  let textFxClipActive = 0
+  function textFxClipPump(): void {
+    while (textFxClipActive < 3 && textFxClipQueue.length) {
+      const job = textFxClipQueue.shift()!
+      textFxClipActive++
+      job().finally(() => { textFxClipActive--; textFxClipPump() })
+    }
+  }
+  /** 取词条真实动画 blob URL（内存缓存同 (模板,词) 复用；失败返回 '' 走纯文字） */
+  function ensureTextFxClipUrl(templateId: string, word: string): Promise<string> {
+    const key = templateId + '|{{w}}|' + word
+    const hit = textFxClipUrlCache.get(key)
+    if (hit) return Promise.resolve(hit)
+    return new Promise((resolve) => {
+      textFxClipQueue.push(async () => {
+        try {
+          const res = await window.tintin?.server?.textfxPreviewClip?.({
+            templateId, text: word, width: 200, height: 356, fps: 12, duration: 2,
+          })
+          if (res && 'data' in res && res.data && res.data.length) {
+            const url = URL.createObjectURL(new Blob([res.data as unknown as BlobPart], { type: 'video/webm' }))
+            textFxClipUrlCache.set(key, url)
+            resolve(url)
+            return
+          }
+        } catch (_) { /* 离线/渲染失败 → 纯文字 */ }
+        resolve('')
+      })
+      textFxClipPump()
+    })
   }
   // 2026-09-11：match 含 LLM 补足（服务端 15s 内），防抖 800ms 收敛连续触发
   // （旧本地提取为纯计算，可直接同步跑；接入服务端后必须防抖）

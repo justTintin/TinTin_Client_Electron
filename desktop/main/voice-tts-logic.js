@@ -853,63 +853,66 @@ function textFxSeedShuffle(arr, seed) {
   return a
 }
 
-function buildTextFxDrawtextList(o, hits, videoIdx) {
+/**
+ * 文字模板命中行 → 烧制计划（2026-09-13 用户裁决：本地合成与服务端同效果——
+ * 本方案B下 plan 同时供两条消费端：drawtext 兜底烧字 / 服务端 render-preview
+ * alpha 素材下载（montage-final-ipc 按 plan 逐条取素材后随 textFxClipOverlays 回传）。
+ * 纯函数可单测；样式池先按视频序确定性洗牌取随机子集（textFxCount 个），
+ * 再按 (视频序+命中行序) 轮换；渲染文案=关键词命中显词、无词行整行截断。
+ * o: { textFxStyles, textFxCount }；hits: [{text,start,end,keywords}]
+ * 返回 [{shown,start,end,style:{name,color,effectColor,anim,templateId,decorations?}}]
+ */
+function planTextFxHits(o, hits, videoIdx) {
   const rows = (Array.isArray(hits) ? hits : [])
     .filter((h) => h && typeof h === 'object' && String(h.text || '').trim())
   const allStyles = Array.isArray(o.textFxStyles) ? o.textFxStyles : []
-  if (!rows.length || !allStyles.length) return { drawtexts: [], overlays: [] }
-  // R3 方案A：装饰图标 overlay 需要（styles[].decorations 由主进程按 R2 公式解析随行）
-  const vw = Number(o.videoW) || 0
-  const vh = Number(o.videoH) || 0
+  if (!rows.length || !allStyles.length) return []
   // 每视频独立随机子集（2026-09-10 用户裁决：随机数量 N 对应每条视频；
   // textFxCount<=0 或池≤1 → 全量轮换）
   const count = Number(o.textFxCount) || 0
   const styles = (count > 0 && allStyles.length > 1)
     ? textFxSeedShuffle(allStyles, Number(videoIdx) || 0).slice(0, Math.min(count, allStyles.length))
     : allStyles
-  const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
-  const drawtexts = []
-  const overlays = []
-  rows.forEach((h, hitIdx) => {
+  return rows.map((h, hitIdx) => {
     const kws = (Array.isArray(h.keywords) ? h.keywords : [])
       .map((k) => String(k).trim()).filter(Boolean)
     const full = String(h.text).trim()
     // 渲染文案与效果预览同款（2026-09-11 用户裁决：关键词命中显词、无词行整行截断）
     const shown = kws.length ? kws.join('/')
       : (full.length > 10 ? `${full.slice(0, 10)}…` : full)
-    const st = styles[(videoIdx + hitIdx) % styles.length] // 与预览 (视频序+词序) 轮换同口径
-    const color = String(st.color || '#FFFFFF').replace('#', '0x')
-    const effect = String(st.effectColor || st.color || '#FFD24D').replace('#', '0x')
     const startT = Math.max(0, Number(h.start) || 0)
     const endT = Math.max(startT + 0.2, Number(h.end) || 0)
-    const s = startT.toFixed(3)
-    const animDur = 0.3
-    // 动画（写法对照字幕/花字 fade/slide/pop 先例；x/y/alpha 含逗号必须引号包裹）。
-    // 2026-09-11 用户反馈「本地合成没有文字模板动画」根因：textFxStyleOf 产出 9 种
-    // 动画语义（bounce/flip/flow/neon/shine/slide/type/pulse/fade）而此处只认
-    // slide/pulse，其余全退化 0.3s 淡入（肉眼≈直接出现）→ 补齐 bounce/neon/shine。
-    let xExpr = '(w-text_w)/2'
-    let yExpr = 'h*0.08' // 顶部居中（与花字中上/字幕底部不重叠）
-    const animParts = []
-    if (st.anim === 'slide') {
-      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
-      xExpr = `(w-text_w)/2+(1-min((t-${s})/${animDur},1))*w*0.10`
-    } else if (st.anim === 'bounce') {
-      // 弹入：快速淡入 + y 弹跳衰减（对照花字 pop 表达式）
-      animParts.push(`alpha='if(lt(t,${s}+0.15),(t-${s})/0.15,1)'`)
-      yExpr = `(${yExpr})-abs(sin((t-${s})*14))*h*0.012*(1-min((t-${s})/0.7,1))`
-    } else if (st.anim === 'neon') {
-      // 霓虹：入场后全程呼吸闪烁（不衰减）
-      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.55+0.45*abs(sin((t-${s})*5)))'`)
-    } else if (st.anim === 'shine') {
-      // 闪烁：高频明暗（流光扫过需渐变色能力，drawtext 无 → 以闪烁近似）
-      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.55+0.45*abs(sin((t-${s})*9)))'`)
-    } else if (st.anim === 'pulse') {
-      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},0.65+0.35*abs(sin((t-${s})*6)))'`)
-    } else {
-      // fade（含 flip/flow/type 能力边界近似）：0.3s 淡入
-      animParts.push(`alpha='if(lt(t,${s}+${animDur}),(t-${s})/${animDur},1)'`)
-    }
+    // 2026-09-13 接口对齐：hit.templateId = 服务端 match textfx_clips 的逐事件指派
+    // （预览/素材/concat 三方同源），命中则优先；否则回退 (视频序+行序) 轮换
+    const override = h.templateId
+      ? allStyles.find((s) => String(s.templateId || '') === String(h.templateId))
+      : null
+    const st = override || styles[(videoIdx + hitIdx) % styles.length] // 与预览 (视频序+词序) 轮换同口径
+    return { shown, start: startT, end: endT, style: st, raw: h }
+  })
+}
+
+function buildTextFxDrawtextList(o, hits, videoIdx) {
+  const plan = planTextFxHits(o, hits, videoIdx)
+  if (!plan.length) return { drawtexts: [], overlays: [] }
+  // R3 方案A：装饰图标 overlay 需要（styles[].decorations 由主进程按 R2 公式解析随行）
+  const vw = Number(o.videoW) || 0
+  const vh = Number(o.videoH) || 0
+  const fontPath = o.fancyFontPath || 'C\\:/Windows/Fonts/msyhbd.ttc'
+  const drawtexts = []
+  const overlays = []
+  plan.forEach((p, hitIdx) => {
+    const shown = p.shown
+    const st = p.style
+    const color = String(st.color || '#FFFFFF').replace('#', '0x')
+    const effect = String(st.effectColor || st.color || '#FFD24D').replace('#', '0x')
+    const startT = p.start
+    const endT = p.end
+    // 2026-09-13 用户裁决：要不真实动画（render-preview alpha 素材 overlay，方案B
+    // 主路径），要不只是文字——drawtext 兜底不再用表达式模拟模板动画（近似动画废止）：
+    // 静态文字按命中窗口显隐（enable），颜色/描边仍按模板提炼值。
+    const xExpr = '(w-text_w)/2'
+    const yExpr = 'h*0.08' // 顶部居中（与花字中上/字幕底部不重叠）
     // R3 方案A：装饰图标 overlay（style.decorations：{file,cx,cy,wf,aspect,rot}，
     // cx/wf 为画布宽占比、cy 为画布高占比——R2 公式的分辨率无关形态）
     for (const d of (Array.isArray(st.decorations) ? st.decorations : [])) {
@@ -932,7 +935,6 @@ function buildTextFxDrawtextList(o, hits, videoIdx) {
       + `borderw=3:bordercolor=${effect}@0.9:`
       + `x='${xExpr}':y='${yExpr}':`
       + `enable='between(t,${startT.toFixed(3)},${endT.toFixed(3)})'`
-      + (animParts.length ? ':' + animParts.join(':') : ''),
     )
   })
   return { drawtexts, overlays }
@@ -1033,12 +1035,32 @@ function buildEffectBurnArgs(opts) {
       overlayInputPaths.push(ov.file)
     })
   }
+  // 方案B（2026-09-13 用户裁决：本地合成与服务端同效果）：文字模板命中行改用服务端
+  // render-preview 全分辨率 alpha WebM 素材（与成片同一渲染器，像素一致），全帧 overlay。
+  // 素材缺失的命中行走 drawtext 兜底（textFxHits 只含兜底行，见 montage-final-ipc）。
+  // 输入序：接在音效/装饰输入之后；setpts 把素材平移到命中起点，eof_action=repeat
+  // 让末帧驻留到 enable 窗口结束（素材时长按命中窗口向服务端定制，正常恰好对齐）。
+  const clipOverlays = Array.isArray(o.textFxClipOverlays) ? o.textFxClipOverlays : []
+  clipOverlays.forEach((cv, ci) => {
+    if (!cv || !cv.file || !(cv.end > cv.start)) return
+    const inIdx = 1 + soundInputPaths.length + overlayInputPaths.length
+    const cLabel = `txc${ci}`
+    videoFilters.push(`[${inIdx}:v]setpts=PTS-STARTPTS+${cv.start.toFixed(3)}/TB[${cLabel}]`)
+    videoFilters.push(`[${videoLabel}][${cLabel}]overlay=x=0:y=0:eof_action=repeat:enable='between(t,${cv.start.toFixed(3)},${cv.end.toFixed(3)})'[txc${ci}]`)
+    videoLabel = `txc${ci}`
+    overlayInputPaths.push(cv.file)
+  })
   if (!videoFilters.length) return null
   // 滤镜输出标签（无冒号）需要 [] 包裹；裸输入流（如 0:a:0）不加
   const audioMap = audioLabel.includes(':') ? audioLabel : `[${audioLabel}]`
   const cmd = ['-y', '-i', o.videoPath]
   for (const sp of soundInputPaths) cmd.push('-i', sp)
-  for (const ip of overlayInputPaths) cmd.push('-i', ip)
+  for (const ip of overlayInputPaths) {
+    // 方案B：alpha WebM 素材必须用 libvpx-vp9 解码（原生 vp9 解码器丢弃
+    // alpha_mode=1 附属流 → overlay 黑底块，2026-09-13 冒烟实锤）；PNG 装饰图不适用
+    if (/\.webm$/i.test(ip)) cmd.push('-c:v', 'libvpx-vp9')
+    cmd.push('-i', ip)
+  }
   cmd.push(
     '-filter_complex', videoFilters.join(';'),
     '-map', `[${videoLabel}]`, '-map', audioMap,
@@ -1321,5 +1343,6 @@ module.exports = {
   buildDubFFmpegArgs,
   buildEffectBurnArgs,
   buildTextFxDrawtextList,
+  planTextFxHits,
   buildTextTemplateDecorations,
 }

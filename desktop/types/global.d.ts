@@ -323,6 +323,9 @@ declare interface TintinBridgeServer {
     /** 密集度 low/mid/high（每 30 秒 3/6/10，保底 3；缺省 high） */
     density?: string
     /** 时长（秒）；本端不传——与合成端同口径由服务端取字幕末行 t1 */
+    /** 候选文字模板 id（与 concat text_template_match_ids 同源，2026-09-13 接口对齐）：
+     *  返回 textfx_clips 按序轮换标注 template_id；服务端保存 events 7 天供 match_id 复用 */
+    templateIds?: string[]
     duration?: number
     /** 按合成口径用 LLM 补足到保底数量（本端 true=预览所见即合成所做） */
     llmFill?: boolean
@@ -467,6 +470,10 @@ declare interface TintinBridgeServer {
   jyTemplatesDeleteServer(payload: { ids: string[] }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; error?: string }> } | { error: string }>
   /** AI 生成 BGM 服务端 URL 下载落盘（本端扩展：本地混音需本地文件） */
   bgmDownloadUrl(payload: { url: string; destDir: string }): Promise<{ path: string } | { error: string } | null>
+  /** 文字模板真实动画预览素材：render-preview 小尺寸 alpha WebM 二进制（转 blob 播放） */
+  textfxPreviewClip(payload: {
+    templateId: string; text: string; width?: number; height?: number; fps?: number; duration?: number
+  }): Promise<{ data: Uint8Array } | { error: string } | null>
 
   // ---------- workflow（CoverMaker 一键成片编排）----------
   workflowRun(

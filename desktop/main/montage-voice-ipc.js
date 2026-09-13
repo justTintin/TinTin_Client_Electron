@@ -481,6 +481,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         return { error: '缺少字幕（rows/srt 二选一）' }
       }
       if (Array.isArray(p.keywords) && p.keywords.length) body.keywords = p.keywords.map((k) => String(k))
+      // 2026-09-13 接口对齐：勾选模板候选随 match 下发（与 concat text_template_match_ids
+      // 同源）——返回 textfx_clips 逐事件标注 template_id，预览/素材/concat 三方同源
+      if (Array.isArray(p.templateIds) && p.templateIds.length) body.template_ids = p.templateIds.map((k) => String(k))
       if (typeof p.density === 'string' && p.density) body.density = p.density
       if (Number.isFinite(Number(p.duration)) && Number(p.duration) > 0) body.duration = Number(p.duration)
       body.llm_fill = !!p.llmFill

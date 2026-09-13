@@ -215,6 +215,8 @@ const server = {
   jyTemplatesSync:      (p) => ipcRenderer.invoke('jytpl:sync', p),
   jyTemplatesDeleteServer: (p) => ipcRenderer.invoke('jytpl:deleteServer', p),
   bgmDownloadUrl:       (p) => ipcRenderer.invoke('bgm:downloadUrl', p),
+  // 文字模板真实动画预览素材（render-preview 小尺寸 alpha WebM，2026-09-13）
+  textfxPreviewClip:    (payload) => ipcRenderer.invoke('textfx:previewClip', payload),
   /** 订阅 voice 域进度事件（cloneBatch/dubVideos），返回取消订阅函数 */
   onVoiceProgress:      (channel, cb) => {
     const h = (_e, d) => cb(d)

@@ -108,7 +108,8 @@ test('buildServerFxFields: 文字模板 → enabled/id(非 random) + match_densi
   // 2026-09-11 用户裁决：词表废止——即便上游残留 words 也不再透传，命中由服务端从字幕做
   assert.ok(!('text_template_words' in f))
   assert.ok(!('text_template_match_ids' in f))
-  assert.equal(f.text_template_match_density, 'mid')
+  // 2026-09-13 接口对齐：density 属 match 模式参数，指定模板（text_template_id）不再透传
+  assert.ok(!('text_template_match_density' in f))
 })
 
 test('buildServerFxFields: random 模板 → match_enabled 自动匹配（不传 id；match_ids 必填透传）', () => {
@@ -120,6 +121,29 @@ test('buildServerFxFields: random 模板 → match_enabled 自动匹配（不传
   assert.equal(f.text_template_match_enabled, 'true')
   assert.deepEqual(JSON.parse(f.text_template_match_ids), ['tt_1', 'tt_5'])
   assert.equal(f.text_template_match_density, 'low')
+})
+
+test('buildServerFxFields: random + matchId → match_enabled/ids 仍传 + match_id（2026-09-13 文档口径）', () => {
+  // 文档：传 match_id 时勾选 id 仍以 text_template_match_ids 为准 → 两者都传；
+  // 服务端用保存的 events 烧制不重算（预览=成片一致），保留 7 天过期 400 重 match
+  const f = M.buildServerFxFields(
+    { textFxEnabled: true, textTemplateId: 'random', textTemplateMatchIds: ['tt_1', 'tt_5'], matchDensity: 'mid' },
+    '', 'mt_abc123',
+  )
+  assert.equal(f.text_template_enabled, 'true')
+  assert.equal(f.text_template_match_enabled, 'true')
+  assert.deepEqual(JSON.parse(f.text_template_match_ids), ['tt_1', 'tt_5'])
+  assert.equal(f.text_template_match_id, 'mt_abc123')
+})
+
+test('buildServerFxFields: 指定模板 + matchId → 仍走 text_template_id（matchId 不适用指定模式）', () => {
+  const f = M.buildServerFxFields(
+    { textFxEnabled: true, textTemplateId: 'tt_3' },
+    '', 'mt_abc123',
+  )
+  assert.equal(f.text_template_id, 'tt_3')
+  assert.ok(!('text_template_match_id' in f))
+  assert.ok(!('text_template_match_enabled' in f))
 })
 
 test('buildServerFxFields: match_density 非法/缺省不传（走服务端默认 high）', () => {

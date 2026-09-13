@@ -19,10 +19,57 @@
 const { spawn, spawnSync, execSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
+const os = require('node:os')
+const crypto = require('node:crypto')
 const JY = require('./jianying-exporter')
 // 特效烧制（2026-09-09 裁决：字幕/花字特效自配音链迁 Step4 统一烧制，
 // 与配音链同一构建器 voice-tts-logic.buildEffectBurnArgs 保证样式/时机一致）
 const L = require('./voice-tts-logic')
+
+// ── 方案B（2026-09-13 用户裁决：本地合成与服务端同效果）──────────────
+// 文字模板命中行素材 = 服务端 POST /text_templates/render-preview 全分辨率
+// alpha WebM（与成片同一渲染器、服务端缓存键含模板指纹+变量+尺寸+帧率+时长），
+// 本地 ffmpeg 全帧 overlay → 像素与成片一致。磁盘缓存按 (模板,文案,尺寸,帧率,时长)，
+// 同参数二次合成零网络。下载失败的单条命中行降级 drawtext 兜底烧字。
+const TEXTFX_CLIP_FPS = 25
+const TEXTFX_CLIP_DIR = path.join(os.tmpdir(), 'tintin-textfx-clips')
+
+function textFxClipCachePath(tplId, text, width, height, durationSec, fps) {
+  const hash = crypto.createHash('md5').update(String(text)).digest('hex').slice(0, 12)
+  return path.join(TEXTFX_CLIP_DIR, `${tplId}_${hash}_${width}x${height}_${fps}fps_${Math.round(durationSec * 100) / 100}s.webm`)
+}
+
+async function downloadTextFxClip({ tplId, text, width, height, durationSec, fps }) {
+  const fpsN = Number(fps) || TEXTFX_CLIP_FPS
+  const qs = 'template_id=' + encodeURIComponent(String(tplId))
+    + '&text=' + encodeURIComponent(String(text))
+    + '&width=' + Number(width) + '&height=' + Number(height)
+    + '&fps=' + fpsN + '&duration=' + (Math.round(durationSec * 100) / 100)
+  const res = await httpRequest('POST', '/text_templates/render-preview?' + qs, { timeout: 120000 })
+  const buf = Buffer.isBuffer(res.raw) ? res.raw : null
+  const head = buf ? buf.subarray(0, 4).toString('hex') : ''
+  // WebM/Matroska EBML 头 1A45DFA3；非二进制（JSON 错误体）按失败处理
+  if (!buf || buf.length < 64 || head !== '1a45dfa3') {
+    throw new Error('render-preview 响应非 webm（' + (buf ? buf.length + 'B head=' + head : '空') + '）')
+  }
+  fs.mkdirSync(TEXTFX_CLIP_DIR, { recursive: true })
+  const dest = textFxClipCachePath(tplId, text, width, height, durationSec, fpsN)
+  fs.writeFileSync(dest, buf)
+  return dest
+}
+
+// WebM alpha（alpha_mode=1 附属流）只有 libvpx-vp9 解码器能解出（原生 vp9 解码器
+// 丢弃 alpha → overlay 出黑底块，2026-09-13 冒烟实锤）。进程内探测一次本机
+// ffmpeg 是否带该解码器，缺失则整批降级 drawtext 兜底。
+let _libvpxVp9Ok = null
+function hasLibvpxVp9Decoder(ffmpegPath) {
+  if (_libvpxVp9Ok !== null) return _libvpxVp9Ok
+  try {
+    const out = spawnSync(ffmpegPath, ['-hide_banner', '-decoders'], { encoding: 'utf8', timeout: 15000 })
+    _libvpxVp9Ok = !!(out.stdout && /libvpx-vp9/i.test(out.stdout))
+  } catch (_) { _libvpxVp9Ok = false }
+  return _libvpxVp9Ok
+}
 const FT = require('./fancy-templates')
 const VI = require('./montage-voice-ipc')
 const JT = require('./jianying-templates')
@@ -266,8 +313,12 @@ function buildSrtFromTiming(text, timing, videoDur) {
  *    命中由服务端自行完成（常用关键词∪内置卖点词；不足由 LLM 从字幕行补足，
  *    text_template_match_llm 默认开）；客户端也不再预传词表到 /text_templates/keywords；
  *  · match 模式必填 text_template_match_ids（客户端模板池，命中行从池中随机选一），
- *    漏传则服务端无池可用（/guide 决策1/11）。 */
-function buildServerFxFields(fx, srt) {
+ *    漏传则服务端无池可用（/guide 决策1/11）。
+ *  · 2026-09-13 接口对齐（用户裁决：预览=成片一致）：渲染层已预取 /text_templates/match
+ *    回执 match_id（服务端保存 events 7 天）→ concat 改传 text_template_match_id，
+ *    服务端直接用保存的 events 烧制不重算；此时不再传 match_enabled/ids/density。
+ *    无 match_id（预取失败/离线）→ 退回旧口径由 concat 自行命中。 */
+function buildServerFxFields(fx, srt, matchId) {
   const fields = {}
   // 字幕数据随任一依赖字幕的特效下发（不依赖 burn_subtitle 开关）
   if (srt && (fx.addSubtitles || fx.fancyText || fx.textFxEnabled)) {
@@ -299,15 +350,18 @@ function buildServerFxFields(fx, srt) {
     if (fx.textTemplateId && fx.textTemplateId !== 'random') {
       fields.text_template_id = String(fx.textTemplateId)
     } else {
-      // 随机样式（未指定模板）→ 服务端关键词命中模式（match 优先）
+      // 随机样式 → 关键词命中模式。最小接入=①match_enabled（总开关）+②match_ids
+      // （勾选池，JSON 数组）+字幕；2026-09-13 接口对齐：预取回执 match_id 一并传
+      // （推荐，服务端直接用保存的 events 烧制不重算 → 预览=成片一致；保留 7 天，
+      // 过期 400 客户端重新 match）。文档口径：传 match_id 时勾选 id 仍以 match_ids 为准。
       fields.text_template_match_enabled = 'true'
-      // match 必填：客户端模板池（/guide text_template_match_ids）
       if (Array.isArray(fx.textTemplateMatchIds) && fx.textTemplateMatchIds.length) {
         fields.text_template_match_ids = JSON.stringify(fx.textTemplateMatchIds.map((x) => String(x)))
       }
+      if (matchId) fields.text_template_match_id = String(matchId)
+      const md = String(fx.matchDensity || '').trim().toLowerCase()
+      if (md === 'low' || md === 'mid' || md === 'high') fields.text_template_match_density = md
     }
-    const md = String(fx.matchDensity || '').trim().toLowerCase()
-    if (md === 'low' || md === 'mid' || md === 'high') fields.text_template_match_density = md
   }
   return fields
 }
@@ -368,7 +422,7 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
         if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
       }
     } catch (_) { timing = null }
-    fields = buildServerFxFields(fx, buildSrtFromTiming(sub.text, timing, videoDur))
+    fields = buildServerFxFields(fx, buildSrtFromTiming(sub.text, timing, videoDur), sub.matchId)
   }
   // 回传源规格：否则服务端按默认 1080x1920@30 改写产物（实测坑）
   if (spec && spec.width > 0 && spec.height > 0) {
@@ -537,11 +591,11 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           // 新任务首次合成必炸，两条链路共用此烧制前置）→ 烧制前先建目录
           fs.mkdirSync(path.dirname(fxOut), { recursive: true })
           // R3 方案A：jy_ 前缀文字模板 → 本地装饰图标解析（R2 公式，分辨率无关占比）；
-          // 仅存在 jy_ 样式时才探测画布尺寸，避免多余 ffprobe
+          // 方案B：方案B素材为全帧 overlay，画布尺寸对所有模板都需要 → 有样式池即探测
           let videoW = 0, videoH = 0
           let stylesForBurn = Array.isArray(fx.textFxStyles) ? fx.textFxStyles : []
           try {
-            if (stylesForBurn.some((s) => s && String(s.templateId || '').startsWith('jy_'))) {
+            if (stylesForBurn.length) {
               const dims = probeMedia(t.videoPath)
               videoW = dims.width; videoH = dims.height
               const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
@@ -553,6 +607,46 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             }
           } catch (decoErr) {
             try { logInfo('final-mix', '装饰图标解析失败（降级纯文字）: ' + (decoErr && decoErr.message || decoErr)) } catch (_) {}
+          }
+          // 方案B：命中行 → 服务端 render-preview alpha WebM（与成片同渲染器，像素一致）；
+          // 单条下载失败 → 该行留在 textFxHits 走 drawtext 兜底，不阻塞整批
+          let clipOverlays = []
+          let fallbackHits = Array.isArray(sub.fxLines) ? sub.fxLines : []
+          try {
+            const clipsSupported = hasLibvpxVp9Decoder(ffmpegPath)
+            if (!clipsSupported) {
+              try { logInfo('final-mix', '本机 ffmpeg 无 libvpx-vp9 解码器（无法解 WebM alpha），文字模板整体降级 drawtext') } catch (_) {}
+            }
+            if (clipsSupported && stylesForBurn.length && videoW > 0 && Array.isArray(sub.fxLines) && sub.fxLines.length) {
+              const plan = L.planTextFxHits(
+                { textFxStyles: stylesForBurn, textFxCount: Number(fx.textFxCount) || 0 },
+                sub.fxLines, i,
+              )
+              if (plan.length) {
+                fallbackHits = []
+                clipOverlays = []
+                for (const ph of plan) {
+                  const durSec = Math.min(600, Math.max(0.5, ph.end - ph.start))
+                  try {
+                    const file = await downloadTextFxClip({
+                      tplId: ph.style.templateId || 'default',
+                      text: ph.shown,
+                      width: videoW, height: videoH,
+                      durationSec: durSec,
+                    })
+                    clipOverlays.push({ file, start: ph.start, end: ph.end })
+                  } catch (clipErr) {
+                    fallbackHits.push(ph.raw)
+                    try { logInfo('final-mix', `文字模板素材下载失败（降级 drawtext）：${ph.shown} → ${clipErr && clipErr.message}`) } catch (_) {}
+                  }
+                }
+                if (clipOverlays.length) emit(`文字模板素材就绪 ${clipOverlays.length}/${plan.length}，开始烧制...`, null)
+              }
+            }
+          } catch (planErr) {
+            fallbackHits = Array.isArray(sub.fxLines) ? sub.fxLines : []
+            clipOverlays = []
+            try { logInfo('final-mix', '文字模板素材计划失败（整体降级 drawtext）: ' + (planErr && planErr.message)) } catch (_) {}
           }
           const args = L.buildEffectBurnArgs({
             videoPath: t.videoPath,
@@ -576,14 +670,16 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             fancySoundGainDb,
             // 文字模板命中行（2026-09-11 用户裁决：本地烧制与服务端 /text_templates/match
             // 命中同源——渲染层按合成口径预取命中行（fxLines）随 payload 下发；
-            // 离线/未取到 → 空（不烧，与预览空轨口径一致；不再本地提取卖点词，
-            // 旧实现在无卖点词文案上提取为空会导致文字模板整块不烧））
-            textFxHits: Array.isArray(sub.fxLines) ? sub.fxLines : [],
+            // 2026-09-13 方案B：命中行优先走 render-preview alpha 素材 overlay，
+            // 仅素材下载失败的行留在 textFxHits 走 drawtext 兜底）
+            textFxHits: fallbackHits,
             // textFxCount=每视频随机选 N 个（随机样式模式），漏传会导致全量轮换
             textFxStyles: stylesForBurn,
             videoW: videoW,
             videoH: videoH,
             textFxCount: Number(fx.textFxCount) || 0,
+            // 方案B：服务端同源 alpha 素材全帧 overlay（与成片像素一致）
+            textFxClipOverlays: clipOverlays,
           })
           if (!args) {
             try { logInfo('final-mix', `特效烧制直通（构建器判定无可烧特效，多为命中行/样式池为空）: ${path.basename(t.videoPath)}`) } catch (_) {}
@@ -989,6 +1085,25 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       }
     }
     return { ok: true, results }
+  })
+
+  // ── textfx:previewClip — 文字模板真实动画预览素材（2026-09-13 用户裁决：
+  //     效果预览词条播 render-preview 真实动画，CSS 近似废止）——小尺寸 alpha
+  //     WebM（与成片同渲染器），磁盘缓存同键复用；渲染层转 blob URL 播放 ──
+  ipcMain.handle('textfx:previewClip', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      const tplId = String(p.templateId || '')
+      if (!tplId) throw new Error('templateId required')
+      const width = Math.min(1080, Math.max(120, Number(p.width) || 200))
+      const height = Math.min(1920, Math.max(120, Number(p.height) || 356))
+      const dur = Math.min(10, Math.max(0.5, Number(p.duration) || 2))
+      const file = await downloadTextFxClip({
+        tplId, text: String(p.text || ''), width, height, durationSec: dur,
+        fps: Math.min(30, Math.max(8, Number(p.fps) || 12)),
+      })
+      return { data: new Uint8Array(fs.readFileSync(file)) }
+    } catch (err) { return { error: err.message } }
   })
 
   // ── bgm:downloadUrl — AI 生成 BGM 落盘（本端扩展：本地混音需本地文件，见头注）──

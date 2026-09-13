@@ -485,37 +485,29 @@ test('buildTextFxDrawtextList: 服务端命中行时间窗顶部叠加 + 样式�
   assert.ok(drawtexts[0].includes('fontcolor=0xFFD24D')) // # → 0x（ffmpeg 色值）
   assert.ok(drawtexts[0].includes('bordercolor=0xFF8800@0.9'))
   assert.ok(drawtexts[0].includes("y='h*0.08'") && drawtexts[0].includes('between(t,0.000,3.000)'))
-  assert.ok(drawtexts[0].includes('0.65+0.35*abs(sin((t-0.000)*6))')) // pulse 持续脉动
+  // 2026-09-13 用户裁决：近似动画废止——drawtext 兜底为静态文字（真实动画走 alpha 素材 overlay）
+  assert.ok(!drawtexts[0].includes('sin(') && !drawtexts[0].includes("alpha='if(lt("))
   // 行 2：多词 "/" 拼接 + slide x 位移
   assert.ok(drawtexts[1].includes("text='持久/便宜'"))
-  assert.ok(drawtexts[1].includes('fontcolor=0x4FC3F7') && drawtexts[1].includes('w*0.10'))
+  assert.ok(drawtexts[1].includes('fontcolor=0x4FC3F7') && !drawtexts[1].includes('sin('))
   // 行 3：无词行（LLM 补足）整行截断（>10 字，与预览同款）；样式回到 pool[0]
   assert.ok(drawtexts[2].includes('这是没有命中词的补足…'))
   assert.ok(drawtexts[2].includes('fontcolor=0xFFD24D') && drawtexts[2].includes('between(t,6.000,9.000)'))
 })
 
-test('buildTextFxDrawtextList: 动画语义 bounce/neon/shine 本地可见（不再全量退化 fade）', () => {
-  // 2026-09-11 用户反馈「本地合成没有文字模板动画」：textFxStyleOf 产出 9 种动画
-  // 语义，烧制端此前只认 slide/pulse，其余全退化 0.3s 淡入（肉眼≈直接出现）
-  const mk = (anim) => {
+test('buildTextFxDrawtextList: 兜底纯文字不模拟模板动画（2026-09-13 近似动画废止）', () => {
+  // 要不真实动画（render-preview alpha 素材 overlay，主路径），要不只是文字：
+  // drawtext 兜底不再携带任何模板动画表达式（bounce/neon/shine 等全部废止）
+  for (const anim of ['bounce', 'neon', 'shine', 'slide', 'pulse', 'fade']) {
     const { drawtexts } = L.buildTextFxDrawtextList(
       { textFxStyles: [{ name: anim, color: '#FFD24D', effectColor: '#FF8800', anim }] },
       [{ text: '持久续航', start: 0, end: 3, keywords: ['持久'] }],
       0,
     )
-    return drawtexts[0]
-  }
-  assert.ok(mk, '单命中行应生成 drawtext')
-  // bounce：y 弹跳衰减（对照花字 pop 表达式）
-  assert.ok(mk('bounce').includes('abs(sin((t-0.000)*14))*h*0.012'))
-  // neon/shine：入场后全程闪烁（sin 项在尾帧仍生效，非纯淡入）
-  assert.ok(mk('neon').includes('0.55+0.45*abs(sin((t-0.000)*5))'))
-  assert.ok(mk('shine').includes('0.55+0.45*abs(sin((t-0.000)*9))'))
-  // fade/flip/flow/type：drawtext 能力边界近似淡入（无 sin，尾帧恒亮）
-  for (const a of ['fade', 'flip', 'flow', 'type']) {
-    const d = mk(a)
-    assert.ok(d.includes("alpha='if(lt(t,0.000+0.3),(t-0.000)/0.3,1)'"), `${a} 应为 0.3s 淡入`)
-    assert.ok(!d.includes('sin'), `${a} 不应含闪烁表达式`)
+    assert.equal(drawtexts.length, 1)
+    assert.ok(drawtexts[0].includes('fontcolor=0xFFD24D') && drawtexts[0].includes('bordercolor=0xFF8800@0.9'), anim + ' 保留模板色/描边')
+    assert.ok(drawtexts[0].includes("enable='between(t,0.000,3.000)'"), anim + ' 保留时间窗')
+    assert.ok(!drawtexts[0].includes('sin(') && !drawtexts[0].includes("alpha='if(lt("), anim + ' 不含模拟动画表达式')
   }
 })
 
@@ -616,4 +608,38 @@ test('buildEffectBurnArgs: 仅勾文字模板（无字幕/花字）也生烧制�
   })
   fc = both[both.indexOf('-filter_complex') + 1]
   assert.ok(fc.includes('[v]') && fc.includes('[v]drawtext') && fc.includes('[vtx]'))
+})
+
+test('planTextFxHits：样式轮换 (视频序+行序)；显词/整行截断；raw 保留原 hit', () => {
+  const styles = [
+    { name: 'a', color: '#FF0000', effectColor: '#00FF00', anim: 'bounce', templateId: 'jy_1' },
+    { name: 'b', color: '#0000FF', effectColor: '#FFFF00', anim: 'slide', templateId: 'tpl2' },
+  ]
+  const hits = [
+    { text: '第零行', start: 1, end: 3, keywords: [] },
+    { text: '第一行', start: 2, end: 4, keywords: ['持久'] },
+  ]
+  const plan = L.planTextFxHits({ textFxStyles: styles, textFxCount: 0 }, hits, 0)
+  assert.equal(plan.length, 2)
+  assert.equal(plan[0].shown, '第零行')
+  assert.equal(plan[1].shown, '持久')
+  assert.ok(plan[1].raw === hits[1], 'raw=原 hit（兜底分流用）')
+  assert.equal(plan[0].style.templateId, 'jy_1')
+  assert.equal(plan[1].style.templateId, 'tpl2')
+  assert.deepEqual(L.planTextFxHits({ textFxStyles: [] }, hits, 0), [])
+})
+
+test('buildEffectBurnArgs：textFxClipOverlays → webm 输入带 libvpx-vp9 解码 + setpts 平移 + enable 窗口', () => {
+  const cmd = L.buildEffectBurnArgs({
+    videoPath: 'in.mp4', outputVideoPath: 'out.mp4', videoDur: 10,
+    text: '', textFxHits: [], textFxStyles: [],
+    textFxClipOverlays: [{ file: 'a.webm', start: 1.5, end: 3.5 }],
+  })
+  assert.ok(Array.isArray(cmd), '应产出参数')
+  const iDec = cmd.indexOf('-c:v', cmd.indexOf('-i', cmd.indexOf('-i') + 1) + 1)
+  assert.ok(cmd.includes('libvpx-vp9'), 'webm 输入应声明 libvpx-vp9 解码器')
+  assert.ok(cmd.indexOf('-i', 1) < iDec, '解码器声明在对应 -i 之前')
+  const fc = cmd[cmd.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('[1:v]setpts=PTS-STARTPTS+1.500/TB[txc0]'))
+  assert.ok(fc.includes("overlay=x=0:y=0:eof_action=repeat:enable='between(t,1.500,3.500)'"))
 })

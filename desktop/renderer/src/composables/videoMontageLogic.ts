@@ -906,6 +906,17 @@ export interface TextFxStyle {
   /** M2a/R3：剪映同步模板 id（jy_<resource_id>），本地烧制据此解析装饰图标 */
   templateId?: string
 }
+/** 描边兜底色（2026-09-13 用户反馈「本地全默认效果」：variables 无第二色时 effectColor
+ *  曾回退主色 → 白字白边=无描边。按主色亮度取对比色：亮字深边/暗字白边/中亮加深） */
+function borderFallbackOf(main: string): string {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(main)
+  if (!m) return '#1A1A1A'
+  const ch = [1, 3, 5].map((i) => parseInt(main.slice(i, i + 2), 16) / 255)
+  const lum = 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+  if (lum > 0.6) return '#1A1A1A'
+  if (lum < 0.25) return '#FFFFFF'
+  return '#' + ch.map((v) => Math.round(v * 150).toString(16).padStart(2, '0')).join('')
+}
 export function textFxStyleOf(t: { template_id?: string; name?: string; variables?: unknown }): TextFxStyle {
   const vars = (t.variables && typeof t.variables === 'object' ? t.variables : {}) as Record<string, { default?: unknown }>
   const colors: string[] = []
@@ -926,7 +937,8 @@ export function textFxStyleOf(t: { template_id?: string; name?: string; variable
     : /pulse|zoom|脉冲|缩放/.test(key) ? 'pulse'
     : 'fade')
   const mainColor = String((vars.color && typeof vars.color === 'object' ? vars.color.default : '') || '#FFFFFF')
-  const effectColor = colors.find((c) => c.toLowerCase() !== mainColor.toLowerCase()) || mainColor
+  // 渐变副色 color2 优先做效果色；无第二色按亮度兜底对比描边（不再回退主色）
+  const effectColor = colors.find((c) => c.toLowerCase() !== mainColor.toLowerCase()) || borderFallbackOf(mainColor)
   return { name: String(t.name || ''), color: mainColor, effectColor, anim, templateId: String(t.template_id || '') }
 }
 
@@ -938,12 +950,18 @@ export interface TextFxTrackItem {
   tplName: string
   start: number
   end: number
-  /** 命中模板的动画语义键（textfx-anim-{anim} CSS 类） */
+  /** 服务端 match textfx_clips 逐事件指派的模板 id（2026-09-13 接口对齐；
+   *  预览词条据此播放 render-preview 真实动画，未指派回退轮换） */
+  templateId?: string
+  /** 命中模板的动画语义键（2026-09-13 CSS 近似废止，仅作素材元数据保留） */
   anim?: string
   /** 命中模板的预览样式（颜色/渐变，不含 fontSize） */
   tplStyle?: Record<string, string>
   /** 服务端命中行的完整文本（word 为命中关键词时悬停提示显示整行；2026-09-11） */
   fullText?: string
+  /** 真实动画素材 blob URL（render-preview alpha webm；2026-09-13 用户裁决：
+   *  词条要不播真实动画要不纯文字，CSS 近似动画废止） */
+  clipUrl?: string
 }
 
 /** 确定性种子洗牌（LCG；seed 相同结果相同 → 预览与烧制同源不漂移）。
@@ -1010,8 +1028,9 @@ export function buildTextFxTracks(opts: {
   rows: Array<{
     name: string
     durationSec: number
-    /** 服务端命中行动画（lines 中 selected=true 的行；行级时间戳） */
-    lines?: Array<{ text: string; start: number; end: number; keywords?: string[] }>
+    /** 服务端命中行动画（lines 中 selected=true 的行；行级时间戳；
+     *  2026-09-13 接口对齐：templateId=match textfx_clips 逐事件指派，有则透传词条） */
+    lines?: Array<{ text: string; start: number; end: number; keywords?: string[]; templateId?: string }>
   }>
   tplNames: string[]
   /** 每视频随机样式个数（2026-09-10 用户裁决；缺省 0=全量池轮换） */
@@ -1031,6 +1050,7 @@ export function buildTextFxTracks(opts: {
         tplName: videoPool.length ? videoPool[(vi + i) % videoPool.length] : '',
         start: Number(l.start) || 0,
         end: Number(l.end) || 0,
+        templateId: l.templateId ? String(l.templateId) : undefined,
       }
     })
     return { name: row.name, durationSec: dur, items }

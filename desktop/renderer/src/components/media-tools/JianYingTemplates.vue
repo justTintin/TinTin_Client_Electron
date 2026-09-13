@@ -62,11 +62,15 @@
             <img v-else-if="String(item.preview) && !brokenPreview.has('img:' + String(item.id))" :src="absUrl(String(item.preview))" :alt="String(item.name)" class="jytpl-preview-img"
               loading="lazy" @error="brokenPreview.add('img:' + String(item.id))" />
             <div v-else class="jytpl-preview-anim" :class="'anim-' + String(item.anim || 'fade')">
-              <span class="jytpl-preview-text" :style="{ color: String(item.color || '#fff') }">{{ String(item.text || item.name) }}</span>
+              <span class="jytpl-preview-text"
+                :style="item.cssStyle ? String(item.cssStyle) : { color: String(item.color || '#fff') }">{{ String(item.text || item.name) }}</span>
             </div>
           </div>
           <div class="jytpl-card-body">
-            <div class="jytpl-card-name" :title="String(item.name)">{{ String(item.name) }}</div>
+            <div class="jytpl-card-name" :title="String(item.name)">
+              {{ String(item.name) }}
+              <button v-if="item.fileUrl" class="jytpl-play-btn" @click.stop="toggleAudio(item, $event)" :title="playingId === String(item.id) ? '停止' : '播放'">{{ playingId === String(item.id) ? '⏹' : '▶' }}</button>
+            </div>
             <div class="jytpl-card-meta">
               <span v-if="item.category" class="tag">{{ item.category }}</span>
               <span v-if="item.anim" class="tag anim-tag">{{ animLabel(String(item.anim)) }}</span>
@@ -257,6 +261,22 @@ async function reload() {
     loading.value = false
   }
 }
+// 音频试听（单例 audio，切播即停）
+let audioEl: HTMLAudioElement | null = null
+const playingId = ref('')
+function toggleAudio(item: Record<string, unknown>, ev: Event) {
+  ev.stopPropagation()
+  const id = String(item.id)
+  const url = absUrl(String(item.fileUrl || ''))
+  if (!url) return
+  if (playingId.value === id) { audioEl?.pause(); playingId.value = ''; return }
+  audioEl?.pause()
+  audioEl = new Audio(url)
+  audioEl.onended = () => { playingId.value = '' }
+  audioEl.onerror = () => { playingId.value = '' }
+  audioEl.play().catch(() => { playingId.value = '' })
+  playingId.value = id
+}
 onMounted(reload)
 
 async function syncSelectedById() {
@@ -343,6 +363,7 @@ async function deleteSelected() {
 .jytpl-card-body { padding: 8px 10px; }
 .jytpl-card-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jytpl-card-meta { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+.jytpl-play-btn { background: #409eff; border: none; color: #fff; border-radius: 50%; width: 20px; height: 20px; font-size: 10px; cursor: pointer; margin-left: 6px; line-height: 1; }
 .tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: rgba(255,255,255,.08); color: #999; }
 .anim-tag { color: #8ab4f8; }
 .muted { color: #666; }

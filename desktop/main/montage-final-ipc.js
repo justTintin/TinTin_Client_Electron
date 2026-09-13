@@ -857,18 +857,33 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         for (const lane of g.lanes || []) {
           const items = (fetched[lane.endpoint] || []).map((t) => {
             if (lane.endpoint === '/fancy/templates') {
-              // 花字：fancy 模板结构（template_id/name/category/style/anim/preview?）
+              // 花字：fancy 模板结构；style=drawtext 样式串 → 解析成 CSS（卡片文字渲染用）
               const name = String(t.name || t.template_id || '')
+              const styleStr = String(t.style || '')
+              const d2h = (v) => '#' + String(v).replace(/^0x/i, '').padStart(6, '0').slice(0, 6)
+              const pickC = (k) => { const m = new RegExp(k + '=0x([0-9a-fA-F]{6,8})').exec(styleStr); return m ? d2h(m[1]) : '' }
+              const bw = /borderw=(d+)/.exec(styleStr)
+              const sx = /shadowx=(d+)/.exec(styleStr)
+              const sy = /shadowy=(d+)/.exec(styleStr)
+              const fontColor = pickC('fontcolor') || '#FFFFFF'
+              const borderColor = pickC('bordercolor')
+              const shadowColor = pickC('shadowcolor')
+              const cssParts = ['color:' + fontColor, 'font-weight:900']
+              if (borderColor && bw) cssParts.push('-webkit-text-stroke:' + Math.min(6, Number(bw[1])) + 'px ' + borderColor)
+              const shadows = []
+              if (shadowColor) shadows.push(Number(sx ? sx[1] : 0) + 'px ' + Number(sy ? sy[1] : 0) + 'px 0 ' + shadowColor)
+              if (shadows.length) cssParts.push('text-shadow:' + shadows.join(','))
               return {
                 id: String(t.template_id || t.id || name),
                 name,
-                color: '',
+                color: fontColor,
                 text: name,
-                anim: String(t.anim || ''),
+                anim: String(t.anim || t.jy_intro_anim || ''),
                 animSignature: '',
                 category: String(t.category || ''),
                 preview: String(t.preview || ''),
-                previewWebm: String(t.preview_webm || t.preview || ''),
+                previewWebm: String(t.preview_webm || ''),
+                cssStyle: cssParts.join(';'),
                 raw: t,
               }
             }
@@ -878,6 +893,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
                 name: String(t.filename || t.name || ''),
                 category: String(t.category || ''),
                 durationSec: Number(t.duration_s || 0),
+                fileUrl: '/audio/library/' + String(t.id) + '/file',
                 tags: Array.isArray(t.tags) ? t.tags : [],
                 raw: t,
               }

@@ -237,15 +237,35 @@ function buildSyncPackage(presetDir, rid) {
   if (!p) return null
   const eff = p.effect || {}
   const para = (p.paragraphs || [])[0] || {}
-  let text = '', color = '#FFFFFF', fontSize = 60
+  let text = '', color = '#FFFFFF', color2 = '', fontSize = 60
+  // rgb 浮点三元组 → #RRGGBB
+  const rgbaToHex = (c) => (Array.isArray(c) && c.length >= 3)
+    ? '#' + c.slice(0, 3).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('')
+    : ''
   try {
     const cc = JSON.parse(para.content)
     text = cc.text || ''
     for (const st of cc.styles || []) {
       if (st.size) fontSize = st.size
-      if (st.fill && st.fill.content && st.fill.content.solid) {
-        const col = st.fill.content.solid.color
-        if (Array.isArray(col) && col.length >= 3) color = '#' + col.slice(0, 3).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('')
+      const fc = st.fill && st.fill.content
+      if (!fc) continue
+      if (fc.solid) {
+        const hex = rgbaToHex(fc.solid.color)
+        if (hex) color = hex
+      } else if (fc.gradient && Array.isArray(fc.gradient.color) && fc.gradient.color.length) {
+        // 2026-09-13 用户裁决：渐变填充导出主色+副色（color=首 stop/color2=第一个
+        // 与主色不同的 stop，首末同色时取中间色，如好物分享 白→浅蓝→白）——
+        // 此前只读 solid，渐变模板全被提炼成白字，本地 drawtext 清一色默认观感。
+        // 服务端原样存储可后续做渐变字。
+        const stops = fc.gradient.color
+        const h0 = rgbaToHex(stops[0])
+        let h1 = ''
+        for (let k = 1; k < stops.length; k++) {
+          const hk = rgbaToHex(stops[k])
+          if (hk && hk.toLowerCase() !== (h0 || '').toLowerCase()) { h1 = hk; break }
+        }
+        if (h0) color = h0
+        if (h1) color2 = h1
       }
     }
   } catch (_) {}
@@ -352,6 +372,7 @@ function buildSyncPackage(presetDir, rid) {
     variables: {
       text: { type: 'string', default: text, label: '标题文字' },
       color: { type: 'string', default: color, label: '文字颜色' },
+      ...(color2 ? { color2: { type: 'string', default: color2, label: '渐变副色' } } : {}),
       fontSize: { type: 'number', default: Number((fontSize * textScale).toFixed(1)), label: '字号' },
       anim: { type: 'string', default: anim, label: '入场动画' },
       animSignature: { type: 'string', default: animAll || 'none', label: '动画签名(剪映lua语义)' },

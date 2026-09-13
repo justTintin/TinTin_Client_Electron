@@ -832,21 +832,43 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── jytpl:list — 剪映素材模板聚合列表（六大分类；文本类带服务端同步状态）──
+  // ── jytpl:list — 剪映模板卡片数据源（§0.0 单一数据源：主数据=服务端模板库；
+  //    localAvailable=本机剪映可同步预设清单，仅供「从剪映同步」弹窗使用）──
   ipcMain.handle('jytpl:list', async () => {
     try {
-      const jyRoot = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data')
-      const result = await JT.scanAllAsync({ jianyingRoot: jyRoot, httpRequest })
-      // 为特效 PNG 生成 base64 预览（<50KB）
-      for (const item of result['特效']) {
-        if (item.preview && fs.existsSync(item.preview)) {
-          try {
-            const buf = fs.readFileSync(item.preview)
-            if (buf.length < 51200) item.previewDataUri = 'data:image/png;base64,' + buf.toString('base64')
-          } catch (_) {}
+      // 1) 主数据：服务端模板库（分组按剪映语义：花字库=有效果引用非「文字模板」类目；文字模板=类目含「文字模板」）
+      const res = await httpRequest('GET', '/text_templates/templates', { timeout: 10000 })
+      const data = res && res.data
+      const list = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
+      const fancy = [], tpl = []
+      for (const t of list) {
+        const vars = t.variables || {}
+        const sig = String((vars.animSignature && vars.animSignature.default) || '')
+        const desc = String(t.description || '')
+        const isTpl = /类目:.*文字模板/.test(desc) || /文字模板/.test(String(t.category || ''))
+        const item = {
+          id: String(t.id), name: String(t.name || t.id),
+          color: String((vars.color && vars.color.default) || '#FFFFFF'),
+          text: String((vars.text && vars.text.default) || t.name || ''),
+          anim: String((vars.anim && vars.anim.default) || '') || (sig ? '' : 'fade'),
+          animSignature: sig,
+          category: String(t.category || ''),
+          preview: String(t.preview || ''),
+          previewWebm: String(t.preview_webm || ''),
+          synced: true,
         }
+        ;(isTpl ? tpl : fancy).push(item)
       }
-      return { ok: true, categories: result }
+      // 2) 本机可同步清单（弹窗用；不作为卡片数据源）
+      const jyRoot = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data')
+      const local = JT.scanTextPresets(path.join(jyRoot, 'Presets', 'Text_V2'))
+      const serverIds = new Set(list.map((t) => String(t.id)))
+      const localItems = [...local.textItems, ...local.tplItems].map((it) => ({
+        ...it,
+        serverId: 'jy_' + it.effectId,
+        syncedToServer: serverIds.has('jy_' + it.effectId),
+      }))
+      return { ok: true, serverUrl: getServerUrl(), serverTemplates: { 花字库: fancy, 文字模板: tpl }, localAvailable: localItems }
     } catch (err) {
       return { error: err.message }
     }
@@ -855,7 +877,12 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   // ── jytpl:sync — 批量同步选中文本模板到服务端（打包+上传，buildSyncPackage 内联版）──
   ipcMain.handle('jytpl:sync', async (_e, payload) => {
     const ids = Array.isArray((payload || {}).ids) ? payload.ids : []
+    const alsoServer = (payload || {}).alsoServer !== false
     if (!ids.length) return { error: '未选择模板' }
+    // §0.0 单一数据源：同步目标即服务端；alsoServer=false 无意义，明确提示
+    if (!alsoServer) {
+      return { ok: true, results: ids.map((id) => ({ id: String(id), ok: false, error: '未勾选「同时同步到服务端」——同步目标即服务端，请勾选后重试' })) }
+    }
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     const outDir = path.join(process.env.TEMP || process.env.LOCALAPPDATA, 'tintin-jytpl-sync')
     fs.mkdirSync(outDir, { recursive: true })

@@ -6,7 +6,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
-const CATEGORIES = ['文本', '特效', '贴纸', '转场', '字幕', '音频']
+const CATEGORIES = ['花字库', '文字模板', '特效', '贴纸', '转场', '字幕', '音频']
 
 // 转场映射（延迟 require 避免循环依赖）
 function getTransitionMap() {
@@ -47,8 +47,9 @@ function audioDuration(fp) {
 /** 扫描文字预设（.textpreset → 文本/字幕类目） */
 function scanTextPresets(presetDir) {
   const textItems = []
+  const tplItems = []
   const captionItems = []
-  if (!fs.existsSync(presetDir)) return { textItems, captionItems }
+  if (!fs.existsSync(presetDir)) return { textItems, tplItems, captionItems }
   for (const f of safeReaddir(presetDir)) {
     if (!f.endsWith('.textpreset')) continue
     try {
@@ -79,12 +80,15 @@ function scanTextPresets(presetDir) {
         cover: fs.existsSync(p.cover_image_path || '') ? p.cover_image_path : '',
         file: path.join(presetDir, f),
       }
-      // 花字效果/带贴纸 → 文本；纯文字（无效果引用）→ 字幕
-      if (item.hasEffect || stickerCount > 0) textItems.push(item)
+      // 二期分组：花字库（带 effect 引用且非「文字模板」类目）/ 文字模板（category_name 含文字模板）/ 字幕（纯文字无效果）
+      const effCategory = String((p.effect && p.effect.category_name) || '')
+      item.group = item.hasEffect && !/文字模板/.test(effCategory) ? '花字库' : (item.hasEffect ? '文字模板' : '')
+      if (item.group === '花字库') textItems.push(item)
+      else if (item.group === '文字模板') tplItems.push(item)
       else captionItems.push(item)
     } catch (_) {}
   }
-  return { textItems, captionItems }
+  return { textItems, tplItems, captionItems }
 }
 
 /** 扫描效果缓存（artistEffect → 特效类目） */
@@ -162,8 +166,9 @@ async function scanAllAsync(opts) {
   for (const c of CATEGORIES) result[c] = []
 
   // 文本 + 字幕（textpreset）
-  const { textItems, captionItems } = scanTextPresets(presetDir)
-  result['文本'] = textItems
+  const { textItems, tplItems, captionItems } = scanTextPresets(presetDir)
+  result['花字库'] = textItems
+  result['文字模板'] = tplItems
   result['字幕'] = captionItems
 
   // 特效（artistEffect 缓存）
@@ -182,7 +187,7 @@ async function scanAllAsync(opts) {
       const data = res && res.data
       const list = Array.isArray(data) ? data : (Array.isArray(data?.items) ? data.items : [])
       const serverIds = new Set(list.map((t) => String(t.id || '')))
-      for (const item of result['文本']) {
+      for (const item of [...result['花字库'], ...result['文字模板']]) {
         item.syncedToServer = serverIds.has('jy_' + item.effectId)
         item.serverAnim = ''
         if (item.syncedToServer) {
@@ -192,7 +197,7 @@ async function scanAllAsync(opts) {
       }
     } catch (_) { /* 离线：syncedToServer 留空（前端显示未同步） */ }
   }
-  for (const item of result['文本']) if (item.syncedToServer === undefined) item.syncedToServer = false
+  for (const item of [...result['花字库'], ...result['文字模板']]) if (item.syncedToServer === undefined) item.syncedToServer = false
 
   return result
 }
@@ -207,8 +212,9 @@ function scanAll(opts) {
 
   const result = {}
   for (const c of CATEGORIES) result[c] = []
-  const { textItems, captionItems } = scanTextPresets(presetDir)
-  result['文本'] = textItems
+  const { textItems, tplItems, captionItems } = scanTextPresets(presetDir)
+  result['花字库'] = textItems
+  result['文字模板'] = tplItems
   result['字幕'] = captionItems
   result['特效'] = scanEffectCache(effectCache)
   result['转场'] = getTransitions(o.transitionMap || getTransitionMap())

@@ -137,6 +137,9 @@ window.__ModuleLoader__.load({
 | V6 | 外部进程 | host 插件 `spawn` 本机 ffmpeg.exe（复用现有 `resources/bin/win`）成功返回版本号 |
 | V7 | 进度通道 | 参照 installer「POST 返 202 + GET status 轮询」模式建 `/tintin/jobs/:id/status`，client 侧轮询到状态翻转（SSE/WS 留 P1 增强） |
 | V8 | 锁定评估 | 记录 `0.1.2-rc.1` 构建可复现性、`patches/` 23 个补丁与我们的冲突面、`pnpm patch` 升级演练一次 |
+| V9 | agent 自主调工具 | bundle `defineTool` 注册最小工具 `ping_server`，agent 会话中自主调用成功（§3.5a 机制证明） |
+| V10 | 工作区文件读写 | bundle 工具读/写会话工作区 montage-task.json（§3.5b 结构化输入机制前提） |
+| V11 | 模型接入 | provider `base_url=<server>/llm` + `deepseek-v4-flash`，agent 会话正常推理（实测 200/0.75s 已证服务端兼容，此步验证 harness 侧配置） |
 
 ### P0 判定
 
@@ -222,7 +225,45 @@ harness settings 配置自定义 model provider → `base_url` 指向 TinTin 服
 每步 agent 读返回值决定下一步；出错重试/审批询问
 ```
 
-工具粒度策略：**先粗后细**——P2 先暴露 `montage_full_pipeline` 级工具保证能跑，再逐步拆细给 agent 编排自由度。P0 验证清单新增一条：bundle 注册最小工具 `ping_server`，实测 agent 会话自主调用（机制证明）。
+工具粒度策略：**先粗后细**——P2 先暴露 `montage_full_pipeline` 级工具保证能跑，再逐步拆细给 agent 编排自由度。P0 验证清单新增两条：bundle 注册最小工具 `ping_server`（实测 agent 会话自主调用——机制证明）；bundle 工具读会话工作区文件（实测 task.json 机制可行，见 §3.5b）。
+
+### 3.5b 结构化输入接入：产品/素材/脚本（2026-09-12 设计定案）
+
+**问题**：现有工作台的「上传产品图/选素材/贴脚本」是结构化输入，对话式 agent 靠 prompt 从闲聊里抽取这类精确参数（产品 id、素材路径、脚本文本）会翻车。
+
+**设计：三层「上下文注入 + 参数槽」——结构化传递为主，对话只做意图与覆盖**
+
+```
+第一层：结构化上下文（任务装配面板 → task.json）
+  TinTin bundle 的 client module 提供「任务装配面板」（现有 Vue 输入面平移）：
+  · 产品：品牌/产品/型号/补充卖点，复用产品库选择器（WbPickProductPanel 同源 API）
+  · 素材：文件多选/拖拽（harness workspace 文件引用机制）
+  · 脚本：手填 / 产品库生成（现有 /script 接口）/ agent 生成后确认
+  · 音色/配音/特效/BGM/模板：下拉/开关
+  → 装配结果序列化为 montage-task.json 存会话工作区
+
+第二层：agent 工具读取上下文
+  montage_full_pipeline({ product?, materials?, script?, voice?, options? })
+  参数缺省 → 工具自行读工作区 montage-task.json（缺文件则报"请先装配任务"）
+
+第三层：对话自然语言只做「意图 + 覆盖」
+  "用第二批素材、文案改口语一点" → agent 解析覆盖参数传工具
+  → 合并优先级：对话参数 > task.json > 默认值
+```
+
+**逐项对照现有输入面**：
+
+| 现有输入 | harness 接入方式 | 复用度 |
+|---|---|---|
+| 产品（品牌/型号/卖点，产品库选择） | 装配面板内嵌产品库选择（同一服务端 API）→ task.json `product`；或对话直接说"用罗技 G502"→ agent 填参数槽 | API 100% 复用 |
+| 素材（本地视频多选） | harness workspace/文件引用：拖文件进会话=引用列表；装配面板也可选 → task.json `materials[]` | harness 原生能力 |
+| 脚本/口播文案 | 面板手填/产品库生成（现有 `/script` 接口）；或对话"帮我写个脚本"→ agent 调 `script_generate` 工具 → 结果回写 task.json 并展示确认 | API 复用 + agent 参与生成 |
+| 音色/配音参数 | task.json `voice`（面板下拉）；对话可覆盖（"温和一点"→ agent 调音色工具） | 同上 |
+| 特效/BGM/文字模板 | task.json 对应字段（面板选择）；对话覆盖 | 同上 |
+
+**设计理由**：① 可靠性——素材路径/产品 id 精确参数结构化传递不会错；② 复用——产品库/脚本接口/参数语义原样保留，Vue 面板业务逻辑平移为 bundle 面板；③ 渐进——全面板+一句"开始"、全对话、混合三种用法皆通；④ 审计——task.json 落会话工作区，参数可追溯可改。
+
+**落位**：P0 新增「bundle 工具读会话工作区文件」验证项；P1 的桥清单增加「装配面板 → task.json」（Vue 平移，量级含在原 10~15d）；P2 实现 `montage_full_pipeline` 参数合并（对话 > task.json > 默认）。
 
 ### 3.6 P1 验收
 
@@ -241,7 +282,7 @@ harness settings 配置自定义 model provider → `base_url` 指向 TinTin 服
 
 | 阶段 | 内容 | 量 | 闸门/验收 |
 |---|---|---|---|
-| P0 | 骨架全链路验证 V1~V8 | 5~8d | 逐项过闸；结论回写本文档 |
+| P0 | 骨架全链路验证 V1~V11 | 6~9d | 逐项过闸；结论回写本文档 |
 | P1 | 桥 + host 移植 + 混剪全流程 | 30~45d | §3.6 验收 |
 | P2 | 长尾工具 + agent 工具化 + Skill | 20~40d | agent 可独立编排一次完整混剪 |
 | 合计 | 首个可用版本（P0+P1） | **35~53d** | 对照：整体迁移 100~150d；服务端垫档 15~20d |

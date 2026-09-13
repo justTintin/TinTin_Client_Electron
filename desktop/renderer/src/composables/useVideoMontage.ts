@@ -2008,6 +2008,7 @@ export function useVideoMontage() {
    *  但为单帧静态图无动画，与「文字模板预览要有动画」裁决不符，故预览仍走本地 CSS 动画；
    *  render-preview 动画预览接口实测 500（服务端内部错误，契约缺口已上报）。
    *  从 variables 推导：颜色收集≥2 个做渐变字，fontSize 按比例缩到预览口径） */
+  const srvBase = ref('')
   const textFxStyleSamples = computed(() => {
     // 2026-09-10 用户二次裁决：样式预览显示模板库全部样式（橱窗）；
     // 随机数量是每条视频各自随机选 N 个，在效果预览/烧制端逐视频应用，不在此处裁剪
@@ -2067,19 +2068,19 @@ export function useVideoMontage() {
       return { id: String(t.template_id), name: String(t.name || t.template_id), text, anim, style, previewUrl, previewWebmUrl }
     })
   })
-  /** 服务端基址缓存（预览 URL 绝对化用；loadTextTemplates 时经 env:serverPing 取一次） */
-  let srvBase = ''
+  /** 服务端基址缓存（预览 URL 绝对化用；loadTextTemplates 时经 env:serverPing 取一次）。
+   *  ref 响应式：加载后 textFxStyleSamples 自动重算（修复预览碎图） */
   async function ensureSrvBase(): Promise<void> {
-    if (srvBase) return
+    if (srvBase.value) return
     try {
       const bridge = window.tintin as unknown as { env?: { serverPing?: () => Promise<{ url?: string }> } } | undefined
       const ping = await bridge?.env?.serverPing?.()
-      srvBase = String(ping?.url || '')
+      srvBase.value = String(ping?.url || '')
     } catch (_) { /* 无 env 桥（预览环境） */ }
   }
   function srvAbs(p: string): string {
     if (!p || /^https:\/\//.test(p)) return p
-    return srvBase ? srvBase.replace(/\/$/, '') + (p.startsWith('/') ? p : '/' + p) : p
+    return srvBase.value ? srvBase.value.replace(/\/$/, '') + (p.startsWith('/') ? p : '/' + p) : p
   }
   /** 拉取服务端文字模板库（GET /text_templates/templates，2026-09-10 纠偏；进入 Step4 时调用；空库时下拉仅随机项） */
   async function loadTextTemplates(): Promise<void> {

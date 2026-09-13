@@ -40,7 +40,7 @@ const router = useRouter()
    2026-09-05 用户裁决：删除「产品知识」卡——其文案生成能力已迁入运营工具·产品资料页
    （OtCopywritingPanel.vue），本组仅保留分镜脚本创作 */
    /* 2026-09-07 用户裁决：音频组提到视频组上方 */
-const GROUPS = ['文案脚本', '图形', '音频', '视频'] as const
+const GROUPS = ['文案脚本', '图形', '模板', '音频', '视频'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
   文案脚本: [

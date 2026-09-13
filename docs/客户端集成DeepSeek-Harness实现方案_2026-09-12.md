@@ -181,9 +181,48 @@ host 是独立 Node 子进程，读不到 Electron `resourcesPath`。方案：fo
 - 现有渲染层需审计的隐式依赖：`window.tintin`（3.1 已桥）、`file:///` 本地预览 URL（视频预览 `<video src>` 改为 host 路由的媒体流或保留 file:// ——http 页面加载 file: 受限，**P1 首个技术验证点**：改走 `/tintin/media?path=` 路由由 host 读文件回传 Range 流）。
 - 渐进策略：P1 只挂「智能混剪」单工具；其余工具 P2 逐个挂，不阻塞。
 
-### 3.5 模型接入（1d）
+### 3.5 模型接入（1d → 已实测降级为配置项）
 
 harness settings 配置自定义 model provider → `base_url` 指向 TinTin 服务端 LLM 代理；bundle 配置固化默认 provider，官方 key 不下发客户端。
+
+**2026-09-12 实测结论（192.168.111.31:8000，服务端零改造即可接入）**：
+
+| 端点 | 实测 |
+|---|---|
+| `POST /llm/chat/completions` | ✅ 200 / 0.75s，返回标准 OpenAI Chat Completion 结构（`choices[0].message.content` + usage），模型 `deepseek-v4-flash`（默认）/ `deepseek-v4-pro`（`GET /llm/models` 列表，max_tokens 384k） |
+| `POST /v1/chat/completions` | ❌ 500/挂起（标准 OpenAI 路径当前损坏）——建议服务端修复（~0.5d），修好即兼容全部 OpenAI 生态工具 |
+| `GET /v1/models` | ✅ 正常（whisper/clip/indextts/ollama qwen 系列清单） |
+
+接入方式：harness provider `base_url = http://<server>/llm`（harness 拼 `<base_url>/chat/completions`），model id 填 `deepseek-v4-flash`，api_key 占位符（服务端当前不鉴权）。P0 验证项相应降级为「配置级」。
+
+### 3.5a 模型选择与工具挂载机制（2026-09-12 讨论定案）
+
+**模型选择（harness 自主判断，无需人工指定）**：
+- 默认模型由 provider 配置指定（deepseek-v4-flash），日常会话/工具决策用它（实测 0.75s 完全够）
+- 复杂任务可路由 deepseek-v4-pro；`/llm/models` 清单皆可映射
+- **混剪流程的"判断"**是 agent 读任务描述 → 决定调用哪个工具/什么参数——对话模型即可；**选视频等视觉需求发生在工具内部**（工具调 FastAPI，服务端自路由 qwen-vl），harness 不感知
+
+**工具挂载（三种方式，P2 选 bundle 原生工具）**：
+
+| 方式 | 做法 | 取舍 |
+|---|---|---|
+| **bundle 原生工具（选定）** | TinTin bundle 里 `defineTool()` 注册，工具内部 HTTP 调 FastAPI | 无中间层；本地工具（剪映导出/ffmpeg）与远程工具（合成/配音）统一注册；随客户端分发 |
+| MCP Server | 服务端 FastAPI 包 MCP 协议 | 仅当"外部 agent 驱动服务端"（无人值守/生态开放）需求出现时再做 |
+| 混合 | 两者并存 | 远期 |
+
+**关键认知**：`/montage/concat` 等接口今天就被 Vue 前端调用，harness 只是换了个调用者——**服务端不需要改造成 MCP**。混剪执行路径（示例）：
+
+```
+用户："把这批素材混剪成带货视频，成龙音色，导出剪映草稿"
+1. montage_split → /montage/split
+2. montage_plan → 排列
+3. voice_clone/dub → /voice/*
+4. montage_compose → /montage/concat
+5. jianying_export → 本地剪映草稿（bundle 本地工具）
+每步 agent 读返回值决定下一步；出错重试/审批询问
+```
+
+工具粒度策略：**先粗后细**——P2 先暴露 `montage_full_pipeline` 级工具保证能跑，再逐步拆细给 agent 编排自由度。P0 验证清单新增一条：bundle 注册最小工具 `ping_server`，实测 agent 会话自主调用（机制证明）。
 
 ### 3.6 P1 验收
 

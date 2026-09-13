@@ -61,6 +61,9 @@ function buildPackage(presetPath) {
   else if (/enlarge|spring|heartbeat|textwave|textanim/i.test(animAll)) anim = 'pulse'
   const animCssMap = { fade: 'fadeIn .5s ease both', pulse: 'pulseAnim 1.6s ease-in-out .3s infinite', bounce: 'bounceIn .6s cubic-bezier(.2,1.6,.4,1) both', slide: 'slideIn .5s ease-out both' }
   const animCss = animCssMap[anim] || animCssMap.fade
+  // M2b 修复：每个模板的动画签名写入 meta.variables.anim（jy_intro_anim 消费链），
+  // 预览/本地烧制/剪映导出三层从"猜"变成"声明"；animSignature 留原始 lua 名组合供排查
+  const animSignature = animAll || 'none'
 
   const decorations = []
   const seen = new Set()
@@ -135,6 +138,8 @@ function buildPackage(presetPath) {
       text: { type: 'string', default: text, label: '标题文字' },
       color: { type: 'string', default: color, label: '文字颜色' },
       fontSize: { type: 'number', default: Number((fontSize * textScale).toFixed(1)), label: '字号' },
+      anim: { type: 'string', default: anim, label: '入场动画' },
+      animSignature: { type: 'string', default: animSignature, label: '动画签名(剪映lua语义)' },
     },
   }
   return { rid: rid, html: html, meta: meta }

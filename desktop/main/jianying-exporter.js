@@ -188,6 +188,155 @@ function decorateTextSegment(seg, materials, { anim, effectId } = {}) {
   }
 }
 
+/** 贴纸素材（materials.stickers 成员；pyJianYingDraft StickerSegment.export_material） */
+function stickerMaterial(resourceId) {
+  return {
+    id: hexId(),
+    resource_id: resourceId,
+    sticker_id: resourceId,
+    source_platform: 1,
+    type: 'sticker',
+  }
+}
+
+/** 视频特效素材（materials.video_effects 成员；pyJianYingDraft VideoEffect.export_json） */
+function videoEffectMaterial(effectId, name) {
+  return {
+    apply_target_type: 0,
+    category_id: '',
+    category_name: '',
+    effect_id: effectId,
+    id: hexId(),
+    name: name || '',
+    path: '',
+    platform: 'all',
+    resource_id: effectId,
+    source_platform: 1,
+    type: 'video_effect',
+    value: 1.0,
+    request_id: '',
+    keyframes: [],
+  }
+}
+
+/**
+ * 二期④：给视频主轨全部片段挂视频特效（video_effects + extra_material_refs）。
+ * effectId/resource_id 剪映端自解析；失败静默（特效为可选增强）。
+ */
+function applyVideoEffect(materials, videoTrack, effectId, name) {
+  if (!effectId || !videoTrack || !videoTrack.segments?.length) return 0
+  if (!Array.isArray(materials.video_effects)) materials.video_effects = []
+  const mat = videoEffectMaterial(effectId, name)
+  materials.video_effects.push(mat)
+  let n = 0
+  for (const seg of videoTrack.segments) {
+    seg.extra_material_refs.push(mat.id)
+    n++
+  }
+  return n
+}
+
+/**
+ * 从 textpreset 提取贴纸元素 → 独立贴纸轨（二期③：贴纸+动画）。
+ * R2 坐标公式换算 clip 变换（720 设计画布、y 向上）；无素材/无贴纸 → 空轨不添加。
+ * 返回 track 或 null。texts 用 decoration 的 attach（资源 id 即 rid 家族），
+ * 来源标识：resource_id = preset effect resource_id + 序号。
+ */
+function buildStickerTrackFromPreset(presetDir, rid, clipDurationUs, canvasW, canvasH) {
+  if (!presetDir || !rid || !(clipDurationUs > 0) || !(canvasW > 0) || !(canvasH > 0)) return null
+  if (!fs.existsSync(presetDir)) return null
+  let preset = null
+  for (const f of safeListDir(presetDir)) {
+    if (!f.endsWith('.textpreset')) continue
+    const p = readJsonSafe(path.join(presetDir, f))
+    const eff = p && p.effect
+    if (eff && String(eff.resource_id || eff.effect_id || '') === String(rid)) { preset = p; break }
+  }
+  if (!preset) return null
+  const elements = (preset.elements || []).filter((e) => e && e.type === 'sticker')
+  if (!elements.length) return null
+  // PNG 素材池（与 elements 两遍配对：精确尺寸 → 宽高比就近）
+  const pngs = []
+  const seen = new Set()
+  for (const r of preset.resources || []) {
+    try {
+      for (const f of safeListDir(r.file_path)) {
+        if (!f.endsWith('.png')) continue
+        const fp = path.join(r.file_path, f)
+        const b = fs.readFileSync(fp)
+        const nw = b.readUInt32BE(16), nh = b.readUInt32BE(20)
+        const key = nw + 'x' + nh + ':' + b.length
+        if (seen.has(key)) continue
+        seen.add(key)
+        pngs.push({ file: fp, nw, nh, bytes: b })
+      }
+    } catch (_) {}
+  }
+  pngs.forEach((d) => { d.used = false })
+  const assign = new Array(elements.length).fill(null)
+  elements.forEach((e, i) => {
+    const c = (e.attach_info && e.attach_info.clip) || {}
+    const ow = Number(e.attach_info.original_size_width || 0), oh = Number(e.attach_info.original_size_height || 0)
+    const d = pngs.find((x) => !x.used && x.nw === ow && x.nh === oh)
+    if (d) { d.used = true; assign[i] = d }
+  })
+  elements.forEach((e, i) => {
+    if (assign[i]) return
+    const c = (e.attach_info && e.attach_info.clip) || {}
+    const ow = Number(e.attach_info.original_size_width || 1), oh = Number(e.attach_info.original_size_height || 1)
+    let bestD = null, bestDiff = 1e9
+    for (const d of pngs) {
+      if (d.used) continue
+      const diff = Math.abs(d.nw / d.nh - ow / oh)
+      if (diff < bestDiff) { bestDiff = diff; bestD = d }
+    }
+    if (bestD) { bestD.used = true; assign[i] = bestD }
+  })
+  // 贴纸本地文件必须存在于剪映缓存（resource_id 指向云端时剪映自动下载），
+  // 我们导出为贴纸段（sticker material 带 resource_id），文件路径仅作排障参考。
+  const track = newTrack('sticker')
+  elements.forEach((e, i) => {
+    const c = (e.attach_info && e.attach_info.clip) || {}
+    const d = assign[i]
+    if (!d) return
+    const tx = Number(c.transform_x || 0), ty = Number(c.transform_y || 0)
+    const sc = Number(c.scale_x || 1)
+    // R2 公式：clip.transform 单位=半画布宽（pyJianYingDraft ClipSettings 注释）
+    const transformX = (tx * 2) / 720
+    const transformY = (-ty * 2 * canvasW / 720) / canvasH
+    const scaleX = sc * (canvasW / 720)
+    const scaleY = sc * (canvasW / 720)
+    const mat = stickerMaterial(rid + '_' + i)
+    if (!Array.isArray(preset._stickerMaterials)) preset._stickerMaterials = []
+    preset._stickerMaterials.push(mat)
+    const sp = speedMaterial(1.0)
+    if (!Array.isArray(preset._stickerSpeeds)) preset._stickerSpeeds = []
+    preset._stickerSpeeds.push(sp)
+    const seg = {
+      ...baseSegmentFields(mat.id, 0, clipDurationUs),
+      ...mediaSegmentFields(clipDurationUs, sp.id),
+      clip: {
+        alpha: 1.0,
+        flip: { horizontal: false, vertical: false },
+        rotation: Number(c.rotation || 0),
+        scale: { x: scaleX, y: scaleY },
+        transform: { x: transformX, y: transformY },
+      },
+      uniform_scale: { on: true, value: 1.0 },
+      hdr_settings: null,
+    }
+    track.segments.push(seg)
+  })
+  return track.segments.length ? { track, materials: preset._stickerMaterials || [], speeds: preset._stickerSpeeds || [] } : null
+}
+
+function safeListDir(dir) {
+  try { return fs.readdirSync(dir) } catch (_) { return [] }
+}
+function readJsonSafe(fp) {
+  try { return JSON.parse(fs.readFileSync(fp, 'utf-8')) } catch (_) { return null }
+}
+
 /** 文本素材（materials.texts 成员；text_segment.py TextSegment.export_material）。
  *  effectStyleId：剪映花字效果 id（jy_effect_id）→ content.effectStyle 引用（path 'C:' 为原版占位）。 */
 function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, effectStyleId = '' } = {}) {
@@ -275,7 +424,7 @@ function audioMaterialFields(bgmPath, durationUs) {
 }
 
 /** 单视频导出（兼容旧入口，内部走多片段时间轴导出；export_to_draft L43-64） */
-function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', deps }) {
+function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', deps }) {
   if (!videoPath || !fs.existsSync(videoPath)) return { success: false, message: '视频文件不存在' }
   if (!draftName) {
     draftName = `螺丝钉智能混剪_${path.basename(videoPath, path.extname(videoPath))}`
@@ -292,6 +441,9 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
     textAnim,
     fancyEffectId,
     tplEffectId,
+    subAnim,
+    videoEffectId,
+    videoEffectName,
     deps,
   })
 }
@@ -299,7 +451,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
 /** 多个视频按顺序导出为一条剪映时间轴（v2 完整 schema）。
  *  fxWords（关键词）+ fxKinds（['fancy','tpl']）→ 关键词命中的字幕行导出为
  *  独立文本轨（花字/文字模板各一条，样式色区分），供剪映内直接套样式精修。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', deps }) {
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -392,6 +544,9 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const tracks = [videoTrack]
 
     // 6. 字幕轨（order 1）+ 关键词轨（fancy/tpl）；textAnim=文字入场动画名，fancyEffectId=花字效果 id
+    //    二期②：subAnim=字幕轨入场动画（本地语义 key：rise/slide/pop → 剪映动画名映射）
+    const SUB_ANIM_TO_JY = { rise: '向上滑动', slide: '向右滑动', pop: '弹入' }
+    const subAnimName = SUB_ANIM_TO_JY[subAnim] || subAnim || ''
     if (srtPaths) {
       const subtitleTrack = newTrack('text')
       tracks.push(subtitleTrack)
@@ -401,7 +556,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
-          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: textAnim })
+          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim })
           for (const kind of kwKinds) {
             appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache, {
               anim: textAnim,
@@ -412,6 +567,25 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
         cursorUs += clip.durationUs
       })
       if (!subtitleTrack.segments.length) tracks.splice(tracks.indexOf(subtitleTrack), 1)
+    }
+
+    // 二期③：贴纸轨（jy_ 文字模板选中时，把该预设的装饰元素导出为独立贴纸段，
+    // R2 坐标公式换算 clip 变换；剪映按 resource_id 解析云端素材）
+    if (tplEffectId) {
+      const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
+      try {
+        const built = buildStickerTrackFromPreset(presetDir, tplEffectId, totalDurationUs, canvasWidth, canvasHeight)
+        if (built) {
+          for (const m of built.materials) if (Array.isArray(materials.stickers)) materials.stickers.push(m)
+          for (const s of built.speeds) if (Array.isArray(materials.speeds)) materials.speeds.push(s)
+          tracks.push(built.track)
+        }
+      } catch (_) { /* 贴纸轨失败不阻断导出（文本轨仍在） */ }
+    }
+
+    // 二期④：视频特效挂载（videoEffectId 有值时给主轨全片段挂 video_effects）
+    if (videoEffectId) {
+      applyVideoEffect(materials, videoTrack, videoEffectId, videoEffectName)
     }
 
     // 7. BGM 轨（最后一条）：覆盖整条时间轴

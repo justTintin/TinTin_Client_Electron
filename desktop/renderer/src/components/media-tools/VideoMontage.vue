@@ -1077,7 +1077,9 @@ function scoreClass(score: number | undefined): string {
               <template v-if="textFxStyleSamples.length">
                 <span v-for="s in textFxStyleSamples" :key="'ts' + s.id" class="textfx-sample"
                   :title="`模板：${s.name}`">
-                  <span class="textfx-sample-text" :class="`textfx-anim-${s.anim}`" :style="s.style">{{ s.text }}</span>
+                  <!-- M2a：服务端真实效果预览图优先（上传时自动生成，贴纸+文字合成）；无则回退本地近似画法 -->
+                  <img v-if="s.previewUrl" class="textfx-sample-img" :src="s.previewUrl" :alt="s.name" />
+                  <span v-else class="textfx-sample-text" :class="`textfx-anim-${s.anim}`" :style="s.style">{{ s.text }}</span>
                   <small class="textfx-word-tpl">{{ s.name }}</small>
                 </span>
               </template>

@@ -1674,14 +1674,21 @@ export function useVideoMontage() {
     textAnim?: string
     fancyEffectId?: string
     tplEffectId?: string
+    subAnim?: string
   } {
     const kinds: Array<'fancy' | 'tpl'> = []
     if (fancyEnabled.value) kinds.push('fancy')
     if (textFxEnabled.value) kinds.push('tpl')
-    if (!kinds.length) return {}
+    if (!kinds.length) {
+      // 二期②：仅字幕动画（addSubtitles 开且选了非 fade 动画）也随导出
+      const subAnim = subtitleAnimKey.value && subtitleAnimKey.value !== 'fade' ? subtitleAnimKey.value : ''
+      return addSubtitles.value && subAnim ? { subAnim } : {}
+    }
     const words = extractTextFxWords()
-    if (!words.length) return {}
-    const out: { fxWords: string[]; fxKinds: Array<'fancy' | 'tpl'>; textAnim?: string; fancyEffectId?: string; tplEffectId?: string } = { fxWords: words, fxKinds: kinds }
+    const subAnim = subtitleAnimKey.value && subtitleAnimKey.value !== 'fade' ? subtitleAnimKey.value : ''
+    const out: { fxWords?: string[]; fxKinds?: Array<'fancy' | 'tpl'>; textAnim?: string; fancyEffectId?: string; tplEffectId?: string; subAnim?: string } = { fxKinds: kinds }
+    if (words.length) out.fxWords = words
+    if (subAnim) out.subAnim = subAnim
     const ftpl = selectedFancyTemplate.value as Record<string, unknown> | null
     if (fancyEnabled.value && ftpl) {
       const eff = String(ftpl.jy_effect_id || '').trim()
@@ -1981,8 +1988,10 @@ export function useVideoMontage() {
       const size = fontSize ? Math.min(28, Math.max(14, Math.round((fontSize / 72) * 28))) : 20
       // 动画类型：按服务端模板定义对齐（服务端无结构化动画字段，以 id/name 语义
       //  命名 + variables 效果色变量约定动画；2026-09-10 全量对齐 10 个模板）
+      // M2a：显式 anim 变量优先（同步 jy_ 模板声明），名称正则兜底
+      const varsAnim = vars.anim && typeof vars.anim === 'object' ? String((vars.anim as { default?: unknown }).default || '') : ''
       const key = `${t.template_id || ''}${t.name || ''}`
-      const anim = /bounce|pop|弹/.test(key) ? 'bounce'
+      const anim = varsAnim || (/bounce|pop|弹/.test(key) ? 'bounce'
         : /flip|翻转/.test(key) ? 'flip'
         : /gradient|渐变/.test(key) ? 'flow'
         : /neon|glow|霓虹/.test(key) ? 'neon'
@@ -1991,7 +2000,7 @@ export function useVideoMontage() {
         : /typewriter|打字/.test(key) ? 'type'
         : /pulse|zoom|脉冲|缩放/.test(key) ? 'pulse'
         : /fade|淡/.test(key) ? 'fade'
-        : 'fade'
+        : 'fade')
       // 效果色：variables 中除主色 color 外的第一个色值（jumpColor/popColor/shine/
       //  glow/pulse/accent/cursorColor/color2 —— 服务端为每个动画模板配的专用色）
       const mainColor = String((vars.color && typeof vars.color === 'object' ? (vars.color as { default?: unknown }).default : '') || '#FFFFFF')
@@ -2014,7 +2023,11 @@ export function useVideoMontage() {
       } else {
         style.color = mainColor
       }
-      return { id: String(t.template_id), name: String(t.name || t.template_id), text, anim, style }
+      // M2a：服务端真实效果预览（上传时自动生成，贴纸+文字合成图）——有则优先用图，
+      // 无则回退本地近似画法
+      const previewUrl = String((t as Record<string, unknown>).preview || '')
+      const previewWebmUrl = String((t as Record<string, unknown>).preview_webm || '')
+      return { id: String(t.template_id), name: String(t.name || t.template_id), text, anim, style, previewUrl, previewWebmUrl }
     })
   })
   /** 拉取服务端文字模板库（GET /text_templates/templates，2026-09-10 纠偏；进入 Step4 时调用；空库时下拉仅随机项） */

@@ -452,6 +452,10 @@ declare interface TintinBridgeServer {
     textAnim?: string
     fancyEffectId?: string
     tplEffectId?: string
+    /** 二期②④：字幕轨入场动画（本地语义 key）+ 视频特效 resource_id */
+    subAnim?: string
+    videoEffectId?: string
+    videoEffectName?: string
     draftName?: string
   }): Promise<{ success: boolean; message: string; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
   /** 剪映素材模板聚合列表（六大分类：文本/特效/贴纸/转场/字幕/音频） */

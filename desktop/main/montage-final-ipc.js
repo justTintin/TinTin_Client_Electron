@@ -782,6 +782,11 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             textAnim: p.textAnim,
             fancyEffectId: p.fancyEffectId,
             tplEffectId: p.tplEffectId,
+            // 二期②：字幕轨入场动画（本地语义 key，导出器映射剪映动画名）
+            subAnim: p.subAnim,
+            // 二期④：视频特效（resource_id）挂主轨全片段
+            videoEffectId: p.videoEffectId,
+            videoEffectName: p.videoEffectName,
             draftName: p.draftName,
             deps,
           })
@@ -795,6 +800,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             textAnim: p.textAnim,
             fancyEffectId: p.fancyEffectId,
             tplEffectId: p.tplEffectId,
+            subAnim: p.subAnim,
+            videoEffectId: p.videoEffectId,
+            videoEffectName: p.videoEffectName,
             draftName: p.draftName,
             deps,
           })

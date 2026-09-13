@@ -1818,14 +1818,50 @@ export function useVideoMontage() {
   })
   /** 随机模式生效个数（指定模板=1；每视频从 activeTextPool 独立随机选 N 个） */
   const activeTextCount = computed(() => textTemplateId.value === 'random' ? textRandomCount.value : 1)
-  /** 文字模板下拉：首项随机样式（默认），其余为服务端库条目；jy_ 前缀=剪映同步模板（§0.1 命名规范） */
-  const textTemplateOptions = computed(() => [
-    { label: '随机样式', value: 'random' },
-    ...textTemplates.value.map((t) => ({
-      label: String(t.name || t.template_id) + (String(t.template_id).startsWith('jy_') ? '（剪映）' : ''),
-      value: t.template_id,
-    })),
-  ])
+  /** 文字模板下拉：首项随机样式（默认）；按 catalog 类目前缀分组平铺（「花字库｜」「文字模板｜」）；
+   *  jy_ 前缀=剪映同步。TSelect 无嵌套分组，用前缀承载层级 */
+  const CATALOG_LANE_TPL = '/text_templates/templates'
+  const catalogTextLanes = ref<Array<{ lane: string; endpoint: string }>>([])
+  function catalogLaneIdOf(t: { template_id?: string; description?: string }): string {
+    const id = String(t.template_id || '')
+    if (!id.startsWith('jy_')) return '内置'
+    const m = /原始类目:([^|]+)/.exec(String(t.description || ''))
+    return m && /文字模板/.test(m[1]) ? '文字模板' : '花字库'
+  }
+  const textTemplateOptions = computed(() => {
+    const base = [{ label: '随机样式', value: 'random' }]
+    if (!catalogTextLanes.value.length) {
+      return [...base, ...textTemplates.value.map((t) => ({
+        label: String(t.name || t.template_id) + (String(t.template_id).startsWith('jy_') ? '（剪映）' : ''),
+        value: t.template_id,
+      }))]
+    }
+    const lanes = [...catalogTextLanes.value.map((l) => l.lane), '内置']
+    const out: Array<{ label: string; value: string }> = [...base]
+    for (const lane of lanes) {
+      for (const t of textTemplates.value) {
+        if (catalogLaneIdOf(t) !== lane) continue
+        out.push({ label: `${lane}｜${String(t.name || t.template_id)}`, value: String(t.template_id) })
+      }
+    }
+    // 兜底：分类遗漏的模板（不该发生，防丢）
+    const inLanes = new Set(out.map((o) => o.value))
+    for (const t of textTemplates.value) {
+      if (!inLanes.has(String(t.template_id))) out.push({ label: String(t.name || t.template_id), value: String(t.template_id) })
+    }
+    return out
+  })
+  async function loadCatalogLanes(): Promise<void> {
+    try {
+      const res = await window.tintin?.server?.jyTemplatesList?.()
+      if (res && 'ok' in res && res.ok) {
+        const textGroup = (res.groups || []).find((g) => g.group === '文本')
+        catalogTextLanes.value = (textGroup?.lanes || [])
+          .filter((l) => l.endpoint === CATALOG_LANE_TPL)
+          .map((l) => ({ lane: l.lane, endpoint: l.endpoint }))
+      }
+    } catch (_) { /* catalog 不可用 → 兜底平铺 */ }
+  }
   /** 按密度档位从口播文案提取卖点词（2026-09-11 起仅剩一个消费者：剪映导出随行
    *  特效——效果预览与本地合成均已改走服务端 /text_templates/match 命中行，服务端
    *  合成不传词表、关键词命中由服务端从字幕完成）。
@@ -2038,6 +2074,7 @@ export function useVideoMontage() {
       const sr = await window.tintin?.server?.textfxServerTemplates?.()
       const items = sr && !('error' in sr) && Array.isArray(sr.templates) ? sr.templates : []
       textTemplates.value = items.filter((t) => t && t.template_id)
+      void loadCatalogLanes() // 二期：catalog 类目分组（异步不阻塞下拉）
     } catch (_) {
       textTemplates.value = []
     } finally {

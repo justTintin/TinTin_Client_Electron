@@ -55,8 +55,12 @@
           </label>
           <span class="jytpl-kind-badge" :class="activeLaneData.lane === '花字库' ? 'fancy' : 'tpl'">{{ activeLaneData.lane }}</span>
           <div class="jytpl-card-preview">
-            <img v-if="String(item.preview)"  :src="absUrl(String(item.preview))" :alt="String(item.name)" class="jytpl-preview-img"
-              loading="lazy" @error="($event) => { ($event.target as HTMLImageElement).style.display = 'none' }" />
+            <!-- 动态预览优先：preview.webm（透明通道循环播放，真·动画）；失败回退 png → CSS 文字动画 -->
+            <video v-if="String(item.previewWebm) && !brokenPreview.has(String(item.id))" class="jytpl-preview-video"
+              :src="absUrl(String(item.previewWebm))" autoplay loop muted playsinline
+              @error="brokenPreview.add(String(item.id))" />
+            <img v-else-if="String(item.preview) && !brokenPreview.has('img:' + String(item.id))" :src="absUrl(String(item.preview))" :alt="String(item.name)" class="jytpl-preview-img"
+              loading="lazy" @error="brokenPreview.add('img:' + String(item.id))" />
             <div v-else class="jytpl-preview-anim" :class="'anim-' + String(item.anim || 'fade')">
               <span class="jytpl-preview-text" :style="{ color: String(item.color || '#fff') }">{{ String(item.text || item.name) }}</span>
             </div>
@@ -70,7 +74,7 @@
             </div>
           </div>
         </div>
-        <div v-if="!activeLaneData.items.length" class="jytpl-empty">
+        <div v-if="!activeLaneData || !activeLaneData.items.length" class="jytpl-empty">
           该子类目暂无模板——点右上角「从剪映同步」上传
         </div>
       </div>
@@ -136,6 +140,7 @@ const errorMsg = ref('')
 const busy = ref(false)
 const serverUrl = ref('')
 const selection = reactive(new Set<string>())
+const brokenPreview = reactive(new Set<string>())
 
 const activeGroupData = computed(() => groups.value.find((g) => g.group === activeGroup.value) || null)
 const activeLaneData = computed<Lane | null>(() => {
@@ -324,6 +329,7 @@ async function deleteSelected() {
 .jytpl-kind-badge.tpl { background: rgba(96,165,250,.15); color: #93c5fd; border: 1px solid rgba(96,165,250,.4); }
 .jytpl-card-preview { height: 110px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: radial-gradient(circle at 50% 60%, #222, #0d0d0d); }
 .jytpl-preview-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.jytpl-preview-video { max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none; }
 .jytpl-preview-anim { display: flex; align-items: center; justify-content: center; width: 100%; }
 .jytpl-preview-text { font-weight: 900; font-size: 20px; text-shadow: 0 2px 8px rgba(0,0,0,.5); display: inline-block; }
 .anim-bounce .jytpl-preview-text { animation: demoBounce 1.6s cubic-bezier(.2,1.6,.4,1) infinite; }

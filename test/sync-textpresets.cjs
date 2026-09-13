@@ -42,6 +42,26 @@ function buildPackage(presetPath) {
   const textRot = pc.rotation || 0
   const fsVw = (fontSize * textScale * 100 / DESIGN).toFixed(3)
 
+  // 动画语义：扫效果缓存包的 lua/prefab 名（EnlargeIn/BounceIn/LeftIn/HeartBeat/TextWave…）
+  // → 本地可近似动画（pulse/bounce/slide/fade）；与本地 drawtext 支持的 9 种动画对齐
+  const animKeys = new Set()
+  for (const r of p.resources || []) {
+    try {
+      for (const f of fs.readdirSync(r.file_path)) {
+        const base = f.replace(/\.(lua|prefab)$/i, '')
+        if (/^(infoSticker|AETools|Util|Utils|LuaRTTI\.MarkGen|Transform|Rotate|Appear)$/i.test(base)) continue
+        if (/\.(lua|prefab)$/i.test(f)) animKeys.add(base)
+      }
+    } catch (e) {}
+  }
+  const animAll = [...animKeys].join('|')
+  let anim = 'fade'
+  if (/bounce/i.test(animAll)) anim = 'bounce'
+  else if (/slide|shangxiaweiyi/i.test(animAll)) anim = 'slide'
+  else if (/enlarge|spring|heartbeat|textwave|textanim/i.test(animAll)) anim = 'pulse'
+  const animCssMap = { fade: 'fadeIn .5s ease both', pulse: 'pulseAnim 1.6s ease-in-out .3s infinite', bounce: 'bounceIn .6s cubic-bezier(.2,1.6,.4,1) both', slide: 'slideIn .5s ease-out both' }
+  const animCss = animCssMap[anim] || animCssMap.fade
+
   const decorations = []
   const seen = new Set()
   for (const r of p.resources || []) {
@@ -91,12 +111,19 @@ function buildPackage(presetPath) {
     return '<img class="d" src="data:image/png;base64,' + d.b64 + '" style="position:absolute;left:calc(50% + ' + lx + 'vw);top:calc(50% + ' + ly + 'vw);width:' + wPct + 'vw;transform:translate(-50%,-50%) rotate(' + rot + 'deg)">'
   }).join('')
 
+  const kfMap = {
+    fadeIn: '@keyframes fadeIn{0%{opacity:0}100%{opacity:1}}',
+    pulseAnim: '@keyframes pulseAnim{0%{transform:scale(.92)}50%{transform:scale(1.06)}100%{transform:scale(1)}}',
+    bounceIn: '@keyframes bounceIn{0%{transform:scale(.3);opacity:0}60%{transform:scale(1.08);opacity:1}100%{transform:scale(1)}}',
+    slideIn: '@keyframes slideIn{0%{transform:translateX(-24px);opacity:0}100%{transform:translateX(0);opacity:1}}',
+  }
+  const kfName = animCss.split(' ')[0]
   const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
     'body{margin:0;background:transparent;height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}' +
-    '.wrap{position:relative;display:inline-block;animation:tin .5s cubic-bezier(.2,1.4,.4,1) both}' +
+    '.wrap{position:relative;display:inline-block;animation:' + animCss + '}' +
     '.t{font-family:"Microsoft YaHei",sans-serif;font-weight:900;color:' + color + ';font-size:' + fsVw + 'vw;letter-spacing:2px;text-shadow:0 3px 10px rgba(0,0,0,.45);white-space:nowrap}' +
     '.d{position:absolute}' +
-    '@keyframes tin{0%{transform:scale(.3);opacity:0}100%{transform:scale(1);opacity:1}}' +
+    (kfMap[kfName] || '') +
     '</style></head><body><div class="wrap">' + imgs + '<div class="t" style="transform:rotate(' + textRot + 'deg)">{{text}}</div></div></body></html>'
 
   const meta = {

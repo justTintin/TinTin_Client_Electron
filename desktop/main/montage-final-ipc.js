@@ -927,6 +927,13 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           } catch (_) { cover = '' }
           const reg = JY.registerInRootMeta({ draftFolder: res.message, draftName: res.draftName || p.draftName || path.basename(res.message), durationUs: durUs, coverPath: cover })
           res.registered = reg.ok
+        // 2026-09-14 用户裁决：导出成功后自动拉起剪映（已运行不重复启动；失败仅告警不影响导出）
+        try {
+          const launch = JY.launchJianying()
+          res.launched = !!(launch.ok && !launch.running)
+          res.jianyingRunning = !!(launch.ok && launch.running)
+          if (!launch.ok && launch.error) logInfo('jianying-export', '拉起剪映失败：' + launch.error)
+        } catch (lErr) { try { logInfo('jianying-export', '拉起剪映异常：' + (lErr && lErr.message || lErr)) } catch (_) {} }
         } catch (regErr) {
           try { logInfo('jianying-export', '首页索引登记失败（不影响草稿本身）: ' + (regErr && regErr.message || regErr)) } catch (_) {}
         }
@@ -1080,13 +1087,19 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     const results = []
     for (const id of ids) {
       try {
-        const built = JT.buildSyncPackage(presetDir, String(id), { fontFamily: fontFamilyOf(String(id)) })
+        // 2026-09-15 用户裁决改版：客户端只传剪映原始文件（零转换），
+        // 服务端 jy_raw 解析层负责翻译；zip = meta.json(v2) + template.html + assets 原样
+        const built = JT.buildRawSyncPackage(presetDir, String(id), path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Cache'), { fontFamily: fontFamilyOf(String(id)) })
         if (!built) throw new Error('未找到该预设或无有效效果资源')
         const dir = path.join(outDir, String(id))
         fs.rmSync(dir, { recursive: true, force: true })
         fs.mkdirSync(dir, { recursive: true })
-        fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(built.meta, null, 1))
-        fs.writeFileSync(path.join(dir, 'template.html'), built.html)
+        for (const rf of built.files) {
+          const dest = path.join(dir, rf.name)
+          fs.mkdirSync(path.dirname(dest), { recursive: true })
+          if (rf.data) fs.writeFileSync(dest, rf.data)
+          else fs.copyFileSync(rf.absPath, dest)
+        }
         const zip = path.join(outDir, String(id) + '.zip')
         fs.rmSync(zip, { force: true })
         execFileSync('powershell', ['-NoProfile', '-Command', `Push-Location '${dir}'; Compress-Archive -Force -Path '.\\*' -DestinationPath '${zip}'; Pop-Location`], { stdio: 'pipe' })

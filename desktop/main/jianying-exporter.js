@@ -840,6 +840,45 @@ function timestampToSec(ts) {
   }
 }
 
+/** 定位剪映主程序（Apps\<版本>\JianyingPro.exe，取存在 exe 的最高版本号） */
+function findJianyingExe(appsDir) {
+  const local = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local')
+  const root = appsDir || path.join(local, 'JianyingPro', 'Apps')
+  let best = null
+  try {
+    for (const ver of fs.readdirSync(root)) {
+      const exe = path.join(root, ver, 'JianyingPro.exe')
+      let ok = false
+      try { ok = fs.statSync(exe).isFile() } catch (_) { ok = false }
+      if (!ok) continue
+      const key = String(ver).split('.').map((x) => parseInt(x, 10) || 0)
+      if (!best) { best = { exe, key }; continue }
+      for (let i = 0; i < Math.max(key.length, best.key.length); i++) {
+        const a = key[i] || 0
+        const bv = best.key[i] || 0
+        if (a !== bv) { if (a > bv) best = { exe, key }; break }
+      }
+    }
+  } catch (_) {}
+  return best ? best.exe : ''
+}
+
+/** 拉起剪映（已运行不重复启动；未找到安装返回 ok:false）。尽力而为，不抛异常 */
+function launchJianying(appsDir) {
+  try {
+    const { execFileSync, spawn } = require('node:child_process')
+    try {
+      const out = execFileSync('tasklist', ['/FI', 'IMAGENAME eq JianyingPro.exe'], { encoding: 'utf8', timeout: 10000, windowsHide: true })
+      if (/JianyingPro\.exe/i.test(out)) return { ok: true, running: true }
+    } catch (_) { /* tasklist 失败按未运行处理，继续尝试拉起 */ }
+    const exe = findJianyingExe(appsDir)
+    if (!exe) return { ok: false, error: '未找到剪映安装路径（Apps 下无 <版本>/JianyingPro.exe）' }
+    const child = spawn(exe, [], { detached: true, stdio: 'ignore', windowsHide: false })
+    child.unref()
+    return { ok: true, launched: true, exe }
+  } catch (e) { return { ok: false, error: e.message } }
+}
+
 module.exports = {
   TRANSITION_MAP,
   DRAFT_SCHEMA,
@@ -853,4 +892,6 @@ module.exports = {
   timestampToSec,
   appendKeywordTrack,
   KEYWORD_TRACK_STYLES,
+  findJianyingExe,
+  launchJianying,
 }

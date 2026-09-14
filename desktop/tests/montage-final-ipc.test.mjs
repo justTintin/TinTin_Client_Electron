@@ -123,6 +123,16 @@ test('buildServerFxFields: random 模板 → match_enabled 自动匹配（不传
   assert.equal(f.text_template_match_density, 'low')
 })
 
+test('buildServerFxFields: lutRestore 勾选 → lut_restore=true；默认/未勾选不传（2026-09-14 服务端口径）', () => {
+  const on = M.buildServerFxFields({ lutRestore: true }, '')
+  assert.equal(on.lut_restore, 'true')
+  const off = M.buildServerFxFields({}, '')
+  assert.ok(!('lut_restore' in off), '默认不传（服务端默认 false=不还原 LUT）')
+  const sfx = M.buildServerFxFields({ lutRestore: true, textFxEnabled: true, textTemplateId: 'random', textTemplateMatchIds: ['tt_1'] }, '')
+  assert.equal(sfx.lut_restore, 'true')
+  assert.equal(sfx.text_template_match_enabled, 'true', '与文字模板字段互不干扰')
+})
+
 test('buildServerFxFields: random + matchId → match_enabled/ids 仍传 + match_id（2026-09-13 文档口径）', () => {
   // 文档：传 match_id 时勾选 id 仍以 text_template_match_ids 为准 → 两者都传；
   // 服务端用保存的 events 烧制不重算（预览=成片一致），保留 7 天过期 400 重 match

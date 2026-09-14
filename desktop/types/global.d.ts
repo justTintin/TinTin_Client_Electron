@@ -403,6 +403,10 @@ declare interface TintinBridgeServer {
       subtitleAnim: string
       /** 文字模板随统一合成提交服务端（/montage/concat text_template_* 字段；2026-09-10） */
       textFxEnabled?: boolean
+      /** 2026-09-14 服务端新增：还原 LUT（无显式 LUT 文件时自动抽帧匹配 LUT 库；默认 false 不还原） */
+      lutRestore?: boolean
+      /** 勾选还原后选定的库内 LUT id（concat lut_id，待服务端支持后生效） */
+      lutId?: string
       textTemplateId?: string
       /** match 模式必填模板池（/guide text_template_match_ids；命中行从池中随机选一）。
        *  2026-09-11 用户裁决：不再传本地提取词表（text_template_words）——关键词
@@ -474,6 +478,14 @@ declare interface TintinBridgeServer {
   textfxPreviewClip(payload: {
     templateId: string; text: string; width?: number; height?: number; fps?: number; duration?: number
   }): Promise<{ data: Uint8Array } | { error: string } | null>
+  /** 服务端 LUT 库清单（GET /config/luts） */
+  lutList(): Promise<{ luts: Array<Record<string, unknown>> } | { error: string } | null>
+  /** 剪映模板页「字体（剪映）」分类：本机剪映字体清单（ResourcesFont + Cache 模板引用字体） */
+  jyfontsScan(): Promise<{ fonts: Array<{ name: string; family: string; path: string; sizeKb: number; source: 'fontdir' | 'cache' }> } | { error: string }>
+  /** 服务端已装字体清单（GET /config/fonts，voice:fonts 同源） */
+  jyfontsServerList(): Promise<{ fonts: Array<Record<string, unknown>> } | { error: string } | null>
+  /** 批量上传本机剪映字体到服务端字体库（名称互含命中已装则跳过；单条失败不阻断） */
+  jyfontsUpload(payload: { paths: string[] }): Promise<{ ok: boolean; results: Array<{ path: string; name: string; ok: boolean; skipped?: boolean; error?: string }> } | { error: string }>
 
   // ---------- workflow（CoverMaker 一键成片编排）----------
   workflowRun(

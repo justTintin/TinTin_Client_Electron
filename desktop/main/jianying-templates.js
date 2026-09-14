@@ -226,7 +226,32 @@ function scanAll(opts) {
  * 打包单个 textpreset 为服务端模板包（复用 test/sync-textpresets.cjs 逻辑）。
  * 返回 { meta, html } 或 null。
  */
-function buildSyncPackage(presetDir, rid) {
+/** 收集预设引用的字体文件（panel=fonts 资源，ttf/otf 直文件；路径去重、存在性过滤）。
+ *  2026-09-13 用户裁决：文字模板同步时对应字体一并上传（POST /config/fonts/upload）。 */
+function collectTemplateFonts(presetDir, rid) {
+  const out = []
+  const seenPreset = new Set()
+  let p = null
+  for (const f of safeReaddir(presetDir)) {
+    if (!f.endsWith('.textpreset')) continue
+    const cand = readJson(path.join(presetDir, f))
+    if (cand && cand.effect && String(cand.effect.resource_id || cand.effect.effect_id || '') === String(rid)) { p = cand; break }
+  }
+  if (!p) return out
+  const seenPath = new Set()
+  for (const r of p.resources || []) {
+    if (String(r.panel || '') !== 'fonts') continue
+    const fp = String(r.file_path || '')
+    if (!fp || seenPath.has(fp)) continue
+    seenPath.add(fp)
+    if (!/.(ttf|otf)$/i.test(fp)) continue
+    if (!fs.existsSync(fp)) continue
+    out.push({ name: path.basename(fp), path: fp })
+  }
+  return out
+}
+
+function buildSyncPackage(presetDir, rid, opts) {
   if (!presetDir || !rid || !fs.existsSync(presetDir)) return null
   let p = null
   for (const f of safeReaddir(presetDir)) {
@@ -355,10 +380,14 @@ function buildSyncPackage(presetDir, rid) {
     return '<img class="d" src="data:image/png;base64,' + d.b64 + '" style="position:absolute;left:calc(50% + ' + lx + 'vw);top:calc(50% + ' + ly + 'vw);width:' + wPct + 'vw;transform:translate(-50%,-50%) rotate(' + rot + 'deg)">'
   }).join('')
   const kfName = animCss.split(' ')[0]
+  // 2026-09-13 用户裁决：同步时模板字体一并上传（/config/fonts/upload + fontconfig），
+  // HTML font-family 写服务端解析出的家族名（opts.fontFamily），未上传/未命中回退雅黑
+  const cssFont = (opts && String(opts.fontFamily || '').trim())
+    ? "'" + String(opts.fontFamily).trim().replace(/'/g, '') + "'," : ''
   const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' +
     'body{margin:0;background:transparent;height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}' +
     '.wrap{position:relative;display:inline-block;animation:' + animCss + '}' +
-    '.t{font-family:"Microsoft YaHei",sans-serif;font-weight:900;color:' + color + ';font-size:' + fsVw + 'vw;letter-spacing:2px;text-shadow:0 3px 10px rgba(0,0,0,.45);white-space:nowrap}' +
+    '.t{font-family:' + cssFont + '"Microsoft YaHei",sans-serif;font-weight:900;color:' + color + ';font-size:' + fsVw + 'vw;letter-spacing:2px;text-shadow:0 3px 10px rgba(0,0,0,.45);white-space:nowrap}' +
     '.d{position:absolute}' + (kfMap[kfName] || '') +
     '</style></head><body><div class="wrap">' + imgs + '<div class="t" style="transform:rotate(' + textRot + 'deg)">{{text}}</div></div></body></html>'
   const category = eff.category_name && /^(好物种草|美食|穿搭|科技数码|综艺|强调|热门)$/.test(eff.category_name) ? eff.category_name : (eff.category_name === '文字模板' ? '好物种草' : '热门')
@@ -374,6 +403,7 @@ function buildSyncPackage(presetDir, rid) {
       color: { type: 'string', default: color, label: '文字颜色' },
       ...(color2 ? { color2: { type: 'string', default: color2, label: '渐变副色' } } : {}),
       fontSize: { type: 'number', default: Number((fontSize * textScale).toFixed(1)), label: '字号' },
+      font: { type: 'string', default: (opts && String(opts.fontFamily || '').trim()) || 'Microsoft YaHei', label: '字体' },
       anim: { type: 'string', default: anim, label: '入场动画' },
       animSignature: { type: 'string', default: animAll || 'none', label: '动画签名(剪映lua语义)' },
     },
@@ -383,4 +413,229 @@ function buildSyncPackage(presetDir, rid) {
 
 const DESIGN = 720
 
-module.exports = { CATEGORIES, scanAll, scanAllAsync, scanTextPresets, scanEffectCache, scanAudioCache, getTransitions, pngSize, buildSyncPackage }
+/** 资产补充数据包（2026-09-13 用户裁决：v2 原地升级所需数据由客户端上传——
+ *  effectStyle/动画参数(data_val)/Lua/序列帧只在客户端剪映缓存里，v1 HTML 转换时已丢，
+ *  服务端无法反推。收集模板全部原始资源文件，保留 cache 相对结构 + manifest 清单；
+ *  字体走 /config/fonts/upload 通道（manifest 标注 channel=fonts-api，不入包）。
+ *  返回 { files:[{relPath,absPath}], manifest }。可单测（fs 除外）。 */
+function buildAssetPackage(presetDir, rid, cacheRoot) {
+  let p = null
+  for (const f of safeReaddir(presetDir)) {
+    if (!f.endsWith('.textpreset')) continue
+    const cand = readJson(path.join(presetDir, f))
+    if (cand && cand.effect && String(cand.effect.resource_id || cand.effect.effect_id || '') === String(rid)) { p = cand; break }
+  }
+  if (!p) return null
+  const eff = p.effect || {}
+  const files = []
+  const resources = []
+  const fonts = []
+  const seen = new Set()
+  for (const r of p.resources || []) {
+    const panel = String(r.panel || 'misc')
+    const fp = String(r.file_path || '')
+    if (!fp || seen.has(fp)) continue
+    seen.add(fp)
+    const ridSeg = String(r.resource_id || '')
+    const segs = fp.split(/[\/]+/).filter(Boolean)
+    const lastSeg = segs[segs.length - 1] || ''
+    const hashSeg = lastSeg.replace(/\.[^.]*$/, '').slice(0, 24)
+    if (panel === 'fonts') {
+      // 字体：走 /config/fonts/upload 通道（fontconfig 按名安装），不入资产包
+      let st
+      try { st = fs.statSync(fp) } catch (_) { continue }
+      if (!/.(ttf|otf)$/i.test(fp)) continue
+      fonts.push({ file: path.basename(fp), family: path.basename(fp).replace(/.(ttf|otf)$/i, ''), sizeKb: Math.round(st.size / 1024), channel: 'fonts-api' })
+      resources.push({ panel, resource_id: ridSeg, file: path.basename(fp), channel: 'fonts-api' })
+      continue
+    }
+    let es = []
+    try { es = fs.readdirSync(fp) } catch (_) { continue }
+    const seg = ridSeg ? (panel + '/' + ridSeg + '/' + hashSeg) : (panel + '/' + hashSeg)
+    for (const fn of es) {
+      const abs = path.join(fp, fn)
+      let st
+      try { st = fs.statSync(abs) } catch (_) { continue }
+      if (st.isDirectory()) continue
+      const rel = 'assets/' + seg + '/' + fn
+      files.push({ relPath: rel.split('\\').join('/'), absPath: abs })
+      resources.push({ panel, resource_id: ridSeg, path: rel.split('\\').join('/'), file: fn, sizeKb: Math.round(st.size / 1024) })
+    }
+  }
+  const manifest = {
+    rid: String(rid),
+    name: eff.effect_name || '',
+    category: eff.category_name || '',
+    textpreset_version: p.version || 5,
+    generator: 'tintin-client asset-package v1',
+    fonts,
+    resources,
+  }
+  return { files, manifest }
+}
+
+/** v2 资产升级包（2026-09-14 服务端新增 POST /text_templates/templates/{id}/assets）：
+ *  按 v2 规范 schema 产出规范化数据（effect_style/text_anim/meta_patch.fonts），
+ *  服务端运行时做语义翻译与确定性驱动（__renderAt）。纯函数可单测（fs 除外）。
+ *  opts.serverFonts：服务端已装字体条目（GET /config/fonts），用于 meta_patch 字体对齐。 */
+function rgbToHex01(c) {
+  if (!Array.isArray(c) || c.length < 3) return '#FFFFFF'
+  return '#' + c.slice(0, 3).map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('')
+}
+function normalizeFillContent(fc) {
+  if (!fc) return null
+  const rt = String(fc.render_type || '').toLowerCase()
+  if (rt === 'gradient' && fc.gradient && Array.isArray(fc.gradient.color)) {
+    const g = fc.gradient
+    const stops = g.color.map((c, i) => ({
+      offset: Math.round((Array.isArray(g.percent) && g.percent[i] != null ? g.percent[i] : i / Math.max(1, g.color.length - 1)) * 100),
+      color: rgbToHex01(c),
+    }))
+    return { type: 'gradient', angle: Number(g.angle) || 90, stops }
+  }
+  if (rt === 'texture' && fc.texture && fc.texture.path) {
+    return { type: 'texture', image: 'assets/textures/' + path.basename(fc.texture.path), alpha: Number(fc.texture.alpha) || 1 }
+  }
+  const solid = fc.solid || {}
+  return { type: 'solid', color: rgbToHex01(solid.color), alpha: Number(solid.alpha != null ? solid.alpha : 1) }
+}
+function normalizeShadowLayer(arr, kind) {
+  return (Array.isArray(arr) ? arr : [])
+    .filter((s) => s && s.enable !== false)
+    .map((s) => {
+      const fill = normalizeFillContent(s.content)
+      const color = fill && fill.type === 'solid' ? fill.color : (fill && fill.stops ? fill.stops[0].color : '#000000')
+      return {
+        kind,
+        angle: Number(s.angle) || 0,
+        distance: Number(s.distance) || 0,
+        blur: Math.round((Number(s.diffuse) || 0) * 100),
+        color,
+        alpha: Number(s.alpha != null ? s.alpha : 1),
+      }
+    })
+}
+/** 服务端字体条目匹配（与 jianying-fonts-ipc.fontMatches 同逻辑；本模块零依赖内联）：
+ *  filename 精确（服务端按文件名去重）或 family 互含（fc-scan 英文家族名）。 */
+function jyFontEntryMatches(entry, family, fileName) {
+  if (!entry || typeof entry !== 'object') return false
+  const fam = String(entry.family || entry.font_name || entry.name || '').toLowerCase()
+  const sfn = String(entry.filename || entry.stored_as || '').toLowerCase()
+  const f = String(family || '').toLowerCase()
+  const fn = String(fileName || '').toLowerCase()
+  if (sfn && fn && sfn === fn) return true
+  return !!(fam && f && (fam.includes(f) || f.includes(fam)))
+}
+function buildV2AssetUpgrade(presetDir, rid, cacheRoot, opts) {
+  void cacheRoot
+  let p = null
+  for (const f of safeReaddir(presetDir)) {
+    if (!f.endsWith('.textpreset')) continue
+    const cand = readJson(path.join(presetDir, f))
+    if (cand && cand.effect && String(cand.effect.resource_id || cand.effect.effect_id || '') === String(rid)) { p = cand; break }
+  }
+  if (!p) return null
+  // ① effectStyle.json（flower 资源目录，明文样式定义）→ 规范化 + 纹理源图收集
+  let effectStyle = null
+  const textures = []
+  const flowerDir = (p.resources || []).map((r) => String(r.file_path || '')).find((fp) => {
+    try { return fs.existsSync(path.join(fp, 'effectStyle.json')) } catch (_) { return false }
+  })
+  if (flowerDir) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(flowerDir, 'effectStyle.json'), 'utf8'))
+      effectStyle = {
+        fills: [normalizeFillContent(raw.fill && raw.fill.content)].filter(Boolean)
+          .concat(normalizeShadowLayer(raw.inner_shadows, 'inner').length ? [] : []),
+        shadows: normalizeShadowLayer(raw.inner_shadows, 'inner')
+          .concat(normalizeShadowLayer(raw.shadows, 'outer')),
+        stroke: Array.isArray(raw.strokes) && raw.strokes.length
+          ? { color: rgbToHex01((raw.strokes[0].content && raw.strokes[0].content.solid && raw.strokes[0].content.solid.color) || []), width: Number(raw.strokes[0].width) || 2 }
+          : undefined,
+      }
+      if (!effectStyle.fills.length) delete effectStyle.fills
+      if (!effectStyle.stroke) delete effectStyle.stroke
+      // 纹理源图收集（fill/shadow content.texture.path 相对 flowerDir）
+      for (const s of [raw.fill && raw.fill.content].concat(raw.inner_shadows || [], raw.shadows || [])) {
+        const tp = s && s.texture && String(s.texture.path || '')
+        if (tp && path.basename(tp) === tp) {
+          const src = path.join(flowerDir, tp)
+          if (fs.existsSync(src)) textures.push({ name: 'assets/textures/' + tp, absPath: src })
+        }
+      }
+    } catch (_) { effectStyle = null }
+  }
+  // ② text_anim（panel=text 资源 data_val.json → 逐字 chars；贝塞尔/时序/模糊为明文参数）
+  let textAnim = null
+  let textLen = 0
+  try {
+    const para = (p.paragraphs || [])[0] || {}
+    const cc = JSON.parse(para.content || '{}')
+    textLen = String(cc.text || '').length
+  } catch (_) {}
+  const seenR = new Set()
+  for (const r of p.resources || []) {
+    if (seenR.has(r.file_path)) continue
+    seenR.add(r.file_path)
+    if (String(r.panel || '') !== 'text') continue
+    const dvPath = path.join(String(r.file_path), 'data_val.json')
+    if (!fs.existsSync(dvPath)) continue
+    try {
+      const dv = JSON.parse(fs.readFileSync(dvPath, 'utf8'))
+      const bez = Array.isArray(dv.bezierValue2) ? dv.bezierValue2 : (Array.isArray(dv.bezierValue1) ? dv.bezierValue1 : [0.25, 0.1, 0.25, 1])
+      const timer = Array.isArray(dv.textAnimTimer) ? dv.textAnimTimer : [0, 1]
+      const per = Number(dv.single_char_anim_time && dv.single_char_anim_time[0]) || 0.08
+      const n = Math.max(1, Math.min(textLen || 1, 24))
+      const blur0 = Array.isArray(dv.blur_info) ? (Number(dv.blur_info[0]) || 0) : 0
+      const y0 = (Number(dv.initialPosition_weight) || 0) * 100
+      const chars = []
+      for (let i = 0; i < n; i++) {
+        chars.push({
+          index: i,
+          delay: Math.round(i * per * 1000) / 1000,
+          duration: 0.4,
+          easing: bez.map((v) => Math.round(v * 1000) / 1000),
+          from: { x: 0, y: Math.round(y0), scale: 1, rotate: 0, opacity: 0, blur: Math.round(blur0 * 50) },
+          to: { x: 0, y: 0, scale: 1, rotate: 0, opacity: 1, blur: 0 },
+        })
+      }
+      textAnim = { chars }
+      break
+    } catch (_) {}
+  }
+  if (!textAnim && !effectStyle) return null
+  // ③ meta_patch.fonts：服务端已装家族名对齐（fc-scan 英文名，fontMatches 宽松匹配）
+  const fonts = collectTemplateFonts(presetDir, rid)
+  const patchFonts = []
+  for (const f of fonts) {
+    const e = (Array.isArray(opts && opts.serverFonts) ? opts.serverFonts : []).find((s) => jyFontEntryMatches(s, f.family, f.name))
+    const fam = (e && e.family) || ''
+    // 家族名解析失败（如泛名 font.ttf 且服务端无同名条目）→ 不进 patch（服务端校验 family 必填）
+    if (fam) patchFonts.push({ family: fam })
+  }
+  const files = []
+  // 无扩展名纹理：嗅探魔数补扩展名（服务端仅收 png/jpg 等图片扩展名；剪映缓存文件常无后缀）
+  for (const t of textures) {
+    if (/.(png|jpe?g|webp)$/i.test(t.name)) continue
+    let b
+    try { b = fs.readFileSync(t.absPath) } catch (_) { t.drop = true; continue }
+    let ext = ''
+    if (b[0] === 0x89 && b[1] === 0x50) ext = '.png'
+    else if (b[0] === 0xFF && b[1] === 0xD8) ext = '.jpg'
+    else { t.drop = true; continue }
+    t.oldRef = t.name
+    t.name += ext
+  }
+  let esText = effectStyle ? JSON.stringify(effectStyle) : ''
+  for (const t of textures) {
+    if (t.drop || !t.oldRef) continue
+    esText = esText.split('assets/textures/' + path.basename(t.oldRef)).join(t.name)
+  }
+  if (effectStyle) files.push({ name: 'assets/effect_style.json', data: Buffer.from(esText) })
+  if (textAnim) files.push({ name: 'assets/text_anim.json', data: Buffer.from(JSON.stringify(textAnim)) })
+  if (patchFonts.length) files.push({ name: 'meta_patch.json', data: Buffer.from(JSON.stringify({ fonts: patchFonts })) })
+  for (const t of textures) { if (!t.drop) files.push({ name: t.name, absPath: t.absPath }) }
+  return { files, effectStyle: !!effectStyle, textAnim: !!textAnim, fonts: patchFonts.length }
+}
+
+module.exports = { CATEGORIES, scanAll, scanAllAsync, scanTextPresets, scanEffectCache, scanAudioCache, getTransitions, pngSize, buildSyncPackage, collectTemplateFonts, buildAssetPackage, buildV2AssetUpgrade, jyFontEntryMatches }

@@ -73,7 +73,7 @@ const {
   subtitleAnimKey,
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立；随机样式默认 3 个）
-  textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
+  lutRestore, lutId, lutList, lutListLoading, loadLuts, textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
   textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
   textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
   voiceProgress,
@@ -1173,9 +1173,28 @@ function scoreClass(score: number | undefined): string {
           <span class="vd4-gain-label">{{ bgmVolume }} %</span>
         </div>
 
-        <!-- 2026-09-11 用户终裁：按钮决定链路，开了哪些特效/是否选 BGM 都只是参数——
-             「服务端合成」特效烧制 + BGM 混音整条交服务端一次 concat 完成（失败直接
-             报错，不静默回退本地）；「本地合成」全本地 ffmpeg。各自独立 loading -->
+        <!-- 2026-09-14 服务端 /montage/concat 新增 lut_restore（默认 false=不还原 LUT）：
+             勾选=恢复旧行为（无显式 LUT 文件时自动抽帧匹配 LUT 库）；显式 LUT 文件上传
+             始终优先不受开关影响。仅服务端合成消费（本地 ffmpeg 无 LUT 概念） -->
+        <div class="row">
+          <label class="chk" title="勾选后：服务端合成在未显式上传 LUT 文件时，自动抽帧匹配 LUT 库还原调色（恢复旧行为）。&#10;默认不勾选 = 不做 LUT 还原。显式上传 LUT 文件时始终应用，不受此开关影响。">
+            <input v-model="lutRestore" type="checkbox" />
+            还原 LUT（自动抽帧匹配 LUT 库）
+          </label>
+        </div>
+        <div v-if="lutRestore" class="row">
+          <label class="param-label">选择 LUT:</label>
+          <div class="lut-list">
+            <label v-for="l in lutList" :key="String(l.id)" class="chk">
+              <input type="radio" name="lutPick" :value="String(l.id)" :checked="lutId === String(l.id)"
+                @change="lutId = String(l.id)" />
+              {{ String(l.name) }}
+              <span class="tag">{{ l.kind === 'restore' ? '还原' : '风格' }}</span>
+              <span v-if="l.description" class="muted">{{ String(l.description) }}</span>
+            </label>
+            <span v-if="!lutList.length" class="muted">{{ lutListLoading ? '加载中…' : '服务端 LUT 库为空（可用 /config/luts 上传 .cube）' }}</span>
+          </div>
+        </div>
         <div class="row between" style="gap: var(--space-2)">
           <TButton label="服务端合成" class="vd4-run vd4-grow" :loading="finalBusy && finalMode === 'server'"
             :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
@@ -2090,4 +2109,7 @@ function scoreClass(score: number | undefined): string {
 .st-running { color: var(--primary); font-size: 12px; font-weight: 600; }
 .st-done { color: var(--success); font-size: 12px; font-weight: 600; }
 .st-failed { color: var(--danger, #e74c3c); font-size: 12px; font-weight: 600; }
+
+/* 还原 LUT：库内选择列表（2026-09-14） */
+.lut-list { display: flex; flex-direction: column; gap: 4px; max-height: 132px; overflow-y: auto; }
 </style>

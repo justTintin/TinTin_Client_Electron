@@ -217,6 +217,12 @@ const server = {
   bgmDownloadUrl:       (p) => ipcRenderer.invoke('bgm:downloadUrl', p),
   // 文字模板真实动画预览素材（render-preview 小尺寸 alpha WebM，2026-09-13）
   textfxPreviewClip:    (payload) => ipcRenderer.invoke('textfx:previewClip', payload),
+  // 服务端 LUT 库清单（GET /config/luts，特效包装「还原 LUT」选择数据源）
+  lutList:              () => ipcRenderer.invoke('lut:list'),
+  // 剪映模板页「字体（剪映）」分类：本机扫描/服务端清单/批量上传（POST /config/fonts/upload）
+  jyfontsScan:          () => ipcRenderer.invoke('jyfonts:scan'),
+  jyfontsServerList:    () => ipcRenderer.invoke('jyfonts:serverList'),
+  jyfontsUpload:        (payload) => ipcRenderer.invoke('jyfonts:upload', payload),
   /** 订阅 voice 域进度事件（cloneBatch/dubVideos），返回取消订阅函数 */
   onVoiceProgress:      (channel, cb) => {
     const h = (_e, d) => cb(d)

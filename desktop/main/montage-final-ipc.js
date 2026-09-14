@@ -73,6 +73,7 @@ function hasLibvpxVp9Decoder(ffmpegPath) {
 const FT = require('./fancy-templates')
 const VI = require('./montage-voice-ipc')
 const JT = require('./jianying-templates')
+const F = require('./jianying-fonts-ipc')
 const { logInfo } = require('./logger')
 
 // ── ffmpeg/ffprobe 路径（同 ffmpeg-gate.js getBinDir 口径，未导出故本地等价实现）──
@@ -345,6 +346,14 @@ function buildServerFxFields(fx, srt, matchId) {
       if (tpl.template_id) fields.fancy_template_id = String(tpl.template_id)
     }
   }
+  // 2026-09-14 服务端新增 lut_restore（bool，默认 false=不还原 LUT）：true=恢复旧行为
+  // （无显式 LUT 文件时自动抽帧匹配 LUT 库）；显式 LUT 文件上传始终优先，不受开关影响。
+  // 仅服务端链消费（本地 ffmpeg 无 LUT 概念）；默认不传=不还原。
+  if (fx.lutRestore) fields.lut_restore = 'true'
+  // 2026-09-14 用户裁决：勾选还原后可选库内具体 LUT（GET /config/luts 清单单选）。
+  // concat 现契约 lut 字段仅收文件（实测传 id → 422 Expected UploadFile），
+  // lut_id 为本端前置对接字段——服务端支持后即生效；未支持时忽略（不炸任务）。
+  if (fx.lutId) fields.lut_id = String(fx.lutId)
   if (fx.textFxEnabled) {
     fields.text_template_enabled = 'true'
     if (fx.textTemplateId && fx.textTemplateId !== 'random') {
@@ -930,6 +939,16 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
 
   // ── jytpl:list — 剪映模板卡片数据源（§0.0 单一数据源：主数据=服务端模板库；
   //    localAvailable=本机剪映可同步预设清单，仅供「从剪映同步」弹窗使用）──
+  // ── lut:list — 服务端 LUT 库清单（GET /config/luts；特效包装「还原 LUT」选择数据源）──
+  ipcMain.handle('lut:list', async () => {
+    try {
+      const res = await httpRequest('GET', '/config/luts', { timeout: 10000 })
+      const data = res.data
+      const luts = Array.isArray(data) ? data : (Array.isArray(data?.luts) ? data.luts : [])
+      return { luts }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
   ipcMain.handle('jytpl:list', async () => {
     try {
       // 1) 类目结构 = GET /templates/catalog（服务端唯一权威）：groups → lanes（花字库/文字模板/音频…各带 endpoint+tags）
@@ -1033,11 +1052,35 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     const outDir = path.join(process.env.TEMP || process.env.LOCALAPPDATA, 'tintin-jytpl-sync')
     fs.mkdirSync(outDir, { recursive: true })
+    // 2026-09-13 用户裁决：模板引用字体随模板一并上传（POST /config/fonts/upload，
+    // 名称互含命中已装跳过）；HTML font-family 写服务端解析出的家族名，
+    // 渲染端 fontconfig 按名命中 → 成片字形=剪映原字形
+    const perIdFonts = new Map()
+    const fontPaths = []
+    for (const id of ids) {
+      try {
+        const fonts = JT.collectTemplateFonts(presetDir, String(id))
+        perIdFonts.set(String(id), fonts)
+        for (const f of fonts) if (!fontPaths.some((x) => x.path === f.path)) fontPaths.push(f)
+      } catch (_) { perIdFonts.set(String(id), []) }
+    }
+    const familyOf = new Map()
+    if (fontPaths.length) {
+      const fres = await F.uploadFontFiles(httpRequest, fontPaths.map((f) => f.path))
+      const fFails = fres.filter((r) => !r.ok)
+      if (fFails.length) console.warn('[jytpl:sync] 字体上传失败（模板回退雅黑）：', fFails.map((f) => f.name + ':' + f.error).join('; '))
+      const serverFonts = await F.fetchServerFonts(httpRequest).catch(() => [])
+      for (const f of fontPaths) {
+        // fc-scan 家族名多为字体内部英文名（如 字由奇巧.ttf → "HelloFont ID QiQiao"）
+        const entry = serverFonts.find((e) => F.fontMatches(e, f.family, f.name))
+        familyOf.set(f.path, (entry && entry.family) || f.family)
+      }
+    }
     const { execFileSync } = require('node:child_process')
     const results = []
     for (const id of ids) {
       try {
-        const built = JT.buildSyncPackage(presetDir, String(id))
+        const built = JT.buildSyncPackage(presetDir, String(id), { fontFamily: fontFamilyOf(String(id)) })
         if (!built) throw new Error('未找到该预设或无有效效果资源')
         const dir = path.join(outDir, String(id))
         fs.rmSync(dir, { recursive: true, force: true })

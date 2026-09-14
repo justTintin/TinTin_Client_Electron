@@ -1561,6 +1561,9 @@ export function useVideoMontage() {
             // 不再传本地提取词表（text_template_words）——关键词命中在合成请求内由
             // 服务端从随请求提交的字幕自行完成；random 模板→match_enabled + 模板池）
             textFxEnabled: textFxEnabled.value,
+            // 2026-09-14：还原 LUT 开关随统一合成提交服务端（lut_restore，仅服务端链消费）
+            lutRestore: lutRestore.value,
+            lutId: lutRestore.value ? (lutId.value || '') : '',
             textTemplateId: textTemplateId.value,
             // match 模式必填（/guide text_template_match_ids）：每次合成从模板库随机
             // 取 N 个 id 作模板池，命中行从池中随机选一（与「随机数量」UI 语义一致）
@@ -1805,6 +1808,26 @@ export function useVideoMontage() {
   // 独立「文字模板烧制」接口——所有素材统一合成（用户裁决口径）；待把字段接入确认合成请求。
   // 2026-09-13 用户裁决：文字模板默认勾选（模板池/命中均由服务端承担，默认开不增本地负担）
   const textFxEnabled = ref(true)
+  // 2026-09-14 服务端 /montage/concat 新增 lut_restore（bool，默认 false）：
+  // 勾选=恢复旧行为（无显式 LUT 文件时自动抽帧匹配 LUT 库）；默认不勾=不还原 LUT
+  const lutRestore = ref(false)
+  // 2026-09-14 用户裁决：勾选还原后可选库内具体 LUT（GET /config/luts 清单单选）
+  const lutId = ref('')
+  const lutList = ref<Array<Record<string, unknown> & { id: string; name: string; kind?: string; description?: string }>>([])
+  const lutListLoading = ref(false)
+  async function loadLuts(): Promise<void> {
+    if (lutListLoading.value) return
+    lutListLoading.value = true
+    try {
+      const res = await window.tintin?.server?.lutList?.()
+      lutList.value = res && 'luts' in res && Array.isArray(res.luts)
+        ? res.luts.map((x) => ({ ...(x as Record<string, unknown>), id: String(x.id ?? ''), name: String(x.name ?? x.filename ?? x.id ?? '') }))
+        : []
+    } catch (_) { lutList.value = [] } finally { lutListLoading.value = false }
+  }
+  watch(lutRestore, (on) => {
+    if (on) { void loadLuts() } else { lutId.value = '' } // 取消勾选清空选择
+  })
   const textTemplateId = ref('random')
   const textRandomCount = ref(3)
   // 关键词密度档位（2026-09-10 用户裁决：低/中/高；调节后重新提取关键词并重新掷模板）
@@ -2949,7 +2972,7 @@ export function useVideoMontage() {
     voiceProgress, fancyTemplatesLoading,
     selectedFancyTemplate, loadFancyTemplates,
     // 文字模板（textfx；与花字独立；随机样式默认 3 个）
-    textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
+    lutRestore, lutId, lutList, lutListLoading, loadLuts, textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
     textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
     textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
     FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,

@@ -6,25 +6,30 @@
         <template v-for="g in groups" :key="g.group">
           <!-- 单 lane 组：一个 tab -->
           <button v-if="(g.lanes || []).length === 1" class="jytpl-tab"
-            :class="{ active: activeLane === (g.group + '/' + g.lanes[0].lane) }"
+            :class="{ active: !fontsTab && activeLane === (g.group + '/' + g.lanes[0].lane) }"
             @click="switchLane(g.lanes[0], g.group)">
             {{ g.lanes[0].lane }} <span class="jytpl-count">{{ g.lanes[0].total }}</span>
           </button>
           <!-- 多 lane 组（文本）：组 tab + 子类目下拉 -->
           <template v-else>
             <button class="jytpl-tab jytpl-tab-group"
-              :class="{ active: activeGroup === g.group }" @click="switchGroup(g)">
+              :class="{ active: !fontsTab && activeGroup === g.group }" @click="switchGroup(g)">
               {{ g.group }} <span class="jytpl-count">{{ (g.lanes || []).reduce((s, l) => s + (l.total || 0), 0) }}</span>
               <span class="jytpl-caret">▾</span>
             </button>
             <div v-if="activeGroup === g.group" class="jytpl-sublanes">
               <button v-for="l in g.lanes" :key="l.lane" class="jytpl-tab jytpl-tab-sub"
-                :class="{ active: activeLane === g.group + '/' + l.lane }" @click="switchLane(l, g.group)">
+                :class="{ active: !fontsTab && activeLane === g.group + '/' + l.lane }" @click="switchLane(l, g.group)">
                 {{ l.lane }} <span class="jytpl-count">{{ l.total }}</span>
               </button>
             </div>
           </template>
         </template>
+        <!-- 2026-09-13 用户裁决：新增「字体（剪映）」分类——与原服务端字体管理分开，
+             本机剪映字体上传到服务端字体库（POST /config/fonts/upload），来源=剪映 -->
+        <button class="jytpl-tab" :class="{ active: fontsTab }" @click="openFontsTab">
+          字体（剪映） <span class="jytpl-count">{{ localFonts.length }}</span>
+        </button>
       </div>
       <div class="jytpl-actions">
         <template v-if="isTextLane">
@@ -44,6 +49,41 @@
       <p>{{ errorMsg }}</p>
       <p class="muted">请确认服务端可访问。</p>
     </div>
+
+    <!-- 字体（剪映）分类面板：本机剪映字体 → 服务端字体库 -->
+    <template v-else-if="fontsTab">
+      <div class="jytpl-fonts">
+        <div class="jytpl-fonts-head">
+          <span class="jytpl-fonts-title">本机剪映字体 <span class="tag">来源：剪映</span></span>
+          <button class="jytpl-btn" :disabled="fontsBusy" @click="scanFonts">刷新</button>
+          <button class="jytpl-btn primary" :disabled="!fontSel.size || fontsBusy" @click="uploadFonts">
+            上传选中到服务端（{{ fontSel.size }}）
+          </button>
+        </div>
+        <div class="jytpl-fonts-cols">
+          <div class="jytpl-fonts-col">
+            <div class="jytpl-fonts-sub">本机剪映（{{ localFonts.length }}）</div>
+            <label v-for="f in localFonts" :key="f.path" class="jytpl-dlg-item">
+              <input type="checkbox" :checked="fontSel.has(f.path)" :disabled="fontOnServer(f.family, f.name)"
+                @change="toggleFontSel(f.path)" />
+              <span class="jytpl-dlg-item-name">{{ f.name }}</span>
+              <span class="tag">{{ f.sizeKb }}KB</span>
+              <span class="tag">{{ f.source === 'fontdir' ? '字体资源' : '模板引用' }}</span>
+              <span class="tag" :class="fontOnServer(f.family) ? 'ok' : ''">{{ fontOnServer(f.family, f.name) ? '已在服务端' : '未上传' }}</span>
+            </label>
+            <div v-if="!localFonts.length" class="jytpl-empty">本机剪映未发现字体文件</div>
+          </div>
+          <div class="jytpl-fonts-col">
+            <div class="jytpl-fonts-sub">服务端已装（{{ serverFonts.length }}）</div>
+            <div v-for="(f, fi) in serverFonts" :key="fi" class="jytpl-dlg-item">
+              <span class="jytpl-dlg-item-name">{{ String(f.name || f.font_name || f.family || f.id || ('#' + (fi + 1))) }}</span>
+            </div>
+            <div v-if="!serverFonts.length" class="jytpl-empty">服务端字体库为空</div>
+          </div>
+        </div>
+        <div v-if="fontsMsg" class="jytpl-dlg-progress">{{ fontsMsg }}</div>
+      </div>
+    </template>
 
     <!-- 卡片网格：数据源=服务端 catalog lanes -->
     <template v-else>
@@ -231,13 +271,79 @@ async function doSyncFromJianying() {
       const fails = (res.results || []).filter((r) => !r.ok)
       syncDlg.progress = `完成：成功 ${okN}${fails.length ? '，失败 ' + fails.length : ''}`
       if (fails.length) window.alert(fails.map((f) => `${f.id}: ${f.error}`).join('\n'))
-      await reload()
     } else if (res && 'error' in res) {
       syncDlg.progress = '同步失败：' + res.error
     }
   } finally {
     syncDlg.busy = false
   }
+}
+
+// ── 字体（剪映）分类：本机剪映字体 → 服务端字体库（POST /config/fonts/upload）──
+const fontsTab = ref(false)
+const fontsBusy = ref(false)
+const fontsMsg = ref('')
+const localFonts = ref<Array<{ name: string; family: string; path: string; sizeKb: number; source: 'fontdir' | 'cache' }>>([])
+const serverFonts = ref<Array<Record<string, unknown>>>([])
+const fontSel = reactive(new Set<string>())
+/** 已在服务端判定：名称互含（fc-scan 家族名与文件名可能不同） */
+function fontOnServer(family: string, fileName?: string): boolean {
+  // fc-scan 家族名多为字体内部英文名（字由奇巧.ttf → "HelloFont ID QiQiao"）：
+  // 文件名精确相等 或 家族名互含 任一命中即已装
+  const f = String(family || '').toLowerCase()
+  const fn = String(fileName || '').toLowerCase()
+  return serverFonts.value.some((s) => {
+    const fam = String(s.family || s.font_name || s.name || '').toLowerCase()
+    const sfn = String(s.filename || s.stored_as || '').toLowerCase()
+    if (sfn && fn && sfn === fn) return true
+    return !!(fam && f && (fam.includes(f) || f.includes(fam)))
+  })
+}
+function toggleFontSel(p: string) {
+  if (fontSel.has(p)) fontSel.delete(p)
+  else fontSel.add(p)
+}
+async function scanFonts() {
+  fontsBusy.value = true
+  fontsMsg.value = ''
+  try {
+    const res = await window.tintin?.server?.jyfontsScan?.()
+    localFonts.value = res && 'fonts' in res && Array.isArray(res.fonts) ? res.fonts : []
+  } finally { fontsBusy.value = false }
+}
+async function loadServerFonts() {
+  const res = await window.tintin?.server?.jyfontsServerList?.()
+  serverFonts.value = res && 'fonts' in res && Array.isArray(res.fonts) ? (res.fonts as Array<Record<string, unknown>>) : []
+}
+async function uploadFonts() {
+  const paths = [...fontSel].filter((p) => {
+    const f = localFonts.value.find((x) => x.path === p)
+    return f && !fontOnServer(f.family)
+  })
+  if (!paths.length) return
+  fontsBusy.value = true
+  fontsMsg.value = `正在上传 ${paths.length} 个字体…`
+  try {
+    const res = await window.tintin?.server?.jyfontsUpload?.({ paths })
+    if (res && 'ok' in res && res.ok) {
+      const rs = res.results || []
+      const okN = rs.filter((r) => r.ok && !r.skipped).length
+      const skipN = rs.filter((r) => r.skipped).length
+      const fails = rs.filter((r) => !r.ok)
+      fontsMsg.value = `完成：上传 ${okN}${skipN ? '，跳过已存在 ' + skipN : ''}${fails.length ? '，失败 ' + fails.length : ''}`
+      if (fails.length) window.alert(fails.map((f) => `${f.name}: ${f.error}`).join('\n'))
+      fontSel.clear()
+      await loadServerFonts()
+    } else if (res && 'error' in res) {
+      fontsMsg.value = '上传失败：' + res.error
+    }
+  } finally { fontsBusy.value = false }
+}
+function openFontsTab() {
+  fontsTab.value = true
+  selection.clear()
+  void scanFonts()
+  void loadServerFonts()
 }
 
 async function reload() {
@@ -384,4 +490,12 @@ async function deleteSelected() {
 .jytpl-dlg-item-name { flex: 1; font-size: 13px; }
 .jytpl-dlg-progress { margin-top: 10px; font-size: 12px; color: #8ab4f8; min-height: 16px; }
 .jytpl-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid #333; }
+
+/* 字体（剪映）分类（2026-09-13：与原服务端字体管理分开；来源标记=剪映） */
+.jytpl-fonts { display: flex; flex-direction: column; gap: 10px; }
+.jytpl-fonts-head { display: flex; align-items: center; gap: 8px; }
+.jytpl-fonts-title { font-weight: 600; }
+.jytpl-fonts-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.jytpl-fonts-col { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; max-height: 62vh; overflow-y: auto; }
+.jytpl-fonts-sub { font-weight: 600; margin-bottom: 6px; }
 </style>

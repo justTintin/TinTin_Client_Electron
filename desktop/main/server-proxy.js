@@ -22,6 +22,7 @@ const { createMontageProxyIpc } = require('./montage-proxy-ipc')
 // 智能混剪 Step3「口播配音」域（VoiceCloneWorker/VideoDubbingWorker 主进程化）
 const { createMontageVoiceIpc } = require('./montage-voice-ipc')
 const { createMontageFinalIpc } = require('./montage-final-ipc')
+const { createJianyingFontsIpc } = require('./jianying-fonts-ipc')
 // machine_id 稳定派生（W11 口径：config-store 'machineIdV2' 缓存优先 + 原版 license.py 口径派生写回）
 const { resolveMachineIdSync, MACHINE_ID_KEY } = require('./machine-id')
 // 接口调用留痕：所有 httpRequest 请求/响应/失败都落日志，便于观察"何时点了哪个服务端接口"（2026-09-06）
@@ -877,6 +878,10 @@ function createServerProxy(ipcMain, ctx) {
   //     final:collectOutputs 回退扫描 outputs / final:findSrt / jianying:export 剪映草稿 /
   //     bgm:downloadUrl AI 生成 BGM 落盘）外迁 montage-final-ipc.js ------
   createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl })
+
+  // --- 剪映模板页「字体（剪映）」分类域（jyfonts:scan/serverList/upload，
+  //     本机剪映字体 → POST /config/fonts/upload，来源=剪映；外迁独立模块 ≤800 行铁律）---
+  createJianyingFontsIpc(ipcMain, { httpRequest, isExpectedOfflineError })
 
   // --- audio（智能混剪 Step4 生成 BGM + 音频生成 tab；2026-09-05 用户裁决：BGM 生成
   //  切服务端 GUIDE 新口径——body = {style, mood?, duration}，无 prompt 字段（服务端

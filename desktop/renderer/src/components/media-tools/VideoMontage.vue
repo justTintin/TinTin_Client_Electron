@@ -977,9 +977,9 @@ function scoreClass(score: number | undefined): string {
         <VdStepBar :step="step" @go="go" />
         <!-- 特效包装分组（2026-09-13 用户裁决：字幕拆出单独成组、置于背景音乐上方）：花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
-          <div class="fx-pack-title">特效包装</div>
+          <div class="fx-pack-title">花字</div>
 
-          <!-- 花字（原 Step3 三行原样迁入） -->
+          <!-- 花字（原 Step3 三行原样迁入；2026-09-14 用户裁决：花字/文字模板分开成组） -->
           <div class="row">
             <label class="chk" title="在视频画面叠加花字特效文字（可选出现位置），用于突出关键卖点/价格/型号等信息。&#10;花字内容自动从口播文案中逐行提取卖点（价格 > 数字参数 > 关键词），无需手动输入；&#10;每个花字随对应字幕提前 0.3 秒出现、该句字幕结束即消失。">
               <input v-model="fancyEnabled" type="checkbox" />
@@ -1011,6 +1011,11 @@ function scoreClass(score: number | undefined): string {
             </div>
           </div>
 
+        </div>
+
+        <!-- 文字模板分组（2026-09-14 用户裁决：与花字分开成组） -->
+        <div class="action-box fx-pack-box">
+          <div class="fx-pack-title">文字模板</div>
           <!-- 文字模板（2026-09-09 用户裁决：服务端 textfx 动画体系，与花字独立概念；
                随机样式默认从全部模板中选 3 个；烧制待服务端烧制接口上线，先配置+预览；
                2026-09-10 布局裁决：勾选/设置/样式预览/效果预览各占一行） -->
@@ -1198,8 +1203,11 @@ function scoreClass(score: number | undefined): string {
         <div class="row between" style="gap: var(--space-2)">
           <TButton label="服务端合成" class="vd4-run vd4-grow" :loading="finalBusy && finalMode === 'server'"
             :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
-          <TButton label="本地合成" class="vd4-run vd4-grow" plain :loading="finalBusy && finalMode === 'local'"
-            :disabled="finalBusy" title="特效+混音全本地 ffmpeg（字幕动画全功能）" @click="startFinalMix('local')" />
+          <!-- 2026-09-14 用户裁决：本地合成禁用——文字模板 v2 效果由服务端运行时渲染
+               （本地链路依赖服务端素材下载且 v2 保真度只在服务端），统一走服务端合成 -->
+          <TButton label="本地合成" class="vd4-run vd4-grow" plain
+            :disabled="true"
+            title="本地合成已停用：文字模板 v2 效果由服务端运行时渲染，请使用「服务端合成」" @click="startFinalMix('local')" />
         </div>
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
 
@@ -2032,7 +2040,7 @@ function scoreClass(score: number | undefined): string {
   row-gap: 4px;
 }
 .style-preview-canvas.textfx-canvas.textfx-expanded {
-  max-height: 268px;
+  max-height: 420px;
   overflow-y: auto;
 }
 /* 折叠按钮（最右侧）：不用 .icon-btn（28px 宽装不下中文） */
@@ -2057,7 +2065,9 @@ function scoreClass(score: number | undefined): string {
    本地 CSS 近似演示，与服务端烧制效果非逐帧一致） */
 /* 2026-09-13 用户裁决：文字模板预览要不播真实动画（render-preview/服务端 webm），
    要不只显示文字/静态图——CSS 近似模板动画整体废止（原 keyframes + textfx-anim-* 已删） */
-.textfx-sample-video { height: 100%; width: auto; display: block; border-radius: var(--radius-sm); }
+/* 2026-09-14 用户裁决：样式预览换成剪映模板页同款卡片（9:16 视频卡+模板名），
+   原 52px 共用容器压扁竖版视频 → 文字模板组独立加高 */
+.textfx-sample-video { width: 108px; height: 160px; object-fit: cover; display: block; border-radius: 4px; background: #101010; }
 /* 时间轴词条真实动画素材（alpha webm）：高度撑满轨条，宽度按素材比例 */
 .textfx-clip { height: 100%; width: auto; display: block; border-radius: 3px; }
 .w80 { width: 80px; flex: none; }

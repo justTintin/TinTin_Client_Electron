@@ -1743,8 +1743,11 @@ export function useVideoMontage() {
       return
     }
     if (res && res.success) {
-      notify('草稿导出成功', successBody(base.draftName))
-      try { window.tintin.shell.openItem(res.message) } catch (_) {}
+      // 2026-09-14 用户裁决：导出成功后自动拉起剪映（主进程 launchJianying），
+      // 替代原「打开草稿文件夹」；拉起状态附在通知里
+      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean }
+      const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+      notify('草稿导出成功', successBody(base.draftName) + tail)
     } else {
       clientError('video-montage', '导出剪映草稿失败', res ? res.message : '主进程不可达')
       notify('导出失败', `导出剪映草稿时发生错误：\n${res ? res.message : '主进程不可达'}`)

@@ -162,7 +162,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated } from 'vue'
 
 interface Lane {
   lane: string
@@ -231,8 +231,9 @@ function animLabel(a: string): string {
 }
 function absUrl(p: string): string {
   if (!p) return ''
-  if (/^https?:/.test(p)) return p
-  return serverUrl.value.replace(/\/$/, '') + (p.startsWith('/') ? p : '/' + p)
+  const url = /^https?:/.test(p) ? p : serverUrl.value.replace(/\/$/, '') + (p.startsWith('/') ? p : '/' + p)
+  // 服务端重渲染后同名 URL 内容会变 → 附 catalog 拉取时间绕开浏览器启发式缓存
+  return url + (url.includes('?') ? '&' : '?') + 'v=' + catalogLoadedAt.value
 }
 
 // ── 从剪映同步弹窗 ──
@@ -346,11 +347,14 @@ function openFontsTab() {
   void loadServerFonts()
 }
 
+let reloadInFlight = false
 async function reload() {
-  loading.value = true
-  errorMsg.value = ''
-  selection.clear()
+  if (reloadInFlight) return
+  reloadInFlight = true
   try {
+    loading.value = true
+    errorMsg.value = ''
+    selection.clear()
     const res = await window.tintin?.server?.jyTemplatesList?.()
     if (res && 'ok' in res && res.ok) {
       groups.value = (res.groups || []) as Group[]
@@ -365,6 +369,7 @@ async function reload() {
     errorMsg.value = String(e)
   } finally {
     loading.value = false
+    reloadInFlight = false
   }
 }
 // 音频试听（单例 audio，切播即停）
@@ -384,6 +389,10 @@ function toggleAudio(item: Record<string, unknown>, ev: Event) {
   playingId.value = id
 }
 onMounted(reload)
+// 2026-09-15 用户裁决：KeepAlive 每次激活都重拉 catalog；catalogLoadedAt 作为预览
+// URL 版本参数（服务端重渲染后同名 URL 内容会变，绕开浏览器启发式缓存）
+onActivated(reload)
+const catalogLoadedAt = ref(Date.now())
 
 async function syncSelectedById() {
   busy.value = true

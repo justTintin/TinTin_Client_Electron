@@ -10,7 +10,7 @@
 // （纯函数 videoMontageLogic.ts，IRON-06/07 分层）。
 // 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（重按按钮即重试）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onActivated, onUnmounted, watch, nextTick } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VideoPreview from '@/components/common/VideoPreview.vue'
@@ -480,6 +480,12 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
   }
 })
 onMounted(() => { void loadFancyTemplates() })
+// 2026-09-15 用户裁决：KeepAlive 下每次进入第④步都刷新模板库/字体/LUT 清单（服务端重渲染后进页面即见新预览）
+onActivated(() => {
+  void loadTextTemplates()
+  void loadFancyTemplates()
+  void loadLuts()
+})
 // 声音样本与 VoiceClone 页同口径：每次进入 Step3（及挂载时）重新拉取（原实现仅在
 // composable 创建时拉一次，服务端新增样本/离线恢复后下拉一直为空）
 onMounted(() => { void loadRefSamples() })

@@ -480,6 +480,8 @@ declare interface TintinBridgeServer {
   textfxPreviewClip(payload: {
     templateId: string; text: string; width?: number; height?: number; fps?: number; duration?: number
   }): Promise<{ data: Uint8Array } | { error: string } | null>
+  /** 清空文字模板渲染片磁盘缓存（2026-09-15：进第四步重拉服务端渲染前调用） */
+  textfxClearClipCache(): Promise<{ ok: boolean } | { error: string } | null>
   /** 服务端 LUT 库清单（GET /config/luts） */
   lutList(): Promise<{ luts: Array<Record<string, unknown>> } | { error: string } | null>
   /** 剪映模板页「字体（剪映）」分类：本机剪映字体清单（ResourcesFont + Cache 模板引用字体） */

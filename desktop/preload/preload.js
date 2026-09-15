@@ -217,6 +217,8 @@ const server = {
   bgmDownloadUrl:       (p) => ipcRenderer.invoke('bgm:downloadUrl', p),
   // 文字模板真实动画预览素材（render-preview 小尺寸 alpha WebM，2026-09-13）
   textfxPreviewClip:    (payload) => ipcRenderer.invoke('textfx:previewClip', payload),
+  // 清空渲染片磁盘缓存（2026-09-15：每次进第四步重拉服务端渲染）
+  textfxClearClipCache: () => ipcRenderer.invoke('textfx:clearClipCache'),
   // 服务端 LUT 库清单（GET /config/luts，特效包装「还原 LUT」选择数据源）
   lutList:              () => ipcRenderer.invoke('lut:list'),
   // 剪映模板页「字体（剪映）」分类：本机扫描/服务端清单/批量上传（POST /config/fonts/upload）

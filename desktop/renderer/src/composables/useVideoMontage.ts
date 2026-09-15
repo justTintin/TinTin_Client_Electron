@@ -1423,6 +1423,11 @@ export function useVideoMontage() {
     finalProgress.value = -1
     // 2026-09-09 裁决：特效配置迁入 Step4，进入时拉取服务端文字模板库（空库仅随机项）
     void loadTextTemplates()
+    // 2026-09-15 用户裁决：每次进第四步重拉服务端渲染——清两级渲染片缓存
+    // （内存 blob URL + 主进程磁盘 TTL 文件），预览与合成兜底按最新渲染取；
+    // 磁盘清空须先于预览取片完成（await），否则并发竞态会命中旧缓存
+    textFxClipUrlCache.clear()
+    await window.tintin?.server?.textfxClearClipCache?.()
     // 效果预览轨（2026-09-10 二次裁决）：进入时按合成候选刷新一次（候选列表独立于 voiceRows）
     void refreshTextFxTracks()
     try {

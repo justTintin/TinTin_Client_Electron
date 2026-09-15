@@ -1177,6 +1177,17 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     } catch (err) { return { error: err.message } }
   })
 
+  // ── textfx:clearClipCache — 清空渲染片磁盘缓存（2026-09-15 用户裁决：每次进
+  //    第四步重拉服务端渲染，进页时由渲染层调用；目录不存在静默成功）──
+  ipcMain.handle('textfx:clearClipCache', async () => {
+    try {
+      for (const f of fs.existsSync(TEXTFX_CLIP_DIR) ? fs.readdirSync(TEXTFX_CLIP_DIR) : []) {
+        try { fs.unlinkSync(path.join(TEXTFX_CLIP_DIR, f)) } catch (_) { /* 占用/已删忽略 */ }
+      }
+      return { ok: true }
+    } catch (err) { return { error: err.message } }
+  })
+
   // ── bgm:downloadUrl — AI 生成 BGM 落盘（本端扩展：本地混音需本地文件，见头注）──
   ipcMain.handle('bgm:downloadUrl', async (_e, payload) => {
     try {

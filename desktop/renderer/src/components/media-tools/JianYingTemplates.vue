@@ -10,20 +10,12 @@
             @click="switchLane(g.lanes[0], g.group)">
             {{ g.lanes[0].lane }} <span class="jytpl-count">{{ g.lanes[0].total }}</span>
           </button>
-          <!-- 多 lane 组（文本）：组 tab + 子类目下拉 -->
-          <template v-else>
-            <button class="jytpl-tab jytpl-tab-group"
-              :class="{ active: !fontsTab && activeGroup === g.group }" @click="switchGroup(g)">
-              {{ g.group }} <span class="jytpl-count">{{ (g.lanes || []).reduce((s, l) => s + (l.total || 0), 0) }}</span>
-              <span class="jytpl-caret">▾</span>
-            </button>
-            <div v-if="activeGroup === g.group" class="jytpl-sublanes">
-              <button v-for="l in g.lanes" :key="l.lane" class="jytpl-tab jytpl-tab-sub"
-                :class="{ active: !fontsTab && activeLane === g.group + '/' + l.lane }" @click="switchLane(l, g.group)">
-                {{ l.lane }} <span class="jytpl-count">{{ l.total }}</span>
-              </button>
-            </div>
-          </template>
+          <!-- 多 lane 组（文本）：仅组 tab；子分组切换在下方内容区（2026-09-15 用户裁决：
+               花字库/文字模板不得出现在 tab 行，显示在文本界面下方） -->
+          <button v-else class="jytpl-tab jytpl-tab-group"
+            :class="{ active: !fontsTab && activeGroup === g.group }" @click="switchGroup(g)">
+            {{ g.group }} <span class="jytpl-count">{{ (g.lanes || []).reduce((s, l) => s + (l.total || 0), 0) }}</span>
+          </button>
         </template>
         <!-- 2026-09-13 用户裁决：新增「字体（剪映）」分类——与原服务端字体管理分开，
              本机剪映字体上传到服务端字体库（POST /config/fonts/upload），来源=剪映 -->
@@ -41,6 +33,14 @@
         </template>
         <button class="jytpl-btn accent" :disabled="syncDlg.busy" @click="openSyncDlg">⟳ 从剪映同步</button>
       </div>
+    </div>
+
+    <!-- 文本页内子分组切换（花字库/文字模板）——位于内容区顶部，不在 tab 行（2026-09-15 用户裁决） -->
+    <div v-if="!fontsTab && activeGroupData && (activeGroupData.lanes || []).length > 1" class="jytpl-sublanes">
+      <button v-for="l in activeGroupData.lanes" :key="l.lane" class="jytpl-tab jytpl-tab-sub"
+        :class="{ active: activeLane === activeGroup + '/' + l.lane }" @click="switchLane(l, activeGroup)">
+        {{ l.lane }} <span class="jytpl-count">{{ l.total }}</span>
+      </button>
     </div>
 
     <div v-if="loading" class="jytpl-loading"><span class="spinner" />正在从服务端加载模板…</div>
@@ -440,8 +440,7 @@ async function deleteSelected() {
 .jytpl-tab.active { background: #409eff; color: #fff; border-color: #409eff; }
 .jytpl-tab:hover:not(.active) { background: rgba(255,255,255,.06); }
 .jytpl-tab-group { font-weight: 600; }
-.jytpl-caret { font-size: 10px; opacity: .6; margin-left: 2px; }
-.jytpl-sublanes { display: flex; gap: 4px; }
+.jytpl-sublanes { display: flex; gap: 6px; margin: 2px 2px 10px; }
 .jytpl-tab-sub { padding: 5px 10px; font-size: 12px; }
 .jytpl-count { font-size: 11px; opacity: .6; margin-left: 4px; }
 .jytpl-actions { display: flex; gap: 8px; align-items: center; }

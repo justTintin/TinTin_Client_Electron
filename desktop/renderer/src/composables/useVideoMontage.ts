@@ -1423,12 +1423,8 @@ export function useVideoMontage() {
     finalProgress.value = -1
     // 2026-09-09 裁决：特效配置迁入 Step4，进入时拉取服务端文字模板库（空库仅随机项）
     void loadTextTemplates()
-    // 2026-09-15 用户裁决：每次进第四步重拉服务端渲染——清两级渲染片缓存
-    // （内存 blob URL + 主进程磁盘 TTL 文件），预览与合成兜底按最新渲染取；
-    // 磁盘清空须先于预览取片完成（await），否则并发竞态会命中旧缓存
-    textFxClipUrlCache.clear()
-    await window.tintin?.server?.textfxClearClipCache?.()
-    // 效果预览轨（2026-09-10 二次裁决）：进入时按合成候选刷新一次（候选列表独立于 voiceRows）
+    // 效果预览轨（2026-09-10 二次裁决）：进入时按合成候选刷新一次（候选列表独立于 voiceRows）；
+    // 2026-09-15 用户裁决：词条=纯标记不渲染，进页无渲染请求
     void refreshTextFxTracks()
     try {
       const cands = await collectCandidates()
@@ -2162,50 +2158,8 @@ export function useVideoMontage() {
       tplNames,
       count: activeTextCount.value, // 每视频独立随机选 N 个（2026-09-10 用户二次裁决）
     })
-    // 2026-09-13 用户裁决：词条要不播真实动画（render-preview alpha webm，与成片同
-    // 渲染器），要不只是文字——CSS 近似动画废止。素材按 (模板,词) 渐进填充 blob URL，
-    // 并发限 3；未就绪/失败显示纯文字（无任何模拟模板动画）
-    for (const tr of textFxPreviewTracks.value) {
-      for (const it of tr.items) {
-        if (!it.templateId || !it.word) continue
-        void ensureTextFxClipUrl(it.templateId, it.word).then((url) => { if (url) it.clipUrl = url })
-      }
-    }
-  }
-
-  // ── 文字模板词条真实动画素材（方案B 同源：render-preview 小尺寸 alpha WebM）──
-  const textFxClipUrlCache = new Map<string, string>()
-  const textFxClipQueue: Array<() => Promise<unknown>> = []
-  let textFxClipActive = 0
-  function textFxClipPump(): void {
-    while (textFxClipActive < 3 && textFxClipQueue.length) {
-      const job = textFxClipQueue.shift()!
-      textFxClipActive++
-      job().finally(() => { textFxClipActive--; textFxClipPump() })
-    }
-  }
-  /** 取词条真实动画 blob URL（内存缓存同 (模板,词) 复用；失败返回 '' 走纯文字） */
-  function ensureTextFxClipUrl(templateId: string, word: string): Promise<string> {
-    const key = templateId + '|{{w}}|' + word
-    const hit = textFxClipUrlCache.get(key)
-    if (hit) return Promise.resolve(hit)
-    return new Promise((resolve) => {
-      textFxClipQueue.push(async () => {
-        try {
-          const res = await window.tintin?.server?.textfxPreviewClip?.({
-            templateId, text: word, width: 200, height: 356, fps: 12, duration: 2,
-          })
-          if (res && 'data' in res && res.data && res.data.length) {
-            const url = URL.createObjectURL(new Blob([res.data as unknown as BlobPart], { type: 'video/webm' }))
-            textFxClipUrlCache.set(key, url)
-            resolve(url)
-            return
-          }
-        } catch (_) { /* 离线/渲染失败 → 纯文字 */ }
-        resolve('')
-      })
-      textFxClipPump()
-    })
+    // 2026-09-15 用户裁决：词条=纯关键词标记（哪些词/哪个位置），不再拉 render-preview
+    // 动画片段——那是近似物（默认字体+CSS 动画，实测非模板真值），渲染只在合成时发生
   }
   // 2026-09-11：match 含 LLM 补足（服务端 15s 内），防抖 800ms 收敛连续触发
   // （旧本地提取为纯计算，可直接同步跑；接入服务端后必须防抖）

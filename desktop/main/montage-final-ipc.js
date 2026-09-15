@@ -1158,36 +1158,6 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     return { ok: true, results }
   })
 
-  // ── textfx:previewClip — 文字模板真实动画预览素材（2026-09-13 用户裁决：
-  //     效果预览词条播 render-preview 真实动画，CSS 近似废止）——小尺寸 alpha
-  //     WebM（与成片同渲染器），磁盘缓存同键复用；渲染层转 blob URL 播放 ──
-  ipcMain.handle('textfx:previewClip', async (_e, payload) => {
-    try {
-      const p = payload || {}
-      const tplId = String(p.templateId || '')
-      if (!tplId) throw new Error('templateId required')
-      const width = Math.min(1080, Math.max(120, Number(p.width) || 200))
-      const height = Math.min(1920, Math.max(120, Number(p.height) || 356))
-      const dur = Math.min(10, Math.max(0.5, Number(p.duration) || 2))
-      const file = await downloadTextFxClip({
-        tplId, text: String(p.text || ''), width, height, durationSec: dur,
-        fps: Math.min(30, Math.max(8, Number(p.fps) || 12)),
-      })
-      return { data: new Uint8Array(fs.readFileSync(file)) }
-    } catch (err) { return { error: err.message } }
-  })
-
-  // ── textfx:clearClipCache — 清空渲染片磁盘缓存（2026-09-15 用户裁决：每次进
-  //    第四步重拉服务端渲染，进页时由渲染层调用；目录不存在静默成功）──
-  ipcMain.handle('textfx:clearClipCache', async () => {
-    try {
-      for (const f of fs.existsSync(TEXTFX_CLIP_DIR) ? fs.readdirSync(TEXTFX_CLIP_DIR) : []) {
-        try { fs.unlinkSync(path.join(TEXTFX_CLIP_DIR, f)) } catch (_) { /* 占用/已删忽略 */ }
-      }
-      return { ok: true }
-    } catch (err) { return { error: err.message } }
-  })
-
   // ── bgm:downloadUrl — AI 生成 BGM 落盘（本端扩展：本地混音需本地文件，见头注）──
   ipcMain.handle('bgm:downloadUrl', async (_e, payload) => {
     try {

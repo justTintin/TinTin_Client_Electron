@@ -977,9 +977,6 @@ export interface TextFxTrackItem {
   tplStyle?: Record<string, string>
   /** 服务端命中行的完整文本（word 为命中关键词时悬停提示显示整行；2026-09-11） */
   fullText?: string
-  /** 真实动画素材 blob URL（render-preview alpha webm；2026-09-13 用户裁决：
-   *  词条要不播真实动画要不纯文字，CSS 近似动画废止） */
-  clipUrl?: string
 }
 
 /** 确定性种子洗牌（LCG；seed 相同结果相同 → 预览与烧制同源不漂移）。

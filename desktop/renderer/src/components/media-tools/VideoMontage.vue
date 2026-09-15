@@ -1091,11 +1091,9 @@ function scoreClass(score: number | undefined): string {
                     <span v-for="(it, ii) in tr.items" :key="'ti' + ii" class="textfx-track-item"
                       :style="{ left: (tr.durationSec > 0 ? Math.min(92, (it.start / tr.durationSec) * 100) : 0) + '%' }"
                       :title="`${it.fullText || it.word} · ${it.tplName} · ${fmtDur(it.start)} / ${fmtDur(tr.durationSec)}`">
-                      <!-- 2026-09-13 用户裁决：词条要不播真实动画（render-preview alpha
-                           webm，与成片同渲染器），要不只是文字——CSS 近似动画废止；
-                           素材未就绪/失败显示纯文字 -->
-                      <video v-if="it.clipUrl" class="textfx-clip" :src="it.clipUrl" autoplay loop muted playsinline />
-                      <b v-else>{{ it.word }}</b>
+                      <!-- 2026-09-15 用户裁决：词条=纯关键词标记（哪些词/哪个位置），不播
+                           render-preview 片段——那是近似物（默认字体+CSS 动画），渲染只在合成时发生 -->
+                      <b>{{ it.word }}</b>
                     </span>
                   </div>
                 </div>

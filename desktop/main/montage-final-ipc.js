@@ -39,8 +39,20 @@ function textFxClipCachePath(tplId, text, width, height, durationSec, fps) {
   return path.join(TEXTFX_CLIP_DIR, `${tplId}_${hash}_${width}x${height}_${fps}fps_${Math.round(durationSec * 100) / 100}s.webm`)
 }
 
+// 磁盘缓存 TTL（2026-09-15）：24h 内同键直读，过期重渲染。失效语义说明——
+// 服务端渲染管线更新客户端无法感知（模板条目无 updated_at、/health 无渲染版本），
+// TTL 是过渡口径（服务端更新最晚 24h 生效）；正解=服务端下发 render_version/
+// updated_at 编入缓存键做精确失效，届时替换此处
+const TEXTFX_CLIP_TTL_MS = 24 * 3600 * 1000
+
 async function downloadTextFxClip({ tplId, text, width, height, durationSec, fps }) {
   const fpsN = Number(fps) || TEXTFX_CLIP_FPS
+  const dest = textFxClipCachePath(tplId, text, width, height, durationSec, fpsN)
+  // 缓存命中（TTL 内）直读——此前只写不读，每次都真实打服务端渲染（分钟级/条）
+  try {
+    const st = fs.statSync(dest)
+    if (st.isFile() && Date.now() - st.mtimeMs < TEXTFX_CLIP_TTL_MS) return dest
+  } catch (_) { /* 未命中/不可读 → 走服务端渲染 */ }
   const qs = 'template_id=' + encodeURIComponent(String(tplId))
     + '&text=' + encodeURIComponent(String(text))
     + '&width=' + Number(width) + '&height=' + Number(height)
@@ -53,7 +65,6 @@ async function downloadTextFxClip({ tplId, text, width, height, durationSec, fps
     throw new Error('render-preview 响应非 webm（' + (buf ? buf.length + 'B head=' + head : '空') + '）')
   }
   fs.mkdirSync(TEXTFX_CLIP_DIR, { recursive: true })
-  const dest = textFxClipCachePath(tplId, text, width, height, durationSec, fpsN)
   fs.writeFileSync(dest, buf)
   return dest
 }

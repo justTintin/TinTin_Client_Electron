@@ -166,7 +166,8 @@ test('buildDubFFmpegArgs: 字幕 drawtext（新口径：字号 0.035 + 底边贴
   const fc = args[args.indexOf('-filter_complex') + 1]
   assert.ok(fc.includes('drawtext=fontfile='))
   assert.ok(fc.includes('fontsize=h*0.035'))
-  assert.ok(fc.includes('boxcolor=black@0.50'))
+  // 缺省背景不透明度 20%（2026-09-15 用户裁决，原 0.5）
+  assert.ok(fc.includes('boxcolor=black@0.20'))
   assert.ok(fc.includes('y=h*(1-0.1)-text_h-h*0.02'))
   assert.ok(fc.includes("enable='between(t,0.000,2.000)'"))
 })

@@ -8,7 +8,7 @@
 // 架构差异（注明）：播放原版走临时文件下载 + QMediaPlayer，V3 内联
 // <audio controls> 流式播放（/material/serve 与结果 URL 拼服务端基址）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useAudioGen } from '@/composables/useAudioGen'
@@ -46,37 +46,15 @@ function kindValueOf(it: { mid: string; kindCode: string }): string {
   return kindOverrides.value[it.mid] ?? it.kindCode
 }
 
-// ── 生成面板内联播放（原 icon_button("play") 触发；<audio controls> 可暂停/拖动）──
-const bgmAudioEl = ref<HTMLAudioElement | null>(null)
-const sfxAudioEl = ref<HTMLAudioElement | null>(null)
-
-function playBgm(): void {
-  const el = bgmAudioEl.value
-  if (!el) return
-  // 本地优先（对照 _on_play_ai_bgm L1821-1830：已归档本地文件直接播放，未就绪回退在线 URL）
-  if (bgmLocal.value) {
-    el.src = 'file:///' + encodeURI(bgmLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
-    void el.play().catch(() => { /* 加载失败静默 */ })
-    return
-  }
-  if (!bgmUrl.value) return
-  el.src = toAbsolute(bgmUrl.value)
-  void el.play().catch(() => { /* 加载失败静默（服务端不可达时结果标签已有错误态） */ })
-}
-
-function playSfx(): void {
-  const el = sfxAudioEl.value
-  if (!el) return
-  // 本地优先（对照 _on_play_ai_sfx 同口径）
-  if (sfxLocal.value) {
-    el.src = 'file:///' + encodeURI(sfxLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
-    void el.play().catch(() => { /* 加载失败静默 */ })
-    return
-  }
-  if (!sfxUrl.value) return
-  el.src = toAbsolute(sfxUrl.value)
-  void el.play().catch(() => { /* 同上 */ })
-}
+// ── 生成面板内联播放条（2026-09-15 用户裁决：删「播放生成的」按钮，<audio controls>
+//    的 src 直挂就地播放；取源口径同原 playBgm/playSfx——本地归档优先，未就绪回退在线 URL；
+//    src 变化时 audio 自动重载，新生成即播新文件）──
+const bgmAudioSrc = computed(() => bgmLocal.value
+  ? 'file:///' + encodeURI(bgmLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
+  : bgmUrl.value ? toAbsolute(bgmUrl.value) : '')
+const sfxAudioSrc = computed(() => sfxLocal.value
+  ? 'file:///' + encodeURI(sfxLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
+  : sfxUrl.value ? toAbsolute(sfxUrl.value) : '')
 
 /** 进入页面拉取列表 + 服务端 BGM 标签体系（2026-09-04 用户裁决：tag 服务端定义） */
 onMounted(() => { doSearch(); void loadBgmTags() })
@@ -217,11 +195,10 @@ onMounted(() => { doSearch(); void loadBgmTags() })
         <p v-if="bgmResultLabel" class="result-label">{{ bgmResultLabel }}</p>
 
         <div class="action-row">
-          <TButton label="播放生成的 BGM" variant="ghost" size="small" class="action-btn" :disabled="!bgmUrl" @click="playBgm" />
           <TButton label="保存到 BGM 库" variant="secondary" size="small" class="action-btn" :loading="bgmSaving" :disabled="!bgmUrl || bgmSaving" @click="saveBgmToLib" />
           <!-- 打开位置（条目14，对照 btn_ai_bgm_open L1692-1695：归档成功后可用） -->
           <TButton label="打开位置" variant="secondary" size="small" class="action-btn" :disabled="!bgmLocal" title="在资源管理器中打开生成的 BGM 本地文件（outputs/ai_audio）" @click="openBgmLocation" />
-          <audio v-if="bgmUrl" ref="bgmAudioEl" controls class="inline-audio" />
+          <audio v-if="bgmAudioSrc" :src="bgmAudioSrc" controls class="inline-audio" />
         </div>
       </div>
 
@@ -257,11 +234,10 @@ onMounted(() => { doSearch(); void loadBgmTags() })
         <p v-if="sfxResultLabel" class="result-label">{{ sfxResultLabel }}</p>
 
         <div class="action-row">
-          <TButton label="播放生成的音效" variant="ghost" size="small" class="action-btn" :disabled="!sfxUrl" @click="playSfx" />
           <TButton label="保存到音效库" variant="secondary" size="small" class="action-btn" :loading="sfxSaving" :disabled="!sfxUrl || sfxSaving" @click="saveSfxToLib" />
           <!-- 打开位置（对照 btn_ai_sfx_open L1748-1751） -->
           <TButton label="打开位置" variant="secondary" size="small" class="action-btn" :disabled="!sfxLocal" title="在资源管理器中打开生成的音效本地文件（outputs/ai_audio）" @click="openSfxLocation" />
-          <audio v-if="sfxUrl" ref="sfxAudioEl" controls class="inline-audio" />
+          <audio v-if="sfxAudioSrc" :src="sfxAudioSrc" controls class="inline-audio" />
         </div>
       </div>
     </div>

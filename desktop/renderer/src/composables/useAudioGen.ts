@@ -161,9 +161,10 @@ export function useAudioGen() {
   }
 
   // ── 情绪/场景精控（2026-09-05 用户裁决：服务端 /audio/bgm/tags 的 mood/scene 组，
-  //    保存时随 upload 契约的 mood/scene 字段上传；默认「不指定」传空串） ──
+  //    保存时随 upload 契约的 mood/scene 字段上传）。场景默认「口播」（2026-09-15
+  //    用户裁决；值=服务端 scene 组原文），情绪默认「不指定」传空串 ──
   const bgmMood = ref('')
-  const bgmScene = ref('')
+  const bgmScene = ref('口播')
   const bgmMoodOptions = ref<Array<{ label: string; value: string }>>([])
   const bgmSceneOptions = ref<Array<{ label: string; value: string }>>([])
 

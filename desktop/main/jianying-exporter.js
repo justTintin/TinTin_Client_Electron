@@ -188,6 +188,320 @@ function decorateTextSegment(seg, materials, { anim, effectId } = {}) {
   }
 }
 
+// ── 剪映原生文字模板三件套（2026-09-15 用户裁决：文字模板轨=剪映原生模板引用，
+// resource_id 让剪映自己套模板渲染，零渲染保真损失）──
+// 结构范本：王晗雨解密草稿（test/wang-dec.json）「超级推荐」实例逐字段比对本机
+// .textpreset（Presets/Text_V2）证实结构同构，可机械重排生成：
+//   materials.text_templates[] ← preset.effect/resources/paragraphs[0].attach_info/
+//                                 elements[](sticker)
+//   materials.texts[]          ← preset.paragraphs[0].content（仅替换 text+range）
+//   文字轨 segment             ← material_id 指向 text_templates 实例 id
+// 贴纸纹理在草稿中本无直接引用（non_text 条目不带 resource_id），剪映打开时按
+// resource_id 从本机缓存模板定义重建实例——草稿只是实例快照，故动画/花字引用按
+// panel 可确定性推导的部分随行（text/flower/sticker），不可推导的贴纸元素绑定留空。
+
+/** 按 resource_id 定位并解析 .textpreset（找到返回解析对象，否则 null） */
+function findTextPreset(presetDir, rid) {
+  if (!presetDir || !rid || !fs.existsSync(presetDir)) return null
+  const want = String(rid)
+  for (const f of safeListDir(presetDir)) {
+    if (!f.endsWith('.textpreset')) continue
+    const p = readJsonSafe(path.join(presetDir, f))
+    const eff = p && p.effect
+    if (eff && String(eff.resource_id || eff.effect_id || '') === want) return p
+  }
+  return null
+}
+
+/** .textpreset attach_info.clip → 草稿 clip（scale/transform 拆对象 + flip 补空） */
+function presetAttachClipToDraft(c) {
+  const s = c || {}
+  return {
+    scale: { x: Number(s.scale_x || 1), y: Number(s.scale_y || 1) },
+    rotation: Number(s.rotation || 0),
+    transform: { x: Number(s.transform_x || 0), y: Number(s.transform_y || 0) },
+    flip: {},
+  }
+}
+
+/** .textpreset attach_info → 草稿 attach_info（duration/original_size/clip） */
+function presetAttachToDraft(a) {
+  const s = a || {}
+  return {
+    duration: Number(s.duration || 0),
+    original_size_width: Number(s.original_size_width || 0),
+    original_size_height: Number(s.original_size_height || 0),
+    clip: presetAttachClipToDraft(s.clip),
+  }
+}
+
+/** 浮点 rgb 三元组 → '#rrggbbff'（草稿 texts.text_color 口径，范本 '#fdfbfbff'） */
+function rgbToHex8(c) {
+  if (!Array.isArray(c) || c.length < 3) return '#FFFFFFFF'
+  return '#' + c.slice(0, 3).map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('').toUpperCase() + 'FF'
+}
+
+/** 猜动画方向（in/loop）：资源目录 lua 名——EnlargeIn/BounceIn→in，Rotate/Loop→loop */
+function guessStickerAnimType(dir) {
+  for (const f of safeListDir(dir)) {
+    if (!/\.lua$/i.test(f)) continue
+    if (/(rotate|loop|float|wave|swing)/i.test(f)) return 'loop'
+  }
+  return 'in'
+}
+
+/** 模板实例动画素材（materials.material_animations 成员；范本最小形状：
+ *  {id, type:'sticker_animation', animations:[{id:'',type,duration,path,resource_id,
+ *  source_platform:1,material_type:'sticker'}]}）。时长用范本常量 in=500000/loop=800000。 */
+function templateAnimMaterial(entries) {
+  if (!entries.length) return null
+  return { id: hexId(), type: 'sticker_animation', animations: entries }
+}
+
+/** 模板实例花字效果素材（materials.effects 成员；范本形状，flower 面板资源） */
+function templateFlowerEffectMaterial(rid, dirPath) {
+  return {
+    id: hexId(),
+    resource_id: String(rid),
+    type: 'text_effect',
+    sub_type: 'none',
+    path: dirPath,
+    source_platform: 1,
+    multi_language_current: '',
+    beauty_face_auto_retouch_info: {},
+  }
+}
+
+/** 模板自身资源包定位（范本 path=C:/.../Cache/artistEffect/<rid>/<hash>；缺失返 ''） */
+function findArtistEffectPath(rid) {
+  const root = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Cache', 'artistEffect', String(rid))
+  for (const h of safeListDir(root)) {
+    const hd = path.join(root, h)
+    try { if (fs.statSync(hd).isDirectory()) return hd.split('\\').join('/') } catch (_) {}
+  }
+  return ''
+}
+
+/**
+ * 从 .textpreset 构建单个文字模板实例三件套（一次命中=一个实例，范本同构：
+ * 19 段=19 实例）。phrase=填充文字（命中关键词），替换 content.text 并对齐 range。
+ * 返回 { templateMaterial, textEntry, animMaterials[], flowerEffects[], extraRefs[] }
+ * 或 null（preset 缺关键结构）。
+ */
+function buildTemplateClipTrio(p, phrase) {
+  if (!p || !p.effect) return null
+  const eff = p.effect
+  const para = (p.paragraphs || [])[0] || {}
+  const text = String(phrase ?? '').trim() || (() => { try { return String(JSON.parse(para.content || '{}').text || '') } catch (_) { return '' } })()
+  // content：预设原文即草稿 texts.content 同源串（字体/effectStyle/size 全同），仅换文字
+  let contentObj = null
+  try { contentObj = JSON.parse(para.content || '') } catch (_) { contentObj = null }
+  if (!contentObj || typeof contentObj !== 'object') contentObj = { text: text, styles: [] }
+  contentObj.text = text
+  for (const st of contentObj.styles || []) { if (Array.isArray(st.range)) st.range = [0, text.length] }
+  const contentJson = JSON.stringify(contentObj)
+
+  // 字体（content.styles[].font → texts.fonts，去重）
+  const fonts = []
+  const seenFont = new Set()
+  for (const st of contentObj.styles || []) {
+    const f = st && st.font
+    if (!f || (!f.path && !f.id)) continue
+    const key = String(f.id || '') + '|' + String(f.path || '')
+    if (seenFont.has(key)) continue
+    seenFont.add(key)
+    fonts.push({ id: hexId(), resource_id: String(f.id || ''), source_platform: 1, path: String(f.path || '') })
+  }
+
+  const textEntry = {
+    id: hexId(),
+    // 关键绑定键（2026-09-15 真机定位）：texts.name = 预设 text_name = 模板工程
+    // content.json 文字元素 id（@343E12FD...）——剪映按它把填充文字映射进模板
+    // extra.json texts[] 槽位；随机 id 时剪映回退渲染模板默认文字（超级推荐）。
+    name: String(para.text_name || hexId()),
+    type: 'text',
+    content: contentJson,
+    words: {},
+    current_words: {},
+    combo_info: {},
+    caption_template_info: { resource_id: '', path: '' },
+    layer_weight: 1,
+    line_spacing: 0.1,
+    shadow_alpha: 0,
+    shadow_distance: 5,
+    shadow_point: { x: 0, y: 0 },
+    shadow_angle: -45,
+    border_alpha: 0,
+    border_width: 0,
+    text_color: (para.style && para.style.color) || rgbToHex8((() => {
+      try {
+        const st = (contentObj.styles || []).find((s) => s && s.fill && s.fill.content && s.fill.content.solid)
+        return st ? st.fill.content.solid.color : null
+      } catch (_) { return null }
+    })()),
+    initial_scale: 1,
+    bold_width: 0.008,
+    italic_degree: 10,
+    check_flag: 47,
+    fonts,
+    lyrics_template: { resource_id: '', path: '' },
+  }
+
+  // panel 推导的可确定性引用：text=入场/循环动画、flower=花字效果、sticker=贴纸动画
+  const fwd = (s) => String(s || '').split('\\').join('/')
+  const textPanel = []
+  const stickerPanel = []
+  let flowerRes = null
+  const flowerRidFromContent = (() => {
+    try {
+      const st = (contentObj.styles || []).find((s) => s && s.effectStyle && s.effectStyle.id)
+      return st ? String(st.effectStyle.id) : ''
+    } catch (_) { return '' }
+  })()
+  for (const r of p.resources || []) {
+    const panel = String(r.panel || '')
+    if (panel === 'text') textPanel.push(r)
+    else if (panel === 'sticker') stickerPanel.push(r)
+    else if (panel === 'flower' && (!flowerRes || String(r.resource_id || '') === flowerRidFromContent)) flowerRes = r
+  }
+
+  const animMaterials = []
+  const flowerEffects = []
+  const extraRefs = []
+  if (textPanel.length) {
+    const anims = textPanel.slice(0, 2).map((r, i) => ({
+      id: '',
+      type: i === 0 ? 'in' : 'loop',
+      duration: i === 0 ? 500000 : 800000,
+      path: fwd(r.file_path),
+      resource_id: String(r.resource_id || ''),
+      source_platform: 1,
+      material_type: 'sticker',
+    }))
+    const mat = templateAnimMaterial(anims)
+    if (mat) animMaterials.push(mat)
+  }
+  if (flowerRes) {
+    flowerEffects.push(templateFlowerEffectMaterial(flowerRes.resource_id, fwd(flowerRes.file_path)))
+  }
+  for (const r of stickerPanel) {
+    const type = guessStickerAnimType(r.file_path)
+    const mat = templateAnimMaterial([{
+      id: '',
+      type,
+      duration: type === 'in' ? 500000 : 800000,
+      path: fwd(r.file_path),
+      resource_id: String(r.resource_id || ''),
+      source_platform: 1,
+      material_type: 'sticker',
+    }])
+    if (mat) animMaterials.push(mat)
+  }
+  extraRefs.push(...flowerEffects.map((m) => m.id), ...animMaterials.map((m) => m.id))
+
+  const templateMaterial = {
+    id: hexId(),
+    version: String(eff.effect_version || '1.0.0'),
+    effect_id: String(eff.effect_id || eff.resource_id || ''),
+    resource_id: String(eff.resource_id || eff.effect_id || ''),
+    name: String(eff.effect_name || ''),
+    type: 'text_template',
+    path: findArtistEffectPath(eff.resource_id || eff.effect_id || ''),
+    category_id: String(eff.category_id || ''),
+    category_name: String(eff.category_name || ''),
+    source_platform: 1,
+    resources: (p.resources || []).map((r) => ({
+      panel: String(r.panel || ''),
+      path: fwd(r.file_path),
+      resource_id: String(r.resource_id || ''),
+      source_platform: 1,
+    })),
+    text_info_resources: [{
+      id: hexId(),
+      attach_info: presetAttachToDraft(para.attach_info),
+      text_material_id: textEntry.id,
+      // 范本顺序：[花字效果, 文字动画]
+      extra_material_refs: [...flowerEffects.map((m) => m.id), ...animMaterials.slice(0, 1).map((m) => m.id)],
+    }],
+    non_text_info_resources: (p.elements || [])
+      .filter((e) => e && e.type === 'sticker')
+      .map((e) => ({
+        name: String(e.element_name || hexId()),
+        type: 'sticker',
+        attach_info: presetAttachToDraft(e.attach_info),
+        shape_param: {},
+      })),
+    aigc_config: { font_item: { id: hexId(), resource_id: '', path: '' } },
+    request_id: '',
+    origin_word_info: {},
+    current_word_info: {},
+    preview_time: 0.1,
+    ai_generate_task_info: { resource_id: '', path: '' },
+  }
+  return { templateMaterial, textEntry, animMaterials, flowerEffects, extraRefs }
+}
+
+/**
+ * textTemplateClips 输入归一化：逐视频数组（与 videoPaths 对齐，同 srtPaths 口径）。
+ * 条目 {phrase, startUs, durUs, resourceId}；resourceId 容错剥 'jy_' 前缀；
+ * 非法条目丢弃。返回 Array<Array> 或 null（无输入）。
+ */
+function normalizeTextTemplateClips(textTemplateClips, videoCount) {
+  if (!Array.isArray(textTemplateClips)) return null
+  const out = []
+  for (let i = 0; i < videoCount; i++) {
+    const arr = Array.isArray(textTemplateClips[i]) ? textTemplateClips[i] : []
+    const list = []
+    for (const c of arr) {
+      if (!c) continue
+      const rid = String(c.resourceId || c.resource_id || '').trim().replace(/^jy_/, '')
+      const startUs = Math.max(0, Math.round(Number(c.startUs ?? c.start_us ?? 0)))
+      const durUs = Math.round(Number(c.durUs ?? c.dur_us ?? 0))
+      if (!rid || durUs <= 0) continue
+      list.push({ phrase: String(c.phrase ?? c.text ?? ''), startUs, durUs, resourceId: rid })
+    }
+    list.sort((a, b) => a.startUs - b.startUs)
+    out.push(list)
+  }
+  return out
+}
+
+/** 模板实例段追加到文字模板轨（时间窗裁剪同 appendSubtitleTrack 口径；
+ *  preset 解析经 cache 复用；模板缺失静默跳过——不造假）。 */
+function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache) {
+  for (const c of clips) {
+    const startUs = offsetUs + c.startUs
+    let durUs = c.durUs
+    if (limitEndUs !== null && startUs >= limitEndUs) continue
+    if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = limitEndUs - startUs
+    if (durUs <= 0) continue
+    let p = tplCache.get(c.resourceId)
+    if (p === undefined) {
+      p = findTextPreset(presetDir, c.resourceId)
+      tplCache.set(c.resourceId, p)
+    }
+    if (!p) continue
+    const trio = buildTemplateClipTrio(p, c.phrase)
+    if (!trio) continue
+    materials.text_templates.push(trio.templateMaterial)
+    materials.texts.push(trio.textEntry)
+    if (!Array.isArray(materials.material_animations)) materials.material_animations = []
+    materials.material_animations.push(...trio.animMaterials)
+    if (trio.flowerEffects.length) {
+      if (!Array.isArray(materials.effects)) materials.effects = []
+      materials.effects.push(...trio.flowerEffects)
+    }
+    const sp = speedMaterial(1.0)
+    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
+    track.segments.push({
+      ...baseSegmentFields(trio.templateMaterial.id, startUs, durUs),
+      ...mediaSegmentFields(durUs, sp.id),
+      ...visualSegmentFields(),
+      extra_material_refs: [sp.id, ...trio.extraRefs],
+    })
+  }
+}
+
 /** 贴纸素材（materials.stickers 成员；pyJianYingDraft StickerSegment.export_material） */
 function stickerMaterial(resourceId) {
   return {
@@ -424,7 +738,7 @@ function audioMaterialFields(bgmPath, durationUs) {
 }
 
 /** 单视频导出（兼容旧入口，内部走多片段时间轴导出；export_to_draft L43-64） */
-function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', deps }) {
+function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, deps }) {
   if (!videoPath || !fs.existsSync(videoPath)) return { success: false, message: '视频文件不存在' }
   if (!draftName) {
     draftName = `螺丝钉智能混剪_${path.basename(videoPath, path.extname(videoPath))}`
@@ -444,14 +758,19 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
     subAnim,
     videoEffectId,
     videoEffectName,
+    textTemplateClips: textTemplateClips ? [textTemplateClips] : null,
     deps,
   })
 }
 
 /** 多个视频按顺序导出为一条剪映时间轴（v2 完整 schema）。
  *  fxWords（关键词）+ fxKinds（['fancy','tpl']）→ 关键词命中的字幕行导出为
- *  独立文本轨（花字/文字模板各一条，样式色区分），供剪映内直接套样式精修。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', deps }) {
+ *  独立文本轨（花字/文字模板各一条，样式色区分），供剪映内直接套样式精修。
+ *  textTemplateClips（2026-09-15 用户裁决）：逐视频文字模板命中
+ *  [{phrase,startUs,durUs,resourceId}]（match textfx_clips 权威指派）→
+ *  剪映原生文字模板三件套轨（text_templates+texts+segment）；有命中的视频
+ *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。 */
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -543,35 +862,63 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     })
     const tracks = [videoTrack]
 
-    // 6. 字幕轨（order 1）+ 关键词轨（fancy/tpl）；textAnim=文字入场动画名，fancyEffectId=花字效果 id
-    //    二期②：subAnim=字幕轨入场动画（本地语义 key：rise/slide/pop → 剪映动画名映射）
+    // 6. 字幕轨（order 1）+ 关键词轨（fancy/tpl）+ 原生文字模板轨；textAnim=文字入场动画名，
+    //    fancyEffectId=花字效果 id。二期②：subAnim=字幕轨入场动画（本地语义 key → 剪映动画名映射）
     const SUB_ANIM_TO_JY = { rise: '向上滑动', slide: '向右滑动', pop: '弹入' }
     const subAnimName = SUB_ANIM_TO_JY[subAnim] || subAnim || ''
+    // 2026-09-15：原生文字模板命中归一化（match textfx_clips 权威指派；有命中→'tpl'
+    // 蓝字轨被原生实例替代）
+    const tplClips = normalizeTextTemplateClips(textTemplateClips, clips.length)
+    const tplTrack = tplClips ? newTrack('text') : null
+    const tplCache = new Map()
+    const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     if (srtPaths) {
       const subtitleTrack = newTrack('text')
       tracks.push(subtitleTrack)
       const fxTrackCache = {}
       const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []
       const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
+      const hasTplClips = !!tplClips && tplClips.some((l) => l.length)
+      const effKinds = hasTplClips ? kwKinds.filter((k) => k !== 'tpl') : kwKinds
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
           appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim })
-          for (const kind of kwKinds) {
+          for (const kind of effKinds) {
             appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache, {
               anim: textAnim,
               effectId: kind === 'fancy' ? fancyEffectId : tplEffectId,
             })
           }
         }
+        if (tplClips && tplClips[i] && tplClips[i].length) {
+          try {
+            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
+          } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
+        }
         cursorUs += clip.durationUs
       })
       if (!subtitleTrack.segments.length) tracks.splice(tracks.indexOf(subtitleTrack), 1)
+      if (tplTrack && tplTrack.segments.length) tracks.push(tplTrack)
+    } else if (tplClips && tplClips.some((l) => l.length)) {
+      // 无字幕轨输入时模板轨独立成轨（时间轴累计口径与上方一致）
+      cursorUs = 0
+      clips.forEach((clip, i) => {
+        if (tplClips[i] && tplClips[i].length) {
+          try {
+            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
+          } catch (_) {}
+        }
+        cursorUs += clip.durationUs
+      })
+      if (tplTrack && tplTrack.segments.length) tracks.push(tplTrack)
     }
 
     // 二期③：贴纸轨（jy_ 文字模板选中时，把该预设的装饰元素导出为独立贴纸段，
-    // R2 坐标公式换算 clip 变换；剪映按 resource_id 解析云端素材）
-    if (tplEffectId) {
+    // R2 坐标公式换算 clip 变换；剪映按 resource_id 解析云端素材）。
+    // 2026-09-15：原生模板轨有命中时跳过——模板实例自带贴纸，叠加会双重绘制。
+    const hasNativeTpl = !!(tplTrack && tplTrack.segments.length)
+    if (tplEffectId && !hasNativeTpl) {
       const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
       try {
         const built = buildStickerTrackFromPreset(presetDir, tplEffectId, totalDurationUs, canvasWidth, canvasHeight)
@@ -894,4 +1241,10 @@ module.exports = {
   KEYWORD_TRACK_STYLES,
   findJianyingExe,
   launchJianying,
+  // 剪映原生文字模板三件套（2026-09-15）
+  findTextPreset,
+  presetAttachToDraft,
+  buildTemplateClipTrio,
+  normalizeTextTemplateClips,
+  appendTextTemplateSegments,
 }

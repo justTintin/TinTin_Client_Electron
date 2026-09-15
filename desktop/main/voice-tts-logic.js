@@ -704,10 +704,11 @@ function buildSubtitleLines({ timing, text, displayDur, needAudioSpeed, videoDur
  *  run L1218-1242 口径：背景可配/底边安全框/超长行按时间窗切段） */
 function buildSubtitleDrawtextList(o, subLines, subStarts, subEnds) {
   const fontPath = o.subtitleFontPath || 'msyh'
-  // 背景不透明度可配（run L1057-1060：异常回退 0.5；0=无背景框）
-  let boxOpacity = 0.5
+  // 背景不透明度可配（run L1057-1060；0=无背景框）。缺省回退 20%
+  // （2026-09-15 用户裁决：背景透明默认 20%，原 0.5，与 SUBTITLE_BG_OPTIONS 默认项同源）
+  let boxOpacity = 0.2
   try { boxOpacity = Math.min(1.0, Math.max(0.0, Number(o.subtitleBoxOpacity))) } catch (_) { /* NaN 等 → 默认 */ }
-  if (!Number.isFinite(boxOpacity)) boxOpacity = 0.5
+  if (!Number.isFinite(boxOpacity)) boxOpacity = 0.2
   const boxStr = boxOpacity > 0
     ? `box=1:boxcolor=black@${boxOpacity.toFixed(2)}:boxborderw=6:`
     : ''

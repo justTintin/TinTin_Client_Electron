@@ -421,6 +421,22 @@ test('normalizeSourceResolution：服务端 split 响应分辨率归一化（数
   assert.equal(R.normalizeSourceResolution(1920), '')
 })
 
+// ── Step2 画幅基准（2026-09-15 用户裁决：与分割片段一致，非原素材）──
+
+test('resolveSplitBaselineResolution：逐镜画幅优先，source_resolution 仅兜底，全空返回空串', () => {
+  // 4K 竖屏素材：服务端分割产物 1080x1920（逐镜画幅），原素材 source_resolution 是 2160x3840——
+  // 旧实现取后者当基准，预合成被撑成 4K/横屏；裁决后逐镜画幅优先
+  assert.equal(R.resolveSplitBaselineResolution(['1080x1920', '1080x1920'], '2160x3840'), '1080x1920')
+  assert.equal(R.resolveSplitBaselineResolution(['', '1080x1920'], '2160x3840'), '1080x1920') // 首个非空
+  // 响应缺逐镜画幅 → source_resolution 降级兜底
+  assert.equal(R.resolveSplitBaselineResolution([], '2160x3840'), '2160x3840')
+  assert.equal(R.resolveSplitBaselineResolution(['', ''], '2160x3840'), '2160x3840')
+  // 两者皆缺 → 空串（交调用方本地探测首个片段，再 layoutSize 兜底 1080x1920）
+  assert.equal(R.resolveSplitBaselineResolution([], ''), '')
+  assert.equal(R.resolveSplitBaselineResolution([], undefined), '')
+  assert.equal(R.resolveSplitBaselineResolution(undefined, '2160x3840'), '2160x3840')
+})
+
 // ── Step2 预合成方案（对照 _build_precompose_plans L5223-5344）──
 
 test('buildPrecomposePlans：去重 + low 不洗牌保持原序 + 方案结构初始态', () => {

@@ -606,7 +606,8 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             // 花字内容已改为自动提取卖点（PR#4），fancyWords 仅兼容保留不再参与渲染
             fancyWords: Array.isArray(p.fancyWords) ? p.fancyWords : [],
             fancyPosition: p.fancyPosition || 'upper_middle',
-            subtitleBoxOpacity: p.subtitleBoxOpacity ?? 0.5,
+            // 背景不透明度缺省 20%（2026-09-15 用户裁决，原 0.5）
+            subtitleBoxOpacity: p.subtitleBoxOpacity ?? 0.2,
             // 2026-09-09 裁决：字幕/花字特效迁 Step4 统一烧制，配音链只出声音（纯化配音）
             burnEffects: false,
             // 字幕文字样式预设 key（2026-09-09 裁决：样式属字幕配置；主进程 SUBTITLE_STYLES 查表）

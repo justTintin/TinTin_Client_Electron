@@ -87,7 +87,7 @@ const {
     voiceBusy, rewriteBusy,
   scanVoiceDir, enterStepVoice,
     batchAiRewrite, startSynthesizeVoice,
-  regenVoice, exportVoice, playVoice, playDubbedVideo,
+  regenVoice, exportVoice, playDubbedVideo,
   toggleLengthMode, lengthModeTip,
   voiceStatusText, voiceStatusClass, pathBasename,
   // Step4 特效包装（对照 step4_final_view.py 逐控件）
@@ -97,7 +97,7 @@ const {
   bgmPlaying, bgmPosMs, bgmDurMs,
   pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
   enterStep4, startFinalMix, openFinalDir,
-  exportJianyingDraft, exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
+  exportFinalVideoDraft, finalExportIdx, exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
   fmtBgmTime,
   selectRefAudio,
   fmtDur,
@@ -114,7 +114,8 @@ function toFileUrl(p: string): string {
 
 /** 预览块画幅（2026-09-11 用户裁决）：竖屏模式下预览块也竖起来，不再是横向块里
  *  嵌竖条（两侧大片黑边）。口径与 Step2「输出画幅」+ layoutSize 兜底完全同步：
- *  vertical → 9/16；horizontal → 16/9；source → 原片分辨率（splitResolution）；
+ *  vertical → 9/16；horizontal → 16/9；source → 分割片段分辨率（splitResolution，
+ *  2026-09-15 用户裁决：基准=分割片段而非原素材）；
  *  source 拿不到 → 9/16（layoutSize 对 source 无效探测的兜底即 1080x1920）。
  *  三步右栏共用同一比例（Step3/4 预览的都是本链路成片，画幅同源） */
 const previewAspect = computed(() => {
@@ -312,20 +313,12 @@ watch(bgmLocal, (p) => {
   if (p) { bgmPath.value = p; bgmName.value = pathBasename(p) }
 })
 
-/** 生成面板内联播放（同 AudioGen playBgm：本地归档优先，未就绪回退在线 URL） */
-const agBgmAudioEl = ref<HTMLAudioElement | null>(null)
-function playAgBgm(): void {
-  const el = agBgmAudioEl.value
-  if (!el) return
-  if (bgmLocal.value) {
-    el.src = 'file:///' + encodeURI(bgmLocal.value.replace(/\\/g, '/')).replace(/#/g, '%23')
-    void el.play().catch(() => { /* 加载失败静默 */ })
-    return
-  }
-  if (!bgmUrl.value) return
-  el.src = toAbsolute(bgmUrl.value)
-  void el.play().catch(() => { /* 加载失败静默 */ })
-}
+/** 生成面板内联播放条（2026-09-15 用户裁决：删「播放生成的 BGM」按钮，<audio controls>
+ *  的 src 直挂就地播放；取源口径同原 playAgBgm——本地归档优先，未就绪回退在线 URL；
+ *  src 变化时 audio 自动重载，新生成即播新文件） */
+const agBgmAudioSrc = computed(() => bgmLocal.value
+  ? toFileUrl(bgmLocal.value)
+  : bgmUrl.value ? toAbsolute(bgmUrl.value) : '')
 
 /** BGM 选择弹窗（同音频生成页左栏布局：搜索/分类/标签/列表/分页；单击选中，双击或 ▶ 试听） */
 const bgmPickDlg = ref<{ show: boolean; pickedMid: string; busy: boolean; error: string }>({ show: false, pickedMid: '', busy: false, error: '' })
@@ -491,9 +484,11 @@ onActivated(() => {
 onMounted(() => { void loadRefSamples() })
 watch(step, (v) => { if (v === 2) void loadRefSamples() })
 
-/** 输出画幅下拉（原版 layout_combo 3 项；首项动态附原片分辨率，L4800-4802 同口径） */
+/** 输出画幅下拉（原版 layout_combo 3 项；首项动态附分割片段画幅——
+ *  2026-09-15 用户裁决：「与原视频一致」基准=分割片段，非原素材（4K 素材分割产物
+ *  1080x1920，取原素材会把预合成撑成 4K/横屏），文案同步改「与分割视频一致」） */
 const LAYOUTS = computed(() => [
-  { label: splitResolution.value ? `与原视频一致 (${splitResolution.value})` : '与原视频一致', value: 'source' },
+  { label: splitResolution.value ? `与分割视频一致 (${splitResolution.value})` : '与分割视频一致', value: 'source' },
   { label: '竖屏 (1080x1920 抖音流)', value: 'vertical' },
   { label: '横屏 (1920x1080 宽屏)', value: 'horizontal' },
 ])
@@ -682,8 +677,8 @@ function scoreClass(score: number | undefined): string {
               <option v-for="o in LAYOUTS" :key="o.value" :value="o.value">{{ o.label }}</option>
             </select>
             <span v-if="concatLayout === 'source'" class="src-res"
-              title="分割片段检测到的原始画幅，选择'与原视频一致'时将使用此分辨率">
-              原片: {{ splitResolution || '未知' }}</span>
+              title="分割片段画幅（2026-09-15 裁决：画幅基准=分割片段而非原素材），选择'与分割视频一致'时将使用此分辨率">
+              分割画幅: {{ splitResolution || '未知' }}</span>
             <span class="param-label">时长限制:</span>
             <select v-model.number="durationLimit" class="input w80" title="每个预合成视频的总时长上限（实际不超此值的 1.1 倍）">
               <option v-for="s in DURATION_LIMITS" :key="s" :value="s">{{ s }} 秒</option>
@@ -898,7 +893,19 @@ function scoreClass(score: number | undefined): string {
                          成组右对齐（.vd-actions，窄宽度换行后仍贴右）；
                          二次裁决：删「导出」「试看」两按钮（不需要） -->
                     <div class="vd-actions">
-                      <TButton label="试听" variant="secondary" size="small" :disabled="!row.wavPath" :title="row.wavPath ? '播放克隆的声音' : '尚未生成克隆声音'" @click="playVoice(i)" />
+                      <!-- 2026-09-15 用户裁决：试听按钮 → 行内原生播放条（<audio controls>，
+                           即浏览器原生控件：播放/进度拖动/时长/音量），生成后就地试听；
+                           key 带 voiceDurSec——重生成覆写同路径 wav 时强制重建元素避开媒体缓存 -->
+                      <audio
+                        v-if="row.wavPath"
+                        :key="row.wavPath + '|' + (row.voiceDurSec || 0)"
+                        class="vd-voice-audio"
+                        controls
+                        preload="none"
+                        :src="toFileUrl(row.wavPath)"
+                        :title="`试听克隆声音（${fmtDur(row.voiceDurSec)}）`"
+                      />
+                      <audio v-else class="vd-voice-audio" controls preload="none" disabled title="尚未生成克隆声音" />
                       <TButton label="编辑" variant="secondary" size="small" title="对比与编辑文案（双击配音文案栏同效）" @click="openEditDlg(i)" />
                       <TButton label="重生成" variant="secondary" size="small" :disabled="row.status === 'generating'" :title="row.status === 'generating' ? '生成中，请稍候' : '仅重新生成该声音'" @click="regenVoice(i)" />
                       <TButton :label="row.lengthMode === 'video' ? '时长:视频' : '时长:音频'" variant="secondary" size="small" :title="lengthModeTip(row)" @click="toggleLengthMode(i)" />
@@ -1165,10 +1172,9 @@ function scoreClass(score: number | undefined): string {
           </div>
           <p v-if="bgmResultLabel" class="agb-result">{{ bgmResultLabel }}</p>
           <div class="row">
-            <TButton label="播放生成的 BGM" variant="ghost" size="small" :disabled="!bgmUrl" @click="playAgBgm" />
             <TButton label="保存到 BGM 库" variant="secondary" size="small" :loading="bgmSaving" :disabled="!bgmUrl || bgmSaving" @click="saveBgmToLib" />
             <TButton label="打开位置" variant="secondary" size="small" :disabled="!bgmLocal" title="在资源管理器中打开生成的 BGM 本地文件（outputs/ai_audio）" @click="openBgmLocation" />
-            <audio v-if="bgmUrl" ref="agBgmAudioEl" controls class="grow" />
+            <audio v-if="agBgmAudioSrc" :src="agBgmAudioSrc" controls class="grow" />
           </div>
         </div>
 
@@ -1226,12 +1232,22 @@ function scoreClass(score: number | undefined): string {
                 v-for="(it, i) in finalVideoList" :key="i"
                 :class="{ picked: finalSelIdx === i }"
                 @click="onStep4Select(i)"
-              >{{ it.name }}</li>
+              >
+                <!-- 2026-09-15 用户裁决：一键导出到剪映草稿移到每个成片行尾，一条条导出
+                     （成片已烧字幕/混音 → 草稿=单片主轨）；列表限高约 10 行，超出滚动 -->
+                <span class="vd4-fname" :title="it.path">{{ it.name }}</span>
+                <TButton
+                  label="一键导出到剪映草稿" variant="primary" size="small"
+                  :loading="finalExportIdx === i"
+                  :disabled="finalExportIdx >= 0 && finalExportIdx !== i"
+                  title="将该成片单独导出为剪映草稿"
+                  @click.stop="exportFinalVideoDraft(i)"
+                />
+              </li>
               <li v-if="!finalVideoList.length" class="muted">暂无成片，点击「服务端合成」或「本地合成」后此处展示结果</li>
             </ul>
             <div class="vd4-btns">
               <TButton label="打开视频输出目录" variant="secondary" :disabled="!finalDone" class="grow" @click="openFinalDir" />
-              <TButton label="一键导出到剪映草稿" variant="primary" :disabled="!finalDone" class="grow" @click="exportJianyingDraft" />
               <TButton label="导出全部到时间轴(带转场)" variant="secondary" :disabled="!finalDone" class="grow"
                 title="将合成列表中的所有视频按顺序导出为一条剪映时间轴，片段之间自动添加所选转场，每个片段携带各自字幕"
                 @click="exportAllToJianyingDraft" />
@@ -1787,6 +1803,11 @@ function scoreClass(score: number | undefined): string {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   margin-left: auto; margin-right: 66px;
 }
+/* 行内原生试听播放条（2026-09-15 用户裁决：<audio controls>，Chromium 原生控件） */
+.vd-voice-audio {
+  width: 260px; height: 32px; vertical-align: middle;
+}
+.vd-voice-audio[disabled] { opacity: 0.45; }
 .vd-name {
   max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 13px; font-weight: 600; color: var(--foreground);
@@ -2103,7 +2124,9 @@ function scoreClass(score: number | undefined): string {
 }
 .vd4-left { flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .vd4-left-title { font-size: 13px; font-weight: 600; color: var(--foreground); }
-.vd4-list { max-height: 150px; overflow-y: auto; }
+/* 成片列表限高约 10 行（2026-09-15 用户裁决：多则滚动、少则按实际高度），行内带逐条导出按钮 */
+.vd4-list { max-height: 320px; overflow-y: auto; }
+.vd4-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vd4-btns { display: flex; gap: 8px; }
 .vd4-btns > .t-button { flex: 1; padding: 0 6px; }
 /* 界面统一两栏（2026-09-10 用户需求「二三四步界面统一+联动预览」）：

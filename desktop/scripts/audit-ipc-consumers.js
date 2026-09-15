@@ -72,6 +72,9 @@ const BASELINE_UNWIRED = {
   'system:licenseVerify':          '授权校验 UI 未落地（等产品决策是否启用）',
   // ── VSR 旧提交式通道：SubtitleRemoval 只用 vsr:remove（useVsrRemoval.ts L157）──
   'vsr:submit':                    '字幕/水印去除已改走 vsr:remove 一步式，本通道无消费方，待废弃',
+  // ── 视频合成：成片/候选配套字幕查找（2026-09-14 导出改轨道结构——SRT 由文案
+  //    +timing 现算，不再按文件配对；handler 保留供成片配对字幕场景复用）──
+  'final:findSrt':                 '2026-09-14 导出改轨道结构后暂无消费场景（配对字幕查找保留待复用）',
   // ── ffmpeg 通用能力：分段拼接暂无调用方（embedCover 已于 2026-09-03
   //    M9 直播切片最终导出真实接线，按基线只减不增规则从此处移除）──
   'ffmpeg:concatSegments':         'M9 直播切片最终导出对应能力待接线',

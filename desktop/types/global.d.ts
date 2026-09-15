@@ -464,6 +464,8 @@ declare interface TintinBridgeServer {
     subAnim?: string
     videoEffectId?: string
     videoEffectName?: string
+    /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
+    textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     draftName?: string
   }): Promise<{ success: boolean; message: string; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */

@@ -396,6 +396,24 @@ export function normalizeSourceResolution(value: unknown): string {
   return m && Number(m[1]) > 0 && Number(m[2]) > 0 ? s : ''
 }
 
+/**
+ * Step2 画幅基准（2026-09-15 用户裁决：「与原视频一致」的基准=分割片段，非原素材——
+ * 服务端分割产物已统一缩放（4K 竖屏素材出 1080x1920），旧实现把 split 响应的
+ * source_resolution（原素材 4K）当画幅基准，预合成被撑成 4K/横屏）。
+ * 取值链：① 逐镜画幅（服务端 shots[].resolution，分割产物口径，取首个非空）
+ *         ② source_resolution 兜底（响应缺逐镜画幅时的降级，仅此一档——
+ *            本地探测首个片段由调用方在两者皆缺时执行）。
+ * 入参均应为 normalizeSourceResolution 归一化后的 "WxH"；无效返回 ''。
+ */
+export function resolveSplitBaselineResolution(
+  shotResolutions: ReadonlyArray<string | undefined>, serverSourceResolution?: string,
+): string {
+  for (const r of shotResolutions || []) {
+    if (r) return r
+  }
+  return serverSourceResolution || ''
+}
+
 // ── Step2 镜头重组·预合成方案（对照 video_montage_page.py _build_precompose_plans L5223-5344）──
 
 /** 预合成方案（对照原版 plan dict：clips/deleted_flags/mode/confirmed/output_path） */
@@ -1160,6 +1178,13 @@ export function pathBasename(p: string): string {
   return i >= 0 ? p.slice(i + 1) : p
 }
 
+/** 从完整路径取不带扩展名的 basename（渲染层无 node path；对照 path.basename(p, ext)） */
+export function pathStem(p: string): string {
+  const b = pathBasename(p)
+  const i = b.lastIndexOf('.')
+  return i > 0 ? b.slice(0, i) : b
+}
+
 // ══ Step4 特效包装（对照 video_montage_page.py + FinalMixWorker 入口逻辑）════
 
 /** final 输出目录（逐行对照 _get_out_final_dir L3983-3995，Windows 路径口径） */
@@ -1268,12 +1293,13 @@ export function subtitlePresetTileStyle(p: SubtitleStylePreset): Record<string, 
   return s
 }
 
-/** 字幕背景 6 项（对照 subtitle_bg_combo L226-228，value 为黑框不透明度） */
+/** 字幕背景 6 项（对照 subtitle_bg_combo L226-228，value 为黑框不透明度）。
+ *  默认 20%（2026-09-15 用户裁决：背景里的透明默认设计为 20%） */
 export const SUBTITLE_BG_OPTIONS = [
   { label: '无背景', value: 0 },
-  { label: '20% 透明黑', value: 0.2 },
+  { label: '20% 透明黑 (默认)', value: 0.2 },
   { label: '35% 透明黑', value: 0.35 },
-  { label: '50% 透明黑 (默认)', value: 0.5 },
+  { label: '50% 透明黑', value: 0.5 },
   { label: '65% 透明黑', value: 0.65 },
   { label: '80% 透明黑', value: 0.8 },
 ]

@@ -331,8 +331,9 @@ function buildServerFxFields(fx, srt, matchId) {
     // 构建，items.push({ label, value: fid })）→ 走契约 font_id 字段；
     // fontname 仅适用于真字体族名场景，本端不传（旧实现把 id 当族名传错）
     if (fx.subtitleFont) fields.font_id = String(fx.subtitleFont)
-    const op = Math.min(1, Math.max(0, Number(fx.subtitleBoxOpacity ?? 0.5)))
-    fields.subtitle_style = JSON.stringify({ box_opacity: Number.isFinite(op) ? op : 0.5 })
+    // 背景不透明度默认 20%（2026-09-15 用户裁决，原 0.5；与 SUBTITLE_BG_OPTIONS 默认项同源）
+    const op = Math.min(1, Math.max(0, Number(fx.subtitleBoxOpacity ?? 0.2)))
+    fields.subtitle_style = JSON.stringify({ box_opacity: Number.isFinite(op) ? op : 0.2 })
   }
   if (fx.fancyText) {
     fields.fancy_enabled = 'true'
@@ -667,7 +668,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             addSubtitles: !!fx.addSubtitles,
             subtitleFontPath: fontPathEsc,
             subtitleStyle: String(fx.subtitleStyle || 'white'),
-            subtitleBoxOpacity: fx.subtitleBoxOpacity ?? 0.5,
+            subtitleBoxOpacity: fx.subtitleBoxOpacity ?? 0.2,
             // 字幕入场动画（2026-09-10 用户裁决：可选 fade/rise/slide/pop/none，预览与烧制同源）
             subtitleAnim: String(fx.subtitleAnim || 'fade'),
             fancyText: !!fx.fancyText,
@@ -892,6 +893,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             // 二期④：视频特效（resource_id）挂主轨全片段
             videoEffectId: p.videoEffectId,
             videoEffectName: p.videoEffectName,
+            // 2026-09-15：原生文字模板命中（match textfx_clips 权威指派）→ 三件套轨
+            textTemplateClips: p.textTemplateClips,
             draftName: p.draftName,
             deps,
           })
@@ -908,6 +911,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             subAnim: p.subAnim,
             videoEffectId: p.videoEffectId,
             videoEffectName: p.videoEffectName,
+            textTemplateClips: p.textTemplateClips,
             draftName: p.draftName,
             deps,
           })

@@ -28,7 +28,9 @@ import {
   // Step1 splits 本地缓存（原版 montage_cache 口径）
   safeSourceName,
   normalizeSourceResolution,
+  resolveSplitBaselineResolution,
   collectEdgeTrimJobs,
+  pathStem,
   EDGE_CLIP_MAX_SEC,
   // Step2 镜头重组·预合成方案
   buildPrecomposePlans,
@@ -328,6 +330,8 @@ export function useVideoMontage() {
     splitMsg.value = '正在解析素材…'
     try {
       const rows: SplitSceneRow[] = []
+      // 最后一次素材的 source_resolution（供分割后画幅兜底链 ③ 使用；帧率取 fps 字段）
+      let lastSrcRes: unknown = null
       // 逐素材阶段文案 + 进度（对照原版 _process_next_merged_video L202-203：
       // `_stage("智能镜头分割 ({idx}/{total})：{fname}")` + `_progress(done*100/total)`）
       const total = srcVideos.value.length
@@ -372,14 +376,16 @@ export function useVideoMontage() {
         // 即刷新 split_result_table；行号连续重编号，未落盘行预览回退服务端 clipUrl 内嵌）
         scenes.value = rows.slice()
         rows.forEach((r, i) => { r.idx = i + 1 })
-        // 原片分辨率：优先服务端 split 响应 source_resolution（对照原版 step1_split_controller
-        // L326-328 逐素材覆盖 _source_resolution 的同口径），无则后置本地探测兑底。
-        // 帧率同源（2026-09-11 在线实测）：source_resolution 是对象
-        // {width,height,aspect_ratio,fps,codec}，其中 fps 即原片帧率——「跟随原片」
-        // 优先用它（本地探测在无 ffprobe 的打包环境可能失败，服务端值是白送的）
+        // 画幅基准（2026-09-15 用户裁决）：「与原视频一致」= 与分割片段一致，非原素材——
+        // 服务端分割产物已统一缩放（4K 竖屏素材出 1080x1920），旧实现取 source_resolution
+        // （原素材 4K）当画幅基准，Step2 预合成被撑成 4K/横屏。取值链：
+        // ① 逐镜画幅（shots[].resolution，分割产物口径，resolveSplitBaselineResolution 取首个非空）
+        // ② 本地探测首个片段（splits 落盘，见下方 probe 兑底块）
+        // ③ source_resolution 最后兜底（前两者皆缺时，见 probe 兑底块 else 分支）
+        // 帧率同源不变（2026-09-11）：source_resolution.fps 即原片帧率，分割片段与原片同帧率
         const srcRes = (res as { source_resolution?: unknown }).source_resolution
-        const sr = normalizeSourceResolution(srcRes)
-        if (sr) splitResolution.value = sr
+        lastSrcRes = srcRes
+        splitResolution.value = resolveSplitBaselineResolution(rows.map((r) => r.resolution), '')
         const remoteFps = Number((srcRes as { fps?: unknown } | null | undefined)?.fps)
         if (Number.isFinite(remoteFps) && remoteFps > 0) splitFps.value = remoteFps
       }
@@ -396,21 +402,29 @@ export function useVideoMontage() {
       // PR#4 条目10：出入场超长片段自动裁剪（后台，对照 _maybe_trim_edge_clips L1706
       // 挂在 _check_split_clips_exist 尾部的同口径：分割完成即扫描）
       void maybeTrimEdgeClips()
-      // 探测兑底（原版 _detect_and_show_source_resolution L4783-4793：服务端未返回时
-      // probe 第一个镜头文件；本端片段已落盘 splits，优先探测片段，源视频兑底）。
-      // 触发条件含 fps（2026-09-11 纠偏）：服务端 split 只给 source_resolution 不给
-      // 帧率（在线核实无 source_fps 字段）→ 画幅已知时仍需探测一次拿 fps
+      // 探测兑底（2026-09-15 用户裁决后的画幅兜底链收口）：逐镜画幅缺失时探
+      // 首个本地片段（分割产物=画幅基准）；原素材仅作帧率兜底探测，画幅不再取
+      // 原素材（4K 素材曾把 Step2 撑成 4K/横屏）
       if (!splitResolution.value || !splitFps.value) {
         const firstClip = rows.find((r) => r.clipLocalPath)
-        const probeTarget = firstClip?.clipLocalPath || srcVideos.value[0]
-        if (probeTarget) {
-          void window.tintin.ffmpeg.probe(probeTarget).then((info) => {
+        if (firstClip?.clipLocalPath) {
+          void window.tintin.ffmpeg.probe(firstClip.clipLocalPath).then((info) => {
             if (Number(info?.width) > 0 && Number(info?.height) > 0 && !splitResolution.value) {
               splitResolution.value = `${Number(info.width)}x${Number(info.height)}`
             }
             // 原片帧率同源探测（一次 probe 同时拿宽高与 fps）
             if (Number(info?.fps) > 0 && !splitFps.value) splitFps.value = Number(info.fps)
           }).catch(() => { /* 探测失败：画幅列显 —、帧率走 resolveConcatFps 兑底 30 */ })
+        } else if (!splitResolution.value) {
+          // ③ 兜底：无逐镜画幅且片段未落盘（下载失败等）——source_resolution 最后降级
+          const sr = normalizeSourceResolution(lastSrcRes)
+          if (sr) splitResolution.value = sr
+        }
+        // 帧率兜底：分割片段与原素材同帧率，无本地片段时探原素材拿 fps（画幅不取）
+        if (!splitFps.value && !firstClip?.clipLocalPath && srcVideos.value[0]) {
+          void window.tintin.ffmpeg.probe(srcVideos.value[0]).then((info) => {
+            if (Number(info?.fps) > 0 && !splitFps.value) splitFps.value = Number(info.fps)
+          }).catch(() => { /* 帧率走 resolveConcatFps 兑底 30 */ })
         }
       }
     } catch (e) {
@@ -836,25 +850,24 @@ export function useVideoMontage() {
    *  clipShotTypes：镜头文件名→景别键（对照原版 L3004-3015 clip_shot_types，仅非空景别收进） */
   async function submitConcatTask(clipUrls: string[], clipShotTypes?: Record<string, string>, localFiles?: string[]): Promise<{ url: string; id: string; newContract: boolean }> {
     await ensureServerUrl()
-    // 「与原片一致」分辨率优先级（对照原版 _submit_concat_to_server L2963-2979：
-    // ① 服务端 split 响应的原片分辨率 → ② 本地探测第一个镜头 → ③ 兑底 1080x1920）
+    // 「与原片一致」分辨率优先级（2026-09-15 用户裁决：画幅基准=分割片段，非原素材——
+    // ① splitResolution（逐镜画幅/首个片段探测，Step1 已收口）→ ② 本地探测首个片段 →
+    // ③ 探测不到交 layoutSize 兜底 1080x1920（与分割产物同口径）。原素材分辨率不再进画幅链）
     let sourceProbe: { width?: number; height?: number } | null = null
     if (concatLayout.value === 'source') {
       const m = /^(\d+)x(\d+)$/.exec(splitResolution.value || '')
       if (m) sourceProbe = { width: Number(m[1]), height: Number(m[2]) }
       if (!sourceProbe) {
         const firstClip = scenes.value.find((c) => c.clipLocalPath)
-        const candidates = [firstClip?.clipLocalPath, srcVideos.value[0]].filter(Boolean) as string[]
-        for (const p of candidates) {
+        if (firstClip?.clipLocalPath) {
           try {
-            const info = await window.tintin.ffmpeg.probe(p)
+            const info = await window.tintin.ffmpeg.probe(firstClip.clipLocalPath)
             if (Number(info?.width) > 0 && Number(info?.height) > 0) {
               sourceProbe = { width: Number(info.width), height: Number(info.height) }
               // 帧率同步补探测（Step1 探测失败时走到这里）
               if (Number(info?.fps) > 0 && !splitFps.value) splitFps.value = Number(info.fps)
-              break
             }
-          } catch (_) { /* 尝试下一个候选 */ }
+          } catch (_) { /* 画幅交 layoutSize 兜底 1080x1920 */ }
         }
       }
     }
@@ -1624,48 +1637,107 @@ export function useVideoMontage() {
     try { window.tintin.shell.openItem(dir) } catch (e) { clientError('video-montage', '打开输出目录失败', e); notify('打开失败', errText(e)) }
   }
 
-  /** 一键导出到剪映草稿（_export_to_jianying_draft：选中项默认第一个；单段无转场） */
-  async function exportJianyingDraft(): Promise<void> {
-    const items = finalVideoList.value
-    if (!items.length) { notify('未选中视频', '请先在合成列表中选择一个视频！'); return }
-    const idx = finalSelIdx.value >= 0 ? finalSelIdx.value : 0
-    const videoPath = items[idx]?.path || ''
-    if (!videoPath) {
-      notify('文件不存在', `无法定位该视频的物理文件：\n${videoPath}`)
-      return
+  /** 逐条导出成片为剪映草稿（2026-09-15 用户裁决：一键导出按钮移到每个成片行尾，
+   *  一条条导出）——成片已烧字幕/混音，草稿=该成片单片主轨，不再叠加 SRT/BGM
+   *  （noBgm 抑制 doJianyingExport 自动携带的全局 BGM，避免双重 BGM） */
+  const finalExportIdx = ref(-1)
+  async function exportFinalVideoDraft(index: number): Promise<void> {
+    const it = finalVideoList.value[index]
+    if (!it?.path || finalExportIdx.value >= 0) return
+    finalExportIdx.value = index
+    try {
+      await doJianyingExport({
+        mode: 'single',
+        videoPath: it.path,
+        noBgm: true,
+        draftName: `螺丝钉剪辑_${pathStem(it.path)}`,
+        successBody: (name) => `已将「${pathBasename(it.path)}」导出为剪映草稿！
+
+项目名称：${name}
+
+请直接打开您的电脑「剪映专业版」客户端进行精修编辑。`,
+      })
+    } finally {
+      finalExportIdx.value = -1
     }
-    // 2026-09-10 缺陷修复：单段导出此前漏传 srtPath（剪映草稿缺字幕轨），与多段同口径找配套 SRT
-    const fr = await window.tintin?.server?.finalFindSrt?.({ videoPath })
-    const srtPath = fr && 'srtPath' in fr && fr.srtPath ? fr.srtPath : ''
-    await doJianyingExport({
-      mode: 'single',
-      videoPath,
-      srtPath,
-      ...jianyingFxParams(),
-      draftName: `螺丝钉剪辑_${pathBasename(videoPath).replace(/\.[^.]+$/, '')}`,
-      successBody: (name) => `混剪工程导出完成！\n\n项目名称：${name}\n\n请直接打开您的电脑「剪映专业版」客户端进行精修编辑。\n系统已为您在资源管理器中定位到该草稿文件夹。`,
-    })
   }
 
-  /** 导出全部到时间轴（_export_all_to_jianying_draft：转场沿用第②步下拉，默认 fade） */
+  /** 导出全部到时间轴（2026-09-14 用户裁决：同轨道导出口径，带转场） */
   async function exportAllToJianyingDraft(): Promise<void> {
-    const paths = finalVideoList.value.map((it) => it.path).filter(Boolean)
-    if (!paths.length) { notify('未选中视频', '合成列表为空，请先生成视频！'); return }
-    // 逐段找配套 srt（主进程 _find_srt_for_video 同口径）
-    const srtPaths: Array<string | null> = []
-    for (const p of paths) {
-      const r = await window.tintin?.server?.finalFindSrt?.({ videoPath: p })
-      srtPaths.push(r && 'srtPath' in r && r.srtPath ? r.srtPath : null)
+    await exportMontageTracksDraft('螺丝钉剪辑_轨道时间轴')
+  }
+
+  /** 轨道导出（2026-09-14 用户裁决：导出原来的轨道结构，不导合成成片）：
+   *  主轨=预合成候选视频分条（转场沿用第②步下拉）、字幕轨=逐候选 SRT、
+   *  文字模板轨=match 命中→剪映原生模板三件套（2026-09-15 用户裁决：resource_id
+   *  让剪映自己套模板渲染，零渲染保真损失；无命中回退旧蓝字关键词轨）、
+   *  花字轨=命中关键词（jianyingFxParams）、BGM 轨=所选背景音乐 */
+  async function exportMontageTracksDraft(draftName: string): Promise<void> {
+    const cands = await collectCandidates()
+    if (!cands.length) { notify('无候选素材', '请先完成镜头重组与口播配音再导出'); return }
+    const srtPaths: string[] = []
+    const textTemplateClips: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>> = []
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i]
+      const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
+      const text = String(row?.text || '').trim()
+      const timingPath = row?.wavPath ? `${row.wavPath}.timing.json` : ''
+      let timing: Array<{ text: string; start: number; end: number }> = []
+      if (timingPath) {
+        const r = await window.tintin?.server?.finalReadTiming?.({ timingPath })
+        timing = r && 'items' in r ? r.items : []
+      }
+      const rows = buildSubtitleRows(text, timing, 0)
+      const ts = (s: number) => {
+        const ms = Math.round(s * 1000)
+        const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000)
+        const sec = Math.floor(ms % 60000 / 1000), mmm = ms % 1000
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')},${String(ms % 1000).padStart(3, '0')}`
+      }
+      const srt = rows.map((r, k) => `${k + 1}\n${ts(r.start)} --> ${ts(r.end)}\n${r.text}\n`).join('\n')
+      // 临时 SRT 由主进程写入系统临时目录（liveclip:writeTempText，路径主进程生成）——
+      // 2026-09-15 报障修复：渲染层 process.env.TEMP 不可用 → 兜底 'C:/Temp' 不存在
+      // → ENOENT「SRT 写入失败」导出中断；失败即中止导出（不再带坏路径继续）
+      const tr = await window.tintin?.liveclip?.writeTempText?.({ basename: `jyexport_${i}_${Date.now()}.srt`, content: srt })
+      const srtPath = tr && 'path' in tr ? String(tr.path) : ''
+      if (!srtPath) {
+        notify('SRT 写入失败', `临时字幕写入失败，导出中止：${tr && 'error' in tr ? tr.error : '主进程不可达'}`)
+        return
+      }
+      srtPaths.push(srtPath)
+      // 原生文字模板命中随行（textFxEnabled 时）：match textfx_clips 的
+      // 短语+时间+模板 id → 导出器三件套；时间窗按候选视频本地系（微秒），
+      // 由导出器按时间轴游标偏移
+      if (textFxEnabled.value) {
+        const hits = await textFxHitsForExport(c, text, timingPath)
+        textTemplateClips.push(hits
+          .filter((l) => l.templateId && l.end > l.start)
+          .map((l) => ({
+            phrase: l.text,
+            startUs: Math.round(l.start * 1e6),
+            durUs: Math.round((l.end - l.start) * 1e6),
+            resourceId: String(l.templateId),
+          })))
+      } else {
+        textTemplateClips.push([])
+      }
     }
     const transition = concatTransition.value || 'fade'
     await doJianyingExport({
       mode: 'multi',
-      videoPaths: paths,
+      videoPaths: cands,
       srtPaths,
       transitions: transition,
       ...jianyingFxParams(),
-      draftName: `螺丝钉剪辑_多片段时间轴(${paths.length}段)`,
-      successBody: (name) => `已将 ${paths.length} 个片段导出为剪映时间轴（转场：${transition}）！\n\n项目名称：${name}\n\n请直接打开您的电脑「剪映专业版」客户端进行精修编辑。\n系统已为您在资源管理器中定位到该草稿文件夹。`,
+      textTemplateClips,
+      bgmPath: bgmPath.value,
+      bgmVolume: bgmVolume.value,
+      draftName,
+      successBody: (name) => `已按原始轨道结构导出 ${cands.length} 段候选视频（转场：${transition}，含字幕/关键词/BGM 轨）！
+
+项目名称：${name}
+
+请直接打开您的电脑「剪映专业版」客户端进行精修编辑。`,
     })
   }
 
@@ -1716,11 +1788,17 @@ export function useVideoMontage() {
     srtPath?: string
     srtPaths?: Array<string | null>
     transitions?: string
+    bgmPath?: string
+    bgmVolume?: number
     fxWords?: string[]
     fxKinds?: Array<'fancy' | 'tpl'>
     textAnim?: string
     fancyEffectId?: string
     tplEffectId?: string
+    /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
+    textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
+    /** 2026-09-15：抑制全局 BGM（逐条导出成片时用——成片已混音，再带 BGM 轨会双重） */
+    noBgm?: boolean
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {
@@ -1729,12 +1807,12 @@ export function useVideoMontage() {
     // ...base 整体展开混入 IPC payload——结构化克隆无法序列化函数 → invoke 直接
     // reject → 链路无 catch → 无弹窗无日志的完全静默。解构剔除回调后 IPC 只收纯数据，
     // 并对 invoke 兜底 catch：任何异常都 clientError + 弹窗透出，不再「没反应」。
-    const { successBody, ...ipcBase } = base
+    const { successBody, noBgm, ...ipcBase } = base
     let res: { success: boolean; message: string } | undefined
     try {
       res = await window.tintin?.server?.jianyingExport?.({
         ...ipcBase,
-        bgmPath: bgmPath.value,
+        bgmPath: noBgm ? '' : bgmPath.value,
         bgmVolume: bgmVolume.value,
       })
     } catch (e) {
@@ -1799,7 +1877,8 @@ export function useVideoMontage() {
   const subtitleAnimKey = ref('fade')
   // 花字位置/字幕背景/模板（L224-352；模板首项「自定义 (下方样式)」value=''）
   const fancyPosition = ref('upper_middle')
-  const subtitleBgOpacity = ref(0.5)
+  // 字幕背景不透明度默认 20%（2026-09-15 用户裁决：背景里的透明默认设计为 20%，原 0.5）
+  const subtitleBgOpacity = ref(0.2)
   const fancyTemplateId = ref('')
   const fancyTemplates = ref<FancyTemplateItem[]>([])
   const fancyPreviews = ref<Record<string, string>>({})
@@ -1838,13 +1917,16 @@ export function useVideoMontage() {
   const textTemplates = ref<Array<Record<string, unknown> & { template_id: string; name: string }>>([])
   const textTemplatesLoading = ref(false)
   /** 生效模板池（2026-09-10 用户二次裁决：随机数量 N 对应每条视频各自随机选——
-   *  池恒为全量库，逐视频在烧制/预览端确定性洗牌取子集；指定模板则池=单模板） */
+   *  池恒为全量库，逐视频在烧制/预览端确定性洗牌取子集；指定模板则池=单模板）。
+   *  2026-09-15 用户裁决：随机只从剪映同步模板（jy_ 前缀）中选，内置模板不参与；
+   *  无 jy_ 模板时回退全量池（避免随机失效） */
   const activeTextPool = computed(() => {
     if (textTemplateId.value !== 'random') {
       const one = textTemplates.value.find((t) => t.template_id === textTemplateId.value)
       return one ? [one] : []
     }
-    return textTemplates.value
+    const jy = textTemplates.value.filter((t) => String(t.template_id || '').startsWith('jy_'))
+    return jy.length ? jy : textTemplates.value
   })
   /** 随机模式生效个数（指定模板=1；每视频从 activeTextPool 独立随机选 N 个） */
   const activeTextCount = computed(() => textTemplateId.value === 'random' ? textRandomCount.value : 1)
@@ -1923,6 +2005,26 @@ export function useVideoMontage() {
    *  rows 由 buildSubtitleRows 组装，density 透传，llm_fill=true 按合成口径保底；
    *  离线/失败 → 空（不造数）。返回 { dur, lines, ok }——dur 供预览轨背景条复用，
    *  ok=false 区分「接口失败」与「合法零命中」（失败不再静默） */
+  /** 逐视频命中缓存（2026-09-15：导出剪映草稿构建原生文字模板三件套的数据源——
+   *  match textfx_clips 短语+时间+模板 id 的权威结果；fetchTextFxHits 成功/缓存命中
+   *  都回填，键=取数时的 videoPath 实参）。lastMatchTemplateIds 记录最近一次 match
+   *  的候选模板池：随机模式下导出复用同池查 textFxHitsCache（rows+ids 同键）→
+   *  不再二次随机、不再二次请求，与预览/合成所见一致。 */
+  const textFxHitsByVideo = new Map<string, Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>>()
+  let lastMatchTemplateIds: string[] = []
+  /** 导出取命中（textFxEnabled 时）：优先逐视频缓存，缺失则按最近模板池取
+   *  fetchTextFxHits（rows 与预览/合成同源 → 命中 textFxHitsCache，零服务端调用） */
+  async function textFxHitsForExport(
+    videoPath: string,
+    text: string,
+    timingPath: string,
+  ): Promise<Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>> {
+    const cachedByVideo = textFxHitsByVideo.get(videoPath)
+    if (cachedByVideo) return cachedByVideo
+    const ids = lastMatchTemplateIds.length ? lastMatchTemplateIds : currentMatchTemplateIds()
+    const r = await fetchTextFxHits(videoPath, text, timingPath, ids)
+    return r.lines
+  }
   async function fetchTextFxHits(
     videoPath: string,
     text: string,
@@ -1946,7 +2048,10 @@ export function useVideoMontage() {
     // 密度/模板池/行内容变化 → key 变 → 重取）
     const cacheKey = textFxHitsKey(rows) + '|' + templateIds.join(',')
     const cached = textFxHitsCache.get(cacheKey)
-    if (cached) return { dur, lines: cached.lines, matchId: cached.matchId, ok: true }
+    if (cached) {
+      textFxHitsByVideo.set(videoPath, cached.lines)
+      return { dur, lines: cached.lines, matchId: cached.matchId, ok: true }
+    }
     // 重试口径（2026-09-12 实锤：服务端 match 偶发 500/ECONNRESET，单次失败曾致
     // 本地烧制 textFxHits=0 → 成片无文字模板；400/900ms 退避共 3 次）
     let ok = false
@@ -1993,7 +2098,11 @@ export function useVideoMontage() {
       }
     }
     if (!ok) console.warn('[textfx] match 三次均失败（服务端 500/离线），本次不烧文字模板', videoPath)
-    if (ok) textFxHitsCache.set(cacheKey, { lines, matchId }) // 成功才入缓存（失败不污染，下次重取）
+    if (ok) {
+      textFxHitsCache.set(cacheKey, { lines, matchId }) // 成功才入缓存（失败不污染，下次重取）
+      textFxHitsByVideo.set(videoPath, lines)
+      if (templateIds.length) lastMatchTemplateIds = templateIds.slice()
+    }
     return { dur, lines, matchId, ok }
   }
   /** 命中行缓存（2026-09-12 用户质询：预览已调过 match，合成为何再调——match 的唯一
@@ -2110,9 +2219,11 @@ export function useVideoMontage() {
    *  从 variables 推导：颜色收集≥2 个做渐变字，fontSize 按比例缩到预览口径） */
   const srvBase = ref('')
   const textFxStyleSamples = computed(() => {
-    // 2026-09-10 用户二次裁决：样式预览显示模板库全部样式（橱窗）；
+    // 2026-09-15 用户裁决：橱窗只显示剪映同步模板（jy_ 前缀），内置模板不再展示；
     // 随机数量是每条视频各自随机选 N 个，在效果预览/烧制端逐视频应用，不在此处裁剪
-    return textTemplates.value.map((t) => {
+    return textTemplates.value
+      .filter((t) => String(t.template_id || '').startsWith('jy_'))
+      .map((t) => {
       const vars = (t.variables && typeof t.variables === 'object' ? t.variables : {}) as Record<string, { default?: unknown }>
       const colors: string[] = []
       let fontSize = 0
@@ -2887,12 +2998,6 @@ export function useVideoMontage() {
     }
   }
 
-  /** 播放克隆的声音（对照 _on_btn_play_clicked → _play_audio） */
-  function playVoice(index: number): void {
-    const row = voiceRows.value[index]
-    if (row?.wavPath) { try { window.tintin?.shell?.openItem?.(row.wavPath) } catch (_) {} }
-  }
-
   /** 行播放视频：配音后优先（对照 _on_play_row_video L6725-6733）→ 内置播放器 */
   function playRowVideo(index: number): void {
     const row = voiceRows.value[index]
@@ -2989,7 +3094,7 @@ export function useVideoMontage() {
     nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
     pickNewSampleFile, transcribeNewSample, uploadNewSampleRef,
     batchAiRewrite, startSynthesizeVoice,
-    regenVoice, exportVoice, playVoice, playRowVideo, playDubbedVideo,
+    regenVoice, exportVoice, playRowVideo, playDubbedVideo,
     toggleLengthMode, lengthModeTip,
     voiceStatusText, voiceStatusClass, fmtDur, pathBasename,
     planDurText,
@@ -3002,7 +3107,7 @@ export function useVideoMontage() {
     generateBgm,
     pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
     enterStep4, startFinalMix, openFinalDir,
-    exportJianyingDraft, exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
+    exportFinalVideoDraft, finalExportIdx, exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
     fmtBgmTime,
     // 景别分类（UI 展示用）
     SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,

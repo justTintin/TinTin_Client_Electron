@@ -624,39 +624,6 @@ function createThickShellIpc(ipcMain, ctx) {
 
   // ── 平台 Cookie 域名映射（来自 platform-meta.js 单一维护点，勿在此重复定义）──
 
-  // browser:exportCookies：导出指定平台的 Cookie 为 Netscape 文件（给 yt-dlp 用）
-  ipcMain.handle('browser:exportCookies', async (_e, { platformId, destPath }) => {
-    try {
-      if (!PLATFORM_IDS.includes(platformId)) return { success: false, error: 'UNKNOWN_PLATFORM' }
-      const def = PLATFORM_DEFS[platformId]
-      const domains = PLATFORM_COOKIE_DOMAINS[platformId] || []
-      const result = await _exportCookiesForPartition(def.partition, destPath, domains)
-      return result
-    } catch (e) { return { success: false, error: e.message } }
-  })
-
-  // browser:getCookieStatus：检查指定平台的登录状态
-  ipcMain.handle('browser:getCookieStatus', async (_e, platformId) => {
-    try {
-      if (!PLATFORM_IDS.includes(platformId)) return { success: false, error: 'UNKNOWN_PLATFORM' }
-      const def = PLATFORM_DEFS[platformId]
-      const sess = session.fromPartition(def.partition)
-      const allCookies = await sess.cookies.get({})
-      const domains = PLATFORM_COOKIE_DOMAINS[platformId] || []
-      const matched = allCookies.filter(c => domains.some(d => c.domain.includes(d.replace(/^\./, ''))))
-      const hasLoginCookie = matched.length > 0
-      return {
-        success: true,
-        platformId,
-        platformName: def.name,
-        totalCookies: allCookies.length,
-        matchedCookies: matched.length,
-        hasLoginCookie,
-        cookies: matched.map(c => ({ name: c.name, domain: c.domain, expired: c.expirationDate ? new Date(c.expirationDate * 1000).toISOString() : null })).slice(0, 20),
-      }
-    } catch (e) { return { success: false, error: e.message } }
-  })
-
   // browser:getCurrentUrl：获取指定平台 BrowserView 当前 URL 和标题
   ipcMain.handle('browser:getCurrentUrl', (_e, platformId) => {
     try {

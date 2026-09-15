@@ -276,21 +276,6 @@ function createDownloadManager(ipcMain, workspacePath) {
     }
   })
 
-  // 获取下载列表
-  ipcMain.handle('downloads:list', (event) => {
-    const list = []
-    for (const [taskId, task] of downloadTasks) {
-      list.push({
-        taskId,
-        savePath: task.savePath,
-        receivedBytes: task.receivedBytes || 0,
-        totalBytes: task.totalBytes || 0,
-        type: task.type
-      })
-    }
-    return list
-  })
-
   // 暴露原生下载处理器给 BrowserView
   return { handleNativeDownload }
 }

@@ -120,18 +120,6 @@ function createMediaStorage(ipcMain, { store }) {
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('media:storageGetSettings', () => {
-    try { return { success: true, data: settingsCache } }
-    catch (e) { return { success: false, error: e.message } }
-  })
-
-  ipcMain.handle('media:storageSaveSettings', (_e, s) => {
-    try {
-      saveSettings(s)
-      return { success: true, data: settingsCache }
-    } catch (e) { return { success: false, error: e.message } }
-  })
-
   ipcMain.handle('media:storageExport', async (_e, { format = 'json', path: destPath } = {}) => {
     try {
       const data = {
@@ -224,26 +212,9 @@ function createMediaStorage(ipcMain, { store }) {
     } catch (e) { return { success: false, error: e.message } }
   })
 
-  ipcMain.handle('media:storageOpenDownloadDir', () => {
-    try {
-      const dlDir = settingsCache.downloadDir || app.getPath('downloads')
-      _ensureDir(dlDir)
-      const { shell } = require('electron')
-      shell.openPath(dlDir)
-      return { success: true, path: dlDir }
-    } catch (e) { return { success: false, error: e.message } }
-  })
-
   ipcMain.handle('media:storageGetFavorites', () => {
     try { return { success: true, data: favoritesCache } }
     catch (e) { return { success: false, error: e.message } }
-  })
-
-  ipcMain.handle('media:storageSaveFavorites', (_e, list) => {
-    try {
-      saveFavorites(list)
-      return { success: true, count: favoritesCache.length }
-    } catch (e) { return { success: false, error: e.message } }
   })
 
   ipcMain.handle('media:storageAddFavorite', (_e, item) => {

@@ -725,11 +725,6 @@ ipcMain.handle('app:get-path', (event, name) => {
   if (name === 'temp') return app.getPath('temp')
   return ''
 })
-ipcMain.on('app:quit', () => app.quit())
-ipcMain.on('app:relaunch', () => {
-  app.relaunch()
-  app.quit()
-})
 
 // IPC: 历史面板
 ipcMain.on('history:open', (event, items, anchorX, anchorY) => openHistoryPanel(items, anchorX, anchorY, BrowserWindow.fromWebContents(event.sender) || mainWindow))
@@ -741,14 +736,6 @@ ipcMain.on('history:navigate', (event, index) => {
     mainWindow.webContents.send('history:navigate', index)
   }
   closeHistoryPanel()
-})
-ipcMain.handle('history:get', async () => {
-  try {
-    const ms = require('./media-storage')
-    return { success: true, items: await ms.getHistory() }
-  } catch (e) {
-    return { success: false, items: [] }
-  }
 })
 ipcMain.handle('history:clear', async () => {
   try {

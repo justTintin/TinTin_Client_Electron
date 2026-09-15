@@ -635,10 +635,6 @@ function createFfmpegGate(ipcMain, studioRoot) {
     return await extractAudioCached(ffmpegPath, video, forceReextract)
   })
 
-  ipcMain.handle('ffmpeg:concatSegments', async (event, paths, outPath) => {
-    return await concatSegments(ffmpegPath, paths, outPath)
-  })
-
   ipcMain.handle('ffmpeg:extractAudio', async (event, video, outPath, format) => {
     return await extractAudio(ffmpegPath, video, outPath, format)
   })

@@ -70,35 +70,20 @@ const BASELINE_UNWIRED = {
   'agent:registerArtifact':        'W11 同上',
   // ── 授权校验：服务端能力就绪，客户端无入口 ──
   'system:licenseVerify':          '授权校验 UI 未落地（等产品决策是否启用）',
-  // ── VSR 旧提交式通道：SubtitleRemoval 只用 vsr:remove（useVsrRemoval.ts L157）──
-  'vsr:submit':                    '字幕/水印去除已改走 vsr:remove 一步式，本通道无消费方，待废弃',
   // ── 视频合成：成片/候选配套字幕查找（2026-09-14 导出改轨道结构——SRT 由文案
   //    +timing 现算，不再按文件配对；handler 保留供成片配对字幕场景复用）──
   'final:findSrt':                 '2026-09-14 导出改轨道结构后暂无消费场景（配对字幕查找保留待复用）',
-  // ── ffmpeg 通用能力：分段拼接暂无调用方（embedCover 已于 2026-09-03
-  //    M9 直播切片最终导出真实接线，按基线只减不增规则从此处移除）──
-  'ffmpeg:concatSegments':         'M9 直播切片最终导出对应能力待接线',
-  // ── 媒体存储设置：下载目录/收藏夹走 browser 域，此四条为重复通道 ──
-  'media:storageGetSettings':      '与 browser 域下载设置重复，待废弃或接线（择一）',
-  'media:storageSaveSettings':     '同上',
-  'media:storageOpenDownloadDir':  '同上',
-  'media:storageSaveFavorites':    '同上',
-  // ── 浏览器：Cookie 导出/状态，能力就绪但无 UI 入口 ──
-  'browser:exportCookies':         'B5 Cookie 导出无 UI 入口（能力已具备）',
-  'browser:getCookieStatus':       'B5 同上',
+  // ── 2026-09-15 第二类待废弃清理：vsr:submit / ffmpeg:concatSegments /
+  //    media:storageGet|SaveSettings|OpenDownloadDir|SaveFavorites /
+  //    browser:exportCookies|getCookieStatus / storyboard:listScripts|saveScript /
+  //    app:quit|relaunch 共 12 条通道已删（handler+preload+类型），
+  //    downloads:list / history:get 两条真死码已删，按只减不增规则移出基线 ──
   // 注：browser:extensionInstall / extensionUninstall 由 extensions-panel.html 直接
   //     ipcRenderer.invoke 裸通道消费，不计悬空（isConsumed 的裸通道分支已覆盖）。
-  // ── 分镜专用通道：useOpsStoryboard 走通用 server:get/post 绕过，属重复通道 ──
-  'storyboard:listScripts':        '与 useOpsStoryboard 的通用 server.get 重复，待删或改用',
-  'storyboard:saveScript':         '同上',
-  // ── 应用生命周期：窗口关闭走原生，两条无 UI 触发点 ──
-  'app:quit':                      '应用退出走原生窗口关闭，无 UI 触发点（可废弃）',
-  'app:relaunch':                  '同上（重启走 env 域）',
 };
 
 const BASELINE_DEAD = {
-  'downloads:list': 'download-manager.js 早期通道，已被 browser:downloadsSnapshot 取代，待删',
-  'history:get':    'main.js L698-706 注册，preload 未暴露；历史面板走 history-panel.html，待确认删除',
+  // 2026-09-15 第二类清理：downloads:list / history:get 两条真死码已随通道删除移出基线
 };
 
 // ─────────────────────────────────────────────────────────────────────

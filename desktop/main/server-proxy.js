@@ -1028,25 +1028,6 @@ function createServerProxy(ipcMain, ctx) {
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
-  // --- storyboard -----------------------------------------------------
-  ipcMain.handle('storyboard:listScripts', async (_e, params) => {
-    try {
-      const path = resolveEndpoint(API_ENDPOINTS.storyboard.scripts, params || {})
-      const res = await httpRequest('GET', path)
-      return res.data || { items: [], total: 0 }
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-  ipcMain.handle('storyboard:saveScript', async (_e, payload) => {
-    try {
-      const p = payload || {}
-      if (!p.title || !Array.isArray(p.shots)) throw new Error('storyboard:saveScript requires title+shots[]')
-      const method = p.id ? 'PUT' : 'POST'
-      const path   = p.id ? API_ENDPOINTS.storyboard.scriptItem(p.id) : API_ENDPOINTS.storyboard.scripts
-      const res = await httpRequest(method, path, { body: p })
-      return res.data
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
   // --- system ---------------------------------------------------------
   ipcMain.handle('system:licenseVerify', async (_e, payload) => {
     try {

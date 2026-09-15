@@ -189,10 +189,7 @@ declare interface TintinBridgeServer {
   ): Promise<IpcError<RembgAPI.MattingResponse>>
   /** GET /matting/models（服务端可用抠图模型清单；离线/失败返 null，组件用静态兜底） */
   mattingModels(): Promise<IpcError<{ models?: unknown[] } | null>>
-  vsrSubmit(
-    payload: VSRAPI.EnhanceRequest,
-    onProgress?: (percent: number) => void
-  ): Promise<IpcError<VSRAPI.EnhanceResponse>>
+  // vsrSubmit 已废弃（2026-09-15：vsr:submit 通道随一步式 vsr:remove 废止移除）
   vsrRemove(
     payload: VSRAPI.RemoveRequest,
     onProgress?: (percent: number) => void
@@ -567,15 +564,8 @@ declare interface TintinBridgeServer {
     onProgress?: (percent: number) => void
   ): Promise<IpcError<MontageAPI.PromptVideoResponse>>
 
-  // ---------- storyboard ----------
-  storyboardListScripts(params?: {
-    source?: string
-    page?: number
-    page_size?: number
-  }): Promise<IpcError<PaginatedResponse<StoryboardAPI.Script>>>
-  storyboardSaveScript(
-    payload: StoryboardAPI.Script
-  ): Promise<IpcError<StoryboardAPI.Script>>
+  // storyboard:listScripts/saveScript 通道已废弃（2026-09-15：与 useOpsStoryboard
+  // 通用 server.get 重复移除；storyboard 域其余类型保留供类型引用）
 
   // ---------- system ----------
   systemLicenseVerify(payload: {

@@ -52,26 +52,6 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
-  ipcMain.handle('vsr:submit', async (event, payload, onProgressChannel) => {
-    try {
-      const p = payload || {}
-      if (!p.video) throw new Error('vsr:submit missing `video` Blob')
-      const fields = {}
-      fields.video = p.video
-      if (p.mode)              fields.mode              = p.mode
-      if (p.scale)             fields.scale             = p.scale
-      if (p.fps !== undefined) fields.fps               = String(p.fps)
-      if (p.denoise_strength !== undefined) fields.denoise_strength = String(p.denoise_strength)
-      if (p.face_restoration !== undefined) fields.face_restoration = String(!!p.face_restoration)
-      if (p.trim_start_sec !== undefined)   fields.trim_start_sec   = String(p.trim_start_sec)
-      if (p.trim_end_sec !== undefined)     fields.trim_end_sec     = String(p.trim_end_sec)
-      const onProgress = onProgressChannel
-        ? (percent) => event.sender.send(onProgressChannel, percent)
-        : undefined
-      return await multipartUpload(API_ENDPOINTS.vsr.enhance, fields, onProgress)
-    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
-  })
-
   // M4 对齐 API-GUIDE 契约 Body_remove_subtitle_vsr_remove_post：
   //   file（multipart 文件）+ inpaint_mode/sub_areas/purpose/watermark_text/
   //   mode/mask_dilate/mask_expand_y/sttn_max_load_num；sub_areas='' 表示智能识别

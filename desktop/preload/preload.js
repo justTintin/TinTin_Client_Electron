@@ -8,8 +8,6 @@ const doneListeners = new Map()
 const app = {
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   getPath: (name) => ipcRenderer.invoke('app:get-path', name),
-  quit: () => ipcRenderer.send('app:quit'),
-  relaunch: () => ipcRenderer.send('app:relaunch'),
   onUpdateAvailable: (cb) => {
     const handler = (_event, ver, url) => cb(ver, url)
     ipcRenderer.on('updater:update-available', handler)
@@ -168,7 +166,6 @@ const server = {
   // ---------- V3 S1~S3 媒体工具（上传类，支持 onProgress）----------
   rembgSubmit:          (p, onProgress) => _withUploadProgress(onProgress, 'rembg:submit', p),
   mattingModels:        () => ipcRenderer.invoke('rembg:models'),
-  vsrSubmit:            (p, onProgress) => _withUploadProgress(onProgress, 'vsr:submit', p),
   vsrRemove:            (p, onProgress) => _withUploadProgress(onProgress, 'vsr:remove', p),
   visionReversePrompt:  (p, onProgress) => _withUploadProgress(onProgress, 'vision:reversePrompt', p),
 
@@ -296,8 +293,6 @@ const server = {
   serverWorkflowStatus:   (taskId) => ipcRenderer.invoke('server:get', `/workflows/task/${encodeURIComponent(taskId)}`),
 
   // ---------- storyboard ----------
-  storyboardListScripts: (params)  => ipcRenderer.invoke('storyboard:listScripts', params),
-  storyboardSaveScript:  (payload) => ipcRenderer.invoke('storyboard:saveScript', payload),
 
   // ---------- system ----------
   systemLicenseVerify: (payload) => ipcRenderer.invoke('system:licenseVerify', payload),
@@ -314,7 +309,6 @@ const ffmpeg = {
   // 批量抽帧 + base64（视觉模型研判类工具共用：视频评价预测/视频营销检测）
   extractFrames: (payload) => ipcRenderer.invoke('ffmpeg:extractFrames', payload),
   embedCover: (video, cover, outPath, durationSec) => ipcRenderer.invoke('ffmpeg:embedCover', video, cover, outPath, durationSec),
-  concatSegments: (paths, outPath) => ipcRenderer.invoke('ffmpeg:concatSegments', paths, outPath),
   extractAudio: (video, outPath, format) => ipcRenderer.invoke('ffmpeg:extractAudio', video, outPath, format),
   // M9 直播切片：带缓存音频提取（meta 校验 + 原版 wav 参数）→ { path, cached }
   extractAudioCached: (video, forceReextract) => ipcRenderer.invoke('ffmpeg:extractAudioCached', video, forceReextract),
@@ -524,8 +518,6 @@ const browser = {
     }
   },
   // Phase 1: Cookie 导出 / 状态查询
-  exportCookies: (platformId, destPath) => ipcRenderer.invoke('browser:exportCookies', { platformId, destPath }),
-  getCookieStatus: (platformId) => ipcRenderer.invoke('browser:getCookieStatus', platformId),
   getCurrentUrl: (platformId) => ipcRenderer.invoke('browser:getCurrentUrl', platformId),
 }
 
@@ -556,16 +548,12 @@ const mediaStorage = {
   saveSniffed: (list) => ipcRenderer.invoke('media:storageSaveSniffed', list),
   getDownloads: () => ipcRenderer.invoke('media:storageGetDownloads'),
   saveDownloads: (list) => ipcRenderer.invoke('media:storageSaveDownloads', list),
-  getSettings: () => ipcRenderer.invoke('media:storageGetSettings'),
-  saveSettings: (s) => ipcRenderer.invoke('media:storageSaveSettings', s),
   getFavorites: () => ipcRenderer.invoke('media:storageGetFavorites'),
-  saveFavorites: (list) => ipcRenderer.invoke('media:storageSaveFavorites', list),
   addFavorite: (item) => ipcRenderer.invoke('media:storageAddFavorite', item),
   removeFavorite: (url) => ipcRenderer.invoke('media:storageRemoveFavorite', url),
   export: (format, filePath) => ipcRenderer.invoke('media:storageExport', { format, path: filePath }),
   import: (filePath) => ipcRenderer.invoke('media:storageImport', { path: filePath }),
   clearHistory: (type) => ipcRenderer.invoke('media:storageClearHistory', { type }),
-  openDownloadDir: () => ipcRenderer.invoke('media:storageOpenDownloadDir'),
 }
 
 // ── A2 双模式推理（10 条白名单 C14 IPC，Q2 红线：渲染层仅能从此处调用）──

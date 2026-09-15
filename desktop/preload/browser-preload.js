@@ -50,8 +50,6 @@ const browser = {
   // Cherry Studio：主动校验（渲染端期望 vs 主进程实际生效值）
   verifyBounds:    (payload)             => ipcRenderer.invoke('browser:verifyBounds', payload),
   // Cookie 导出 / 状态查询（yt-dlp 辅助）
-  exportCookies:   (platformId, destPath) => ipcRenderer.invoke('browser:exportCookies', { platformId, destPath }),
-  getCookieStatus: (platformId)          => ipcRenderer.invoke('browser:getCookieStatus', platformId),
   getCurrentUrl:   (platformId)          => ipcRenderer.invoke('browser:getCurrentUrl', platformId),
   // B9 每日素材（main/daily-assets.js）：按日期扫描下载目录 + 文件定位/打开
   getDailyAssets:  ()                    => ipcRenderer.invoke('browser:getDailyAssets'),
@@ -133,16 +131,12 @@ const mediaStorage = {
   saveSniffed: (list) => ipcRenderer.invoke('media:storageSaveSniffed', list),
   getDownloads: () => ipcRenderer.invoke('media:storageGetDownloads'),
   saveDownloads: (list) => ipcRenderer.invoke('media:storageSaveDownloads', list),
-  getSettings: () => ipcRenderer.invoke('media:storageGetSettings'),
-  saveSettings: (s) => ipcRenderer.invoke('media:storageSaveSettings', s),
   getFavorites: () => ipcRenderer.invoke('media:storageGetFavorites'),
-  saveFavorites: (list) => ipcRenderer.invoke('media:storageSaveFavorites', list),
   addFavorite: (item) => ipcRenderer.invoke('media:storageAddFavorite', item),
   removeFavorite: (url) => ipcRenderer.invoke('media:storageRemoveFavorite', url),
   export: (format, filePath) => ipcRenderer.invoke('media:storageExport', { format, path: filePath }),
   import: (filePath) => ipcRenderer.invoke('media:storageImport', { path: filePath }),
   clearHistory: (type) => ipcRenderer.invoke('media:storageClearHistory', { type }),
-  openDownloadDir: () => ipcRenderer.invoke('media:storageOpenDownloadDir'),
 }
 
 // ── 历史浮窗（main.js）：open/close + navigate/cleared 事件 ──

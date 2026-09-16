@@ -1722,37 +1722,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
       if (!row?.wavPath) return []
       return [{ path: row.wavPath, startUs: 0, durUs: Math.max(1, Math.round((row.voiceDurSec || 0) * 1e6)) }]
     })
-    // 音效轨（2026-09-15 架构裁决：服务端=音效资产权威源，导出时按需拉取本地缓存）：
-    // 文字模板命中事件按其模板绑定的音效（sfx_id / sound / assets.sfx 任一形状）落
-    // 音频段，时间对齐命中时刻；无绑定或拉取失败 → 该事件无音效（不造数）。
-    // 服务端音效资产库就绪并给模板挂上绑定后，此轨自动点亮。
-    const sfxClips: Array<Array<{ path: string; startUs: number; durUs: number; gainDb?: number }>> = []
-    {
-      const tplById = new Map(textTemplates.value.map((t) => [String(t.template_id), t as Record<string, unknown>]))
-      for (let i = 0; i < textTemplateClips.length; i++) {
-        const list: Array<{ path: string; startUs: number; durUs: number; gainDb?: number }> = []
-        for (const ev of textTemplateClips[i] || []) {
-          const t = tplById.get(ev.resourceId)
-          const binding = t
-            ? (t.sfx_id || t.sfx || (t.assets && typeof t.assets === 'object' ? (t.assets as Record<string, unknown>).sfx : undefined))
-            : undefined
-          const id = typeof binding === 'string' ? binding
-            : (binding && typeof binding === 'object' ? String((binding as Record<string, unknown>).id || '') : '')
-          if (!id) continue
-          const gainRaw = binding && typeof binding === 'object' ? (binding as Record<string, unknown>).gain_db : undefined
-          const f = await window.tintin?.server?.sfxEnsureFile?.({ sfxId: id })
-          if (!f || 'error' in f || !f.path) continue
-          const sfxDurUs = Math.max(1, Math.round((Number(f.durationSec) || 0) * 1e6))
-          list.push({
-            path: f.path,
-            startUs: ev.startUs,
-            durUs: Math.min(sfxDurUs, ev.durUs),
-            gainDb: typeof gainRaw === 'number' ? gainRaw : undefined,
-          })
-        }
-        sfxClips.push(list)
-      }
-    }
     await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
@@ -1761,7 +1730,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
       ...jianyingFxParams(),
       textTemplateClips,
       voiceClips,
-      sfxClips,
       bgmPath: bgmPath.value,
       bgmVolume: bgmVolume.value,
       draftName,
@@ -1831,8 +1799,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
-    /** 2026-09-15：逐视频音效（服务端资产按 id 对齐命中时刻；无绑定则空轨） */
-    sfxClips?: Array<Array<{ path: string; startUs: number; durUs: number; gainDb?: number }>>
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {

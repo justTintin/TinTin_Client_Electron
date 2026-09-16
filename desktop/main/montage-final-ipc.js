@@ -21,7 +21,6 @@ const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
 const crypto = require('node:crypto')
-const { app } = require('electron')
 const JY = require('./jianying-exporter')
 // 特效烧制（2026-09-09 裁决：字幕/花字特效自配音链迁 Step4 统一烧制，
 // 与配音链同一构建器 voice-tts-logic.buildEffectBurnArgs 保证样式/时机一致）
@@ -909,7 +908,6 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             textTemplateClips: p.textTemplateClips,
             // 2026-09-15：逐视频口播 wav → 独立口播轨（对应素材段自动静音）
             voiceClips: p.voiceClips,
-            sfxClips: p.sfxClips,
             draftName: p.draftName,
             deps,
           })
@@ -1165,29 +1163,6 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   // ── sfx:ensureFile — 音效资产按 id 落本地缓存（2026-09-15 架构裁决：服务端=音效
   //     资产权威源，客户端导出时按需拉取；草稿引用本地路径。幂等：命中缓存不重复下载）──
   const SFX_CACHE_DIR = path.join(app.getPath('userData'), 'sfx-cache')
-  ipcMain.handle('sfx:ensureFile', async (_e, payload) => {
-    try {
-      const id = String((payload || {}).sfxId || '').trim()
-      if (!id || !/^[A-Za-z0-9_-]{1,80}$/.test(id)) throw new Error('sfxId 非法')
-      fs.mkdirSync(SFX_CACHE_DIR, { recursive: true })
-      // 命中缓存（id 任意扩展名）
-      for (const f of fs.readdirSync(SFX_CACHE_DIR)) {
-        if (f.startsWith(id + '.')) {
-          const hit = path.join(SFX_CACHE_DIR, f)
-          return { path: hit, durationSec: getMediaDuration(hit) }
-        }
-      }
-      const res = await httpRequest('GET', '/sfx/' + encodeURIComponent(id) + '/file', { timeout: 60000 })
-      const buf = Buffer.from(res.raw || '')
-      if (!buf.length) throw new Error('音效文件为空')
-      // 扩展名按 content-type 推断（剪映音频素材需要可识别后缀）
-      const ct = String((res.headers && res.headers['content-type']) || '').toLowerCase()
-      const ext = ct.includes('mpeg') ? '.mp3' : ct.includes('ogg') ? '.ogg' : ct.includes('wav') ? '.wav' : '.mp3'
-      const dest = path.join(SFX_CACHE_DIR, id + ext)
-      fs.writeFileSync(dest, buf)
-      return { path: dest, durationSec: getMediaDuration(dest) }
-    } catch (err) { return { error: err.message } }
-  })
 
   // ── bgm:downloadUrl — AI 生成 BGM 落盘（本端扩展：本地混音需本地文件，见头注）──
   ipcMain.handle('bgm:downloadUrl', async (_e, payload) => {

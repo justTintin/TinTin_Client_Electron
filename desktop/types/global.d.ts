@@ -440,6 +440,8 @@ declare interface TintinBridgeServer {
   finalFindSrt(payload: { videoPath: string }): Promise<{ srtPath: string } | { error: string }>
   /** 读句级时间轴 timing.json（[{text,start秒,end秒}]；文字模板效果预览时间轴用） */
   finalReadTiming(payload: { timingPath: string }): Promise<{ items: Array<{ text: string; start: number; end: number }> } | { error: string }>
+  /** 音效资产按 id 拉取到本地缓存（幂等；返回本地路径与时长秒） */
+  sfxEnsureFile(payload: { sfxId: string }): Promise<{ path: string; durationSec?: number } | { error: string } | null>
   /** 回扫 final 目录已合成成片（2026-09-10 报障修复：刷新/重启后恢复列表；排除 .fx. 中间产物） */
   finalListResults(payload: { dirPath: string }): Promise<{ files: string[]; outDir?: string } | { error: string }>
   /** 剪映专业版草稿导出（JianyingExporter 一比一；mode single=单视频 / multi=多片段时间轴带转场） */
@@ -465,6 +467,8 @@ declare interface TintinBridgeServer {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
+    /** 2026-09-15：逐视频音效（服务端资产按 id 对齐命中时刻；无绑定则空轨） */
+    sfxClips?: Array<Array<{ path: string; startUs: number; durUs: number; gainDb?: number }>>
     draftName?: string
   }): Promise<{ success: boolean; message: string; bgmIncluded?: boolean; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */

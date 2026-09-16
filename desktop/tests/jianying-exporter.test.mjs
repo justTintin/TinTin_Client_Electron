@@ -578,3 +578,29 @@ test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的�
   // 口播 wav 进音频素材
   assert.ok(content.materials.audios.some((a) => String(a.path).endsWith('voice_1.wav')))
 })
+
+test('exportMultiToDraft：sfxClips → 独立音效轨（时间对齐命中时刻 + gain_db 转音量）', () => {
+  const v = path.join(tmpRoot, 'sfx_v.mp4')
+  const sfx1 = path.join(tmpRoot, 'sfx_pop.mp3')
+  const sfx2 = path.join(tmpRoot, 'sfx_ding.wav')
+  fs.writeFileSync(v, 'x'); fs.writeFileSync(sfx1, 'x'); fs.writeFileSync(sfx2, 'x')
+  const r = exportMultiToDraft({
+    videoPaths: [v],
+    sfxClips: [[
+      { path: sfx1, startUs: 500000, durUs: 800000, gainDb: -6 },
+      { path: sfx2, startUs: 2000000, durUs: 400000 },
+    ]],
+    draftName: '音效轨测试',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  const sfxTracks = content.tracks.filter((t) => t.type === 'audio')
+  assert.equal(sfxTracks.length, 1, '音效轨应存在')
+  assert.equal(sfxTracks[0].segments.length, 2)
+  assert.equal(sfxTracks[0].segments[0].target_timerange.start, 500000)
+  assert.equal(sfxTracks[0].segments[0].volume, 0.5011872336272722) // -6dB
+  assert.equal(sfxTracks[0].segments[1].target_timerange.start, 2000000)
+  assert.equal(sfxTracks[0].segments[1].volume, 1.0)
+  assert.ok(content.materials.audios.length >= 2)
+})

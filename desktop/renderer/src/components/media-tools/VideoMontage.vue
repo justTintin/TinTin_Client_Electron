@@ -97,7 +97,7 @@ const {
   bgmPlaying, bgmPosMs, bgmDurMs,
   pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
   enterStep4, startFinalMix, openFinalDir,
-  exportFinalVideoDraft, finalExportIdx, exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
+  exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
   fmtBgmTime,
   selectRefAudio,
   fmtDur,
@@ -1213,11 +1213,12 @@ function scoreClass(score: number | undefined): string {
         <div class="row between" style="gap: var(--space-2)">
           <TButton label="服务端合成" class="vd4-run vd4-grow" :loading="finalBusy && finalMode === 'server'"
             :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
-          <!-- 2026-09-14 用户裁决：本地合成禁用——文字模板 v2 效果由服务端运行时渲染
-               （本地链路依赖服务端素材下载且 v2 保真度只在服务端），统一走服务端合成 -->
-          <TButton label="本地合成" class="vd4-run vd4-grow" plain
-            :disabled="true"
-            title="本地合成已停用：文字模板 v2 效果由服务端运行时渲染，请使用「服务端合成」" @click="startFinalMix('local')" />
+          <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
+               导出到剪映时间轴紧随服务端合成之后 -->
+          <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
+            :disabled="finalBusy || !finalDone"
+            title="将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）"
+            @click="exportAllToJianyingDraft" />
         </div>
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
 
@@ -1230,25 +1231,11 @@ function scoreClass(score: number | undefined): string {
                 v-for="(it, i) in finalVideoList" :key="i"
                 :class="{ picked: finalSelIdx === i }"
                 @click="onStep4Select(i)"
-              >
-                <!-- 2026-09-15 用户裁决：一键导出到剪映草稿移到每个成片行尾，一条条导出
-                     （成片已烧字幕/混音 → 草稿=单片主轨）；列表限高约 10 行，超出滚动 -->
-                <span class="vd4-fname" :title="it.path">{{ it.name }}</span>
-                <TButton
-                  label="一键导出到剪映草稿" variant="primary" size="small"
-                  :loading="finalExportIdx === i"
-                  :disabled="finalExportIdx >= 0 && finalExportIdx !== i"
-                  title="将该成片单独导出为剪映草稿"
-                  @click.stop="exportFinalVideoDraft(i)"
-                />
-              </li>
-              <li v-if="!finalVideoList.length" class="muted">暂无成片，点击「服务端合成」或「本地合成」后此处展示结果</li>
+              >{{ it.name }}</li>
+              <li v-if="!finalVideoList.length" class="muted">暂无成片，点击「服务端合成」后此处展示结果</li>
             </ul>
             <div class="vd4-btns">
               <TButton label="打开视频输出目录" variant="secondary" :disabled="!finalDone" class="grow" @click="openFinalDir" />
-              <TButton label="导出全部到时间轴(带转场)" variant="secondary" :disabled="!finalDone" class="grow"
-                title="将合成列表中的所有视频按顺序导出为一条剪映时间轴，片段之间自动添加所选转场，每个片段携带各自字幕"
-                @click="exportAllToJianyingDraft" />
             </div>
           </div>
         </div><!-- /vd4-result -->
@@ -2124,7 +2111,6 @@ function scoreClass(score: number | undefined): string {
 .vd4-left-title { font-size: 13px; font-weight: 600; color: var(--foreground); }
 /* 成片列表限高约 10 行（2026-09-15 用户裁决：多则滚动、少则按实际高度），行内带逐条导出按钮 */
 .vd4-list { max-height: 320px; overflow-y: auto; }
-.vd4-fname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vd4-btns { display: flex; gap: 8px; }
 .vd4-btns > .t-button { flex: 1; padding: 0 6px; }
 /* 界面统一两栏（2026-09-10 用户需求「二三四步界面统一+联动预览」）：

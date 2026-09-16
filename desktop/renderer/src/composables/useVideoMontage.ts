@@ -1646,33 +1646,8 @@ export function useVideoMontage() {
     try { window.tintin.shell.openItem(dir) } catch (e) { clientError('video-montage', '打开输出目录失败', e); notify('打开失败', errText(e)) }
   }
 
-  /** 逐条导出成片为剪映草稿（2026-09-15 用户裁决：一键导出按钮移到每个成片行尾，
-   *  一条条导出）——成片已烧字幕/混音，草稿=该成片单片主轨，不再叠加 SRT/BGM
-   *  （noBgm 抑制 doJianyingExport 自动携带的全局 BGM，避免双重 BGM） */
-  const finalExportIdx = ref(-1)
-  async function exportFinalVideoDraft(index: number): Promise<void> {
-    const it = finalVideoList.value[index]
-    if (!it?.path || finalExportIdx.value >= 0) return
-    finalExportIdx.value = index
-    try {
-      await doJianyingExport({
-        mode: 'single',
-        videoPath: it.path,
-        noBgm: true,
-        draftName: `螺丝钉剪辑_${pathStem(it.path)}`,
-        successBody: (name) => `已将「${pathBasename(it.path)}」导出为剪映草稿！
-
-项目名称：${name}
-
-请直接打开您的电脑「剪映专业版」客户端进行精修编辑。`,
-      })
-    } finally {
-      finalExportIdx.value = -1
-    }
-  }
-
   /** 导出全部到时间轴（2026-09-14 用户裁决：同轨道导出口径，带转场） */
-  async function exportAllToJianyingDraft(): Promise<void> {
+async function exportAllToJianyingDraft(): Promise<void> {
     await exportMontageTracksDraft('螺丝钉剪辑_轨道时间轴')
   }
 
@@ -1747,6 +1722,37 @@ export function useVideoMontage() {
       if (!row?.wavPath) return []
       return [{ path: row.wavPath, startUs: 0, durUs: Math.max(1, Math.round((row.voiceDurSec || 0) * 1e6)) }]
     })
+    // 音效轨（2026-09-15 架构裁决：服务端=音效资产权威源，导出时按需拉取本地缓存）：
+    // 文字模板命中事件按其模板绑定的音效（sfx_id / sound / assets.sfx 任一形状）落
+    // 音频段，时间对齐命中时刻；无绑定或拉取失败 → 该事件无音效（不造数）。
+    // 服务端音效资产库就绪并给模板挂上绑定后，此轨自动点亮。
+    const sfxClips: Array<Array<{ path: string; startUs: number; durUs: number; gainDb?: number }>> = []
+    {
+      const tplById = new Map(textTemplates.value.map((t) => [String(t.template_id), t as Record<string, unknown>]))
+      for (let i = 0; i < textTemplateClips.length; i++) {
+        const list: Array<{ path: string; startUs: number; durUs: number; gainDb?: number }> = []
+        for (const ev of textTemplateClips[i] || []) {
+          const t = tplById.get(ev.resourceId)
+          const binding = t
+            ? (t.sfx_id || t.sfx || (t.assets && typeof t.assets === 'object' ? (t.assets as Record<string, unknown>).sfx : undefined))
+            : undefined
+          const id = typeof binding === 'string' ? binding
+            : (binding && typeof binding === 'object' ? String((binding as Record<string, unknown>).id || '') : '')
+          if (!id) continue
+          const gainRaw = binding && typeof binding === 'object' ? (binding as Record<string, unknown>).gain_db : undefined
+          const f = await window.tintin?.server?.sfxEnsureFile?.({ sfxId: id })
+          if (!f || 'error' in f || !f.path) continue
+          const sfxDurUs = Math.max(1, Math.round((Number(f.durationSec) || 0) * 1e6))
+          list.push({
+            path: f.path,
+            startUs: ev.startUs,
+            durUs: Math.min(sfxDurUs, ev.durUs),
+            gainDb: typeof gainRaw === 'number' ? gainRaw : undefined,
+          })
+        }
+        sfxClips.push(list)
+      }
+    }
     await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
@@ -1755,6 +1761,7 @@ export function useVideoMontage() {
       ...jianyingFxParams(),
       textTemplateClips,
       voiceClips,
+      sfxClips,
       bgmPath: bgmPath.value,
       bgmVolume: bgmVolume.value,
       draftName,
@@ -1824,8 +1831,8 @@ export function useVideoMontage() {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
-    /** 2026-09-15：抑制全局 BGM（逐条导出成片时用——成片已混音，再带 BGM 轨会双重） */
-    noBgm?: boolean
+    /** 2026-09-15：逐视频音效（服务端资产按 id 对齐命中时刻；无绑定则空轨） */
+    sfxClips?: Array<Array<{ path: string; startUs: number; durUs: number; gainDb?: number }>>
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {
@@ -1834,12 +1841,12 @@ export function useVideoMontage() {
     // ...base 整体展开混入 IPC payload——结构化克隆无法序列化函数 → invoke 直接
     // reject → 链路无 catch → 无弹窗无日志的完全静默。解构剔除回调后 IPC 只收纯数据，
     // 并对 invoke 兜底 catch：任何异常都 clientError + 弹窗透出，不再「没反应」。
-    const { successBody, noBgm, ...ipcBase } = base
+    const { successBody, ...ipcBase } = base
     let res: { success: boolean; message: string } | undefined
     try {
       res = await window.tintin?.server?.jianyingExport?.({
         ...ipcBase,
-        bgmPath: noBgm ? '' : bgmPath.value,
+        bgmPath: bgmPath.value,
         bgmVolume: bgmVolume.value,
       })
     } catch (e) {
@@ -1853,8 +1860,8 @@ export function useVideoMontage() {
       const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean }
       let tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
       // 2026-09-15 用户报障：BGM 未选/文件已删时静默产出无 BGM 轨草稿——据实附在通知里
-      // （导出器回传 bgmIncluded；noBgm 场景为成片单导，本就不含 BGM 轨，不提示）
-      if (!noBgm && rx.bgmIncluded === false) {
+      // （导出器回传 bgmIncluded：未选 BGM 或所选文件不存在时为 false）
+      if (rx.bgmIncluded === false) {
         tail += '\n⚠️ 本次草稿未包含 BGM 轨（未选择 BGM 或所选文件不存在）'
       }
       notify('草稿导出成功', successBody(base.draftName) + tail)
@@ -3099,7 +3106,7 @@ export function useVideoMontage() {
     generateBgm,
     pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
     enterStep4, startFinalMix, openFinalDir,
-    exportFinalVideoDraft, finalExportIdx, exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
+    exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
     fmtBgmTime,
     // 景别分类（UI 展示用）
     SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,

@@ -576,5 +576,5 @@ test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的�
   assert.equal(vt.segments[0].volume, 0)
   assert.equal(vt.segments[1].volume, 1.0)
   // 口播 wav 进音频素材
-  assert.ok(content.materials.audios.some((a) => a.path.split('\').join('/').endsWith('/voice_1.wav')))
+  assert.ok(content.materials.audios.some((a) => String(a.path).endsWith('voice_1.wav')))
 })

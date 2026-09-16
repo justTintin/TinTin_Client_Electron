@@ -1174,6 +1174,18 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   ipcMain.handle('editor:exportJianyingFromTasks', async (_e, payload) => {
     try {
       const p = payload || {}
+      // 0) 前置校验（2026-09-15 用户裁决）：剪映已安装且版本 ≥ 11.0，否则本地时间轴
+      //    草稿不可用（文字模板/字体依赖本机剪映缓存），只能走服务端导出成片
+      const jyExe = JY.findJianyingExe()
+      if (!jyExe) {
+        return { success: false, code: 'JIANYING_NOT_INSTALLED', message: '未检测到剪映专业版：时间轴草稿依赖本机剪映（文字模板/字体缓存），请安装剪映专业版，或使用服务端导出的成片' }
+      }
+      const vMatch = jyExe.match(/Apps[\/](\d+(?:\.\d+)*)[\/]JianyingPro\.exe/i)
+      const version = vMatch ? vMatch[1] : ''
+      const nums = version.split('.').map(Number)
+      if (!(nums[0] > 11 || (nums[0] === 11 && (nums[1] || 0) >= 0))) {
+        return { success: false, code: 'JIANYING_VERSION_LOW', message: '剪映版本过低（当前 ' + (version || '未知') + '，需 ≥ 11.0）：请升级剪映专业版，或使用服务端导出的成片' }
+      }
       const taskIds = (Array.isArray(p.taskIds) ? p.taskIds : []).map((t) => String(t).trim()).filter(Boolean)
       if (!taskIds.length) throw new Error('缺少合成任务 id（请先执行「服务端合成」）')
       const draftName = String(p.draftName || '螺丝钉剪辑_轨道时间轴')

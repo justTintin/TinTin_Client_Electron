@@ -1237,9 +1237,17 @@ export function useVideoMontage() {
   function closePlanMenu(): void { planMenu.value.show = false }
 
   // ══ Step4 特效包装（对照 step4_final_view.py 逐控件 + _start_final_mix/FinalMixWorker 一比一）══
-  const bgmPath = ref('')
+  // BGM 选择持久化（2026-09-15 用户报障：会话级 ref 重启清空 → 导出时间轴缺 BGM 轨。
+  // localStorage 跨会话记忆 bgmPath/bgmVolume，文件被删时导出侧 fs.existsSync 兜底跳过）
+  const bgmPath = ref(localStorage.getItem('montage.bgmPath') || '')
   const bgmName = ref('')
-  const bgmVolume = ref(100)       // BGM 增益 0-200（原版 slider 默认 100=原音量）
+  const bgmVolume = ref(Number(localStorage.getItem('montage.bgmVolume')) || 100)       // BGM 增益 0-200（原版 slider 默认 100=原音量）
+  watch([bgmPath, bgmVolume], () => {
+    try {
+      localStorage.setItem('montage.bgmPath', bgmPath.value)
+      localStorage.setItem('montage.bgmVolume', String(bgmVolume.value))
+    } catch (_) { /* 隐私模式等写失败忽略 */ }
+  })
   const finalBusy = ref(false)
   const finalMode = ref<'' | 'server' | 'local'>('') // 进行中的链路（双按钮独立 loading）
   const finalDone = ref(false)     // 三按钮启用开关（原版 btn_open_final_dir 等初始 disabled）
@@ -1824,8 +1832,13 @@ export function useVideoMontage() {
     if (res && res.success) {
       // 2026-09-14 用户裁决：导出成功后自动拉起剪映（主进程 launchJianying），
       // 替代原「打开草稿文件夹」；拉起状态附在通知里
-      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean }
-      const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean }
+      let tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+      // 2026-09-15 用户报障：BGM 未选/文件已删时静默产出无 BGM 轨草稿——据实附在通知里
+      // （导出器回传 bgmIncluded；noBgm 场景为成片单导，本就不含 BGM 轨，不提示）
+      if (!noBgm && rx.bgmIncluded === false) {
+        tail += '\n⚠️ 本次草稿未包含 BGM 轨（未选择 BGM 或所选文件不存在）'
+      }
       notify('草稿导出成功', successBody(base.draftName) + tail)
     } else {
       clientError('video-montage', '导出剪映草稿失败', res ? res.message : '主进程不可达')

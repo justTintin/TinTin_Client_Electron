@@ -936,8 +936,10 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     }
 
     // 7. BGM 轨（最后一条）：覆盖整条时间轴
+    let bgmIncluded = false
     if (bgmPath && fs.existsSync(bgmPath)) {
       appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, deps)
+      bgmIncluded = true
     }
 
     // 8. render_index = 轨道顺序（pyJianYingDraft script_file.dumps：主轨 0，叠加轨依次递增）
@@ -947,7 +949,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     content.tracks = tracks
 
     fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(content, null, 2), 'utf-8')
-    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA }
+    // bgmIncluded：BGM 轨是否实际生成（未选/文件不存在时为 false，渲染层据实提示）
+    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA, bgmIncluded }
   } catch (e) {
     return { success: false, message: e && e.message ? e.message : String(e) }
   }

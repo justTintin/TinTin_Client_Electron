@@ -1241,7 +1241,9 @@ export function useVideoMontage() {
   // localStorage 跨会话记忆 bgmPath/bgmVolume，文件被删时导出侧 fs.existsSync 兜底跳过）
   const bgmPath = ref(localStorage.getItem('montage.bgmPath') || '')
   const bgmName = ref('')
-  const bgmVolume = ref(Number(localStorage.getItem('montage.bgmVolume')) || 100)       // BGM 增益 0-200（原版 slider 默认 100=原音量）
+  // BGM 增益默认 35%（2026-09-15 用户裁决，原 100；localStorage 记忆用户调整，0=静音为合法值不回退）
+  const storedBgmVolume = Number(localStorage.getItem('montage.bgmVolume'))
+  const bgmVolume = ref(Number.isFinite(storedBgmVolume) ? storedBgmVolume : 35)
   watch([bgmPath, bgmVolume], () => {
     try {
       localStorage.setItem('montage.bgmPath', bgmPath.value)

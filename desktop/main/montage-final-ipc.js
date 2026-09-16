@@ -1171,16 +1171,31 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     try {
       const p = payload || {}
       // 0) 前置校验（2026-09-15 用户裁决）：剪映已安装且版本 ≥ 11.0，否则本地时间轴
-      //    草稿不可用（文字模板/字体依赖本机剪映缓存），只能走服务端导出成片
-      const jyExe = JY.findJianyingExe()
+      //    草稿不可用（文字模板/字体依赖本机剪映缓存），只能走服务端导出成片。
+      //    版本取自 Apps 下版本目录名（不经路径正则，避免打包/用户目录差异误判）
+      const jyAppsDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'Apps')
+      let jyVersion = ''
+      let jyExe = ''
+      try {
+        for (const dirName of fs.readdirSync(jyAppsDir)) {
+          const exe = path.join(jyAppsDir, dirName, 'JianyingPro.exe')
+          let isFile = false
+          try { isFile = fs.statSync(exe).isFile() } catch (_) { /* 跳过 */ }
+          if (!isFile) continue
+          const nums = dirName.trim().split('.').map((x) => parseInt(x, 10) || 0)
+          if (nums.length < 2 || !nums[0]) continue // 非版本形态目录跳过
+          jyExe = exe
+          const cur = jyVersion.split('.').map((x) => parseInt(x, 10) || 0)
+          const newer = nums.some((v, i2) => v > (cur[i2] || 0))
+          if (!jyVersion || newer) jyVersion = dirName.trim()
+        }
+      } catch (_) { /* 扫描失败按未安装处理 */ }
       if (!jyExe) {
         return { success: false, code: 'JIANYING_NOT_INSTALLED', message: '未检测到剪映专业版：时间轴草稿依赖本机剪映（文字模板/字体缓存），请安装剪映专业版，或使用服务端导出的成片' }
       }
-      const vMatch = jyExe.match(/Apps[\/](\d+(?:\.\d+)*)[\/]JianyingPro\.exe/i)
-      const version = vMatch ? vMatch[1] : ''
-      const nums = version.split('.').map(Number)
-      if (!(nums[0] > 11 || (nums[0] === 11 && (nums[1] || 0) >= 0))) {
-        return { success: false, code: 'JIANYING_VERSION_LOW', message: '剪映版本过低（当前 ' + (version || '未知') + '，需 ≥ 11.0）：请升级剪映专业版，或使用服务端导出的成片' }
+      const vNums = jyVersion.split('.').map(Number)
+      if (!(vNums[0] > 11 || (vNums[0] === 11 && (vNums[1] || 0) >= 0))) {
+        return { success: false, code: 'JIANYING_VERSION_LOW', message: '剪映版本过低（当前 ' + (jyVersion || '未知') + '，需 ≥ 11.0）：请升级剪映专业版，或使用服务端导出的成片' }
       }
       const taskIds = (Array.isArray(p.taskIds) ? p.taskIds : []).map((t) => String(t).trim()).filter(Boolean)
       if (!taskIds.length) throw new Error('缺少合成任务 id（请先执行「服务端合成」）')

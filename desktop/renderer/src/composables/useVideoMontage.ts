@@ -1658,25 +1658,149 @@ async function exportAllToJianyingDraft(): Promise<void> {
     await exportMontageTracksDraft('螺丝钉剪辑_轨道时间轴')
   }
 
-  /** 导出到剪映时间轴（2026-09-15 用户裁决第3条：客户端合并 from-task 清单+对齐资产到剪映数据格式）：
-   *  素材/字幕/口播/BGM 由服务端 from-task 清单出（assets 逐个下载落草稿目录）；
-   *  文字模板三件套轨（本机 .textpreset 真值）/花字轨/音效轨由客户端按 match 命中事件对齐追加；
-   *  前置=已完成一次服务端合成（各成片的合成任务 id 随合成回传并持久化）。 */
+  // ── 旧客户端自组装导出（无服务端合成任务时的 B 路径使用）──
+  async function doJianyingExport(base: {
+    mode: 'single' | 'multi'
+    videoPath?: string
+    videoPaths?: string[]
+    srtPath?: string
+    srtPaths?: Array<string | null>
+    transitions?: string
+    bgmPath?: string
+    bgmVolume?: number
+    fxWords?: string[]
+    fxKinds?: Array<'fancy' | 'tpl'>
+    textAnim?: string
+    fancyEffectId?: string
+    tplEffectId?: string
+    /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
+    textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
+    /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
+    voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
+    draftName: string
+    successBody: (name: string) => string
+  }): Promise<void> {
+    // 2026-09-12 缺陷修复（用户报「两导出按钮点击毫无反应」，日志仅一条
+    // Error: An object could not be cloned.）：successBody 是渲染层本地回调，此前经
+    // ...base 整体展开混入 IPC payload——结构化克隆无法序列化函数 → invoke 直接
+    // reject → 链路无 catch → 无弹窗无日志的完全静默。解构剔除回调后 IPC 只收纯数据，
+    // 并对 invoke 兜底 catch：任何异常都 clientError + 弹窗透出，不再「没反应」。
+    const { successBody, ...ipcBase } = base
+    let res: { success: boolean; message: string } | undefined
+    try {
+      res = await window.tintin?.server?.jianyingExport?.({
+        ...ipcBase,
+        bgmPath: bgmPath.value,
+        bgmVolume: bgmVolume.value,
+      })
+    } catch (e) {
+      clientError('video-montage', '导出剪映草稿失败', errText(e))
+      notify('导出失败', `导出剪映草稿时发生错误：\n${errText(e)}`)
+      return
+    }
+    if (res && res.success) {
+      // 2026-09-14 用户裁决：导出成功后自动拉起剪映（主进程 launchJianying），
+      // 替代原「打开草稿文件夹」；拉起状态附在通知里
+      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean }
+      let tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+      // 2026-09-15 用户报障：BGM 未选/文件已删时静默产出无 BGM 轨草稿——据实附在通知里
+      // （导出器回传 bgmIncluded：未选 BGM 或所选文件不存在时为 false）
+      if (rx.bgmIncluded === false) {
+        tail += '\n⚠️ 本次草稿未包含 BGM 轨（未选择 BGM 或所选文件不存在）'
+      }
+      notify('草稿导出成功', successBody(base.draftName) + tail)
+    } else {
+      clientError('video-montage', '导出剪映草稿失败', res ? res.message : '主进程不可达')
+      notify('导出失败', `导出剪映草稿时发生错误：\n${res ? res.message : '主进程不可达'}`)
+    }
+  }
+
+  function jianyingFxParams(): {
+    fxWords?: string[]
+    fxKinds?: Array<'fancy' | 'tpl'>
+    textAnim?: string
+    fancyEffectId?: string
+    tplEffectId?: string
+    subAnim?: string
+  } {
+    const kinds: Array<'fancy' | 'tpl'> = []
+    if (fancyEnabled.value) kinds.push('fancy')
+    if (textFxEnabled.value) kinds.push('tpl')
+    if (!kinds.length) {
+      // 二期②：仅字幕动画（addSubtitles 开且选了非 fade 动画）也随导出
+      const subAnim = subtitleAnimKey.value && subtitleAnimKey.value !== 'fade' ? subtitleAnimKey.value : ''
+      return addSubtitles.value && subAnim ? { subAnim } : {}
+    }
+    const words = extractTextFxWords()
+    const subAnim = subtitleAnimKey.value && subtitleAnimKey.value !== 'fade' ? subtitleAnimKey.value : ''
+    const out: { fxWords?: string[]; fxKinds?: Array<'fancy' | 'tpl'>; textAnim?: string; fancyEffectId?: string; tplEffectId?: string; subAnim?: string } = { fxKinds: kinds }
+    if (words.length) out.fxWords = words
+    if (subAnim) out.subAnim = subAnim
+    const ftpl = selectedFancyTemplate.value as Record<string, unknown> | null
+    if (fancyEnabled.value && ftpl) {
+      const eff = String(ftpl.jy_effect_id || '').trim()
+      const anim = String(ftpl.jy_intro_anim || '').trim()
+      if (eff) out.fancyEffectId = eff
+      if (anim) out.textAnim = anim
+    }
+    if (textFxEnabled.value && textTemplateId.value.startsWith('jy_')) {
+      out.tplEffectId = textTemplateId.value.slice(3)
+    }
+    return out
+  }
+
+  /** 各成片合成任务 id（from-task 合并流数据源；随服务端合成回传并持久化跨会话） */
   const lastComposeTasks = ref<Array<{ taskId: string; outputPath: string }>>((
     () => {
       try { return JSON.parse(localStorage.getItem('montage.lastComposeTasks') || '[]') } catch (_) { return [] }
     }
   )())
+
+  /** 草稿命名：品牌产品 + 日期 + 音频索引 + 轨道时间轴（2026-09-15 用户裁决） */
+  function timelineDraftName(): string {
+    const brand = String(sharedProductInfo.value.brand || '').trim()
+    const product = String(sharedProductInfo.value.product || '').trim()
+    const bp = (brand + product) || '混剪'
+    const d = new Date()
+    const ymd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0')
+    const idxs = voiceRows.value
+      .map((r) => {
+        const base = (r.wavPath || '').split('/').pop() || ''
+        const m = base.match(/voice_(\d+)\.wav/i)
+        return m ? Number(m[1]) : 0
+      })
+      .filter((n) => n > 0)
+      .sort((a, b) => a - b)
+    let audioPart = ''
+    if (idxs.length) {
+      audioPart = (idxs[idxs.length - 1] - idxs[0] === idxs.length - 1)
+        ? '音频' + idxs[0] + '-' + idxs[idxs.length - 1]
+        : '音频' + idxs.join(',')
+    }
+    return bp + '_' + ymd + (audioPart ? '_' + audioPart : '') + '_轨道时间轴'
+  }
+
+  /** 导出到剪映时间轴（2026-09-15 用户裁决双路径）：
+   *  A) 有服务端合成任务 → from-task 合并流：素材/字幕/口播/BGM 由服务端清单出
+   *     （assets 逐个下载落草稿目录），客户端对齐追加文字模板三件套/花字/音效轨；
+   *  B) 无任务 → 客户端自组装流：候选素材 + 口播 wav 轨 + 字幕 + 文字模板三件套 + BGM。
+   *  两路径草稿命名一致：品牌产品+日期+音频索引+轨道时间轴。 */
   async function exportMontageTracksDraft(draftName: string): Promise<void> {
-    if (!lastComposeTasks.value.length) {
-      notify('无可导出的合成任务', '请先执行「服务端合成」，完成后即可一键导出剪映时间轴草稿')
+    const hasTasks = lastComposeTasks.value.length > 0
+    const cands = hasTasks ? lastComposeTasks.value.map((p2) => p2.outputPath) : await collectCandidates()
+    if (!cands.length) {
+      notify('无候选素材', '请先完成镜头重组与口播配音再导出')
       return
     }
+    const srtPaths: Array<string | null> = []
     const textTemplateClips: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>> = []
+    const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     const fancyEvents: Array<Array<{ word: string; startUs: number; durUs: number }>> = []
     const fxWords = fancyEnabled.value ? extractTextFxWords() : []
-    for (const pair of lastComposeTasks.value) {
-      const row = voiceRows.value.find((r) => r.dubbedPath === pair.outputPath || r.path === pair.outputPath)
+    let cursorUs = 0
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i]
+      const row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c)
       const text = String(row?.text || '').trim()
       const timingPath = row?.wavPath ? row.wavPath + '.timing.json' : ''
       let timing: Array<{ text: string; start: number; end: number }> = []
@@ -1684,9 +1808,31 @@ async function exportAllToJianyingDraft(): Promise<void> {
         const r = await window.tintin?.server?.finalReadTiming?.({ timingPath })
         timing = r && 'items' in r ? r.items : []
       }
+      const rows2 = buildSubtitleRows(text, timing, 0)
+      // 字幕 SRT（无服务端合成任务的客户端自组装流需要；from-task 流字幕由服务端清单出）
+      if (!hasTasks) {
+        const ts = (s: number) => {
+          const ms = Math.round(s * 1000)
+          const h = Math.floor(ms / 3600000)
+          const m = Math.floor(ms % 3600000 / 60000)
+          const sec = Math.floor(ms % 60000 / 1000)
+          const mmm = ms % 1000
+          return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0') + ',' + String(mmm).padStart(3, '0')
+        }
+        const srt = rows2.map((r, k) => String(k + 1) + '\n' + ts(r.start) + ' --> ' + ts(r.end) + '\n' + r.text + '\n').join('\n')
+        const srtFile = (process.env.TEMP || 'C:/Temp') + '/jyexport_' + i + '_' + Date.now() + '.srt'
+        const w = await window.tintin?.liveclip?.writeTextFile?.({ path: srtFile, content: srt })
+        if (w && 'error' in w) {
+          notify('SRT 写入失败', String(w.error))
+          return
+        }
+        srtPaths.push(srtFile)
+      } else {
+        srtPaths.push(null)
+      }
       // 文字模板命中（match textfx_clips 权威指派；与合成取数同源同缓存）
       if (textFxEnabled.value) {
-        const hits = await textFxHitsForExport(pair.outputPath, text, timingPath)
+        const hits = await textFxHitsForExport(c, text, timingPath)
         textTemplateClips.push(hits
           .filter((h) => h.templateId && h.end > h.start)
           .map((h) => ({
@@ -1698,9 +1844,14 @@ async function exportAllToJianyingDraft(): Promise<void> {
       } else {
         textTemplateClips.push([])
       }
+      // 口播 wav（独立口播轨；候选即配音产物时其声已内嵌，此轨仍保留便于独立调整）
+      if (row?.wavPath) {
+        voiceClips.push([{ path: row.wavPath, startUs: 0, durUs: Math.max(1, Math.round((row.voiceDurSec || 0) * 1e6)) }])
+      } else {
+        voiceClips.push([])
+      }
       // 花字命中（fancyEnabled：命中关键词在成片内的时间窗）
       if (fancyEnabled.value && fxWords.length) {
-        const rows2 = buildSubtitleRows(text, timing, 0)
         const evs: Array<{ word: string; startUs: number; durUs: number }> = []
         for (const r of rows2) {
           for (const w of fxWords) {
@@ -1711,24 +1862,45 @@ async function exportAllToJianyingDraft(): Promise<void> {
       } else {
         fancyEvents.push([])
       }
+      cursorUs += 0
     }
-    const ftpl = selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null
-    const res = await window.tintin?.server?.editorExportJianyingFromTasks?.({
-      taskIds: lastComposeTasks.value.map((p2) => p2.taskId),
+    const transition = concatTransition.value || 'fade'
+    const finalName = timelineDraftName()
+    if (hasTasks) {
+      // A) from-task 合并流：服务端清单（素材/字幕/口播/BGM）+ 客户端对齐轨
+      const ftpl = selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null
+      const res = await window.tintin?.server?.editorExportJianyingFromTasks?.({
+        taskIds: lastComposeTasks.value.map((p2) => p2.taskId),
+        textTemplateClips,
+        fancyEvents,
+        fancyTemplate: ftpl,
+        draftName: finalName,
+      })
+      if (res && res.success) {
+        const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; assetCount?: number }
+        const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+        notify('时间轴草稿导出成功', '已导出 ' + lastComposeTasks.value.length + ' 段成片合一的剪映时间轴草稿（素材/口播/BGM/字幕/文字模板/花字/音效轨对齐，资产 ' + (rx.assetCount ?? 0) + ' 项）。\n项目名称：' + finalName + tail)
+      } else {
+        const msg = res && 'message' in res ? String(res.message || '') : '主进程不可达'
+        clientError('video-montage', '导出时间轴草稿失败', msg)
+        notify('导出失败', '导出剪映时间轴草稿时发生错误：\n' + msg)
+      }
+      return
+    }
+    // B) 客户端自组装流（exportMultiToDraft 全能力：素材/口播/字幕/文字模板/BGM）
+    await doJianyingExport({
+      mode: 'multi',
+      videoPaths: cands,
+      srtPaths,
+      transitions: transition,
+      ...jianyingFxParams(),
       textTemplateClips,
-      fancyEvents,
-      fancyTemplate: ftpl,
-      draftName,
+      voiceClips,
+      bgmPath: bgmPath.value,
+      bgmVolume: bgmVolume.value,
+      draftName: finalName,
+      successBody: (name: string) => '已按原始轨道结构导出 ' + cands.length + ' 段候选视频（转场：' + transition + '，含口播/字幕/关键词/BGM 轨）！\n项目名称：' + name,
     })
-    if (res && res.success) {
-      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; assetCount?: number }
-      const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
-      notify('时间轴草稿导出成功', '已导出 ' + lastComposeTasks.value.length + ' 段成片合一的剪映时间轴草稿（素材/口播/BGM/字幕/文字模板/花字/音效轨对齐，资产 ' + (rx.assetCount ?? 0) + ' 项）。\n项目名称：' + draftName + tail)
-    } else {
-      const msg = res && 'message' in res ? String((res as { message?: string }).message || '') : '主进程不可达'
-      clientError('video-montage', '导出时间轴草稿失败', msg)
-      notify('导出失败', '导出剪映时间轴草稿时发生错误：\n' + msg)
-    }
   }
 
   /** 双击成片项内嵌预览（_preview_final_video：标题换文件名并播放） */

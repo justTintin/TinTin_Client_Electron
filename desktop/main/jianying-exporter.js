@@ -466,6 +466,27 @@ function normalizeTextTemplateClips(textTemplateClips, videoCount) {
   return out
 }
 
+/** voiceClips 输入归一化：逐视频数组 [{path,startUs,durUs}]（与 videoPaths 对齐，同
+ *  textTemplateClips 口径）；非法条目丢弃。返回 Array<Array> 或 []（无输入）。 */
+function normalizeVoiceClips(voiceClips, videoCount) {
+  if (!Array.isArray(voiceClips)) return []
+  const out = []
+  for (let i = 0; i < videoCount; i++) {
+    const arr = Array.isArray(voiceClips[i]) ? voiceClips[i] : []
+    const list = []
+    for (const c of arr) {
+      if (!c) continue
+      const p = String(c.path || '')
+      const startUs = Math.max(0, Math.round(Number(c.startUs ?? 0)))
+      const durUs = Math.round(Number(c.durUs ?? 0))
+      if (!p || durUs <= 0) continue
+      list.push({ path: p, startUs, durUs })
+    }
+    out.push(list)
+  }
+  return out
+}
+
 /** 模板实例段追加到文字模板轨（时间窗裁剪同 appendSubtitleTrack 口径；
  *  preset 解析经 cache 复用；模板缺失静默跳过——不造假）。 */
 function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache) {
@@ -770,7 +791,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  [{phrase,startUs,durUs,resourceId}]（match textfx_clips 权威指派）→
  *  剪映原生文字模板三件套轨（text_templates+texts+segment）；有命中的视频
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, deps }) {
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -838,18 +859,24 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const materials = content.materials
     const speeds = Array.isArray(materials.speeds) ? materials.speeds : (materials.speeds = [])
 
-    // 5. 视频轨（order 0）：全片段 + 转场挂「前一个」片段
+    // 5. 视频轨（order 0）：全片段 + 转场挂「前一个」片段；
+    //    口播轨（2026-09-15 用户裁决：音频=口播轨/BGM 轨/音效轨三轨体系）——
+    //    口播 wav 独立成音频轨，对应素材段自动静音（与成片「配音替换原声」混音口径一致）；
+    //    无口播的素材段保留原声
     const transitionSpecs = normalizeTransitions(transitions, clips.length - 1)
     const videoTrack = newTrack('video')
+    const voiceTrack = newTrack('audio')
+    const voiceSegsByVideo = normalizeVoiceClips(voiceClips, clips.length)
     let cursorUs = 0
     clips.forEach((clip, i) => {
       const materialId = hexId()
       materials.videos.push(videoMaterialFields({ ...clip, materialId }))
       const sp = speedMaterial(1.0)
       speeds.push(sp)
+      const voiced = (voiceSegsByVideo[i] || []).length > 0
       const seg = {
         ...baseSegmentFields(materialId, cursorUs, clip.durationUs),
-        ...mediaSegmentFields(clip.durationUs, sp.id),
+        ...mediaSegmentFields(clip.durationUs, sp.id, { volume: voiced ? 0 : 1.0 }),
         ...visualSegmentFields(),
         hdr_settings: { intensity: 1.0, mode: 1, nits: 1000 },
       }
@@ -857,6 +884,22 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       if (i > 0) {
         const spec = transitionSpecs[i - 1]
         if (spec) videoTrack.segments[videoTrack.segments.length - 2].extra_material_refs.push(buildTransitionMaterial(materials, spec))
+      }
+      for (const vc of voiceSegsByVideo[i] || []) {
+        const mat = audioMaterialFields(vc.path, vc.durUs)
+        materials.audios.push(mat)
+        const vsp = speedMaterial(1.0)
+        speeds.push(vsp)
+        voiceTrack.segments.push({
+          ...baseSegmentFields(mat.id, cursorUs + vc.startUs, vc.durUs),
+          source_timerange: { start: 0, duration: vc.durUs },
+          speed: 1.0,
+          volume: 1.0,
+          extra_material_refs: [vsp.id],
+          is_tone_modify: false,
+          clip: null,
+          hdr_settings: null,
+        })
       }
       cursorUs += clip.durationUs
     })
@@ -934,6 +977,9 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     if (videoEffectId) {
       applyVideoEffect(materials, videoTrack, videoEffectId, videoEffectName)
     }
+
+    // 6.5 口播音频轨（有段才入轨；音频域三轨=口播/BGM/音效，音效轨待负债启动）
+    if (voiceTrack.segments.length) tracks.push(voiceTrack)
 
     // 7. BGM 轨（最后一条）：覆盖整条时间轴
     let bgmIncluded = false
@@ -1250,4 +1296,5 @@ module.exports = {
   buildTemplateClipTrio,
   normalizeTextTemplateClips,
   appendTextTemplateSegments,
+  normalizeVoiceClips,
 }

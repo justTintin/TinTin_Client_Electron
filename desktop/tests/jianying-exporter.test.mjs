@@ -549,3 +549,32 @@ test('exportMultiToDraft：无命中（空 clips）→ 回退旧 tpl 蓝字轨 +
   assert.equal(content.materials.stickers.length >= 1, true) // 二期③贴纸轨照旧
   assert.equal(content.materials.texts.filter(isBlueKeywordText).length, 1) // 旧蓝字轨回退
 })
+
+test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的素材段静音（音频三轨体系）', () => {
+  const v1 = path.join(tmpRoot, 'dubbed_v1.mp4')
+  const v2 = path.join(tmpRoot, 'dubbed_v2.mp4')
+  const wav = path.join(tmpRoot, 'voice_1.wav')
+  fs.writeFileSync(v1, 'x'); fs.writeFileSync(v2, 'x'); fs.writeFileSync(wav, 'x')
+  const r = exportMultiToDraft({
+    videoPaths: [v1, v2],
+    voiceClips: [
+      [{ path: wav, startUs: 0, durUs: 2000000 }],
+      [],
+    ],
+    draftName: '口播轨测试',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  const audioTracks = content.tracks.filter((t) => t.type === 'audio')
+  assert.equal(audioTracks.length, 1, '口播独立音频轨应存在')
+  assert.equal(audioTracks[0].segments.length, 1)
+  assert.equal(audioTracks[0].segments[0].target_timerange.start, 0)
+  assert.equal(audioTracks[0].segments[0].target_timerange.duration, 2000000)
+  // 有口播的素材段静音（配音替换原声口径），无口播段保留原声
+  const vt = content.tracks.find((t) => t.type === 'video')
+  assert.equal(vt.segments[0].volume, 0)
+  assert.equal(vt.segments[1].volume, 1.0)
+  // 口播 wav 进音频素材
+  assert.ok(content.materials.audios.some((a) => a.path.split('\').join('/').endsWith('/voice_1.wav')))
+})

@@ -1739,6 +1739,14 @@ export function useVideoMontage() {
     if (!hasDubbedCand && hasVoiceCopy) {
       notify('口播未包含', '候选视频不是配音产物（未配音或配音关联丢失），时间轴草稿将不含口播声音。\n请先完成「口播配音」后重新导出。')
     }
+    // 2026-09-15 用户裁决：音频三轨=口播轨/BGM 轨/音效轨（音效待负债）——
+    // 口播 wav 独立成轨，有口播的素材段由导出器自动静音（与成片「配音替换原声」
+    // 混音口径一致；候选保持原序，时长与 SRT/配音时间线对齐）
+    const voiceClips = cands.map((c) => {
+      const row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c)
+      if (!row?.wavPath) return []
+      return [{ path: row.wavPath, startUs: 0, durUs: Math.max(1, Math.round((row.voiceDurSec || 0) * 1e6)) }]
+    })
     await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
@@ -1746,10 +1754,11 @@ export function useVideoMontage() {
       transitions: transition,
       ...jianyingFxParams(),
       textTemplateClips,
+      voiceClips,
       bgmPath: bgmPath.value,
       bgmVolume: bgmVolume.value,
       draftName,
-      successBody: (name) => `已按原始轨道结构导出 ${cands.length} 段候选视频（转场：${transition}，含字幕/关键词/BGM 轨）！
+      successBody: (name) => `已按原始轨道结构导出 ${cands.length} 段候选视频（转场：${transition}，含口播/字幕/关键词/BGM 轨）！
 
 项目名称：${name}
 
@@ -1813,6 +1822,8 @@ export function useVideoMontage() {
     tplEffectId?: string
     /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
+    /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
+    voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
     /** 2026-09-15：抑制全局 BGM（逐条导出成片时用——成片已混音，再带 BGM 轨会双重） */
     noBgm?: boolean
     draftName: string

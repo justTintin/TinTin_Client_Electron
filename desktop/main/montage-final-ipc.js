@@ -906,6 +906,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             videoEffectName: p.videoEffectName,
             // 2026-09-15：原生文字模板命中（match textfx_clips 权威指派）→ 三件套轨
             textTemplateClips: p.textTemplateClips,
+            // 2026-09-15：逐视频口播 wav → 独立口播轨（对应素材段自动静音）
+            voiceClips: p.voiceClips,
             draftName: p.draftName,
             deps,
           })

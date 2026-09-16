@@ -1216,7 +1216,7 @@ function scoreClass(score: number | undefined): string {
           <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
                导出到剪映时间轴紧随服务端合成之后 -->
           <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
-            :disabled="finalBusy || !finalDone"
+            :disabled="finalBusy"
             title="将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）"
             @click="exportAllToJianyingDraft" />
         </div>

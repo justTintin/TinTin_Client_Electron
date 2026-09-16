@@ -157,6 +157,10 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       files.sort((a, b) => path.basename(a).toLowerCase().localeCompare(path.basename(b).toLowerCase()))
 
       const voicesDir = path.join(L.resolveOutMontageDir(dirPath), 'voices')
+      // 配音产物重关联（2026-09-15 用户报障：dubbedPath 为会话态，重启后丢失 →
+      // collectCandidates 回退未配音的第二步产物，导出时间轴静默丢口播）。
+      // 配音产物固定落 <montage_cache>/dubbed/dubbed_<视频名>，存在即回填。
+      const dubbedDir = path.join(path.dirname(voicesDir), 'dubbed')
       const items = files.map((filepath, i) => {
         const expectedWav = path.join(voicesDir, `voice_${i + 1}.wav`)
         let originalText = ''
@@ -164,10 +168,12 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         try {
           if (fs.existsSync(txtPath)) originalText = fs.readFileSync(txtPath, 'utf-8').trim()
         } catch (_) { /* 读失败按空 */ }
+        const dubbedCand = path.join(dubbedDir, 'dubbed_' + path.basename(filepath))
         return {
           path: filepath,
           name: path.basename(filepath),
           wavPath: fs.existsSync(expectedWav) ? expectedWav : '',
+          dubbedPath: fs.existsSync(dubbedCand) ? dubbedCand : '',
           originalText,
           // 原版行构建时逐行 get_media_duration(filepath)（dialogs.py L1850 口径）
           durationSec: getMediaDuration(filepath),

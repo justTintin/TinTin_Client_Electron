@@ -1732,6 +1732,13 @@ export function useVideoMontage() {
       }
     }
     const transition = concatTransition.value || 'fade'
+    // 2026-09-15 用户报障：候选非配音产物时口播静默缺失——导出前据实提示
+    // （配音文案存在但候选里没有一条配音产物 = 口播不会出现在时间轴）
+    const hasDubbedCand = cands.some((c) => voiceRows.value.some((r) => r.dubbedPath === c))
+    const hasVoiceCopy = voiceRows.value.some((r) => r.wavPath && r.text.trim())
+    if (!hasDubbedCand && hasVoiceCopy) {
+      notify('口播未包含', '候选视频不是配音产物（未配音或配音关联丢失），时间轴草稿将不含口播声音。\n请先完成「口播配音」后重新导出。')
+    }
     await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
@@ -2384,7 +2391,7 @@ export function useVideoMontage() {
       // 展开为纯数组：ref([]) 的 .value 是响应式 Proxy，ipcRenderer.invoke 结构化克隆
       //   不支持 Proxy，直接传会批「An object could not be cloned」致扫描永远失败
       //   （2026-09-08 实测：Step3 视频列表从未建成的真正根因）
-      const allFiles: Array<{ path: string; name: string; originalText: string; wavPath?: string; durationSec?: number; voiceDurSec?: number }> = []
+      const allFiles: Array<{ path: string; name: string; originalText: string; wavPath?: string; dubbedPath?: string; durationSec?: number; voiceDurSec?: number }> = []
       let voicesDirFirst = ''
       for (let i = 0; i < dirs.length; i++) {
         const dirPath = dirs[i]
@@ -2410,6 +2417,8 @@ export function useVideoMontage() {
         status: f.wavPath ? 'done' : 'pending',
         progress: f.wavPath ? 100 : 0,
         wavPath: f.wavPath || '',
+        // 配音产物重关联（2026-09-15 报障：重启后 dubbedPath 丢失 → 导出时间轴静默丢口播）
+        dubbedPath: f.dubbedPath || '',
         lengthMode: 'video' as const,
         durationSec: f.durationSec || 0,
         // 克隆音频时长（2026-09-10 报障修复：重建行时从扫描结果恢复，不再恒 0 → --:--）

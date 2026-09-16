@@ -487,6 +487,155 @@ function normalizeVoiceClips(voiceClips, videoCount) {
   return out
 }
 
+/** 合并多份 from-task 导出清单为一条时间轴草稿（2026-09-15 用户裁决：客户端合并清单）。
+ *  manifests 顺序=成片顺序；各清单段落按累计时长偏移；资产按全局序号改名
+ *  （download_url 相同的资产去重复用）；轨道按「类型+同类序号」聚合。
+ *  返回 { draft_content, draft_meta_info, assets:[{rel_path,download_url}], durationUs }
+ *  或 null（无有效清单）。 */
+function mergeJianyingManifests(manifests, draftName) {
+  const list = (manifests || []).filter((m) => m && m.draft_content)
+  if (!list.length) return null
+  const assetsOut = []
+  const urlToPath = new Map()
+  const renameByManifest = []
+  for (const m of list) {
+    const rename = new Map()
+    for (const a of m.assets || []) {
+      const key = String(a.download_url || a.rel_path || a.asset_id)
+      if (urlToPath.has(key)) { rename.set(String(a.rel_path), urlToPath.get(key)); continue }
+      const safeName = String(a.name || ('asset_' + a.asset_id)).replace(/[\\/]/g, '_')
+      const newRel = 'assets/' + String(assetsOut.length + 1).padStart(4, '0') + '_' + safeName
+      urlToPath.set(key, newRel)
+      rename.set(String(a.rel_path), newRel)
+      assetsOut.push({ rel_path: newRel, download_url: String(a.download_url || '') })
+    }
+    renameByManifest.push(rename)
+  }
+  // 内容合并：materials 数组拼接（资产路径按改名表重写）；轨道按类型+同类序号聚合
+  let cursorUs = 0
+  let durationUs = 0
+  const mergedMaterials = {}
+  const mergedTracksByKey = new Map()
+  const mergedTracksOrder = []
+  list.forEach((m, mi) => {
+    const content = JSON.parse(JSON.stringify(m.draft_content))
+    const rename = renameByManifest[mi]
+    const mats = content.materials || {}
+    for (const k of Object.keys(mats)) {
+      const arr = mats[k]
+      if (!Array.isArray(arr)) continue
+      if (!mergedMaterials[k]) mergedMaterials[k] = []
+      for (const item of arr) {
+        if (item && typeof item === 'object' && typeof item.path === 'string' && item.path.startsWith('assets/')) {
+          const np = rename.get(item.path)
+          if (np) item.path = np
+        }
+      }
+      mergedMaterials[k].push(...arr)
+    }
+    const typeCount = new Map()
+    for (const tr of content.tracks || []) {
+      const idx = typeCount.get(tr.type) || 0
+      typeCount.set(tr.type, idx + 1)
+      const key = tr.type + '#' + idx
+      if (!mergedTracksByKey.has(key)) {
+        const copy = JSON.parse(JSON.stringify(tr))
+        copy.segments = []
+        mergedTracksByKey.set(key, copy)
+        mergedTracksOrder.push(copy)
+      }
+      for (const seg of tr.segments || []) {
+        const copy = JSON.parse(JSON.stringify(seg))
+        if (copy.target_timerange && typeof copy.target_timerange.start === 'number') copy.target_timerange.start += cursorUs
+        mergedTracksByKey.get(key).segments.push(copy)
+      }
+    }
+    durationUs += Number(content.duration) || 0
+    cursorUs += Number(content.duration) || 0
+  })
+  const firstContent = JSON.parse(JSON.stringify(list[0].draft_content))
+  firstContent.id = hexId()
+  if (draftName) firstContent.name = draftName
+  firstContent.duration = durationUs
+  firstContent.tracks = mergedTracksOrder
+  draft_content_tracks_render_index(firstContent.tracks)
+  firstContent.materials = mergedMaterials
+  return {
+    draft_content: firstContent,
+    draft_meta_info: list[0].draft_meta_info ? JSON.parse(JSON.stringify(list[0].draft_meta_info)) : {},
+    assets: assetsOut,
+    durationUs,
+  }
+}
+
+/** 合并后轨道统一 render_index（按轨序逐段，对照本导出器 exportMultiToDraft 收尾口径） */
+
+/** 花字事件轨 + 音效轨（2026-09-15 用户裁决：时间轴草稿对齐——
+ *  花字关键词按事件时刻落金色文字段（effectStyle/入场动画随选），
+ *  音效按同一时刻落音频段（sfxPath 存在时；gain_db 转音量，上限 1）。
+ *  events=[{word,startUs,durUs}] 为该成片局部系；offsetUs=该成片在合并时间轴的起点；
+ *  opts.probeDur(path)=秒（主进程 ffprobe 注入）。 */
+function appendFancyEventTracks(tracks, materials, events, offsetUs, limitEndUs, opts = {}) {
+  const list = Array.isArray(events) ? events : []
+  if (!list.length) return
+  const effectId = opts.effectId || ''
+  const anim = opts.anim || ''
+  const track = newTrack('text')
+  for (const ev of list) {
+    const startUs = offsetUs + Math.max(0, Math.round(Number(ev.startUs) || 0))
+    let durUs = Math.max(1, Math.round(Number(ev.durUs) || 0))
+    if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = limitEndUs - startUs
+    if (durUs <= 0) continue
+    const mat = textMaterial(String(ev.word || '').trim(), { colorHex: '#FFD700', bold: true, effectStyleId: effectId })
+    materials.texts.push(mat)
+    const sp = speedMaterial(1.0)
+    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
+    const seg = {
+      ...baseSegmentFields(mat.id, startUs, durUs),
+      ...mediaSegmentFields(durUs, sp.id),
+      ...visualSegmentFields(),
+    }
+    decorateTextSegment(seg, materials, { anim, effectId })
+    track.segments.push(seg)
+  }
+  if (track.segments.length) tracks.push(track)
+  // 音效轨（sfxPath 存在时）：每事件一段音频
+  const sfxPath = String(opts.sfxPath || '')
+  if (!sfxPath || !fs.existsSync(sfxPath)) return
+  const sfxDurSec = Math.max(0.05, Number(opts.probeDur ? opts.probeDur(sfxPath) : 0) || 0.5)
+  const sfxDurUs = Math.round(sfxDurSec * 1e6)
+  const gainDb = Number(opts.gainDb)
+  const volume = Number.isFinite(gainDb) ? Math.min(1, Math.max(0, Math.pow(10, gainDb / 20))) : 1.0
+  const sfxTrack = newTrack('audio')
+  for (const ev of list) {
+    const startUs = offsetUs + Math.max(0, Math.round(Number(ev.startUs) || 0))
+    let durUs = Math.min(sfxDurUs, Math.max(1, Math.round(Number(ev.durUs) || 0)))
+    if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = limitEndUs - startUs
+    if (durUs <= 0) continue
+    const mat = audioMaterialFields(sfxPath, durUs)
+    materials.audios.push(mat)
+    const ssp = speedMaterial(1.0)
+    if (Array.isArray(materials.speeds)) materials.speeds.push(ssp)
+    sfxTrack.segments.push({
+      ...baseSegmentFields(mat.id, startUs, durUs),
+      source_timerange: { start: 0, duration: durUs },
+      speed: 1.0,
+      volume,
+      extra_material_refs: [ssp.id],
+      is_tone_modify: false,
+      clip: null,
+      hdr_settings: null,
+    })
+  }
+  if (sfxTrack.segments.length) tracks.push(sfxTrack)
+}
+
+
+function draft_content_tracks_render_index(tracks) {
+  tracks.forEach((track, order) => {
+    for (const seg of track.segments || []) seg.render_index = order
+  })
+}
 /** 模板实例段追加到文字模板轨（时间窗裁剪同 appendSubtitleTrack 口径；
  *  preset 解析经 cache 复用；模板缺失静默跳过——不造假）。 */
 function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache) {
@@ -1296,5 +1445,8 @@ module.exports = {
   buildTemplateClipTrio,
   normalizeTextTemplateClips,
   appendTextTemplateSegments,
+  mergeJianyingManifests,
+  appendFancyEventTracks,
+  draft_content_tracks_render_index,
   normalizeVoiceClips,
 }

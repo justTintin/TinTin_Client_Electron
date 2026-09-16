@@ -433,7 +433,7 @@ declare interface TintinBridgeServer {
       fxLines?: Array<{ text: string; start: number; end: number; keywords?: string[] }>
     }>
     progressChannel?: string
-  }): Promise<{ results: string[] } | { error: string }>
+  }): Promise<{ results: string[]; taskIds?: string[] } | { error: string }>
   /** 回退扫描 outputs 排列视频（_collect_mix_candidates 回退段 + _get_out_montage_dir 规则） */
   finalCollectOutputs(payload: { dirPath: string }): Promise<{ files: string[]; outDir?: string } | { error: string }>
   /** 查找视频同目录配套 .srt（_find_srt_for_video：兼容 dubbed_/final_ 前缀） */
@@ -467,6 +467,14 @@ declare interface TintinBridgeServer {
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
     draftName?: string
   }): Promise<{ success: boolean; message: string; bgmIncluded?: boolean; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
+  /** 服务端合成任务 → 剪映时间轴草稿（2026-09-15：合并 from-task 清单+资产对齐落盘） */
+  editorExportJianyingFromTasks(payload: {
+    taskIds: string[]
+    draftName?: string
+    textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
+    fancyEvents?: Array<Array<{ word: string; startUs: number; durUs: number }>>
+    fancyTemplate?: Record<string, unknown> | null
+  }): Promise<{ success: boolean; message: string; assetCount?: number; durationUs?: number; registered?: boolean; launched?: boolean; jianyingRunning?: boolean } | { success: false; message: string }>
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */
   jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; groups: Array<{ group: string; lanes: Array<{ lane: string; total: number; endpoint: string; tags: Array<{ name: string; count: number }>; items: Array<Record<string, unknown>> }> }>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>
   /** 批量同步选中模板到服务端（§0.0 同步目标即服务端） */

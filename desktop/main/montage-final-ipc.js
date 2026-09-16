@@ -502,7 +502,7 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
     try { fs.unlinkSync(outPath) } catch (_) { /* 忽略 */ }
     throw new Error('服务端合成产物无法读取（moov 缺失/截断）')
   }
-  return dur
+  return { dur, taskId: String(id) }
 }
 
 function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl }) {
@@ -522,6 +522,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       // extra（2026-09-12）：donePath=逐条完成事件随带成片路径，渲染层增量上表
       // （此前列表只在整批返回后填充，合成期间已落盘的成片不可见）
       const emit = (stage, value, extra) => { if (channel) event.sender.send(channel, { stage, value, ...(extra || {}) }) }
+      const composeTaskIds = [] // 各成片的合成任务 id（2026-09-15：供 from-task 导出剪映时间轴）
 
       const ffmpegPath = getFfmpegPath()
       const hasBgm = !!(p.bgmPath && fs.existsSync(p.bgmPath))
@@ -735,13 +736,14 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           // → 不传特效字段，仅按参数做 BGM 混音或配音替换（与本地链路「直通」同语义）
           const fxForTask = (hasFx && sub && String(sub.text || '').trim() && spec.durationSec > 0) ? fx : null
           try {
-            await serverComposeOne({
+            const { taskId } = await serverComposeOne({
               httpRequest, videoPath, outPath,
               fx: fxForTask, sub,
               videoDur: spec.durationSec, spec,
               bgmPath: hasBgm ? p.bgmPath : '', bgmVol,
             })
             results.push(outPath)
+            composeTaskIds.push(taskId)
             // 逐条完成即推送（渲染层增量上表，不等整批返回）
             emit(`服务端统一合成完成 (${index + 1}/${total})...`, Math.floor((index + 1) / total * 95), { donePath: outPath })
             continue
@@ -807,7 +809,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         emit(`最终合成完成 (${index + 1}/${total})...`, mixBase + Math.floor((index + 1) / total * mixSpan), { donePath: outPath })
       }
       emit('所有视频及配乐最终合成完成！', 100)
-      return { results }
+      return { results, taskIds: composeTaskIds }
     } catch (err) {
       return { error: err.message }
     }
@@ -1163,6 +1165,115 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   // ── sfx:ensureFile — 音效资产按 id 落本地缓存（2026-09-15 架构裁决：服务端=音效
   //     资产权威源，客户端导出时按需拉取；草稿引用本地路径。幂等：命中缓存不重复下载）──
   const SFX_CACHE_DIR = path.join(app.getPath('userData'), 'sfx-cache')
+
+  // ── editor:exportJianyingFromTasks — 服务端合成任务 → 剪映时间轴草稿
+  //     （2026-09-15 用户裁决第3条：客户端合并清单 + 对齐资产到剪映数据格式。
+  //     流程：逐任务 from-task 清单 → mergeJianyingManifests 合并（素材/字幕/口播/BGM）
+  //     → 对齐追加：文字模板三件套轨（本机 .textpreset 真值）/花字轨/音效轨
+  //     → 下载资产落草稿目录 → 写 draft_content/meta → 首页注册+拉起剪映）──
+  ipcMain.handle('editor:exportJianyingFromTasks', async (_e, payload) => {
+    try {
+      const p = payload || {}
+      const taskIds = (Array.isArray(p.taskIds) ? p.taskIds : []).map((t) => String(t).trim()).filter(Boolean)
+      if (!taskIds.length) throw new Error('缺少合成任务 id（请先执行「服务端合成」）')
+      const draftName = String(p.draftName || '螺丝钉剪辑_轨道时间轴')
+      const textTemplateClips = Array.isArray(p.textTemplateClips) ? p.textTemplateClips : []
+      const fancyEvents = Array.isArray(p.fancyEvents) ? p.fancyEvents : []
+      let fancyTemplate = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
+      try {
+        if (fancyTemplate && fancyTemplate.template_id) {
+          const local = FT.listFancyTemplates().find((t) => t.template_id === fancyTemplate.template_id)
+          if (local) fancyTemplate = Object.assign({}, fancyTemplate, local) // 本地包带 sound 声明
+        }
+      } catch (_) { fancyTemplate = fancyTemplate || null }
+      // 1) 逐任务拉取导出清单
+      const manifests = []
+      const durations = []
+      for (const tid of taskIds) {
+        const res = await httpRequest('POST', '/editor/export/jianying/from-task/' + encodeURIComponent(tid), { timeout: 120000 })
+        const m = res && res.data
+        if (!m || !m.draft_content || !Array.isArray(m.assets)) throw new Error(`任务 ${tid} 的导出清单无效`)
+        manifests.push(m)
+        durations.push(Number(m.draft_content.duration) || 0)
+      }
+      // 2) 合并（素材/字幕/口播/BGM 由服务端清单出）
+      const merged = JY.mergeJianyingManifests(manifests, draftName)
+      if (!merged) throw new Error('清单合并失败（无有效清单）')
+      // 3) 对齐追加：文字模板三件套轨（本机 .textpreset = 渲染真值）/花字轨/音效轨，
+      //    按各成片时长偏移到合并时间轴
+      const tracks = merged.draft_content.tracks
+      const materials = merged.materials
+      const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
+      const tplCache = new Map()
+      let offsetUs = 0
+      for (let i = 0; i < taskIds.length; i++) {
+        const winEnd = offsetUs + (durations[i] || 0)
+        const clips = Array.isArray(textTemplateClips[i]) ? textTemplateClips[i] : []
+        if (clips.length) {
+          const tplTrack = { attribute: 0, flag: 0, id: crypto.randomBytes(16).toString('hex'), is_default_name: true, name: '', segments: [], type: 'text' }
+          JY.appendTextTemplateSegments(tplTrack, materials, clips, presetDir, offsetUs, winEnd, tplCache)
+          if (tplTrack.segments.length) tracks.push(tplTrack)
+        }
+        const events = Array.isArray(fancyEvents[i]) ? fancyEvents[i] : []
+        if (events.length) {
+          JY.appendFancyEventTracks(tracks, materials, events, offsetUs, winEnd, {
+            effectId: fancyTemplate && fancyTemplate.jy_effect_id ? String(fancyTemplate.jy_effect_id) : '',
+            anim: fancyTemplate && L.getFancyAnim ? L.getFancyAnim(fancyTemplate) : '',
+            sfxPath: fancyTemplate ? FT.getFancySoundPath(fancyTemplate) : '',
+            gainDb: fancyTemplate ? FT.getFancySoundGainDb(fancyTemplate) : undefined,
+            probeDur: (fp) => getMediaDuration(fp),
+          })
+        }
+        offsetUs += durations[i] || 0
+      }
+      // render_index 按最终轨序重排（含对齐追加的轨道）
+      JY.draft_content_tracks_render_index(tracks)
+      // 4) 落盘：草稿目录 + 下载资产（相对路径原样 → 剪映按草稿目录解析）
+      const draftRoot = JY.getDefaultDraftRoot()
+      fs.mkdirSync(draftRoot, { recursive: true })
+      const projectUuid = crypto.randomUUID().replace(/-/g, '').toUpperCase()
+      const draftFolder = path.join(draftRoot, projectUuid)
+      const base = getServerUrl().replace(/\/$/, '')
+      let downloaded = 0
+      for (const a of merged.assets) {
+        const url = /^https?:/i.test(a.download_url) ? a.download_url : base + (a.download_url.startsWith('/') ? '' : '/') + a.download_url
+        const r2 = await httpRequest('GET', url, { timeout: 120000 })
+        const buf = Buffer.from(r2.raw || '')
+        if (!buf.length) throw new Error(`资产下载为空：` + a.rel_path)
+        const dest = path.join(draftFolder, a.rel_path)
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        fs.writeFileSync(dest, buf)
+        downloaded++
+      }
+      // 5) 写草稿文件
+      const fwd = (s2) => String(s2).split(path.sep).join('/')
+      fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(merged.draft_content, null, 2), 'utf-8')
+      const nowMs = Date.now()
+      const metaInfo = Object.assign({}, merged.draft_meta_info || {}, {
+        id: projectUuid,
+        draft_name: draftName,
+        draft_foldpath: fwd(draftFolder),
+        draft_rootpath: fwd(draftRoot),
+        draft_type: 'face',
+        create_time: nowMs,
+        update_time: nowMs,
+        tm_draft_modified: nowMs,
+        platform: 'windows',
+      })
+      fs.writeFileSync(path.join(draftFolder, 'draft_meta_info.json'), JSON.stringify(metaInfo, null, 2), 'utf-8')
+      // 6) 首页注册 + 拉起剪映
+      const reg = JY.registerInRootMeta({ draftFolder, draftName, durationUs: merged.durationUs, coverPath: '' })
+      const launch = JY.launchJianying()
+      return {
+        success: true,
+        message: draftFolder,
+        assetCount: merged.assets.length,
+        durationUs: merged.durationUs,
+        registered: reg.ok,
+        launched: !!(launch.ok && !launch.running), jianyingRunning: !!(launch.ok && launch.running),
+      }
+    } catch (err) { return { success: false, message: err.message } }
+  })
 
   // ── bgm:downloadUrl — AI 生成 BGM 落盘（本端扩展：本地混音需本地文件，见头注）──
   ipcMain.handle('bgm:downloadUrl', async (_e, payload) => {

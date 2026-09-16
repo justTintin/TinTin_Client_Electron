@@ -208,6 +208,8 @@ const server = {
   finalReadTiming:      (p) => ipcRenderer.invoke('final:readTiming', p),
   finalListResults:     (p) => ipcRenderer.invoke('final:listResults', p),
   jianyingExport:       (p) => ipcRenderer.invoke('jianying:export', p),
+  // 服务端合成任务 → 剪映时间轴草稿（2026-09-15：合并 from-task 清单+资产对齐落盘）
+  editorExportJianyingFromTasks: (payload) => ipcRenderer.invoke('editor:exportJianyingFromTasks', payload),
   jyTemplatesList:      () => ipcRenderer.invoke('jytpl:list'),
   jyTemplatesSync:      (p) => ipcRenderer.invoke('jytpl:sync', p),
   jyTemplatesDeleteServer: (p) => ipcRenderer.invoke('jytpl:deleteServer', p),

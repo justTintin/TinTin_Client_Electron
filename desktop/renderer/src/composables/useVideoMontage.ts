@@ -847,8 +847,16 @@ export function useVideoMontage() {
 
   /** 提交单条 /montage/concat 并轮询至完成，返回成片 URL（原版 MontageConcatServerWorker 同口径）
    *  clip_urls 使用服务端绝对路径（split 返回的 path 字段），文件已在服务端无需上传
-   *  clipShotTypes：镜头文件名→景别键（对照原版 L3004-3015 clip_shot_types，仅非空景别收进） */
-  async function submitConcatTask(clipUrls: string[], clipShotTypes?: Record<string, string>, localFiles?: string[]): Promise<{ url: string; id: string; newContract: boolean }> {
+   *  clipShotTypes：镜头文件名→景别键（对照原版 L3004-3015 clip_shot_types，仅非空景别收进）
+   *  2026-09-16 用户裁决（服务端反馈）：预合成=纯镜头拼接，不带任何字幕字段——
+   *  ① 预合成阶段口播文案尚未生成（流程：预合成方案→确认合成→口播文案），无字幕数据可烧；
+   *  ② 字幕/花字/文字模板烧制只在最终合成（Step4 特效包装 serverComposeOne，SRT=口播
+   *     timing）发生，此处再开 burn_subtitle 会与 Step4 二次烧制叠加（成片双重字幕）。 */
+  async function submitConcatTask(
+    clipUrls: string[],
+    clipShotTypes?: Record<string, string>,
+    localFiles?: string[],
+  ): Promise<{ url: string; id: string; newContract: boolean }> {
     await ensureServerUrl()
     // 「与原片一致」分辨率优先级（2026-09-15 用户裁决：画幅基准=分割片段，非原素材——
     // ① splitResolution（逐镜画幅/首个片段探测，Step1 已收口）→ ② 本地探测首个片段 →
@@ -907,6 +915,8 @@ export function useVideoMontage() {
       preset: payload.preset,
       ...(edgeSpeedup.value !== 1.0 ? { edge_speedup: edgeSpeedup.value } : {}),
       ...(Object.keys(stPayload).length ? { clip_shot_types: JSON.stringify(stPayload) } : {}),
+      // 2026-09-16 用户裁决（服务端反馈）：预合成不烧字幕——不传 burn_subtitle/font_id/
+      // subtitle_style/subtitle_srt（字幕烧制只在 Step4 特效包装，见 submitConcatTask 头注）
     }
     console.log('[concat] 提交载荷:', JSON.stringify({ ...concatReq, clip_urls: payload.clip_urls?.slice(0, 200) }))
     const res = unwrapIpc(await window.tintin.server.montageConcat(concatReq), '确认合成')
@@ -1035,6 +1045,9 @@ export function useVideoMontage() {
       const localFiles = hasTrimmed && activeClips.every((c) => c.clipLocalPath)
         ? activeClips.map((c) => c.clipLocalPath as string)
         : undefined
+      // 2026-09-16 用户裁决（服务端反馈）：预合成=纯镜头拼接，不随请求传字幕字段——
+      // 原实现传 burn_subtitle=true 但预合成阶段无口播文案/SRT（服务端收到空烧制请求）；
+      // 字幕数据只在最终合成（Step4 特效包装）随 buildServerFxFields 下发
       const { url, id } = await submitConcatTask(clipUrls, shotTypes, localFiles)
       concatProgress.value = 30
       statusText.value = `已提交服务端合成，任务 ID=${id}，正在轮询...`
@@ -1254,6 +1267,12 @@ export function useVideoMontage() {
   const finalMode = ref<'' | 'server' | 'local'>('') // 进行中的链路（双按钮独立 loading）
   const finalDone = ref(false)     // 三按钮启用开关（原版 btn_open_final_dir 等初始 disabled）
   const finalProgress = ref(-1)    // 混音进度 0-100（-1=隐藏；原版共享 progress_bar 口径）
+  // 2026-09-16：导出剪映时间轴进度（独立于 finalBusy，导出期间禁用按钮+显示进度条）
+  const exportBusy = ref(false)
+  const exportProgress = ref(-1)   // 导出进度 0-100（-1=隐藏）
+  const exportStage = ref('')      // 导出阶段文案
+  // 2026-09-16：导出成功后记录草稿目录路径（供「打开草稿目录」按钮使用）
+  const lastExportDraftPath = ref('')
   const finalVideoList = ref<Array<{ name: string; path: string }>>([])
   const finalVideoPath = ref('')   // 首个成片（final_video_path 口径）
   const finalSelIdx = ref(-1)      // 列表选中项（原版 currentItem，默认取第一个）
@@ -1655,6 +1674,12 @@ export function useVideoMontage() {
     try { window.tintin.shell.openItem(dir) } catch (e) { clientError('video-montage', '打开输出目录失败', e); notify('打开失败', errText(e)) }
   }
 
+  /** 打开剪映草稿目录（2026-09-16：导出成功后供用户直接查看草稿文件） */
+  function openExportDraftDir(): void {
+    if (!lastExportDraftPath.value) return
+    try { window.tintin.shell.openItem(lastExportDraftPath.value) } catch (e) { clientError('video-montage', '打开草稿目录失败', e); notify('打开失败', errText(e)) }
+  }
+
   /** 导出全部到时间轴（2026-09-14 用户裁决：同轨道导出口径，带转场） */
 async function exportAllToJianyingDraft(): Promise<void> {
     await exportMontageTracksDraft('螺丝钉剪辑_轨道时间轴')
@@ -1703,8 +1728,10 @@ async function exportAllToJianyingDraft(): Promise<void> {
     if (res && res.success) {
       // 2026-09-14 用户裁决：导出成功后自动拉起剪映（主进程 launchJianying），
       // 替代原「打开草稿文件夹」；拉起状态附在通知里
-      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean }
+      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean; message?: string }
       let tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+      // 2026-09-16：记录草稿目录路径（供「打开草稿目录」按钮使用）
+      if (rx.message) lastExportDraftPath.value = String(rx.message)
       // 2026-09-15 用户报障：BGM 未选/文件已删时静默产出无 BGM 轨草稿——据实附在通知里
       // （导出器回传 bgmIncluded：未选 BGM 或所选文件不存在时为 false）
       if (rx.bgmIncluded === false) {
@@ -1758,13 +1785,20 @@ async function exportAllToJianyingDraft(): Promise<void> {
     }
   )())
 
-  /** 草稿命名：品牌产品 + 日期 + 音频索引 + 轨道时间轴（2026-09-15 用户裁决） */
+  /** 草稿命名：品牌+产品型号+日期时间+分辨率+音频索引+轨道时间轴（2026-09-16 用户裁决） */
   function timelineDraftName(): string {
     const brand = String(sharedProductInfo.value.brand || '').trim()
     const product = String(sharedProductInfo.value.product || '').trim()
-    const bp = (brand + product) || '混剪'
+    const model = String(sharedProductInfo.value.model || '').trim()
+    // 品牌+产品型号（无则兜底「混剪」）
+    const bp = (brand + product + model) || '混剪'
+    // 日期时间：YYYYMMDD_HHmmss
     const d = new Date()
     const ymd = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0')
+    const hms = String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0') + String(d.getSeconds()).padStart(2, '0')
+    // 分辨率（splitResolution 格式 "1080x1920"，无则兜底「未知分辨率」）
+    const resolution = splitResolution.value || '未知分辨率'
+    // 音频索引
     const idxs = voiceRows.value
       .map((r) => {
         const base = (r.wavPath || '').split('/').pop() || ''
@@ -1779,7 +1813,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
         ? '音频' + idxs[0] + '-' + idxs[idxs.length - 1]
         : '音频' + idxs.join(',')
     }
-    return bp + '_' + ymd + (audioPart ? '_' + audioPart : '') + '_轨道时间轴'
+    return bp + '_' + ymd + '_' + hms + '_' + resolution + (audioPart ? '_' + audioPart : '') + '_轨道时间轴'
   }
 
   /** 导出到剪映时间轴（2026-09-15 用户裁决双路径）：
@@ -1870,22 +1904,44 @@ async function exportAllToJianyingDraft(): Promise<void> {
     const finalName = timelineDraftName()
     if (hasTasks) {
       // A) from-task 合并流：服务端清单（素材/字幕/口播/BGM）+ 客户端对齐轨
-      const ftpl = selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null
-      const res = await window.tintin?.server?.editorExportJianyingFromTasks?.({
-        taskIds: lastComposeTasks.value.map((p2) => p2.taskId),
-        textTemplateClips,
-        fancyEvents,
-        fancyTemplate: ftpl,
-        draftName: finalName,
+      // 2026-09-16：导出进度监听（复用 onVoiceProgress 通用通道，主进程 progressChannel 推送）
+      const progressChannel = `export-jianying:progress:${(crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')}`
+      const offProgress = window.tintin?.server?.onVoiceProgress?.(progressChannel, (d: { stage?: string; value?: number }) => {
+        if (d && typeof d.value === 'number') exportProgress.value = d.value
+        if (d && d.stage) exportStage.value = String(d.stage)
       })
-      if (res && res.success) {
-        const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; assetCount?: number }
-        const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
-        notify('时间轴草稿导出成功', '已导出 ' + lastComposeTasks.value.length + ' 段成片合一的剪映时间轴草稿（素材/口播/BGM/字幕/文字模板/花字/音效轨对齐，资产 ' + (rx.assetCount ?? 0) + ' 项）。\n项目名称：' + finalName + tail)
-      } else {
-        const msg = res && 'message' in res ? String(res.message || '') : '主进程不可达'
-        clientError('video-montage', '导出时间轴草稿失败', msg)
-        notify('导出失败', '导出剪映时间轴草稿时发生错误：\n' + msg)
+      exportBusy.value = true
+      exportProgress.value = 0
+      exportStage.value = '正在初始化导出...'
+      try {
+        const ftpl = selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null
+        const res = await window.tintin?.server?.editorExportJianyingFromTasks?.({
+          taskIds: lastComposeTasks.value.map((p2) => p2.taskId),
+          textTemplateClips,
+          fancyEvents,
+          fancyTemplate: ftpl,
+          draftName: finalName,
+          progressChannel, // 主进程进度推送通道
+        })
+        if (res && res.success) {
+          const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; assetCount?: number; message?: string; verify?: { trackCounts?: Record<string, number>; pathRefs?: number; missing?: number; assetFiles?: number } }
+          const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+          // 2026-09-16：记录草稿目录路径（供「打开草稿目录」按钮使用）
+          if (rx.message) lastExportDraftPath.value = String(rx.message)
+          // 2026-09-16：成功提示带自检明细（主进程 verifyDraftFolder 回传——导出成功的硬判据）
+          const v = rx.verify
+          const vsum = v ? '自检通过：视频 ' + (v.trackCounts?.video ?? 0) + ' / 文本 ' + (v.trackCounts?.text ?? 0) + ' / 音频 ' + (v.trackCounts?.audio ?? 0) + ' 段 · 素材引用 ' + (v.pathRefs ?? 0) + ' 处（缺失 ' + (v.missing ?? 0) + '）· 资产文件 ' + (v.assetFiles ?? 0) + ' 个。\n' : ''
+          notify('时间轴草稿导出成功', '已导出 ' + lastComposeTasks.value.length + ' 段成片合一的剪映时间轴草稿（素材/口播/BGM/字幕/文字模板/花字/音效轨对齐，资产 ' + (rx.assetCount ?? 0) + ' 项）。\n' + vsum + '项目名称：' + finalName + tail)
+        } else {
+          const msg = res && 'message' in res ? String(res.message || '') : '主进程不可达'
+          clientError('video-montage', '导出时间轴草稿失败', msg)
+          notify('导出失败', '导出剪映时间轴草稿时发生错误：\n' + msg)
+        }
+      } finally {
+        exportBusy.value = false
+        exportProgress.value = -1
+        exportStage.value = ''
+        if (typeof offProgress === 'function') offProgress()
       }
       return
     }
@@ -3133,13 +3189,15 @@ async function exportAllToJianyingDraft(): Promise<void> {
     planDurText,
     // Step4 特效包装
     bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
+    exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
+    lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径（供「打开草稿目录」按钮）
     finalVideoList, finalVideoPath, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
     bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration,
     bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl,
     bgmPlaying, bgmPosMs, bgmDurMs,
     generateBgm,
     pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
-    enterStep4, startFinalMix, openFinalDir,
+    enterStep4, startFinalMix, openFinalDir, openExportDraftDir,
     exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
     fmtBgmTime,
     // 景别分类（UI 展示用）

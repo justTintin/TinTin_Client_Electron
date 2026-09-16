@@ -474,6 +474,7 @@ declare interface TintinBridgeServer {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     fancyEvents?: Array<Array<{ word: string; startUs: number; durUs: number }>>
     fancyTemplate?: Record<string, unknown> | null
+    progressChannel?: string // 2026-09-16：导出进度推送通道
   }): Promise<{ success: boolean; message: string; assetCount?: number; durationUs?: number; registered?: boolean; launched?: boolean; jianyingRunning?: boolean } | { success: false; message: string }>
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */
   jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; groups: Array<{ group: string; lanes: Array<{ lane: string; total: number; endpoint: string; tags: Array<{ name: string; count: number }>; items: Array<Record<string, unknown>> }> }>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>

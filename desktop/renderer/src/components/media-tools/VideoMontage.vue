@@ -92,11 +92,13 @@ const {
   voiceStatusText, voiceStatusClass, pathBasename,
   // Step4 特效包装（对照 step4_final_view.py 逐控件）
   bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
+  exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
+  lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径
   finalVideoList, finalSelIdx,
   bgmSource,
   bgmPlaying, bgmPosMs, bgmDurMs,
   pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
-  enterStep4, startFinalMix, openFinalDir,
+  enterStep4, startFinalMix, openFinalDir, openExportDraftDir,
   exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
   fmtBgmTime,
   selectRefAudio,
@@ -1216,11 +1218,14 @@ function scoreClass(score: number | undefined): string {
           <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
                导出到剪映时间轴紧随服务端合成之后 -->
           <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
-            :disabled="finalBusy"
-            title="将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）"
+            :disabled="finalBusy || exportBusy"
+            :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
             @click="exportAllToJianyingDraft" />
         </div>
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
+        <!-- 2026-09-16：导出剪映时间轴进度条（独立于 finalBusy） -->
+        <div v-if="exportBusy" class="pbar"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
+        <div v-if="exportBusy && exportStage" class="muted" style="margin-top:4px;font-size:12px">{{ exportStage }}</div>
 
         <!-- 结果区：左 成片列表 + 三按钮；右 视频预览 -->
         <div class="vd4-result">
@@ -1236,6 +1241,8 @@ function scoreClass(score: number | undefined): string {
             </ul>
             <div class="vd4-btns">
               <TButton label="打开视频输出目录" variant="secondary" :disabled="!finalDone" class="grow" @click="openFinalDir" />
+              <!-- 2026-09-16：导出成功后显示「打开草稿目录」按钮 -->
+              <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" class="grow" @click="openExportDraftDir" />
             </div>
           </div>
         </div><!-- /vd4-result -->

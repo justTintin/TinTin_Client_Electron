@@ -930,6 +930,14 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             draftName: p.draftName,
             deps,
           })
+      // 2026-09-16：成功判据加固——草稿自检（JSON 可解析/轨道非空/素材引用存在），不通过即显式失败
+      if (res && res.success) {
+        try {
+          const v = JY.verifyDraftFolder({ draftFolder: res.message })
+          res.verify = v
+          if (!v.ok) { res.success = false; res.message = '草稿自检未通过：' + v.problems.join('；') }
+        } catch (vErr) { res.verify = { ok: false, problems: [String((vErr && vErr.message) || vErr)] } }
+      }
       // M1：首页索引登记 + 封面（2026-09-12 实测：登记后剪映首页免刷新可见；失败不阻断导出）
       if (res && res.success) {
         try {
@@ -1167,9 +1175,13 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   //     流程：门禁剪映安装/版本 → 逐任务 from-task 清单 → 下载资产 → 探测回填
   //     时长/宽高/绝对路径/顺序化起点 → 合并 → 对齐追加文字模板三件套/花字/音效轨
   //     → render_index → 写 draft_content/meta → 首页注册+拉起剪映）──
-  ipcMain.handle('editor:exportJianyingFromTasks', async (_e, payload) => {
+  ipcMain.handle('editor:exportJianyingFromTasks', async (event, payload) => {
     try {
       const p = payload || {}
+      // 2026-09-16：导出进度推送（参照 final:mix L524 模式）
+      const channel = p.progressChannel || ''
+      const emit = (stage, value) => { if (channel) event.sender.send(channel, { stage, value }) }
+      emit('正在校验剪映环境...', 5)
       // 0) 前置校验：剪映已安装且版本 ≥ 11.0（用户裁决：否则只能服务端导出成片）。
       //    版本取自 Apps 下版本目录名（不经路径正则，避免打包/用户目录差异误判）
       const jyAppsDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'Apps')
@@ -1208,9 +1220,14 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         }
       } catch (_) { fancyTemplate = fancyTemplate || null }
       // 1) 落盘草稿目录 + 逐任务拉取导出清单
+      emit('正在拉取导出清单...', 10)
       const draftRoot = JY.getDefaultDraftRoot()
       fs.mkdirSync(draftRoot, { recursive: true })
-      const projectUuid = crypto.randomUUID().replace(/-/g, '').toUpperCase()
+      // 2026-09-16 用户裁决：草稿目录名从随机 UUID 改为有意义名称（品牌+产品型号+日期时间+分辨率）
+      // 目录名需合法（Windows 文件名限制）；日期时间已保证唯一性，无需追加 UUID 后缀
+      const projectUuid = String(draftName || '螺丝钉剪辑_轨道时间轴')
+        .replace(/[\\/:*?"<>|]/g, '_')  // Windows 非法字符替换为下划线
+        .slice(0, 80)  // 限制长度（Windows 路径上限 260，预留空间）
       const draftFolder = path.join(draftRoot, projectUuid)
       const base = getServerUrl().replace(/\/$/, '')
       const manifests = []
@@ -1223,11 +1240,13 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         durations.push(Number(m.draft_content.duration) || 0)
       }
       // 2) 合并（素材/字幕/口播/BGM 由服务端清单出）
+      emit('正在合并导出清单...', 20)
       const merged = JY.mergeJianyingManifests(manifests, draftName)
       if (!merged) throw new Error('清单合并失败（无有效清单）')
       // 3) 下载资产（相对路径 → 下一步绝对化回填）
       let downloaded = 0
       for (const a of merged.assets) {
+        emit(`正在下载资产 (${downloaded + 1}/${merged.assets.length})...`, 20 + Math.floor(downloaded / merged.assets.length * 50))
         const url = /^https?:/i.test(a.download_url) ? a.download_url : base + (a.download_url.startsWith('/') ? '' : '/') + a.download_url
         const r2 = await httpRequest('GET', url, { timeout: 120000 })
         const buf = Buffer.from(r2.raw || '')
@@ -1237,8 +1256,13 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         fs.writeFileSync(dest, buf)
         downloaded++
       }
-      // 4) 对齐资产到剪映数据格式（用户裁决）：素材路径绝对化 + 探测回填时长/宽高
-      //    + 视频/字幕段顺序化起点 + 音效段时长回填（起点保留服务端对齐值）
+      // 4) 对齐资产到剪映数据格式（用户裁决）：素材路径绝对化 + 探测回填时长/宽高。
+      //    2026-09-16 修复（用户实测：字幕时间戳偏移）：视频段统一为「窗口口径」——
+      //    合并步已按 content.duration 窗口偏移段起点（与字幕/口播/BGM/模板/音效同一
+      //    口径），此处只把段起点之后的时长裁剪到窗口长度并同步 source_timerange；
+      //    原「按素材文件时长顺序重排起点」在文件时长 ≠ content.duration 时（实测任务3
+      //    文件 31.5s vs 成片 29.644s）使视频与其余轨道逐段漂移（任务4 起错位 1.86s）。
+      emit('正在对齐素材与轨道...', 75)
       const tracks = merged.draft_content.tracks
       const materials = merged.materials
       const matById = new Map()
@@ -1249,24 +1273,54 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       }
       const trackOffsets = []
       let accUs = 0
-      for (const m of manifests) { trackOffsets.push(accUs); accUs += Number(m.draft_content.duration) || 0 }
+      // 2026-09-16 用户裁决：视频片段之间添加半秒（JY.VIDEO_GAP_US 微秒）间隔，
+      // 窗口起点含间隔 → 字幕重建/模板追加均随窗口偏移同步（常量单一口径）
+      for (let i = 0; i < manifests.length; i++) {
+        trackOffsets.push(accUs)
+        accUs += Number(manifests[i].draft_content.duration) || 0
+        // 除最后一个片段外，每个片段后添加半秒间隔
+        if (i < manifests.length - 1) accUs += JY.VIDEO_GAP_US
+      }
+      // 合并后视频轨段顺序 = 清单顺序 → 逐清单消费视频段计数，定位每段的归属窗口
+      const videoSegCounts = manifests.map((m) => {
+        let n = 0
+        for (const tr2 of (m.draft_content.tracks || [])) if (tr2.type === 'video') n += (tr2.segments || []).length
+        return n
+      })
       for (const tr of tracks) {
-        let cur = 0
+        const isVideo = tr.type === 'video'
+        let vmi = 0
+        let vUsed = 0
         for (const seg of (tr.segments || [])) {
           const mat = matById.get(seg.material_id)
           if (mat && typeof mat.path === 'string' && mat.path.startsWith('assets/')) {
             mat.path = path.join(draftFolder, mat.path)
             const info = probeMedia(mat.path)
             if (info.durationSec > 0) mat.duration = Math.round(info.durationSec * 1e6)
-            if (tr.type === 'video' && info.width) { mat.width = info.width; mat.height = info.height }
+            if (isVideo && info.width) { mat.width = info.width; mat.height = info.height }
           }
           const matDur = (mat && mat.duration) || 0
-          if (seg.target_timerange) {
-            if (!seg.target_timerange.duration) seg.target_timerange.duration = matDur
-            if (tr.type !== 'audio') seg.target_timerange.start = cur
-            cur = (seg.target_timerange.start || 0) + (seg.target_timerange.duration || 0)
+          if (isVideo) {
+            while (vmi < videoSegCounts.length && vUsed >= videoSegCounts[vmi]) { vmi++; vUsed = 0 }
+            const winEnd = (trackOffsets[vmi] || 0) + (durations[vmi] || 0)
+            if (seg.target_timerange) {
+              const st = seg.target_timerange.start || 0
+              let durUs = seg.target_timerange.duration || matDur
+              if (durUs <= 0) durUs = Math.max(1, winEnd - st)
+              if (st + durUs > winEnd) durUs = Math.max(1, winEnd - st)  // 窗口裁剪：不越过窗口终点
+              if (matDur > 0 && durUs > matDur) durUs = matDur  // 素材裁剪：不越过文件时长
+              seg.target_timerange.duration = durUs
+            }
+            if (seg.source_timerange) {
+              seg.source_timerange.start = 0
+              seg.source_timerange.duration = (seg.target_timerange && seg.target_timerange.duration) || matDur
+            }
+            vUsed++
+          } else {
+            // 其余轨道：起点保留合并值（窗口口径），仅回填空时长
+            if (seg.target_timerange && !seg.target_timerange.duration) seg.target_timerange.duration = matDur
+            if (seg.source_timerange && !seg.source_timerange.duration) seg.source_timerange.duration = (seg.target_timerange && seg.target_timerange.duration) || matDur
           }
-          if (seg.source_timerange && !seg.source_timerange.duration) seg.source_timerange.duration = (seg.target_timerange && seg.target_timerange.duration) || matDur
         }
       }
       // 5) 字幕轨重建（服务端 text 段时长为空 → 从下载的 subtitle.srt 重建白字字幕）
@@ -1283,11 +1337,10 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             for (const cue of cues) {
               const startUs = (trackOffsets[si] || 0) + Math.round(cue[0] * 1e6)
               const durUs = Math.max(1, Math.round((cue[1] - cue[0]) * 1e6))
-              const tx = String(cue[2] || '')
-              const contentJson = JSON.stringify({ text: tx, styles: [{ fill: { alpha: 1, content: { render_type: 'solid', solid: { alpha: 1, color: [1, 1, 1] } } }, range: [0, tx.length], size: 8, bold: false, italic: false, underline: false, strokes: [] }], text: tx })
-              const mat = { id: crypto.randomBytes(16).toString('hex'), content: contentJson, typesetting: 0, alignment: 0, letter_spacing: 0, line_spacing: 0.02, line_feed: 1, force_apply_line_max_width: false, check_flag: 7, type: 'text', global_alpha: 1 }
-              materials.texts.push(mat)
-              subTrack.segments.push({ id: crypto.randomBytes(16).toString('hex'), material_id: mat.id, target_timerange: { start: startUs, duration: durUs }, source_timerange: { start: 0, duration: durUs }, extra_material_refs: [], clip: { alpha: 1, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } }, common_keyframes: [], enable_adjust: false, enable_color_curves: false, enable_lut: false, hdr_settings: null })
+              // 2026-09-16：字幕段改由 JY 标准构造器生成（《剪映轨道格式标准_2026-09-16》
+              // §3.2 唯一实现；此前本地手写段缺 track_attribute/track_render_index/
+              // visible/speed 引用等标准字段，与单/多视频路径不一致）
+              subTrack.segments.push(JY.buildSubtitleSegment(String(cue[2] || ''), startUs, durUs, materials))
             }
           }
         }
@@ -1316,12 +1369,18 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           })
         }
         offsetUs += durations[i] || 0
+        // 2026-09-16 用户裁决：半秒间隔随窗口偏移（最后一个成片后不加）
+        if (i < taskIds.length - 1) offsetUs += JY.VIDEO_GAP_US
       }
       // 7) render_index 按最终轨序重排（含对齐追加的轨道）
       JY.draft_content_tracks_render_index(tracks)
-      // 8) 写草稿文件
+      // 8) 写草稿文件（2026-09-16 修复：写后校验存在性，防半成品残留）
+      emit('正在写入草稿文件...', 90)
       const fwd = (s2) => String(s2).split(path.sep).join('/')
-      fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(merged.draft_content, null, 2), 'utf-8')
+      const draftContentPath = path.join(draftFolder, 'draft_content.json')
+      const draftMetaPath = path.join(draftFolder, 'draft_meta_info.json')
+      fs.writeFileSync(draftContentPath, JSON.stringify(merged.draft_content, null, 2), 'utf-8')
+      if (!fs.existsSync(draftContentPath)) throw new Error('draft_content.json 写入失败（文件不存在）')
       const nowMs = Date.now()
       const metaInfo = Object.assign({}, merged.draft_meta_info || {}, {
         id: projectUuid,
@@ -1334,16 +1393,40 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         tm_draft_modified: nowMs,
         platform: 'windows',
       })
-      fs.writeFileSync(path.join(draftFolder, 'draft_meta_info.json'), JSON.stringify(metaInfo, null, 2), 'utf-8')
+      fs.writeFileSync(draftMetaPath, JSON.stringify(metaInfo, null, 2), 'utf-8')
+      if (!fs.existsSync(draftMetaPath)) throw new Error('draft_meta_info.json 写入失败（文件不存在）')
+      // 8.5) 生成首页封面（draft_cover.jpg：取第一个视频素材第 1 秒帧；失败不阻断导出）
+      //      2026-09-16 修复（用户实测：新草稿目录无封面、首页封面串到「剪辑模板」）：此前
+      //      coverPath 恒为空 → ① 目录缺 draft_cover.jpg；② registerInRootMeta 回退继承
+      //      store[0] 的 draft_cover（指向他人目录）。口径同 jianying:export 单/多视频路径。
+      let cover = ''
+      try {
+        const firstClip = (merged.assets.find((a) => /\.(mp4|mov|mkv|webm|avi)$/i.test(String(a.rel_path || ''))) || {}).rel_path || ''
+        const coverSrc = firstClip ? path.join(draftFolder, String(firstClip)) : ''
+        if (coverSrc && fs.existsSync(coverSrc)) {
+          cover = path.join(draftFolder, 'draft_cover.jpg')
+          const rc = spawnSync(getFfmpegPath(), ['-y', '-ss', '1', '-i', coverSrc, '-frames:v', '1', '-q:v', '3', cover], { timeout: 15000, windowsHide: true })
+          if (rc.status !== 0 || !fs.existsSync(cover)) cover = ''
+        }
+      } catch (_) { cover = '' }
+      // 8.6) 草稿自检（2026-09-16：导出成功的硬判据——解析/轨道非空/素材引用全部存在/
+      //      资产文件数 ≥ 清单数；不通过即显式失败，不写半成品还报成功）
+      const verify = JY.verifyDraftFolder({ draftFolder, expectedAssetCount: merged.assets.length })
+      if (!verify.ok) throw new Error('草稿自检未通过：' + verify.problems.join('；'))
       // 9) 首页注册 + 拉起剪映
-      const reg = JY.registerInRootMeta({ draftFolder, draftName, durationUs: merged.durationUs, coverPath: '' })
+      emit('正在注册首页索引...', 95)
+      const reg = JY.registerInRootMeta({ draftFolder, draftName, durationUs: merged.durationUs, coverPath: cover })
       const launch = JY.launchJianying()
+      emit('导出完成', 100)
       return {
         success: true,
         message: draftFolder,
         assetCount: merged.assets.length,
         durationUs: merged.durationUs,
         registered: reg.ok,
+        // 2026-09-16：回传自检明细（渲染层成功提示展示）+ 封面路径（空=未生成）
+        coverPath: cover,
+        verify: { trackCounts: verify.trackCounts, pathRefs: verify.pathRefs, missing: verify.missing, assetFiles: verify.assetFiles },
         launched: !!(launch.ok && !launch.running), jianyingRunning: !!(launch.ok && launch.running),
       }
     } catch (err) { return { success: false, message: err.message } }

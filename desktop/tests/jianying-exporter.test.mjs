@@ -22,6 +22,13 @@ const {
   parseSrt,
   timestampToSec,
   appendKeywordTrack,
+  mergeJianyingManifests,
+  registerInRootMeta,
+  verifyDraftFolder,
+  buildSubtitleSegment,
+  VIDEO_GAP_US,
+  SUBTITLE_TRANSFORM_Y,
+  SUBTITLE_ALIGNMENT,
 } = await import('../main/jianying-exporter.js')
 
 // ── TRANSITION_MAP（对照原版 8 项资源 ID，禁止自拟）──
@@ -167,7 +174,8 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   assert.equal(videoTrack.segments[0].extra_material_refs.length, 2)
   assert.equal(videoTrack.segments[1].extra_material_refs.length, 1)
   assert.deepEqual(videoTrack.segments[0].target_timerange, { start: 0, duration: 4000000 })
-  assert.deepEqual(videoTrack.segments[1].target_timerange, { start: 4000000, duration: 4000000 })
+  // 2026-09-16 用户裁决：视频片段之间添加半秒（500000 微秒）间隔
+  assert.deepEqual(videoTrack.segments[1].target_timerange, { start: 4500000, duration: 4000000 })
   // v2 片段完整字段（pyJianYingDraft segment.py / video_segment.py）
   assert.equal(videoTrack.segments[0].render_index, 0)
   assert.deepEqual(videoTrack.segments[0].clip, { alpha: 1, flip: { horizontal: false, vertical: false }, rotation: 0, scale: { x: 1, y: 1 }, transform: { x: 0, y: 0 } })
@@ -177,11 +185,16 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   // 字幕轨：整体偏移到第 0 段内
   const textTrack = content.tracks.find((t) => t.type === 'text')
   assert.equal(textTrack.segments[0].target_timerange.start, 0)
+  // 2026-09-16 修复（用户实测：字幕显示在画面中间）：字幕=屏幕下方 + 水平居中
+  // （pyJianYingDraft ClipSettings(transform_y=-0.8) 口径，clip.transform 单位=半画布）
+  assert.deepEqual(textTrack.segments[0].clip.transform, { x: 0, y: SUBTITLE_TRANSFORM_Y })
+  assert.equal(content.materials.texts[0].alignment, SUBTITLE_ALIGNMENT)
   // BGM 音轨：volume=30/100、覆盖整条时间轴、clip=null（audio_segment.py）
   const audioTrack = content.tracks.find((t) => t.type === 'audio')
   assert.equal(audioTrack.segments[0].volume, 0.3)
   assert.equal(audioTrack.segments[0].clip, null)
-  assert.equal(audioTrack.segments[0].target_timerange.duration, 8000000)
+  // 2026-09-16 用户裁决：BGM 覆盖整条时间轴（含片段间半秒间隔）→ 4s + 0.5s + 4s = 8.5s
+  assert.equal(audioTrack.segments[0].target_timerange.duration, 8500000)
 })
 
 test('exportMultiToDraft：未传 draftName → 命名「螺丝钉智能混剪_多片段时间轴」/单段「螺丝钉智能混剪_{basename}」', () => {
@@ -197,6 +210,49 @@ test('exportMultiToDraft：未传 draftName → 命名「螺丝钉智能混剪_�
 
 test('exportToDraft：视频不存在 → {success:false, message:"视频文件不存在"}', () => {
   assert.deepEqual(exportToDraft({ videoPath: '' }), { success: false, message: '视频文件不存在' })
+})
+
+// ── mergeJianyingManifests（from-task 多清单合并）：全轨段起点=窗口起点口径──
+
+test('mergeJianyingManifests：视频/字幕/口播段起点同窗口（content.duration 累计 + 半秒间隔）', () => {
+  const seg = (id, start, dur) => ({ id, material_id: 'm_' + id, target_timerange: { start, duration: dur }, source_timerange: { start: 0, duration: dur } })
+  const mk = (durUs, assets) => ({
+    draft_content: {
+      duration: durUs,
+      materials: { videos: [{ id: 'm_v', path: 'assets/a.mp4', duration: durUs }] },
+      tracks: [
+        { type: 'video', segments: [seg('v', 0, 0)] },
+        { type: 'text', segments: [seg('t', 0, 1000000)] },
+        { type: 'audio', segments: [seg('a', 0, 0)] },
+      ],
+    },
+    draft_meta_info: {},
+    assets,
+  })
+  const url = 'http://server/assets/a.mp4'
+  const r = mergeJianyingManifests([
+    mk(30000000, [{ rel_path: 'assets/a.mp4', download_url: url, name: 'a.mp4' }]),
+    mk(29000000, [{ rel_path: 'assets/a.mp4', download_url: url, name: 'a.mp4' }]),
+  ], '合并测试')
+  assert.ok(r)
+  // 总时长 = 30s + 半秒间隔 + 29s（间隔只加在成片之间，末尾不加）
+  assert.equal(r.durationUs, 30000000 + VIDEO_GAP_US + 29000000)
+  assert.equal(r.draft_content.duration, r.durationUs)
+  // download_url 相同 → 资产去重（两清单复用同一 rel_path）
+  assert.equal(r.assets.length, 1)
+  const vids = r.draft_content.tracks.find((t) => t.type === 'video').segments
+  const txts = r.draft_content.tracks.find((t) => t.type === 'text').segments
+  const auds = r.draft_content.tracks.filter((t) => t.type === 'audio')[0].segments
+  // 窗口起点：三轨一致（不重排、不逐轨各自累计）
+  assert.deepEqual(
+    [vids[0].target_timerange.start, txts[0].target_timerange.start, auds[0].target_timerange.start],
+    [0, 0, 0],
+  )
+  const w2 = 30000000 + VIDEO_GAP_US
+  assert.deepEqual(
+    [vids[1].target_timerange.start, txts[1].target_timerange.start, auds[1].target_timerange.start],
+    [w2, w2, w2],
+  )
 })
 
 test('exportMultiToDraft：横屏素材 → canvas ratio 16:9；BGM 不存在时静默跳过音轨', () => {
@@ -510,8 +566,8 @@ test('exportMultiToDraft：textTemplateClips → 原生模板轨三件套 + tpl 
   assert.ok(tplTrack, '模板轨应存在且 segment.material_id=模板实例 id')
   assert.equal(tplTrack.segments.length, 1)
   const seg = tplTrack.segments.find((s) => s.material_id === tpl.id)
-  // 第二个视频（4s 分条）时间轴偏移：4s+0.5s 起，1.5s 长
-  assert.equal(seg.target_timerange.start, 4500000)
+  // 第二个视频（4s 分条）时间轴偏移：4s(第一段) + 0.5s(片段间隔) + 0.5s(段内局部起点) 起，1.5s 长
+  assert.equal(seg.target_timerange.start, 5000000)
   assert.equal(seg.target_timerange.duration, 1500000)
   // 片段引用：模板动画/花字 id 全在 extra_material_refs
   for (const ref of tpl.text_info_resources[0].extra_material_refs) {
@@ -577,4 +633,115 @@ test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的�
   assert.equal(vt.segments[1].volume, 1.0)
   // 口播 wav 进音频素材
   assert.ok(content.materials.audios.some((a) => String(a.path).endsWith('voice_1.wav')))
+})
+
+// ── registerInRootMeta / verifyDraftFolder（2026-09-16：固定基线不克隆他人条目 + 草稿自检）──
+
+test('registerInRootMeta：固定基线构建条目（不继承 store[0] 脏字段），覆写 11 项 + 置顶 + 同路径去重', () => {
+  const draftRoot = getDefaultDraftRoot()
+  fs.mkdirSync(draftRoot, { recursive: true })
+  const rootMetaPath = path.join(draftRoot, 'root_meta_info.json')
+  // store[0] 故意带「脏」字段：他人封面 / 移除时间戳 / 隐藏标记 —— 验证不再被继承
+  fs.writeFileSync(rootMetaPath, JSON.stringify({ all_draft_store: [{ draft_name: '剪辑模板', draft_cover: 'C:/other/draft_cover.jpg', tm_draft_removed: 1789558813242, draft_is_invisible: true }] }), 'utf-8')
+  const folder = path.join(draftRoot, '测试工程')
+  const fwd = folder.split('\\').join('/')
+  const r1 = registerInRootMeta({ draftFolder: folder, draftName: '测试工程', durationUs: 123456, coverPath: '' })
+  assert.equal(r1.ok, true)
+  let store = JSON.parse(fs.readFileSync(rootMetaPath, 'utf-8')).all_draft_store
+  assert.equal(store[0].draft_name, '测试工程')
+  assert.equal(store[0].draft_cover, '') // 不继承他人封面
+  assert.equal(store[0].draft_is_invisible, false) // 脏布尔不继承
+  assert.equal(store[0].tm_draft_removed, 0) // 基线移除时间戳清零
+  assert.equal(Object.keys(store[0]).length, 38) // 固定基线 38 键，不多不漏
+  assert.equal(store[0].draft_fold_path, fwd)
+  assert.equal(store[0].draft_json_file, fwd + '/draft_content.json')
+  assert.equal(store[0].tm_duration, 123456)
+  assert.equal(store[0].draft_type, 'face')
+  // 同名路径二次登记 → 置顶且不堆积；coverPath 给定则原样写入
+  const cover = path.join(folder, 'draft_cover.jpg')
+  registerInRootMeta({ draftFolder: folder, draftName: '测试工程', durationUs: 1, coverPath: cover })
+  store = JSON.parse(fs.readFileSync(rootMetaPath, 'utf-8')).all_draft_store
+  assert.equal(store.filter((e) => e.draft_fold_path === fwd).length, 1)
+  assert.equal(store[0].draft_cover, cover.split('\\').join('/'))
+  assert.equal(store.length, 2)
+})
+
+test('verifyDraftFolder：完好草稿通过；素材缺失/坏 JSON → ok:false 且列明问题', () => {
+  const folder = path.join(tmpRoot, 'draftX')
+  const asset = path.join(folder, 'assets', '0001_clip_001.mp4')
+  fs.mkdirSync(path.dirname(asset), { recursive: true })
+  fs.writeFileSync(asset, 'x')
+  const content = { duration: 1000000, materials: { videos: [{ id: 'v1', path: asset }] }, tracks: [{ type: 'video', segments: [{ id: 's1' }] }] }
+  fs.writeFileSync(path.join(folder, 'draft_content.json'), JSON.stringify(content), 'utf-8')
+  fs.writeFileSync(path.join(folder, 'draft_meta_info.json'), JSON.stringify({ draft_name: 'draftX' }), 'utf-8')
+  const ok = verifyDraftFolder({ draftFolder: folder, expectedAssetCount: 1 })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.trackCounts.video, 1)
+  assert.equal(ok.pathRefs, 1)
+  assert.equal(ok.missing, 0)
+  assert.equal(ok.assetFiles, 1)
+  // 素材被删 → 缺失定向报错
+  fs.rmSync(asset)
+  const bad = verifyDraftFolder({ draftFolder: folder, expectedAssetCount: 1 })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.missing, 1)
+  assert.equal(bad.problems.some((p) => p.includes('素材路径不存在')), true)
+  // 坏 JSON → 解析问题
+  fs.writeFileSync(path.join(folder, 'draft_content.json'), '{oops', 'utf-8')
+  const bad2 = verifyDraftFolder({ draftFolder: folder })
+  assert.equal(bad2.ok, false)
+  assert.equal(bad2.problems.some((p) => p.includes('不可解析')), true)
+})
+
+// ── 轨道格式标准（2026-09-16：《剪映轨道格式标准_2026-09-16》§3.2 唯一构造器 + §7-⑤ 校验）──
+
+test('buildSubtitleSegment：标准字段齐全（基类/媒体/视觉/字幕标准位/speed 引用不悬空）', () => {
+  const materials = { texts: [], speeds: [] }
+  const seg = buildSubtitleSegment('测试字幕', 1000000, 2000000, materials)
+  // 素材层：texts + speeds 各一件，段引用可解析（§7-⑤）
+  assert.equal(materials.texts.length, 1)
+  assert.equal(materials.speeds.length, 1)
+  assert.equal(seg.material_id, materials.texts[0].id)
+  assert.equal(seg.extra_material_refs.includes(materials.speeds[0].id), true)
+  // 基类标准字段（§3.1）
+  assert.equal(seg.enable_adjust, true)
+  assert.equal(seg.track_attribute, 0)
+  assert.equal(seg.track_render_index, 0)
+  assert.equal(seg.visible, true)
+  assert.equal(seg.reverse, false)
+  assert.deepEqual(seg.target_timerange, { start: 1000000, duration: 2000000 })
+  assert.deepEqual(seg.common_keyframes, [])
+  assert.deepEqual(seg.keyframe_refs, [])
+  // 媒体附加（§3.3）
+  assert.deepEqual(seg.source_timerange, { start: 0, duration: 2000000 })
+  assert.equal(seg.speed, 1.0)
+  assert.equal(seg.is_tone_modify, false)
+  // 视觉附加 + 字幕标准位（§3.2）
+  assert.deepEqual(seg.clip.transform, { x: 0, y: SUBTITLE_TRANSFORM_Y })
+  assert.equal(seg.uniform_scale.on, true)
+  // 文本素材：水平居中 + content JSON 可解析（§4.3）
+  assert.equal(materials.texts[0].alignment, SUBTITLE_ALIGNMENT)
+  assert.equal(materials.texts[0].type, 'text')
+  assert.equal(JSON.parse(materials.texts[0].content).text, '测试字幕')
+})
+
+test('verifyDraftFolder：段 material_id 悬空 → ok:false 且计 dangling（标准 §7-⑤）', () => {
+  const folder = path.join(tmpRoot, 'draftDangling')
+  fs.mkdirSync(folder, { recursive: true })
+  const content = {
+    duration: 1000000,
+    materials: { videos: [{ id: 'v1' }] },
+    tracks: [
+      { type: 'video', segments: [{ id: 's1', material_id: 'v1' }] },
+      { type: 'text', segments: [{ id: 's2', material_id: 'ghost' }] },
+    ],
+  }
+  fs.writeFileSync(path.join(folder, 'draft_content.json'), JSON.stringify(content), 'utf-8')
+  fs.writeFileSync(path.join(folder, 'draft_meta_info.json'), '{}', 'utf-8')
+  const v = verifyDraftFolder({ draftFolder: folder })
+  assert.equal(v.ok, false)
+  assert.equal(v.dangling, 1)
+  assert.equal(v.problems.some((p) => p.includes('段素材引用悬空')), true)
+  assert.equal(v.trackCounts.video, 1)
+  assert.equal(v.trackCounts.text, 1)
 })

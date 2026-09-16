@@ -45,6 +45,20 @@ const DRAFT_SCHEMA = Object.freeze({
   generator_app_version: '5.9.0',
 })
 
+// 2026-09-16 用户裁决：视频片段之间添加半秒（500000 微秒）间隔，所有轨道随窗口起点同步。
+// 模块级单一口径：exportMultiToDraft / mergeJianyingManifests 与 montage-final-ipc 共用
+// （导出后 JY.VIDEO_GAP_US 引用），避免多处常量漂移。
+const VIDEO_GAP_US = 500000
+
+// 2026-09-16 修复（用户实测：字幕显示在画面中间）：字幕标准位=屏幕下方，
+// 口径沿用 pyJianYingDraft ClipSettings(transform_y=-0.8)（官方 README 字幕示例）——
+// clip.transform 单位=半画布（y 负=向下）。单视频路径 appendSubtitleTrack 与
+// from-task 合并路径（montage-final-ipc 经 JY.SUBTITLE_TRANSFORM_Y / SUBTITLE_ALIGNMENT
+// 引用）共用，避免两路径字幕位置漂移。
+const SUBTITLE_TRANSFORM_Y = -0.8
+// 字幕文本水平对齐：0=左 1=居中 2=右（materials.texts[].alignment）
+const SUBTITLE_ALIGNMENT = 1
+
 /** 大写无连字符 uuid（draft_meta_info.draft_id 用，对照 str(uuid.uuid4()).upper()） */
 function newId() {
   return randomUUID().replace(/-/g, '').toUpperCase()
@@ -511,7 +525,9 @@ function mergeJianyingManifests(manifests, draftName) {
     }
     renameByManifest.push(rename)
   }
-  // 内容合并：materials 数组拼接（资产路径按改名表重写）；轨道按类型+同类序号聚合
+  // 内容合并：materials 数组拼接（资产路径按改名表重写）；轨道按类型+同类序号聚合。
+  // 2026-09-16 用户裁决：视频片段之间添加半秒间隔——窗口起点（cursorUs）与总时长
+  // （durationUs）均含间隔（最后一个成片后不加），使全部轨道随窗口偏移同步。
   let cursorUs = 0
   let durationUs = 0
   const mergedMaterials = {}
@@ -550,10 +566,24 @@ function mergeJianyingManifests(manifests, draftName) {
         mergedTracksByKey.get(key).segments.push(copy)
       }
     }
-    durationUs += Number(content.duration) || 0
-    cursorUs += Number(content.duration) || 0
+    const segWindowUs = Number(content.duration) || 0
+    durationUs += segWindowUs
+    cursorUs += segWindowUs
+    if (mi < list.length - 1) { cursorUs += VIDEO_GAP_US; durationUs += VIDEO_GAP_US }
   })
-  const firstContent = JSON.parse(JSON.stringify(list[0].draft_content))
+  // 2026-09-16 修复：合并基底用 TEMPLATE 骨架兜底（防服务端旧版格式缺字段/版本过低）
+  // 服务端清单 draft_content 是旧版（new_version 63.0.0 / version "5.9.0"），
+  // 剪映 11.x 判「版本过低/已损坏」拒开 → 强制覆写版本三元组 + 补齐缺失顶层字段
+  const firstContent = Object.assign(
+    JSON.parse(JSON.stringify(TEMPLATE)), // 完整骨架兜底（29 顶层字段 + new_version 110.0.0 / version 360000）
+    JSON.parse(JSON.stringify(list[0].draft_content)), // 服务端清单覆写业务字段（tracks/materials/duration 等）
+    { // 强制覆写版本三元组 + platform（防服务端旧版格式）
+      new_version: TEMPLATE.new_version,
+      version: TEMPLATE.version,
+      platform: TEMPLATE.platform,
+      last_modified_platform: TEMPLATE.last_modified_platform,
+    }
+  )
   firstContent.id = hexId()
   if (draftName) firstContent.name = draftName
   firstContent.duration = durationUs
@@ -563,6 +593,7 @@ function mergeJianyingManifests(manifests, draftName) {
   return {
     draft_content: firstContent,
     draft_meta_info: list[0].draft_meta_info ? JSON.parse(JSON.stringify(list[0].draft_meta_info)) : {},
+    materials: mergedMaterials,
     assets: assetsOut,
     durationUs,
   }
@@ -822,8 +853,9 @@ function readJsonSafe(fp) {
 }
 
 /** 文本素材（materials.texts 成员；text_segment.py TextSegment.export_material）。
- *  effectStyleId：剪映花字效果 id（jy_effect_id）→ content.effectStyle 引用（path 'C:' 为原版占位）。 */
-function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, effectStyleId = '' } = {}) {
+ *  effectStyleId：剪映花字效果 id（jy_effect_id）→ content.effectStyle 引用（path 'C:' 为原版占位）。
+ *  alignment：水平对齐（0=左 1=居中 2=右）；字幕传 SUBTITLE_ALIGNMENT。 */
+function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, effectStyleId = '', alignment = 0 } = {}) {
   const contentJson = {
     styles: [
       {
@@ -846,7 +878,7 @@ function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, ef
     id: hexId(),
     content: JSON.stringify(contentJson),
     typesetting: 0,
-    alignment: 0,
+    alignment,
     letter_spacing: 0,
     line_spacing: 0.02,
     line_feed: 1,
@@ -962,18 +994,24 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       })
       totalDurationUs += clips[clips.length - 1].durationUs
     }
+    // 总时长包含片段间隔（除最后一个片段外，每个片段后加半秒）
+    if (clips.length > 1) totalDurationUs += (clips.length - 1) * VIDEO_GAP_US
     const canvasWidth = clips[0].width
     const canvasHeight = clips[0].height
 
     // 2. 草稿目录
     const draftRoot = getDefaultDraftRoot()
     fs.mkdirSync(draftRoot, { recursive: true })
-    const projectUuid = newId()
+    // 2026-09-16 用户裁决：草稿目录名从随机 UUID 改为有意义名称（品牌+产品型号+日期时间+分辨率）
+    // 目录名需合法（Windows 文件名限制）；日期时间已保证唯一性，无需追加 UUID 后缀
     if (!draftName) {
       draftName = clips.length === 1
         ? `螺丝钉智能混剪_${path.basename(clips[0].path, path.extname(clips[0].path))}`
         : '螺丝钉智能混剪_多片段时间轴'
     }
+    const projectUuid = String(draftName)
+      .replace(/[\\/:*?"<>|]/g, '_')  // Windows 非法字符替换为下划线
+      .slice(0, 80)  // 限制长度（Windows 路径上限 260，预留空间）
     const draftFolder = path.join(draftRoot, projectUuid)
     fs.mkdirSync(draftFolder, { recursive: true })
 
@@ -1051,6 +1089,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
         })
       }
       cursorUs += clip.durationUs
+      // 除最后一个片段外，每个片段后添加半秒间隔
+      if (i < clips.length - 1) cursorUs += VIDEO_GAP_US
     })
     const tracks = [videoTrack]
 
@@ -1089,6 +1129,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
           } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
         }
         cursorUs += clip.durationUs
+        // 2026-09-16 用户裁决：视频片段之间添加半秒间隔，所有轨道同步
+        if (i < clips.length - 1) cursorUs += VIDEO_GAP_US
       })
       if (!subtitleTrack.segments.length) tracks.splice(tracks.indexOf(subtitleTrack), 1)
       if (tplTrack && tplTrack.segments.length) tracks.push(tplTrack)
@@ -1102,6 +1144,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
           } catch (_) {}
         }
         cursorUs += clip.durationUs
+        // 2026-09-16 用户裁决：视频片段之间添加半秒间隔，所有轨道同步
+        if (i < clips.length - 1) cursorUs += VIDEO_GAP_US
       })
       if (tplTrack && tplTrack.segments.length) tracks.push(tplTrack)
     }
@@ -1152,8 +1196,56 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
 }
 
 /** 把导出的草稿登记进 root_meta_info.json 首页索引（2026-09-12 M1）。
- *  条目 schema 克隆索引现有首条（保真本机剪映版本字段集）；写前备份；
- *  按 draft_fold_path 去重合并。 */
+ *  条目 = 固定基线（ROOT_META_ENTRY_BASE） + 11 项业务字段覆写；写前备份；
+ *  按 draft_fold_path 去重合并、置顶。 */
+/** root_meta_info.json 条目固定基线（2026-09-16 用户裁决：废止「克隆 store[0]」）：
+ *  来源 = 本机剪映 11.x 自行写入的条目快照（实测本机 18 个条目字段并集完全一致，共 38 键）；
+ *  云端/企业/统计字段取中性缺省，调用时仅覆写 registerInRootMeta 列出的 11 项业务字段。
+ *  旧实现克隆 store[0]（首页列表第一条草稿）保真 schema，代价是继承他人路径字段——实测
+ *  draft_cover 指向「剪辑模板」目录（2026-09-16 封面事故）。
+ *  注：草稿的轨道/素材定义在 draft_content.json（pyJianYingDraft 骨架，见 DRAFT_SCHEMA），
+ *  与首页索引条目无关；本条目只是首页卡片的字段集合。 */
+const ROOT_META_ENTRY_BASE = {
+  cloud_draft_cover: false,
+  cloud_draft_sync: false,
+  draft_cloud_last_action_download: false,
+  draft_cloud_purchase_info: '',
+  draft_cloud_template_id: '',
+  draft_cloud_tutorial_info: '',
+  draft_cloud_videocut_purchase_info: '',
+  draft_cover: '',
+  draft_fold_path: '',
+  draft_id: '',
+  draft_is_ai_shorts: false,
+  draft_is_cloud_temp_draft: false,
+  draft_is_infinite_canvas_draft: false,
+  draft_is_invisible: false,
+  draft_is_pippit_draft: false,
+  draft_is_web_article_video: false,
+  draft_json_file: '',
+  draft_name: '',
+  draft_new_version: '',
+  draft_root_path: '',
+  draft_timeline_materials_size: 0,
+  draft_type: 'face',
+  draft_web_article_video_enter_from: '',
+  pippit_avatar_url: '',
+  pippit_extra_info: '',
+  pippit_id: '',
+  pippit_user_name: '',
+  streaming_edit_draft_ready: true,
+  tm_draft_cloud_completed: '',
+  tm_draft_cloud_entry_id: -1,
+  tm_draft_cloud_modified: 0,
+  tm_draft_cloud_parent_entry_id: -1,
+  tm_draft_cloud_space_id: -1,
+  tm_draft_cloud_user_id: -1,
+  tm_draft_create: 0,
+  tm_draft_modified: 0,
+  tm_draft_removed: 0,
+  tm_duration: 0,
+}
+
 function registerInRootMeta({ draftFolder, draftName, durationUs = 0, coverPath = '' }) {
   const draftRoot = getDefaultDraftRoot()
   const rootMetaPath = path.join(draftRoot, 'root_meta_info.json')
@@ -1163,8 +1255,9 @@ function registerInRootMeta({ draftFolder, draftName, durationUs = 0, coverPath 
   const backupPath = rootMetaPath + '.tintin-backup'
   if (!fs.existsSync(backupPath)) fs.copyFileSync(rootMetaPath, backupPath)
 
-  const templateEntry = store[0] || {}
-  const entry = JSON.parse(JSON.stringify(templateEntry))
+  // 2026-09-16 用户裁决：条目从固定基线构建，不再克隆 store[0]（旧实现会继承他人草稿
+  // 的路径字段——实测 draft_cover 指向「剪辑模板」）
+  const entry = JSON.parse(JSON.stringify(ROOT_META_ENTRY_BASE))
   const nowUs = Date.now() * 1000
   Object.assign(entry, {
     draft_name: draftName,
@@ -1176,11 +1269,74 @@ function registerInRootMeta({ draftFolder, draftName, durationUs = 0, coverPath 
     tm_draft_create: nowUs,
     tm_draft_modified: nowUs,
     tm_duration: Math.round(durationUs),
-    draft_cover: coverPath ? fwd(coverPath) : (templateEntry.draft_cover ?? ''),
+    tm_draft_removed: 0, // 基线快照若带「移除」时间戳必须清零（防首页误判已删除）
+    // 2026-09-16 修复（用户实测：首页封面串到别的草稿）：封面由调用方先生成
+    // draftFolder/draft_cover.jpg 再传 coverPath；未生成时一律空串，不得指向他人目录。
+    draft_cover: coverPath ? fwd(coverPath) : '',
   })
   rootMeta.all_draft_store = [entry, ...store.filter((e) => e && e.draft_fold_path !== entry.draft_fold_path)]
   fs.writeFileSync(rootMetaPath, JSON.stringify(rootMeta, null, 2), 'utf-8')
   return { ok: true, backupPath, entry }
+}
+
+/** 草稿目录自检（2026-09-16：导出「成功」的硬判据，替代仅检查文件存在）：
+ *  ① 两个 JSON 可解析；② 轨道非空；③ 所有素材引用路径在磁盘上存在；
+ *  ④ assets 目录文件数 ≥ 导出清单（expectedAssetCount>0 时）。
+ *  返回 { ok, trackCounts, pathRefs, missing, assetFiles, problems }；不抛异常。 */
+function verifyDraftFolder({ draftFolder, expectedAssetCount = 0 }) {
+  const problems = []
+  let content = null
+  try { content = JSON.parse(fs.readFileSync(path.join(draftFolder, 'draft_content.json'), 'utf-8')) } catch (e) { problems.push('draft_content.json 不可解析：' + ((e && e.message) || e)) }
+  try { JSON.parse(fs.readFileSync(path.join(draftFolder, 'draft_meta_info.json'), 'utf-8')) } catch (e) { problems.push('draft_meta_info.json 不可解析：' + ((e && e.message) || e)) }
+  const trackCounts = {}
+  let pathRefs = 0
+  let missing = 0
+  let dangling = 0
+  if (content) {
+    for (const t of content.tracks || []) {
+      const n = (t.segments || []).length
+      trackCounts[t.type] = (trackCounts[t.type] || 0) + n
+    }
+    if (!(content.tracks || []).length) problems.push('draft_content.json 无轨道')
+    for (const k of Object.keys(content.materials || {})) {
+      for (const it of content.materials[k] || []) {
+        if (it && typeof it.path === 'string' && it.path) {
+          pathRefs++
+          if (!fs.existsSync(it.path)) {
+            missing++
+            if (problems.length < 10) problems.push('素材路径不存在：' + it.path)
+          }
+        }
+      }
+    }
+    // 2026-09-16 新增（《剪映轨道格式标准_2026-09-16》§7 合规校验）：段素材引用悬空检查——
+    // segment.material_id 必须在 content.materials.* 中存在（悬空 = 剪映显示占位/丢素材）
+    const matIds = new Set()
+    for (const k of Object.keys(content.materials || {})) {
+      for (const it of content.materials[k] || []) { if (it && it.id) matIds.add(it.id) }
+    }
+    for (const t of content.tracks || []) {
+      for (const s of t.segments || []) {
+        if (s && s.material_id && !matIds.has(s.material_id)) {
+          dangling++
+          if (problems.length < 10) problems.push('段素材引用悬空：' + t.type + ' 轨 -> ' + s.material_id)
+        }
+      }
+    }
+  }
+  let assetFiles = 0
+  try {
+    const walk = (dir) => {
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fp = path.join(dir, ent.name)
+        if (ent.isDirectory()) walk(fp)
+        else assetFiles++
+      }
+    }
+    walk(path.join(draftFolder, 'assets'))
+  } catch (_) { /* 无 assets 目录（本地文件导出路经）不视为问题 */ }
+  if (expectedAssetCount > 0 && assetFiles < expectedAssetCount) problems.push('资产文件数不足：磁盘 ' + assetFiles + ' < 清单 ' + expectedAssetCount)
+  return { ok: problems.length === 0, trackCounts, pathRefs, missing, dangling, assetFiles, problems }
 }
 
 /** 探测 (时长微秒, 宽, 高)；无 deps 或失败返回 [0, 1080, 1920]（_probe_video L241-270） */
@@ -1247,7 +1403,31 @@ function buildTransitionMaterial(materials, spec) {
   return transId
 }
 
-/** 一条 SRT 的 cue 追加到文本轨（v2：segments 带完整视觉片段字段；opts.anim=入场动画名） */
+/** 字幕段标准构造器（2026-09-16：《剪映轨道格式标准_2026-09-16》§3.2 唯一实现）。
+ *  两条导出路径（exportMultiToDraft 单/多视频、from-tasks 字幕重建）共用——
+ *  禁止各自手写段对象（此前 from-tasks 手写段缺 track_attribute/track_render_index/
+ *  visible/speed 引用等标准字段）。用户裁决：轨道格式按标准导出，不许自组装。
+ *  结构 = baseSegmentFields + mediaSegmentFields + visualSegmentFields +
+ *  字幕标准位（transform_y=SUBTITLE_TRANSFORM_Y）+ 文本水平居中（texts.alignment）。 */
+function buildSubtitleSegment(textContent, startUs, durUs, materials, opts = {}) {
+  const mat = textMaterial(textContent, { alignment: SUBTITLE_ALIGNMENT })
+  if (!Array.isArray(materials.texts)) materials.texts = []
+  materials.texts.push(mat)
+  const sp = speedMaterial(1.0)
+  if (!Array.isArray(materials.speeds)) materials.speeds = []
+  materials.speeds.push(sp)
+  const seg = {
+    ...baseSegmentFields(mat.id, startUs, durUs),
+    ...mediaSegmentFields(durUs, sp.id),
+    ...visualSegmentFields(),
+  }
+  // 字幕标准位：屏幕下方（口径见 SUBTITLE_TRANSFORM_Y 注释）
+  seg.clip.transform = { x: 0, y: SUBTITLE_TRANSFORM_Y }
+  decorateTextSegment(seg, materials, opts)
+  return seg
+}
+
+/** 一条 SRT 的 cue 追加到文本轨（v2：走 buildSubtitleSegment 标准构造器；opts.anim=入场动画名） */
 function appendSubtitleTrack(track, materials, srtPath, offsetUs = 0, limitEndUs = null, opts = {}) {
   for (const [startSec, endSec, textContent] of parseSrt(srtPath)) {
     const startUs = Math.floor(startSec * 1000000) + offsetUs
@@ -1255,17 +1435,7 @@ function appendSubtitleTrack(track, materials, srtPath, offsetUs = 0, limitEndUs
     if (durUs <= 0) continue
     if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = Math.max(0, limitEndUs - startUs)
     if (durUs <= 0) continue
-    const mat = textMaterial(textContent)
-    materials.texts.push(mat)
-    const sp = speedMaterial(1.0)
-    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
-    const seg = {
-      ...baseSegmentFields(mat.id, startUs, durUs),
-      ...mediaSegmentFields(durUs, sp.id),
-      ...visualSegmentFields(),
-    }
-    decorateTextSegment(seg, materials, opts)
-    track.segments.push(seg)
+    track.segments.push(buildSubtitleSegment(textContent, startUs, durUs, materials, opts))
   }
 }
 
@@ -1431,6 +1601,7 @@ module.exports = {
   exportToDraft,
   exportMultiToDraft,
   registerInRootMeta,
+  verifyDraftFolder,
   normalizeTransitions,
   normalizeOneTransition,
   parseSrt,
@@ -1449,4 +1620,8 @@ module.exports = {
   appendFancyEventTracks,
   draft_content_tracks_render_index,
   normalizeVoiceClips,
+  SUBTITLE_TRANSFORM_Y,
+  SUBTITLE_ALIGNMENT,
+  buildSubtitleSegment,
+  VIDEO_GAP_US,
 }

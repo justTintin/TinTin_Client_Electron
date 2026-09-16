@@ -1162,10 +1162,6 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     return { ok: true, results }
   })
 
-  // ── sfx:ensureFile — 音效资产按 id 落本地缓存（2026-09-15 架构裁决：服务端=音效
-  //     资产权威源，客户端导出时按需拉取；草稿引用本地路径。幂等：命中缓存不重复下载）──
-  const SFX_CACHE_DIR = path.join(app.getPath('userData'), 'sfx-cache')
-
   // ── editor:exportJianyingFromTasks — 服务端合成任务 → 剪映时间轴草稿
   //     （2026-09-15 用户裁决第3条：客户端合并清单 + 对齐资产到剪映数据格式。
   //     流程：逐任务 from-task 清单 → mergeJianyingManifests 合并（素材/字幕/口播/BGM）

@@ -1025,6 +1025,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
                 return ft && FT.getFancySoundGainDb ? FT.getFancySoundGainDb(ft) : null
               } catch (_) { return null }
             })(),
+            // 2026-09-17 用户报障①：第四步选中的服务端字幕样式 + UI 背景不透明度透传导出器
+            subtitleStyle: p.subtitleStyle && typeof p.subtitleStyle === 'object' ? p.subtitleStyle : null,
+            subtitleBoxOpacity: p.subtitleBoxOpacity ?? null,
             draftName: p.draftName,
             deps,
           })
@@ -1297,8 +1300,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   //     「下载服务端封装好的草稿 zip → 解压 → 数据校验 + 里面文件的路径校验 → 放到草稿目录下」。
   //     链路（2026-09-17 服务端契约变更）：POST /editor/export/jianying/from-task/{tid}
   //     ?jianying_cache_dir=<客户端剪映「媒体缓存」目录> 一步聚合包（建草稿在服务端内部完成；
-  //     缓存目录必填，服务端按它对齐文字模板缓存路径前缀）→ System32 tar 解压（zip 中文
-  //     目录名 UTF-8 实测可靠）→ validateDraftPackage（硬失败不落盘）→ 落盘剪映草稿根
+  //     缓存目录必填，服务端按它对齐文字模板缓存路径前缀）→ zip 落盘资产目录后
+  //     System32 tar 文件口径解压（2026-09-18 实证：stdin 流式读 zip 静默丢条目）→
+  //     validateDraftPackage（硬失败不落盘）→ 落盘剪映草稿根
   //     （包内名防撞名）→ 素材路径绝对化 → 封面/首页注册/拉起。
   //     映射关系属客户端职责（用户裁决）：服务端不给 rel_path，客户端按包内相对路径自校验自落盘。
   ipcMain.handle('editor:exportJianyingPackage', async (event, payload) => {
@@ -1339,13 +1343,25 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           + '?jianying_cache_dir=' + encodeURIComponent(cacheDir), { timeout: 300000 })
         const zipBuf = Buffer.from(zipRes.raw || '')
         if (zipBuf.length < 4 || zipBuf.slice(0, 2).toString() !== 'PK') throw new Error('任务 ' + tid + ' 草稿包无效（非 zip）')
-        // (c) 解压到临时目录（System32 tar=bsdtar，zip + UTF-8 中文条目实测可靠）
+        // (c) 2026-09-18 实证修复：zip 经 stdin 喂 System32 tar 流式解压会静默丢
+        //     头部条目（draft_content.json 等 4 项丢失）且 status=0 无 stderr →
+        //     误报「包内无 draft_content.json」；bsdtar 读 zip 需随机访问，必须
+        //     先落盘再文件口径解压。zip 落点按用户裁决入工程资产目录 jy_pkg/
+        //     子目录（与 srt//dubbed/ 同级，重导覆盖为最新，导入成功保留可复用），
+        //     未传 destDir 回落临时目录；解压中间目录仍 finally 清理
+        const zipDir = String(p.zipDestDir || '').trim() || path.join(os.tmpdir(), 'jy-pkg-zip')
+        fs.mkdirSync(zipDir, { recursive: true })
+        const zipFile = path.join(zipDir, 'jianying_pkg_' + tid + '.zip')
+        fs.writeFileSync(zipFile, zipBuf)
         emit(`[${tid}] 正在解压校验...`, pct + 8)
         const tmp = path.join(os.tmpdir(), 'jy-pkg-' + Date.now() + '-' + ti)
         tmpRoots.push(tmp)
         fs.mkdirSync(tmp, { recursive: true })
-        const rc = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'),
-          ['-xf', '-', '-C', '.'], { input: zipBuf, cwd: tmp, timeout: 120000, windowsHide: true })
+        // tar.exe 定位：SystemRoot 环境变量（Windows 恒有）→ System32\tar.exe；
+        //   缺环境变量回落裸名交 PATH 解析——代码内不写 C:\Windows 字面量
+        //   （2026-09-18 用户批评硬编码；亦杜绝该字面量转义丢失复发）
+        const tarExe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar.exe'
+        const rc = spawnSync(tarExe, ['-xf', zipFile, '-C', tmp], { timeout: 120000, windowsHide: true })
         if (rc.status !== 0) throw new Error('任务 ' + tid + ' 解压失败：' + String(rc.stderr || '').slice(0, 200))
         // (d) 定位包内草稿目录（含 draft_content.json 的目录；兼容 zip 根直铺）
         let pkgDir = tmp

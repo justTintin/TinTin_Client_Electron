@@ -473,6 +473,9 @@ declare interface TintinBridgeServer {
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
     /** 2026-09-17：音效来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板命中位置） */
     fancyTemplate?: Record<string, unknown> | null
+    /** 2026-09-17 用户报障①：服务端字幕样式对象 + UI 背景不透明度百分比 → 字幕轨文本样式 */
+    subtitleStyle?: Record<string, unknown> | null
+    subtitleBoxOpacity?: number | null
     draftName?: string
   }): Promise<{ success: boolean; message: string; bgmIncluded?: boolean; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string }; conformance?: { checkedSegs?: number; warnings?: string[] } }>
   /** 轨 2（2026-09-17 用户裁决）：服务端标准包导入——from-task 一步聚合包（含建草稿，
@@ -480,6 +483,9 @@ declare interface TintinBridgeServer {
   editorExportJianyingPackage(payload: {
     taskIds: string[]
     progressChannel?: string
+    /** 2026-09-18：草稿包 zip 落盘目录（工程资产目录 jy_pkg/；缺省回落临时目录）——
+     *  zip 必须落盘后文件口径解压（stdin 流式读 zip 静默丢条目） */
+    zipDestDir?: string
   }): Promise<{ success: boolean; message: string; results?: Array<{ taskId: string; draftFolder: string; warnings: string[]; registered: boolean }>; launched?: boolean; jianyingRunning?: boolean } | { success: false; message: string }>
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */
   jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; groups: Array<{ group: string; lanes: Array<{ lane: string; total: number; endpoint: string; tags: Array<{ name: string; count: number }>; items: Array<Record<string, unknown>> }> }>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>

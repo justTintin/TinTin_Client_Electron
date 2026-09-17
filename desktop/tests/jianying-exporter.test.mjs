@@ -23,6 +23,7 @@ const {
   timestampToSec,
   appendKeywordTrack,
   appendSfxTrackFromEvents,
+  jianyingSubtitleStyleFromServer,
   registerInRootMeta,
   verifyDraftFolder,
   validateDraftPackage,
@@ -820,4 +821,67 @@ test('validateDraftPackage：完好包通过；缺素材/悬空引用/坏 JSON �
   const w = validateDraftPackage(warnDir)
   assert.equal(w.ok, true)
   assert.equal(w.warnings.some((x) => x.includes('非标准 32 位小写 hex')), true)
+})
+
+// ── 服务端字幕样式 → 剪映文本样式（2026-09-17 用户报障①）──
+
+test('jianyingSubtitleStyleFromServer：色/描边/背景框映射与夹逼口径', () => {
+  // 无样式对象 → 默认白字无描边无背景
+  assert.deepEqual(jianyingSubtitleStyleFromServer(null, 20), {
+    colorHex: '#FFFFFF', strokeColorHex: '', strokeWidth: 0, bgColorHex: '', bgAlpha: 0,
+  })
+  assert.deepEqual(jianyingSubtitleStyleFromServer(undefined, null).colorHex, '#FFFFFF')
+  // 全字段：UI 不透明度优先于 box 自带 opacity
+  const m = jianyingSubtitleStyleFromServer({
+    color: '#FFE135', outline: 3, outline_colour: '#000000', box: 'black@0.5',
+  }, 20)
+  assert.equal(m.colorHex, '#FFE135')
+  assert.equal(m.strokeWidth, 0.03)
+  assert.equal(m.strokeColorHex, '#000000')
+  assert.equal(m.bgAlpha, 0.2)
+  assert.equal(m.bgColorHex, '#000000')
+  // 色名归一 + UI 传 null 回退 box 自带 opacity
+  const m2 = jianyingSubtitleStyleFromServer({ color: 'white', outline: 5, outline_colour: 'black', box: '#102030@0.5' }, null)
+  assert.equal(m2.colorHex, '#FFFFFF')
+  assert.equal(m2.strokeWidth, 0.05)
+  assert.equal(m2.strokeColorHex, '#000000')
+  assert.equal(m2.bgAlpha, 0.5)
+  assert.equal(m2.bgColorHex, '#102030')
+  // UI 0% → 无背景框；outline 0 → 无描边
+  const m3 = jianyingSubtitleStyleFromServer({ color: '#FF0000', outline: 0, box: 'black@0.5' }, 0)
+  assert.equal(m3.bgAlpha, 0)
+  assert.equal(m3.strokeWidth, 0)
+  // 描边宽夹逼 [0.005, 0.1]
+  assert.equal(jianyingSubtitleStyleFromServer({ outline: 50 }, null).strokeWidth, 0.1)
+  assert.equal(jianyingSubtitleStyleFromServer({ outline: 0.1 }, null).strokeWidth, 0.005)
+})
+
+test('buildSubtitleSegment：subtitleStyle 落文本素材（fill/strokes/background 真机 schema）', () => {
+  const materials = {}
+  const style = jianyingSubtitleStyleFromServer({
+    color: '#FFE135', outline: 3, outline_colour: '#223344', box: 'black@0.5',
+  }, 40)
+  const seg = buildSubtitleSegment('字幕行', 0, 2000000, materials, { subtitleStyle: style })
+  assert.ok(seg.material_id)
+  const mat = materials.texts[0]
+  const content = JSON.parse(mat.content)
+  const st = content.styles[0]
+  // 填充色 = 选中样式色
+  assert.deepEqual(st.fill.content.solid.color, [1, 225 / 255, 53 / 255])
+  // 描边：真机 schema strokes=[{content:{render_type,solid},width,mode:0}]
+  assert.equal(st.strokes.length, 1)
+  assert.equal(st.strokes[0].width, 0.03)
+  assert.equal(st.strokes[0].mode, 0)
+  assert.deepEqual(st.strokes[0].content.solid.color, [34 / 255, 51 / 255, 68 / 255])
+  // 背景框：enable + fill.alpha=UI 不透明度
+  assert.equal(st.background.enable, true)
+  assert.equal(st.background.fill.alpha, 0.4)
+  assert.deepEqual(st.background.fill.content.solid.color, [0, 0, 0])
+  // 无样式时回退默认：无描边无背景
+  const materials2 = {}
+  buildSubtitleSegment('默认', 0, 1000000, materials2, {})
+  const st2 = JSON.parse(materials2.texts[0].content).styles[0]
+  assert.deepEqual(st2.strokes, [])
+  assert.equal(st2.background, undefined)
+  assert.deepEqual(st2.fill.content.solid.color, [1, 1, 1])
 })

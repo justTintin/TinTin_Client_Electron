@@ -739,26 +739,44 @@ function readJsonSafe(fp) {
 /** 文本素材（materials.texts 成员；text_segment.py TextSegment.export_material）。
  *  effectStyleId：剪映花字效果 id（jy_effect_id）→ content.effectStyle 引用（path 'C:' 为原版占位）。
  *  alignment：水平对齐（0=左 1=居中 2=右）；字幕传 SUBTITLE_ALIGNMENT。 */
-function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, effectStyleId = '', alignment = 0 } = {}) {
-  const contentJson = {
-    styles: [
-      {
-        fill: {
-          alpha: 1.0,
-          content: { render_type: 'solid', solid: { alpha: 1.0, color: hexToRgbFloats(colorHex) } },
-        },
-        range: [0, text.length],
-        size,
-        bold: !!bold,
-        italic: false,
-        underline: false,
-        strokes: [],
-        // 11.x 实测字段（标准 §4.3 content 注记）：pyJianYingDraft 不导出，导出器补齐
-        useLetterColor: true,
-      },
-    ],
-    text,
+function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, effectStyleId = '', alignment = 0, strokeColorHex = '', strokeWidth = 0, bgColorHex = '', bgAlpha = 0 } = {}) {
+  const style0 = {
+    fill: {
+      alpha: 1.0,
+      content: { render_type: 'solid', solid: { alpha: 1.0, color: hexToRgbFloats(colorHex) } },
+    },
+    range: [0, text.length],
+    size,
+    bold: !!bold,
+    italic: false,
+    underline: false,
+    strokes: [],
+    // 11.x 实测字段（标准 §4.3 content 注记）：pyJianYingDraft 不导出，导出器补齐
+    useLetterColor: true,
   }
+  // 描边（2026-09-17 用户报障①：服务端字幕样式落草稿）：真机 schema
+  //   strokes=[{content:{render_type:'solid',solid:{color}},width,mode:0}]（width=比例量纲，真机实测 0.0423）
+  const sw = Number(strokeWidth) || 0
+  if (sw > 0 && strokeColorHex) {
+    style0.strokes = [{
+      content: { render_type: 'solid', solid: { alpha: 1.0, color: hexToRgbFloats(strokeColorHex) } },
+      width: sw,
+      mode: 0,
+    }]
+  }
+  // 背景框（同报障①）：与真机花字 effectStyle 的 background 同源模式
+  //   {enable, fill:{alpha, content:{render_type, solid}}, expandScale, offsetScale, roundnessScale}
+  const ba = Number(bgAlpha) || 0
+  if (ba > 0 && bgColorHex) {
+    style0.background = {
+      enable: true,
+      expandScale: [0.0, 0.0],
+      fill: { alpha: ba, content: { render_type: 'solid', solid: { alpha: 1.0, color: hexToRgbFloats(bgColorHex) } } },
+      offsetScale: [0.0, 0.0],
+      roundnessScale: 0.3,
+    }
+  }
+  const contentJson = { styles: [style0], text }
   if (effectStyleId) contentJson.styles[0].effectStyle = { id: effectStyleId, path: 'C:' }
   return {
     id: hexId(),
@@ -861,7 +879,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  [{phrase,startUs,durUs,resourceId}]（match textfx_clips 权威指派）→
  *  剪映原生文字模板三件套轨（text_templates+texts+segment）；有命中的视频
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPath = '', sfxGainDb = null, deps }) {
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPath = '', sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -989,6 +1007,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     //    fancyEffectId=花字效果 id。二期②：subAnim=字幕轨入场动画（本地语义 key → 剪映动画名映射）
     const SUB_ANIM_TO_JY = { rise: '向上滑动', slide: '向右滑动', pop: '弹入' }
     const subAnimName = SUB_ANIM_TO_JY[subAnim] || subAnim || ''
+    // 2026-09-17 用户报障①：服务端字幕样式 → 字幕轨文本素材样式（无样式对象回退默认白字）
+    const subStyleMapped = jianyingSubtitleStyleFromServer(subtitleStyle, subtitleBoxOpacity)
     // 2026-09-15：原生文字模板命中归一化（match textfx_clips 权威指派；有命中→'tpl'
     // 蓝字轨被原生实例替代）
     const tplClips = normalizeTextTemplateClips(textTemplateClips, clips.length)
@@ -1006,7 +1026,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
-          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim })
+          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim, subtitleStyle: subStyleMapped })
           for (const kind of effKinds) {
             appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache, {
               anim: textAnim,
@@ -1405,6 +1425,51 @@ function buildTransitionMaterial(materials, spec) {
   return transId
 }
 
+/** drawtext 色名 → hex（服务端样式 color/outline_colour/box 可能为色名，如 white） */
+const DRAWTEXT_COLOR_NAMES = {
+  white: '#FFFFFF', black: '#000000', red: '#FF4040', yellow: '#FFE135', blue: '#40A0FF',
+  green: '#40FF80', pink: '#FF7EB9', orange: '#FF8C1A', purple: '#C060FF', gold: '#F0C040',
+}
+function colorToHex(v, fallback) {
+  const s = String(v || '').trim()
+  if (!s) return fallback
+  if (s.startsWith('#')) return s
+  return DRAWTEXT_COLOR_NAMES[s.toLowerCase()] || fallback
+}
+
+/** 服务端字幕样式对象 → 剪映文本样式参数（2026-09-17 用户报障①：第四步选中的样式
+ *  必须落到导出草稿字幕轨）。style=/subtitle_styles 成员 {color, outline,
+ *  outline_colour, box:"color@opacity"}；boxOpacityPct=UI 背景不透明度百分比
+ *  （0-100，优先于 box 自带 opacity，与烧制链 boxStr 同口径；传 null 时回退 box 自带）。
+ *  描边宽：drawtext borderw 像素量纲（3~5）→ 剪映 content 比例量纲（真机实测 0.0423），
+ *  取 /100 并夹逼 [0.005, 0.1]。 */
+function jianyingSubtitleStyleFromServer(style, boxOpacityPct) {
+  const out = { colorHex: '#FFFFFF', strokeColorHex: '', strokeWidth: 0, bgColorHex: '', bgAlpha: 0 }
+  const st = style && typeof style === 'object' ? style : null
+  if (!st) return out
+  out.colorHex = colorToHex(st.color, '#FFFFFF')
+  const outline = Number(st.outline) || 0
+  if (outline > 0) {
+    out.strokeWidth = Math.min(0.1, Math.max(0.005, outline / 100))
+    out.strokeColorHex = colorToHex(st.outline_colour, '#000000')
+  }
+  const box = String(st.box || '').trim()
+  let boxColor = ''
+  let boxOpacity = 0
+  if (box) {
+    const at = box.indexOf('@')
+    boxColor = at >= 0 ? box.slice(0, at) : box
+    boxOpacity = at >= 0 ? (Number(box.slice(at + 1)) || 0) : 0
+  }
+  const uiPct = Number(boxOpacityPct)
+  const alpha = Number.isFinite(uiPct) && boxOpacityPct !== null && boxOpacityPct !== '' ? uiPct / 100 : boxOpacity
+  if (alpha > 0) {
+    out.bgAlpha = Math.min(1, Math.max(0, alpha))
+    out.bgColorHex = colorToHex(boxColor, '#000000')
+  }
+  return out
+}
+
 /** 字幕段标准构造器（2026-09-16：《剪映轨道格式标准_2026-09-16》§3.2 唯一实现）。
  *  两条导出路径（exportMultiToDraft 单/多视频、from-tasks 字幕重建）共用——
  *  禁止各自手写段对象（此前 from-tasks 手写段缺 track_attribute/track_render_index/
@@ -1412,7 +1477,16 @@ function buildTransitionMaterial(materials, spec) {
  *  结构 = baseSegmentFields + mediaSegmentFields + visualSegmentFields +
  *  字幕标准位（transform_y=SUBTITLE_TRANSFORM_Y）+ 文本水平居中（texts.alignment）。 */
 function buildSubtitleSegment(textContent, startUs, durUs, materials, opts = {}) {
-  const mat = textMaterial(textContent, { alignment: SUBTITLE_ALIGNMENT })
+  // 2026-09-17 用户报障①：字幕样式落草稿（opts.subtitleStyle=jianyingSubtitleStyleFromServer 产物）
+  const ss = opts.subtitleStyle && typeof opts.subtitleStyle === 'object' ? opts.subtitleStyle : null
+  const mat = textMaterial(textContent, {
+    alignment: SUBTITLE_ALIGNMENT,
+    colorHex: (ss && ss.colorHex) || '#FFFFFF',
+    strokeColorHex: (ss && ss.strokeColorHex) || '',
+    strokeWidth: (ss && ss.strokeWidth) || 0,
+    bgColorHex: (ss && ss.bgColorHex) || '',
+    bgAlpha: (ss && ss.bgAlpha) || 0,
+  })
   if (!Array.isArray(materials.texts)) materials.texts = []
   materials.texts.push(mat)
   const sp = speedMaterial(1.0)
@@ -1627,6 +1701,8 @@ module.exports = {
   normalizeTextTemplateClips,
   appendTextTemplateSegments,
   appendSfxTrackFromEvents,
+  jianyingSubtitleStyleFromServer,
+  buildSubtitleSegment,
   draft_content_tracks_render_index,
   normalizeVoiceClips,
   SUBTITLE_TRANSFORM_Y,

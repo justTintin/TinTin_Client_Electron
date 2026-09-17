@@ -62,6 +62,9 @@ function createLiveclipIpc(ipcMain) {
       if (!['.srt', '.txt'].includes(ext)) return _err('仅支持 .srt/.txt 字幕文件')
       const content = typeof p.content === 'string' ? p.content : ''
       if (!content) return _err('缺少字幕内容')
+      // 2026-09-18：父目录不存在直接 writeFile 会 ENOENT（资产目录下新建
+      //   srt/ 等子目录写 SRT 的场景）；递归建目录后写，调用方无需预建
+      fs.mkdirSync(path.dirname(p.path), { recursive: true })
       await fs.promises.writeFile(p.path, content, 'utf8')
       return { ok: true, path: p.path }
     } catch (e) {

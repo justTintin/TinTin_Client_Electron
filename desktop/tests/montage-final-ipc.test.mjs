@@ -83,6 +83,36 @@ test('buildServerFxFields: box_opacity 越界钳制 0-1；无 SRT 不传', () =>
   assert.ok(!('subtitle_srt' in f))
 })
 
+test('buildServerFxFields: subtitleStyleObj → 服务端样式对象原样回传，box 不透明度用滑块重写', () => {
+  const f = M.buildServerFxFields({
+    addSubtitles: true,
+    subtitleStyleObj: { color: '#FFE135', outline: 3, outline_colour: 'black', box: 'black@0.9', fontsize: 12, margin: 8 },
+    subtitleBoxOpacity: 0.35,
+  }, '')
+  const st = JSON.parse(f.subtitle_style)
+  // 文字色/描边/字号/边距原样透传
+  assert.equal(st.color, '#FFE135')
+  assert.equal(st.outline, 3)
+  assert.equal(st.outline_colour, 'black')
+  assert.equal(st.fontsize, 12)
+  assert.equal(st.margin, 8)
+  // box 底色沿用样式(black)，不透明度改为客户端滑块 0.35
+  assert.equal(st.box, 'black@0.35')
+  // 不再回退旧口径 box_opacity
+  assert.ok(!('box_opacity' in st))
+})
+
+test('buildServerFxFields: subtitleStyleObj + 滑块=0 → 删 box（无背景框）', () => {
+  const f = M.buildServerFxFields({
+    addSubtitles: true,
+    subtitleStyleObj: { color: 'white', box: 'black@0.6' },
+    subtitleBoxOpacity: 0,
+  }, '')
+  const st = JSON.parse(f.subtitle_style)
+  assert.equal(st.color, 'white')
+  assert.ok(!('box' in st))
+})
+
 test('buildServerFxFields: 花字 → fancy_timing=subtitle_sync + 模板序列化 + id', () => {
   const f = M.buildServerFxFields({
     fancyText: true,
@@ -368,4 +398,71 @@ test('serverComposeOne: bgm_volume clamp 0~1（0 不回退 0.6）且 wav BGM cty
   assert.ok(bodies[2].includes('name="bgm_volume"\r\n\r\n0.60')) // 缺省 → 契约默认
   assert.ok(bodies[0].includes('Content-Type: audio/wav')) // wav BGM 不再固定 audio/mpeg
   fs.rmSync(t.dir, { recursive: true, force: true })
+})
+
+// ── subtitleStyleCard / cssColorFromStyle（剪映模板页「字幕」分类，catalog lane endpoint=/subtitle_styles）──
+
+test('cssColorFromStyle：hex 原样 / 色名映射 / @opacity 剥离 / 空→白', () => {
+  assert.equal(M.cssColorFromStyle('#FFD700'), '#FFD700')
+  assert.equal(M.cssColorFromStyle('white'), '#FFFFFF')
+  assert.equal(M.cssColorFromStyle('black@0.9'), '#000000')
+  assert.equal(M.cssColorFromStyle(''), '#FFFFFF')
+  assert.equal(M.cssColorFromStyle(undefined), '#FFFFFF')
+})
+
+test('subtitleStyleCard：服务端样式条目 → 卡片（color/cssStyle 描边/category=scenario/tags）', () => {
+  const card = M.subtitleStyleCard({
+    id: 'top_title',
+    name: '顶部大字标题',
+    style: { pos: 'top', color: '#FFD700', margin: 0.06, outline: 3, fontsize: 0.075 },
+    tags: ['标题', '顶部'],
+    scenario: '通用',
+    preview: '',
+  })
+  assert.equal(card.id, 'top_title')
+  assert.equal(card.name, '顶部大字标题')
+  assert.equal(card.color, '#FFD700')
+  assert.equal(card.category, '通用')
+  assert.deepEqual(card.tags, ['标题', '顶部'])
+  // 描边还原（outline=3 → -webkit-text-stroke 3px，outline_colour 缺省 black）
+  assert.ok(card.cssStyle.includes('color:#FFD700'))
+  assert.ok(card.cssStyle.includes('-webkit-text-stroke:3px #000000'))
+  assert.ok(card.cssStyle.includes('paint-order:stroke'))
+  // raw 保留原始条目
+  assert.equal(card.raw.style.pos, 'top')
+})
+
+test('subtitleStyleCard：box="color@opacity" → rgba 背景；无 outline → 无描边', () => {
+  const card = M.subtitleStyleCard({
+    id: 'box_style',
+    name: '黑底白字',
+    style: { color: 'white', box: 'black@0.6' },
+  })
+  assert.equal(card.color, '#FFFFFF')
+  assert.ok(!card.cssStyle.includes('-webkit-text-stroke'))
+  assert.ok(card.cssStyle.includes('background:rgba(0,0,0,0.6)'))
+  assert.deepEqual(card.tags, [])
+})
+
+// ── parseJianyingCachePath / getJianyingMediaCacheDir（2026-09-17 服务端契约：from-task 导出必填 jianying_cache_dir）──
+
+test('parseJianyingCachePath：globalSetting ini currentCachePath → 媒体缓存根；无键/空文 → 空串', () => {
+  const ini = '[General]\nscreenRecordLocation=C:/x\ncurrentCachePath=C:\\Users\\u\\AppData\\Local\\JianyingPro\\User Data\\Cache\ncacheDate=30\n'
+  assert.equal(M.parseJianyingCachePath(ini), 'C:\\Users\\u\\AppData\\Local\\JianyingPro\\User Data\\Cache')
+  // 值含空格保留；行首空白容忍
+  assert.equal(M.parseJianyingCachePath('[General]\n  currentCachePath = D:/jy cache \n'), 'D:/jy cache')
+  assert.equal(M.parseJianyingCachePath('[General]\ncacheDate=30\n'), '')
+  assert.equal(M.parseJianyingCachePath(''), '')
+  assert.equal(M.parseJianyingCachePath(undefined), '')
+})
+
+test('getJianyingMediaCacheDir：设置值 currentCachePath 优先，无设置回退默认 Cache；正斜杠口径', () => {
+  const dir = M.getJianyingMediaCacheDir()
+  assert.ok(dir && !dir.includes('\\'), '应为正斜杠路径：' + dir)
+  // 接线验证：与「读 globalSetting → 回退默认 → 正斜杠」同口径重算对拍
+  const cfg = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Config', 'globalSetting')
+  let want = ''
+  try { if (fs.existsSync(cfg)) want = M.parseJianyingCachePath(fs.readFileSync(cfg, 'utf-8')) } catch (_) { /* 回退 */ }
+  if (!want) want = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Cache')
+  assert.equal(dir, want.split('\\').join('/'))
 })

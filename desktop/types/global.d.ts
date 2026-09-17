@@ -364,6 +364,8 @@ declare interface TintinBridgeServer {
   voiceFonts(): Promise<{ fonts: Array<{ id: string; family: string; filename?: string }> } | { error: string } | null>
   /** 服务端字体文件字节（GET /config/fonts/{font_id}/file；FontFace 加载自渲染用；离线 null） */
   voiceFontFile(fontId: string): Promise<{ data: Uint8Array } | { error: string } | null>
+  /** 服务端字幕样式库（GET /subtitle_styles；2026-09-17 用户裁决：字幕样式统一来自服务端） */
+  voiceSubtitleStyles(): Promise<{ styles: Array<{ id: string; name: string; style: Record<string, unknown>; tags?: string[]; scenario?: string }> } | { error: string } | null>
   /** 导出克隆声音（copy2 到用户选的保存路径） */
   voiceExportAudio(payload: { srcPath: string; savePath: string }): Promise<{ ok: boolean; savePath: string } | { error: string }>
   /** 订阅 voice 域进度事件（返回取消订阅函数；2026-09-11 实时状态：完成事件随带
@@ -395,6 +397,10 @@ declare interface TintinBridgeServer {
       addSubtitles: boolean
       subtitleFont: string
       subtitleStyle: string
+      /** 服务端 /subtitle_styles 完整样式对象（2026-09-17 用户裁决：字幕样式统一来自
+       *  服务端库）。服务端烧制链直接透传 subtitle_style；本地 ffmpeg 链经
+       *  serverStyleToDrawtext 转 drawtext 片段。为 null 时回退 subtitleStyle key。 */
+      subtitleStyleObj?: Record<string, unknown> | null
       subtitleBoxOpacity: number
       /** 字幕入场动画（fade/rise/slide/pop/none；2026-09-10 用户裁决，预览与烧制同源；仅本地烧制链） */
       subtitleAnim: string
@@ -465,17 +471,16 @@ declare interface TintinBridgeServer {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
-    draftName?: string
-  }): Promise<{ success: boolean; message: string; bgmIncluded?: boolean; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string } }>
-  /** 服务端合成任务 → 剪映时间轴草稿（2026-09-15：合并 from-task 清单+资产对齐落盘） */
-  editorExportJianyingFromTasks(payload: {
-    taskIds: string[]
-    draftName?: string
-    textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
-    fancyEvents?: Array<Array<{ word: string; startUs: number; durUs: number }>>
+    /** 2026-09-17：音效来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板命中位置） */
     fancyTemplate?: Record<string, unknown> | null
-    progressChannel?: string // 2026-09-16：导出进度推送通道
-  }): Promise<{ success: boolean; message: string; assetCount?: number; durationUs?: number; registered?: boolean; launched?: boolean; jianyingRunning?: boolean } | { success: false; message: string }>
+    draftName?: string
+  }): Promise<{ success: boolean; message: string; bgmIncluded?: boolean; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string }; conformance?: { checkedSegs?: number; warnings?: string[] } }>
+  /** 轨 2（2026-09-17 用户裁决）：服务端标准包导入——from-task 一步聚合包（含建草稿，
+   *  jianying_cache_dir 必填）→ 解压 → 数据/路径校验 → 落盘剪映草稿目录 */
+  editorExportJianyingPackage(payload: {
+    taskIds: string[]
+    progressChannel?: string
+  }): Promise<{ success: boolean; message: string; results?: Array<{ taskId: string; draftFolder: string; warnings: string[]; registered: boolean }>; launched?: boolean; jianyingRunning?: boolean } | { success: false; message: string }>
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */
   jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; groups: Array<{ group: string; lanes: Array<{ lane: string; total: number; endpoint: string; tags: Array<{ name: string; count: number }>; items: Array<Record<string, unknown>> }> }>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>
   /** 批量同步选中模板到服务端（§0.0 同步目标即服务端） */

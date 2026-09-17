@@ -68,8 +68,8 @@ const {
   transcribeNewSample, uploadNewSampleRef,
   ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
   addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
-  // 字幕预设样式（2026-09-09 裁决：样式属字幕配置；SUBTITLE_STYLE_PRESETS 为图3 色板）
-  subtitleStyleKey, SUBTITLE_STYLE_PRESETS, subtitlePreviewStyle, fontOptionStyle,
+  // 字幕样式（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles）
+  subtitleStyleKey, subtitleStylePresets, subtitlePreviewStyle, fontOptionStyle,
   subtitleAnimKey,
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立；随机样式默认 3 个）
@@ -94,6 +94,7 @@ const {
   bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
   exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
   lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径
+  exportJianyingPackageDraft, // 轨 2（2026-09-17）：导入服务端草稿包
   finalVideoList, finalSelIdx,
   bgmSource,
   bgmPlaying, bgmPosMs, bgmDurMs,
@@ -1126,9 +1127,9 @@ function scoreClass(score: number | undefined): string {
             <label class="param-label">动画:</label>
             <TSelect v-model="subtitleAnimKey" :options="subtitleAnimOptions" class="w130"
               title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
-            <label class="param-label">预设样式:</label>
-            <div class="sub-style-grid" title="字幕文字样式预设（烧制时以 ffmpeg drawtext 描边实现，效果以成品为准）">
-              <button v-for="p in SUBTITLE_STYLE_PRESETS" :key="p.key" type="button" class="sub-style-tile"
+            <label class="param-label">样式:</label>
+            <div class="sub-style-grid" title="字幕样式来自服务端 /subtitle_styles 库（烧制时以 ffmpeg drawtext 或服务端引擎实现，效果以成品为准）">
+              <button v-for="p in subtitleStylePresets" :key="p.key" type="button" class="sub-style-tile"
                 :class="{ active: subtitleStyleKey === p.key }" :title="p.label" @click="subtitleStyleKey = p.key">
                 <span class="sub-style-tile-text" :style="subtitlePresetTileStyle(p)">字幕</span>
               </button>
@@ -1221,6 +1222,11 @@ function scoreClass(score: number | undefined): string {
             :disabled="finalBusy || exportBusy"
             :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
             @click="exportAllToJianyingDraft" />
+          <!-- 轨 2（2026-09-17 用户裁决）：服务端封装好的剪映格式草稿 zip → 解压校验 → 落盘剪映 -->
+          <TButton label="导入服务端草稿包" variant="secondary" class="vd4-run vd4-grow"
+            :disabled="finalBusy || exportBusy"
+            :title="exportBusy ? exportStage : '逐个合成任务下载服务端封装好的剪映格式草稿包，解压校验后放入剪映草稿目录（每任务一个草稿）'"
+            @click="exportJianyingPackageDraft" />
         </div>
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
         <!-- 2026-09-16：导出剪映时间轴进度条（独立于 finalBusy） -->

@@ -618,6 +618,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             burnEffects: false,
             // 字幕文字样式预设 key（2026-09-09 裁决：样式属字幕配置；主进程 SUBTITLE_STYLES 查表）
             subtitleStyle: String(p.subtitleStyle || 'white'),
+            // 服务端 /subtitle_styles 完整样式对象（2026-09-17 用户裁决：字幕样式统一
+            // 来自服务端；配音链 burnEffects=false 不烧字幕，此处透传保持与 Step4 烧制链对称）
+            subtitleStyleObj: (p.subtitleStyleObj && typeof p.subtitleStyleObj === 'object') ? p.subtitleStyleObj : null,
             subtitleAnim: String(p.subtitleAnim || 'fade'),
             fancyTemplate,
             fancySoundPath,
@@ -665,6 +668,21 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const buf = res.raw
       if (!buf || !buf.length) return { error: '字体文件为空' }
       return { data: new Uint8Array(buf) }
+    } catch (err) {
+      if (isExpectedOfflineError(err)) return null
+      return { error: err.message }
+    }
+  })
+
+  // ── voice:subtitleStyles — 服务端字幕样式库（2026-09-17 用户裁决：字幕样式统一来自服务端）
+  //     GET /subtitle_styles → 返回样式列表，渲染层用于 UI 色板 + 预览；
+  //     主进程 buildServerFxFields 用于服务端烧制、serverStyleToDrawtext 用于本地 ffmpeg 烧制。──
+  ipcMain.handle('voice:subtitleStyles', async () => {
+    try {
+      const res = await httpRequest('GET', '/subtitle_styles', { timeout: 10000 })
+      const data = res.data
+      const styles = Array.isArray(data) ? data : (Array.isArray(data?.styles) ? data.styles : [])
+      return { styles }
     } catch (err) {
       if (isExpectedOfflineError(err)) return null
       return { error: err.message }

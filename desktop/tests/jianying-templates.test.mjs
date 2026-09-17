@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { buildSyncPackage, collectTemplateFonts } from '../main/jianying-templates.js'
+import { buildSyncPackage, collectTemplateFonts, buildRawSyncPackage } from '../main/jianying-templates.js'
 
 /** 构造最小 .textpreset 预设：指定 rid/示例文字/字体资源（panel=fonts，含重复与缺失项） */
 function makePreset(dir, rid, fontPath) {
@@ -52,6 +52,31 @@ test('buildSyncPackage：fontFamily 覆盖 HTML font-family 并入 variables.fon
     const without = buildSyncPackage(dir, 't1')
     assert.ok(without.html.includes('font-family:"Microsoft YaHei",sans-serif'), '缺省回退雅黑')
     assert.equal(without.meta.variables.font.default, 'Microsoft YaHei')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('buildRawSyncPackage：预设位置 .textpreset 源文件原样打包到 preset/<文件名>（2026-09-17 用户裁决）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jytpl-raw-'))
+  try {
+    const fontPath = path.join(dir, '测试字体.ttf')
+    fs.writeFileSync(fontPath, Buffer.alloc(1024, 1))
+    makePreset(dir, 't1', fontPath)
+    const built = buildRawSyncPackage(dir, 't1', dir, { fontFamily: '测试字体' })
+    assert.ok(built, '应成功构包')
+    // 包内含 meta.json / template.html / preset/预设_t1.textpreset
+    const names = built.files.map((f) => f.name)
+    assert.ok(names.includes('meta.json'))
+    assert.ok(names.includes('template.html'))
+    assert.ok(names.includes('preset/预设_t1.textpreset'), '预设源文件应打包到 preset/ 下：' + names.join(','))
+    // 原样拷贝（absPath 指向真实预设文件，非 Buffer data）
+    const presetEntry = built.files.find((f) => f.name === 'preset/预设_t1.textpreset')
+    assert.equal(presetEntry.absPath, path.join(dir, '预设_t1.textpreset'))
+    assert.ok(fs.existsSync(presetEntry.absPath))
+    // v2 标识保留
+    assert.equal(built.meta.format_version, 2)
+    assert.equal(built.meta.engine, 'runtime-v2')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

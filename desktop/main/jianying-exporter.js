@@ -46,14 +46,14 @@ const DRAFT_SCHEMA = Object.freeze({
 })
 
 // 2026-09-16 用户裁决：视频片段之间添加半秒（500000 微秒）间隔，所有轨道随窗口起点同步。
-// 模块级单一口径：exportMultiToDraft / mergeJianyingManifests 与 montage-final-ipc 共用
+// 模块级单一口径：exportMultiToDraft 与 montage-final-ipc 共用
 // （导出后 JY.VIDEO_GAP_US 引用），避免多处常量漂移。
 const VIDEO_GAP_US = 500000
 
 // 2026-09-16 修复（用户实测：字幕显示在画面中间）：字幕标准位=屏幕下方，
 // 口径沿用 pyJianYingDraft ClipSettings(transform_y=-0.8)（官方 README 字幕示例）——
 // clip.transform 单位=半画布（y 负=向下）。单视频路径 appendSubtitleTrack 与
-// from-task 合并路径（montage-final-ipc 经 JY.SUBTITLE_TRANSFORM_Y / SUBTITLE_ALIGNMENT
+// 服务端包路径（montage-final-ipc 经 JY.SUBTITLE_TRANSFORM_Y / SUBTITLE_ALIGNMENT
 // 引用）共用，避免两路径字幕位置漂移。
 const SUBTITLE_TRANSFORM_Y = -0.8
 // 字幕文本水平对齐：0=左 1=居中 2=右（materials.texts[].alignment）
@@ -501,138 +501,18 @@ function normalizeVoiceClips(voiceClips, videoCount) {
   return out
 }
 
-/** 合并多份 from-task 导出清单为一条时间轴草稿（2026-09-15 用户裁决：客户端合并清单）。
- *  manifests 顺序=成片顺序；各清单段落按累计时长偏移；资产按全局序号改名
- *  （download_url 相同的资产去重复用）；轨道按「类型+同类序号」聚合。
- *  返回 { draft_content, draft_meta_info, assets:[{rel_path,download_url}], durationUs }
- *  或 null（无有效清单）。 */
-function mergeJianyingManifests(manifests, draftName) {
-  const list = (manifests || []).filter((m) => m && m.draft_content)
-  if (!list.length) return null
-  const assetsOut = []
-  const urlToPath = new Map()
-  const renameByManifest = []
-  for (const m of list) {
-    const rename = new Map()
-    for (const a of m.assets || []) {
-      const key = String(a.download_url || a.rel_path || a.asset_id)
-      if (urlToPath.has(key)) { rename.set(String(a.rel_path), urlToPath.get(key)); continue }
-      const safeName = String(a.name || ('asset_' + a.asset_id)).replace(/[\\/]/g, '_')
-      const newRel = 'assets/' + String(assetsOut.length + 1).padStart(4, '0') + '_' + safeName
-      urlToPath.set(key, newRel)
-      rename.set(String(a.rel_path), newRel)
-      assetsOut.push({ rel_path: newRel, download_url: String(a.download_url || '') })
-    }
-    renameByManifest.push(rename)
-  }
-  // 内容合并：materials 数组拼接（资产路径按改名表重写）；轨道按类型+同类序号聚合。
-  // 2026-09-16 用户裁决：视频片段之间添加半秒间隔——窗口起点（cursorUs）与总时长
-  // （durationUs）均含间隔（最后一个成片后不加），使全部轨道随窗口偏移同步。
-  let cursorUs = 0
-  let durationUs = 0
-  const mergedMaterials = {}
-  const mergedTracksByKey = new Map()
-  const mergedTracksOrder = []
-  list.forEach((m, mi) => {
-    const content = JSON.parse(JSON.stringify(m.draft_content))
-    const rename = renameByManifest[mi]
-    const mats = content.materials || {}
-    for (const k of Object.keys(mats)) {
-      const arr = mats[k]
-      if (!Array.isArray(arr)) continue
-      if (!mergedMaterials[k]) mergedMaterials[k] = []
-      for (const item of arr) {
-        if (item && typeof item === 'object' && typeof item.path === 'string' && item.path.startsWith('assets/')) {
-          const np = rename.get(item.path)
-          if (np) item.path = np
-        }
-      }
-      mergedMaterials[k].push(...arr)
-    }
-    const typeCount = new Map()
-    for (const tr of content.tracks || []) {
-      const idx = typeCount.get(tr.type) || 0
-      typeCount.set(tr.type, idx + 1)
-      const key = tr.type + '#' + idx
-      if (!mergedTracksByKey.has(key)) {
-        const copy = JSON.parse(JSON.stringify(tr))
-        copy.segments = []
-        mergedTracksByKey.set(key, copy)
-        mergedTracksOrder.push(copy)
-      }
-      for (const seg of tr.segments || []) {
-        const copy = JSON.parse(JSON.stringify(seg))
-        if (copy.target_timerange && typeof copy.target_timerange.start === 'number') copy.target_timerange.start += cursorUs
-        mergedTracksByKey.get(key).segments.push(copy)
-      }
-    }
-    const segWindowUs = Number(content.duration) || 0
-    durationUs += segWindowUs
-    cursorUs += segWindowUs
-    if (mi < list.length - 1) { cursorUs += VIDEO_GAP_US; durationUs += VIDEO_GAP_US }
-  })
-  // 2026-09-16 修复：合并基底用 TEMPLATE 骨架兜底（防服务端旧版格式缺字段/版本过低）
-  // 服务端清单 draft_content 是旧版（new_version 63.0.0 / version "5.9.0"），
-  // 剪映 11.x 判「版本过低/已损坏」拒开 → 强制覆写版本三元组 + 补齐缺失顶层字段
-  const firstContent = Object.assign(
-    JSON.parse(JSON.stringify(TEMPLATE)), // 完整骨架兜底（29 顶层字段 + new_version 110.0.0 / version 360000）
-    JSON.parse(JSON.stringify(list[0].draft_content)), // 服务端清单覆写业务字段（tracks/materials/duration 等）
-    { // 强制覆写版本三元组 + platform（防服务端旧版格式）
-      new_version: TEMPLATE.new_version,
-      version: TEMPLATE.version,
-      platform: TEMPLATE.platform,
-      last_modified_platform: TEMPLATE.last_modified_platform,
-    }
-  )
-  firstContent.id = hexId()
-  if (draftName) firstContent.name = draftName
-  firstContent.duration = durationUs
-  firstContent.tracks = mergedTracksOrder
-  draft_content_tracks_render_index(firstContent.tracks)
-  firstContent.materials = mergedMaterials
-  return {
-    draft_content: firstContent,
-    draft_meta_info: list[0].draft_meta_info ? JSON.parse(JSON.stringify(list[0].draft_meta_info)) : {},
-    materials: mergedMaterials,
-    assets: assetsOut,
-    durationUs,
-  }
-}
 
 /** 合并后轨道统一 render_index（按轨序逐段，对照本导出器 exportMultiToDraft 收尾口径） */
 
-/** 花字事件轨 + 音效轨（2026-09-15 用户裁决：时间轴草稿对齐——
- *  花字关键词按事件时刻落金色文字段（effectStyle/入场动画随选），
- *  音效按同一时刻落音频段（sfxPath 存在时；gain_db 转音量，上限 1）。
- *  events=[{word,startUs,durUs}] 为该成片局部系；offsetUs=该成片在合并时间轴的起点；
- *  opts.probeDur(path)=秒（主进程 ffprobe 注入）。 */
-function appendFancyEventTracks(tracks, materials, events, offsetUs, limitEndUs, opts = {}) {
-  const list = Array.isArray(events) ? events : []
-  if (!list.length) return
-  const effectId = opts.effectId || ''
-  const anim = opts.anim || ''
-  const track = newTrack('text')
-  for (const ev of list) {
-    const startUs = offsetUs + Math.max(0, Math.round(Number(ev.startUs) || 0))
-    let durUs = Math.max(1, Math.round(Number(ev.durUs) || 0))
-    if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = limitEndUs - startUs
-    if (durUs <= 0) continue
-    const mat = textMaterial(String(ev.word || '').trim(), { colorHex: '#FFD700', bold: true, effectStyleId: effectId })
-    materials.texts.push(mat)
-    const sp = speedMaterial(1.0)
-    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
-    const seg = {
-      ...baseSegmentFields(mat.id, startUs, durUs),
-      ...mediaSegmentFields(durUs, sp.id),
-      ...visualSegmentFields(),
-    }
-    decorateTextSegment(seg, materials, { anim, effectId })
-    track.segments.push(seg)
-  }
-  if (track.segments.length) tracks.push(track)
-  // 音效轨（sfxPath 存在时）：每事件一段音频
+/** 音效轨（2026-09-17 用户裁决·定义修正）：独立音频轨，**跟随文字模板命中位置**落段
+ *  （位置=关键词命中位置；与花字轨无关——花字轨是纯文本轨）。
+ *  events=[{word|phrase,startUs,durUs}] 为该成片局部系；offsetUs=合并时间轴起点；
+ *  opts.probeDur(path)=秒（主进程 ffprobe 注入）；sfxPath 不存在→不落轨（不造假）。 */
+function appendSfxTrackFromEvents(tracks, materials, events, offsetUs, limitEndUs, opts = {}) {
   const sfxPath = String(opts.sfxPath || '')
   if (!sfxPath || !fs.existsSync(sfxPath)) return
+  const list = Array.isArray(events) ? events : []
+  if (!list.length) return
   const sfxDurSec = Math.max(0.05, Number(opts.probeDur ? opts.probeDur(sfxPath) : 0) || 0.5)
   const sfxDurUs = Math.round(sfxDurSec * 1e6)
   const gainDb = Number(opts.gainDb)
@@ -660,6 +540,7 @@ function appendFancyEventTracks(tracks, materials, events, offsetUs, limitEndUs,
   }
   if (sfxTrack.segments.length) tracks.push(sfxTrack)
 }
+
 
 
 function draft_content_tracks_render_index(tracks) {
@@ -698,6 +579,7 @@ function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs
       ...baseSegmentFields(trio.templateMaterial.id, startUs, durUs),
       ...mediaSegmentFields(durUs, sp.id),
       ...visualSegmentFields(),
+      source_timerange: null, // 文本段（标准 §3.6）：source_timerange = null
       extra_material_refs: [sp.id, ...trio.extraRefs],
     })
   }
@@ -838,7 +720,9 @@ function buildStickerTrackFromPreset(presetDir, rid, clipDurationUs, canvasW, ca
         transform: { x: transformX, y: transformY },
       },
       uniform_scale: { on: true, value: 1.0 },
-      hdr_settings: null,
+      // 标准 §3.7：贴纸段 source_timerange = null，且无 hdr_settings 字段
+      // （2026-09-17 对齐收尾：此前误写 source_timerange 对象 + hdr_settings:null）
+      source_timerange: null,
     }
     track.segments.push(seg)
   })
@@ -869,6 +753,8 @@ function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, ef
         italic: false,
         underline: false,
         strokes: [],
+        // 11.x 实测字段（标准 §4.3 content 注记）：pyJianYingDraft 不导出，导出器补齐
+        useLetterColor: true,
       },
     ],
     text,
@@ -882,6 +768,7 @@ function textMaterial(text, { colorHex = '#FFFFFF', bold = false, size = 8.0, ef
     letter_spacing: 0,
     line_spacing: 0.02,
     line_feed: 1,
+    line_max_width: 0.82, // 标准 §4.3 基准字段（2026-09-17 对齐收尾：此前遗漏）
     force_apply_line_max_width: false,
     check_flag: 7,
     type: 'text',
@@ -919,6 +806,7 @@ function videoMaterialFields(clip) {
 
 /** 音频素材（materials.audios 成员；local_materials.py AudioMaterial.export_json） */
 function audioMaterialFields(bgmPath, durationUs) {
+  const id = hexId()
   return {
     app_id: 0,
     category_id: '',
@@ -928,9 +816,10 @@ function audioMaterialFields(bgmPath, durationUs) {
     duration: durationUs,
     effect_id: '',
     formula_id: '',
-    id: hexId(),
-    local_material_id: '',
-    music_id: '',
+    id,
+    // 标准 §4.2：local_material_id / music_id = id（2026-09-17 对齐收尾：此前误写 ''）
+    local_material_id: id,
+    music_id: id,
     name: path.basename(bgmPath),
     path: bgmPath,
     source_platform: 0,
@@ -972,7 +861,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  [{phrase,startUs,durUs,resourceId}]（match textfx_clips 权威指派）→
  *  剪映原生文字模板三件套轨（text_templates+texts+segment）；有命中的视频
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, deps }) {
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPath = '', sfxGainDb = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -1016,16 +905,18 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     fs.mkdirSync(draftFolder, { recursive: true })
 
     // 3. draft_meta_info.json（原版字段保留；列表可见性由 registerInRootMeta 保证）
+    //    字段名对齐标准 §1.6 骨架：draft_fold_path / draft_root_path
+    //    （2026-09-17 对齐收尾：此前误写 draft_foldpath / draft_rootpath）
     const nowMs = Date.now()
     const metaInfo = {
       id: projectUuid,
       draft_name: draftName,
-      draft_foldpath: draftFolder.split('\\').join('/'),
+      draft_fold_path: draftFolder.split('\\').join('/'),
       draft_type: 'face',
       create_time: nowMs,
       update_time: nowMs,
       tm_draft_modified: nowMs,
-      draft_rootpath: draftRoot.split('\\').join('/'),
+      draft_root_path: draftRoot.split('\\').join('/'),
       platform: 'windows',
     }
     fs.writeFileSync(path.join(draftFolder, 'draft_meta_info.json'), JSON.stringify(metaInfo, null, 2), 'utf-8')
@@ -1126,6 +1017,15 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
         if (tplClips && tplClips[i] && tplClips[i].length) {
           try {
             appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
+            // 音效轨（2026-09-17 用户裁决·定义修正）：跟随文字模板命中位置落段
+            // （位置=关键词命中位置；与花字轨无关）。sfxPath 由调用方解析（本地音效文件）
+            if (sfxPath) {
+              appendSfxTrackFromEvents(tracks, materials, tplClips[i], cursorUs, cursorUs + clip.durationUs, {
+                sfxPath,
+                gainDb: sfxGainDb,
+                probeDur: (fp) => (deps && typeof deps.probeMedia === 'function' ? (deps.probeMedia(fp).durationSec || 0) : 0),
+              })
+            }
           } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
         }
         cursorUs += clip.durationUs
@@ -1189,7 +1089,9 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
 
     fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(content, null, 2), 'utf-8')
     // bgmIncluded：BGM 轨是否实际生成（未选/文件不存在时为 false，渲染层据实提示）
-    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA, bgmIncluded }
+    // conformance：标准符合性自检（本路径全部走标准构造器，预期 0 警告；非 0 即构造器缺陷）
+    const conformance = auditDraftStandardConformance(content)
+    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA, bgmIncluded, conformance }
   } catch (e) {
     return { success: false, message: e && e.message ? e.message : String(e) }
   }
@@ -1277,6 +1179,106 @@ function registerInRootMeta({ draftFolder, draftName, durationUs = 0, coverPath 
   rootMeta.all_draft_store = [entry, ...store.filter((e) => e && e.draft_fold_path !== entry.draft_fold_path)]
   fs.writeFileSync(rootMetaPath, JSON.stringify(rootMeta, null, 2), 'utf-8')
   return { ok: true, backupPath, entry }
+}
+
+/** 草稿段/素材符合性审计（标准 §0.3 条3「服务端直传段违反标准 → 上报不兜底」的落地，
+ *  2026-09-17 对齐收尾新增）。只上报不阻断，返回 { checkedSegs, warnings[] }：
+ *  ① 段/素材 id = 32 位小写 hex（§0.4）；② target_timerange.duration > 0；
+ *  ③ 视频段 hdr_settings 必须为对象（§3.4）；④ 段字段超出标准已知集
+ *  （5.9 全集 + 11.x 实测并集）→ 列名上报。warnings 上限 20 条。 */
+const KNOWN_SEGMENT_FIELDS = new Set([
+  // §3.1 基类 17
+  'id', 'material_id', 'target_timerange', 'enable_adjust', 'enable_color_correct_adjust',
+  'enable_color_curves', 'enable_color_match_adjust', 'enable_color_wheels', 'enable_lut',
+  'enable_smart_color_adjust', 'last_nonzero_volume', 'reverse', 'track_attribute',
+  'track_render_index', 'visible', 'common_keyframes', 'keyframe_refs',
+  // §3.2 媒体 5
+  'source_timerange', 'speed', 'volume', 'extra_material_refs', 'is_tone_modify',
+  // §3.3 视觉 2 + §3.4/§3.5
+  'clip', 'uniform_scale', 'hdr_settings',
+  // §3.11 轨序赋值
+  'render_index',
+  // 11.x 实测并集新增（标准 §3.1 注）
+  'enable_adjust_mask', 'enable_hsl', 'render_timerange', 'responsive_layout', 'source',
+])
+function auditDraftStandardConformance(content) {
+  const warnings = []
+  const push = (msg) => { if (warnings.length < 20) warnings.push(msg) }
+  const lowerHex = /^[0-9a-f]{32}$/
+  let checkedSegs = 0
+  for (const tr of ((content && content.tracks) || [])) {
+    for (const seg of (tr.segments || [])) {
+      if (!seg || typeof seg !== 'object') continue
+      checkedSegs++
+      if (!lowerHex.test(String(seg.id || ''))) push(`${tr.type} 轨段 id 非标准 32 位小写 hex：${seg.id}`)
+      if (seg.material_id && !lowerHex.test(String(seg.material_id))) push(`${tr.type} 轨段 material_id 非标准格式：${seg.material_id}`)
+      const dur = seg.target_timerange && seg.target_timerange.duration
+      if (!(dur > 0)) push(`${tr.type} 轨段 target_timerange.duration ≤ 0（id=${seg.id}）`)
+      if (tr.type === 'video' && (!seg.hdr_settings || typeof seg.hdr_settings !== 'object')) {
+        push(`视频段 hdr_settings 缺失或为 null（id=${seg.id}，§3.4）`)
+      }
+      for (const k of Object.keys(seg)) {
+        if (!KNOWN_SEGMENT_FIELDS.has(k)) push(`${tr.type} 轨段含标准外字段 ${k}（id=${seg.id}）`)
+      }
+    }
+  }
+  for (const mk of Object.keys((content && content.materials) || {})) {
+    for (const m of (content.materials[mk] || [])) {
+      if (m && m.id && !lowerHex.test(String(m.id))) push(`materials.${mk} id 非标准 32 位小写 hex：${m.id}`)
+    }
+  }
+  return { checkedSegs, warnings }
+}
+
+/** 轨 2（服务端标准包）解压后校验（2026-09-17 用户裁决「下载服务端封装好的草稿 zip →
+ *  解压 → 数据校验 + 里面文件的路径校验 → 放到草稿目录下」）。
+ *  pkgDir=解压出的草稿目录（含 draft_content.json）。校验：
+ *  ① 两个 JSON 可解析；② 轨道非空；③ materials.*.path（相对路径）在包内存在；
+ *  ④ 段 material_id 无悬空。符合性审计（auditDraftStandardConformance）警告仅上报
+ *  不阻断（服务端拥有格式，标准 §0.3 条3 口径）。返回 { ok, problems, warnings, trackCounts, pathRefs } */
+function validateDraftPackage(pkgDir) {
+  const problems = []
+  const warnings = []
+  const trackCounts = {}
+  let pathRefs = 0
+  let content = null
+  try {
+    content = JSON.parse(fs.readFileSync(path.join(pkgDir, 'draft_content.json'), 'utf-8'))
+  } catch (e) { problems.push('draft_content.json 不可解析：' + ((e && e.message) || e)) }
+  try {
+    JSON.parse(fs.readFileSync(path.join(pkgDir, 'draft_meta_info.json'), 'utf-8'))
+  } catch (e) { problems.push('draft_meta_info.json 不可解析：' + ((e && e.message) || e)) }
+  if (content) {
+    for (const t of (content.tracks || [])) {
+      trackCounts[t.type] = (trackCounts[t.type] || 0) + (t.segments || []).length
+    }
+    if (!(content.tracks || []).length) problems.push('包内草稿无轨道')
+    const matIds = new Set()
+    for (const k of Object.keys(content.materials || {})) {
+      for (const it of (content.materials[k] || [])) { if (it && it.id) matIds.add(it.id) }
+    }
+    for (const t of (content.tracks || [])) {
+      for (const s of (t.segments || [])) {
+        if (s && s.material_id && !matIds.has(s.material_id)) {
+          problems.push('段素材引用悬空：' + t.type + ' 轨 -> ' + s.material_id)
+        }
+      }
+    }
+    for (const k of Object.keys(content.materials || {})) {
+      for (const it of (content.materials[k] || [])) {
+        if (it && typeof it.path === 'string' && it.path && !path.isAbsolute(it.path)) {
+          pathRefs++
+          const fp = path.join(pkgDir, it.path.split('\\').join('/'))
+          if (!fs.existsSync(fp)) {
+            if (problems.length < 10) problems.push('包内缺素材文件：' + it.path)
+          }
+        }
+      }
+    }
+    const conf = auditDraftStandardConformance(content)
+    warnings.push(...conf.warnings)
+  }
+  return { ok: problems.length === 0, problems, warnings, trackCounts, pathRefs }
 }
 
 /** 草稿目录自检（2026-09-16：导出「成功」的硬判据，替代仅检查文件存在）：
@@ -1420,6 +1422,9 @@ function buildSubtitleSegment(textContent, startUs, durUs, materials, opts = {})
     ...baseSegmentFields(mat.id, startUs, durUs),
     ...mediaSegmentFields(durUs, sp.id),
     ...visualSegmentFields(),
+    // 标准 §3.6：文本段 source_timerange = null（pyJianYingDraft TextSegment 传 None；
+    // 11.x 实测文本段无此字段。2026-09-17 对齐收尾：此前误写 {start:0,duration}）
+    source_timerange: null,
   }
   // 字幕标准位：屏幕下方（口径见 SUBTITLE_TRANSFORM_Y 注释）
   seg.clip.transform = { x: 0, y: SUBTITLE_TRANSFORM_Y }
@@ -1473,6 +1478,7 @@ function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 
       ...baseSegmentFields(mat.id, startUs, durUs),
       ...mediaSegmentFields(durUs, sp.id),
       ...visualSegmentFields(),
+      source_timerange: null, // 文本段（标准 §3.6）：source_timerange = null
     }
     decorateTextSegment(seg, materials, opts)
     track.segments.push(seg)
@@ -1490,13 +1496,15 @@ function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, 
   }
   if (bgmDurationSec <= 0) bgmDurationSec = totalDurationUs / 1000000.0 + 60.0 // 足够长
 
-  const materialId = hexId()
-  materials.audios.push(audioMaterialFields(bgmPath.split('\\').join('/'), Math.floor(bgmDurationSec * 1000000)))
+  // 2026-09-17 golden 对照工具抓出的存量 bug：素材与段必须共用同一个 id——
+  // 此前段用独立 materialId 而 audioMaterialFields 内部另生 id → 段引用悬空（§7-⑤ 必拦截）
+  const bgmMat = audioMaterialFields(bgmPath.split('\\').join('/'), Math.floor(bgmDurationSec * 1000000))
+  materials.audios.push(bgmMat)
   const sp = speedMaterial(1.0)
   materials.speeds.push(sp)
   const track = newTrack('audio')
   track.segments.push({
-    ...baseSegmentFields(materialId, 0, totalDurationUs),
+    ...baseSegmentFields(bgmMat.id, 0, totalDurationUs),
     source_timerange: { start: 0, duration: totalDurationUs },
     speed: 1.0,
     volume: bgmVolume / 100.0,
@@ -1602,6 +1610,8 @@ module.exports = {
   exportMultiToDraft,
   registerInRootMeta,
   verifyDraftFolder,
+  validateDraftPackage,
+  auditDraftStandardConformance,
   normalizeTransitions,
   normalizeOneTransition,
   parseSrt,
@@ -1616,8 +1626,7 @@ module.exports = {
   buildTemplateClipTrio,
   normalizeTextTemplateClips,
   appendTextTemplateSegments,
-  mergeJianyingManifests,
-  appendFancyEventTracks,
+  appendSfxTrackFromEvents,
   draft_content_tracks_render_index,
   normalizeVoiceClips,
   SUBTITLE_TRANSFORM_Y,

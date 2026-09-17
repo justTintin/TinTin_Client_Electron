@@ -85,7 +85,7 @@ const FT = require('./fancy-templates')
 const VI = require('./montage-voice-ipc')
 const JT = require('./jianying-templates')
 const F = require('./jianying-fonts-ipc')
-const { logInfo } = require('./logger')
+const { logInfo, logWarn } = require('./logger')
 
 // ── ffmpeg/ffprobe 路径（同 ffmpeg-gate.js getBinDir 口径，未导出故本地等价实现）──
 function getBinDir() {
@@ -256,6 +256,26 @@ function getOutFinalDir(firstVid) {
   return path.join(baseParent, 'final')
 }
 
+/** 解析剪映全局设置（Config/globalSetting ini）配置的媒体缓存根目录 currentCachePath；
+ *  无该键返回空串（调用方回退默认目录）。纯函数可单测（2026-09-17 服务端契约：
+ *  from-task 导出必填 jianying_cache_dir）。 */
+function parseJianyingCachePath(iniText) {
+  const m = /(?:^|\n)\s*currentCachePath\s*=\s*([^\r\n]+)/.exec(String(iniText || ''))
+  return m ? String(m[1]).trim() : ''
+}
+
+/** 客户端剪映「媒体缓存」目录（全局设置 → 媒体缓存）：优先设置值 currentCachePath，
+ *  回退默认 <LOCALAPPDATA>/JianyingPro/User Data/Cache；统一回正斜杠（服务端示例口径）。
+ *  2026-09-17 服务端契约：/editor/export/jianying/from-task 必填 jianying_cache_dir——
+ *  服务端按它对齐文字模板缓存路径前缀（preset 跨机器场景）。 */
+function getJianyingMediaCacheDir() {
+  const cfg = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Config', 'globalSetting')
+  let configured = ''
+  try { if (fs.existsSync(cfg)) configured = parseJianyingCachePath(fs.readFileSync(cfg, 'utf-8')) } catch (_) { configured = '' }
+  const dir = configured || path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Cache')
+  return dir.split('\\').join('/')
+}
+
 /** 查找视频同目录配套 .srt（_find_srt_for_video L4249-4271 一比一） */
 function findSrtForVideo(videoPath) {
   const videoDir = path.dirname(videoPath)
@@ -344,7 +364,26 @@ function buildServerFxFields(fx, srt, matchId) {
     if (fx.subtitleFont) fields.font_id = String(fx.subtitleFont)
     // 背景不透明度默认 20%（2026-09-15 用户裁决，原 0.5；与 SUBTITLE_BG_OPTIONS 默认项同源）
     const op = Math.min(1, Math.max(0, Number(fx.subtitleBoxOpacity ?? 0.2)))
-    fields.subtitle_style = JSON.stringify({ box_opacity: Number.isFinite(op) ? op : 0.2 })
+    const boxOpacity = Number.isFinite(op) ? op : 0.2
+    // 字幕样式统一来自服务端 /subtitle_styles 库（2026-09-17 用户裁决）：
+    // 渲染层选中的服务端样式对象原样回传（color/outline/outline_colour/fontsize/margin/pos），
+    // 仅背景框不透明度以客户端滑块为准（box="color@opacity" 用滑块值重写；0=去背景框）。
+    // 无服务端样式对象（离线降级）→ 回退旧口径 {box_opacity}。
+    const styleObj = (fx.subtitleStyleObj && typeof fx.subtitleStyleObj === 'object')
+      ? { ...fx.subtitleStyleObj }
+      : null
+    if (styleObj) {
+      if (boxOpacity > 0) {
+        const rawBox = String(styleObj.box || 'black@0.6')
+        const boxColor = rawBox.includes('@') ? rawBox.slice(0, rawBox.lastIndexOf('@')) : rawBox
+        styleObj.box = `${boxColor || 'black'}@${boxOpacity.toFixed(2)}`
+      } else {
+        delete styleObj.box
+      }
+      fields.subtitle_style = JSON.stringify(styleObj)
+    } else {
+      fields.subtitle_style = JSON.stringify({ box_opacity: boxOpacity })
+    }
   }
   if (fx.fancyText) {
     fields.fancy_enabled = 'true'
@@ -503,6 +542,63 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
     throw new Error('服务端合成产物无法读取（moov 缺失/截断）')
   }
   return { dur, taskId: String(id) }
+}
+
+/** 服务端颜色值 → CSS hex（"white"→"#FFFFFF"，"#RRGGBB"→原样，"color@opacity"→剥离@取色）。
+ *  与渲染层 videoMontageLogic.normalizeCssColor 同口径（字幕样式库卡片预览用）。 */
+function cssColorFromStyle(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return '#FFFFFF'
+  const base = s.includes('@') ? s.slice(0, s.lastIndexOf('@')) : s
+  if (base.startsWith('#')) return base.length >= 7 ? base.slice(0, 7) : base
+  const named = {
+    white: '#FFFFFF', black: '#000000', red: '#FF0000', green: '#00FF00',
+    blue: '#0000FF', yellow: '#FFFF00', orange: '#FFA500', pink: '#FFC0CB',
+    purple: '#800080', teal: '#008080', gold: '#FFD700', gray: '#808080',
+  }
+  return named[base.toLowerCase()] || '#FFFFFF'
+}
+
+/** 字幕样式库条目（GET /subtitle_styles 的 styles[]）→ 剪映模板页卡片结构。
+ *  服务端条目：{id,name,style:{color,outline,outline_colour,box,pos,fontsize,margin},tags,scenario,preview}。
+ *  2026-09-17 用户裁决：字幕样式统一来自服务端——剪映模板页「字幕」分类（catalog lane
+ *  endpoint=/subtitle_styles）与智能混剪 Step3/4 色板同源。cssStyle 还原描边/背景框近似预览。 */
+function subtitleStyleCard(t) {
+  const st = (t && t.style) || {}
+  const name = String(t.name || t.id || '')
+  const color = cssColorFromStyle(st.color)
+  const outline = Number(st.outline) || 0
+  const cssParts = ['color:' + color, 'font-weight:700']
+  if (outline > 0) {
+    const stroke = cssColorFromStyle(st.outline_colour || 'black')
+    cssParts.push('-webkit-text-stroke:' + Math.min(4, Math.max(1, outline)) + 'px ' + stroke)
+    cssParts.push('paint-order:stroke')
+  }
+  // 背景框（box="color@opacity" 或 "color"）→ rgba 背景近似
+  if (st.box) {
+    const boxStr = String(st.box)
+    const atIdx = boxStr.lastIndexOf('@')
+    const bc = cssColorFromStyle(atIdx > 0 ? boxStr.slice(0, atIdx) : boxStr)
+    const op = atIdx > 0 ? (parseFloat(boxStr.slice(atIdx + 1)) || 0.5) : 1
+    const r = parseInt(bc.slice(1, 3), 16) || 0
+    const g = parseInt(bc.slice(3, 5), 16) || 0
+    const b = parseInt(bc.slice(5, 7), 16) || 0
+    cssParts.push('background:rgba(' + r + ',' + g + ',' + b + ',' + op + ')')
+  }
+  return {
+    id: String(t.id || name),
+    name,
+    color,
+    text: name,
+    anim: '',
+    animSignature: '',
+    category: String(t.scenario || ''),
+    tags: Array.isArray(t.tags) ? t.tags : [],
+    preview: String(t.preview || ''),
+    previewWebm: '',
+    cssStyle: cssParts.join(';'),
+    raw: t,
+  }
 }
 
 function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl }) {
@@ -680,6 +776,10 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             addSubtitles: !!fx.addSubtitles,
             subtitleFontPath: fontPathEsc,
             subtitleStyle: String(fx.subtitleStyle || 'white'),
+            // 服务端 /subtitle_styles 完整样式对象（2026-09-17 用户裁决：字幕样式统一
+            // 来自服务端）——本地 ffmpeg 烧制经 serverStyleToDrawtext 转 drawtext 片段；
+            // 为 null 时 buildSubtitleDrawtextList 回退 subtitleStyle 查本地表
+            subtitleStyleObj: (fx.subtitleStyleObj && typeof fx.subtitleStyleObj === 'object') ? fx.subtitleStyleObj : null,
             subtitleBoxOpacity: fx.subtitleBoxOpacity ?? 0.2,
             // 字幕入场动画（2026-09-10 用户裁决：可选 fade/rise/slide/pop/none，预览与烧制同源）
             subtitleAnim: String(fx.subtitleAnim || 'fade'),
@@ -910,6 +1010,21 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             textTemplateClips: p.textTemplateClips,
             // 2026-09-15：逐视频口播 wav → 独立口播轨（对应素材段自动静音）
             voiceClips: p.voiceClips,
+            // 2026-09-17 用户裁决·定义修正：音效轨跟随「文字模板命中位置」（与花字轨无关）。
+            // 音效文件由所选花字模板的本地 sound 声明解析（过渡来源；素材音效库接入为终态）
+            sfxPath: (() => {
+              try {
+                const ft = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
+                const s = ft && FT.getFancySoundPath ? FT.getFancySoundPath(ft) : ''
+                return s && fs.existsSync(s) ? s : ''
+              } catch (_) { return '' }
+            })(),
+            sfxGainDb: (() => {
+              try {
+                const ft = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
+                return ft && FT.getFancySoundGainDb ? FT.getFancySoundGainDb(ft) : null
+              } catch (_) { return null }
+            })(),
             draftName: p.draftName,
             deps,
           })
@@ -995,7 +1110,12 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         try {
           const r = await httpRequest('GET', lane.endpoint, { timeout: 10000 })
           const d = r && r.data
-          fetched[lane.endpoint] = Array.isArray(d) ? d : (Array.isArray(d?.items) ? d.items : (Array.isArray(d?.templates) ? d.templates : []))
+          // 宽容解包：数组直用；否则依次试 items/templates/styles 外层
+          // （/subtitle_styles 回执为 {styles:[...]}，2026-09-17 用户裁决：字幕样式库入剪映模板页）
+          fetched[lane.endpoint] = Array.isArray(d) ? d
+            : (Array.isArray(d?.items) ? d.items
+              : (Array.isArray(d?.templates) ? d.templates
+                : (Array.isArray(d?.styles) ? d.styles : [])))
         } catch (_) { fetched[lane.endpoint] = [] }
       }
       for (const g of catalog) for (const lane of g.lanes || []) await fetchLane(lane)
@@ -1047,6 +1167,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
                 raw: t,
               }
             }
+            // /subtitle_styles（字幕样式库；2026-09-17 用户裁决：字幕样式统一来自服务端）
+            if (lane.endpoint === '/subtitle_styles') return subtitleStyleCard(t)
             // /text_templates/templates
             const vars = t.variables || {}
             const sig = String((vars.animSignature && vars.animSignature.default) || '')
@@ -1170,20 +1292,22 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     return { ok: true, results }
   })
 
-  // ── editor:exportJianyingFromTasks — 服务端合成任务 → 剪映时间轴草稿
-  //     （2026-09-15 用户裁决第3条：客户端合并清单 + 对齐资产到剪映数据格式。
-  //     流程：门禁剪映安装/版本 → 逐任务 from-task 清单 → 下载资产 → 探测回填
-  //     时长/宽高/绝对路径/顺序化起点 → 合并 → 对齐追加文字模板三件套/花字/音效轨
-  //     → render_index → 写 draft_content/meta → 首页注册+拉起剪映）──
-  ipcMain.handle('editor:exportJianyingFromTasks', async (event, payload) => {
+
+  // ── editor:exportJianyingPackage — 轨 2：服务端标准包导入（2026-09-17 用户裁决）
+  //     「下载服务端封装好的草稿 zip → 解压 → 数据校验 + 里面文件的路径校验 → 放到草稿目录下」。
+  //     链路（2026-09-17 服务端契约变更）：POST /editor/export/jianying/from-task/{tid}
+  //     ?jianying_cache_dir=<客户端剪映「媒体缓存」目录> 一步聚合包（建草稿在服务端内部完成；
+  //     缓存目录必填，服务端按它对齐文字模板缓存路径前缀）→ System32 tar 解压（zip 中文
+  //     目录名 UTF-8 实测可靠）→ validateDraftPackage（硬失败不落盘）→ 落盘剪映草稿根
+  //     （包内名防撞名）→ 素材路径绝对化 → 封面/首页注册/拉起。
+  //     映射关系属客户端职责（用户裁决）：服务端不给 rel_path，客户端按包内相对路径自校验自落盘。
+  ipcMain.handle('editor:exportJianyingPackage', async (event, payload) => {
+    const tmpRoots = []
     try {
       const p = payload || {}
-      // 2026-09-16：导出进度推送（参照 final:mix L524 模式）
       const channel = p.progressChannel || ''
       const emit = (stage, value) => { if (channel) event.sender.send(channel, { stage, value }) }
-      emit('正在校验剪映环境...', 5)
-      // 0) 前置校验：剪映已安装且版本 ≥ 11.0（用户裁决：否则只能服务端导出成片）。
-      //    版本取自 Apps 下版本目录名（不经路径正则，避免打包/用户目录差异误判）
+      emit('正在校验剪映环境...', 3)
       const jyAppsDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'Apps')
       let jyVersion = ''
       let jyExe = ''
@@ -1192,244 +1316,104 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           const exe = path.join(jyAppsDir, dirName, 'JianyingPro.exe')
           let isFile = false
           try { isFile = fs.statSync(exe).isFile() } catch (_) { /* 跳过 */ }
-          if (!isFile) continue
-          const nums = dirName.trim().split('.').map((x) => parseInt(x, 10) || 0)
-          if (nums.length < 2 || !nums[0]) continue // 非版本形态目录跳过
-          if (!jyExe) { jyExe = exe; jyVersion = dirName.trim(); continue }
-          const cur = jyVersion.split('.').map((x) => parseInt(x, 10) || 0)
-          if (nums.some((v, i2) => v > (cur[i2] || 0))) { jyExe = exe; jyVersion = dirName.trim() }
+          if (isFile) { jyExe = exe; jyVersion = dirName.trim(); break }
         }
       } catch (_) { /* 扫描失败按未安装处理 */ }
-      if (!jyExe) {
-        return { success: false, code: 'JIANYING_NOT_INSTALLED', message: '未检测到剪映专业版：时间轴草稿依赖本机剪映（文字模板/字体缓存），请安装剪映专业版，或使用服务端导出的成片' }
-      }
-      const vNums = jyVersion.split('.').map(Number)
-      if (!(vNums[0] > 11 || (vNums[0] === 11 && (vNums[1] || 0) >= 0))) {
-        return { success: false, code: 'JIANYING_VERSION_LOW', message: '剪映版本过低（当前 ' + (jyVersion || '未知') + '，需 ≥ 11.0）：请升级剪映专业版，或使用服务端导出的成片' }
-      }
+      if (!jyExe) return { success: false, message: '未检测到剪映专业版：草稿包导入依赖本机剪映，请先安装' }
       const taskIds = (Array.isArray(p.taskIds) ? p.taskIds : []).map((t) => String(t).trim()).filter(Boolean)
       if (!taskIds.length) throw new Error('缺少合成任务 id（请先执行「服务端合成」）')
-      const draftName = String(p.draftName || '螺丝钉剪辑_轨道时间轴')
-      const textTemplateClips = Array.isArray(p.textTemplateClips) ? p.textTemplateClips : []
-      const fancyEvents = Array.isArray(p.fancyEvents) ? p.fancyEvents : []
-      let fancyTemplate = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
-      try {
-        if (fancyTemplate && fancyTemplate.template_id) {
-          const local = FT.listFancyTemplates().find((t) => t.template_id === fancyTemplate.template_id)
-          if (local) fancyTemplate = Object.assign({}, fancyTemplate, local) // 本地包带 sound 声明
-        }
-      } catch (_) { fancyTemplate = fancyTemplate || null }
-      // 1) 落盘草稿目录 + 逐任务拉取导出清单
-      emit('正在拉取导出清单...', 10)
       const draftRoot = JY.getDefaultDraftRoot()
       fs.mkdirSync(draftRoot, { recursive: true })
-      // 2026-09-16 用户裁决：草稿目录名从随机 UUID 改为有意义名称（品牌+产品型号+日期时间+分辨率）
-      // 目录名需合法（Windows 文件名限制）；日期时间已保证唯一性，无需追加 UUID 后缀
-      const projectUuid = String(draftName || '螺丝钉剪辑_轨道时间轴')
-        .replace(/[\\/:*?"<>|]/g, '_')  // Windows 非法字符替换为下划线
-        .slice(0, 80)  // 限制长度（Windows 路径上限 260，预留空间）
-      const draftFolder = path.join(draftRoot, projectUuid)
       const base = getServerUrl().replace(/\/$/, '')
-      const manifests = []
-      const durations = []
-      for (const tid of taskIds) {
-        const res = await httpRequest('POST', '/editor/export/jianying/from-task/' + encodeURIComponent(tid), { timeout: 120000 })
-        const m = res && res.data
-        if (!m || !m.draft_content || !Array.isArray(m.assets)) throw new Error('任务 ' + tid + ' 的导出清单无效')
-        manifests.push(m)
-        durations.push(Number(m.draft_content.duration) || 0)
-      }
-      // 2) 合并（素材/字幕/口播/BGM 由服务端清单出）
-      emit('正在合并导出清单...', 20)
-      const merged = JY.mergeJianyingManifests(manifests, draftName)
-      if (!merged) throw new Error('清单合并失败（无有效清单）')
-      // 3) 下载资产（相对路径 → 下一步绝对化回填）
-      let downloaded = 0
-      for (const a of merged.assets) {
-        emit(`正在下载资产 (${downloaded + 1}/${merged.assets.length})...`, 20 + Math.floor(downloaded / merged.assets.length * 50))
-        const url = /^https?:/i.test(a.download_url) ? a.download_url : base + (a.download_url.startsWith('/') ? '' : '/') + a.download_url
-        const r2 = await httpRequest('GET', url, { timeout: 120000 })
-        const buf = Buffer.from(r2.raw || '')
-        if (!buf.length) throw new Error('资产下载为空：' + a.rel_path)
-        const dest = path.join(draftFolder, a.rel_path)
-        fs.mkdirSync(path.dirname(dest), { recursive: true })
-        fs.writeFileSync(dest, buf)
-        downloaded++
-      }
-      // 4) 对齐资产到剪映数据格式（用户裁决）：素材路径绝对化 + 探测回填时长/宽高。
-      //    2026-09-16 修复（用户实测：字幕时间戳偏移）：视频段统一为「窗口口径」——
-      //    合并步已按 content.duration 窗口偏移段起点（与字幕/口播/BGM/模板/音效同一
-      //    口径），此处只把段起点之后的时长裁剪到窗口长度并同步 source_timerange；
-      //    原「按素材文件时长顺序重排起点」在文件时长 ≠ content.duration 时（实测任务3
-      //    文件 31.5s vs 成片 29.644s）使视频与其余轨道逐段漂移（任务4 起错位 1.86s）。
-      emit('正在对齐素材与轨道...', 75)
-      const tracks = merged.draft_content.tracks
-      const materials = merged.materials
-      const matById = new Map()
-      for (const k of Object.keys(materials)) {
-        for (const item of (materials[k] || [])) {
-          if (item && item.id) matById.set(item.id, item)
-        }
-      }
-      const trackOffsets = []
-      let accUs = 0
-      // 2026-09-16 用户裁决：视频片段之间添加半秒（JY.VIDEO_GAP_US 微秒）间隔，
-      // 窗口起点含间隔 → 字幕重建/模板追加均随窗口偏移同步（常量单一口径）
-      for (let i = 0; i < manifests.length; i++) {
-        trackOffsets.push(accUs)
-        accUs += Number(manifests[i].draft_content.duration) || 0
-        // 除最后一个片段外，每个片段后添加半秒间隔
-        if (i < manifests.length - 1) accUs += JY.VIDEO_GAP_US
-      }
-      // 合并后视频轨段顺序 = 清单顺序 → 逐清单消费视频段计数，定位每段的归属窗口
-      const videoSegCounts = manifests.map((m) => {
-        let n = 0
-        for (const tr2 of (m.draft_content.tracks || [])) if (tr2.type === 'video') n += (tr2.segments || []).length
-        return n
-      })
-      for (const tr of tracks) {
-        const isVideo = tr.type === 'video'
-        let vmi = 0
-        let vUsed = 0
-        for (const seg of (tr.segments || [])) {
-          const mat = matById.get(seg.material_id)
-          if (mat && typeof mat.path === 'string' && mat.path.startsWith('assets/')) {
-            mat.path = path.join(draftFolder, mat.path)
-            const info = probeMedia(mat.path)
-            if (info.durationSec > 0) mat.duration = Math.round(info.durationSec * 1e6)
-            if (isVideo && info.width) { mat.width = info.width; mat.height = info.height }
+      const results = []
+      const stamp = new Date().toTimeString().slice(0, 8).replace(/:/g, '')
+      const cacheDir = getJianyingMediaCacheDir() // 2026-09-17 服务端契约：from-task 导出必填
+      for (let ti = 0; ti < taskIds.length; ti++) {
+        const tid = taskIds[ti]
+        const pct = 5 + Math.floor((ti / taskIds.length) * 88)
+        // 一步聚合包（2026-09-17 服务端契约变更）：建草稿在 from-task 导出内部完成
+        //   （旧「建草稿 + draft_id 取 zip」两步废止）；jianying_cache_dir 必填——客户端
+        //   剪映「媒体缓存」目录，服务端按它对齐文字模板缓存路径前缀（preset 跨机器场景）
+        emit(`[${tid}] 正在下载草稿包...`, pct)
+        const zipRes = await httpRequest('POST', '/editor/export/jianying/from-task/' + encodeURIComponent(tid)
+          + '?jianying_cache_dir=' + encodeURIComponent(cacheDir), { timeout: 300000 })
+        const zipBuf = Buffer.from(zipRes.raw || '')
+        if (zipBuf.length < 4 || zipBuf.slice(0, 2).toString() !== 'PK') throw new Error('任务 ' + tid + ' 草稿包无效（非 zip）')
+        // (c) 解压到临时目录（System32 tar=bsdtar，zip + UTF-8 中文条目实测可靠）
+        emit(`[${tid}] 正在解压校验...`, pct + 8)
+        const tmp = path.join(os.tmpdir(), 'jy-pkg-' + Date.now() + '-' + ti)
+        tmpRoots.push(tmp)
+        fs.mkdirSync(tmp, { recursive: true })
+        const rc = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'),
+          ['-xf', '-', '-C', '.'], { input: zipBuf, cwd: tmp, timeout: 120000, windowsHide: true })
+        if (rc.status !== 0) throw new Error('任务 ' + tid + ' 解压失败：' + String(rc.stderr || '').slice(0, 200))
+        // (d) 定位包内草稿目录（含 draft_content.json 的目录；兼容 zip 根直铺）
+        let pkgDir = tmp
+        const walkFor = (dir) => {
+          if (fs.existsSync(path.join(dir, 'draft_content.json'))) { pkgDir = dir; return true }
+          for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+            if (ent.isDirectory() && walkFor(path.join(dir, ent.name))) return true
           }
-          const matDur = (mat && mat.duration) || 0
-          if (isVideo) {
-            while (vmi < videoSegCounts.length && vUsed >= videoSegCounts[vmi]) { vmi++; vUsed = 0 }
-            const winEnd = (trackOffsets[vmi] || 0) + (durations[vmi] || 0)
-            if (seg.target_timerange) {
-              const st = seg.target_timerange.start || 0
-              let durUs = seg.target_timerange.duration || matDur
-              if (durUs <= 0) durUs = Math.max(1, winEnd - st)
-              if (st + durUs > winEnd) durUs = Math.max(1, winEnd - st)  // 窗口裁剪：不越过窗口终点
-              if (matDur > 0 && durUs > matDur) durUs = matDur  // 素材裁剪：不越过文件时长
-              seg.target_timerange.duration = durUs
-            }
-            if (seg.source_timerange) {
-              seg.source_timerange.start = 0
-              seg.source_timerange.duration = (seg.target_timerange && seg.target_timerange.duration) || matDur
-            }
-            vUsed++
-          } else {
-            // 其余轨道：起点保留合并值（窗口口径），仅回填空时长
-            if (seg.target_timerange && !seg.target_timerange.duration) seg.target_timerange.duration = matDur
-            if (seg.source_timerange && !seg.source_timerange.duration) seg.source_timerange.duration = (seg.target_timerange && seg.target_timerange.duration) || matDur
-          }
+          return false
         }
-      }
-      // 5) 字幕轨重建（服务端 text 段时长为空 → 从下载的 subtitle.srt 重建白字字幕）
-      const subTrack = tracks.find((t) => t.type === 'text')
-      if (subTrack) {
-        subTrack.segments = []
-        for (let si = 0; si < manifests.length; si++) {
-          for (const a of (manifests[si].assets || [])) {
-            if (!a.rel_path || !a.rel_path.endsWith('.srt') || a.rel_path.includes('split')) continue
-            const dl = String(a.download_url || '')
-            const na = (merged.assets || []).find((x) => x.download_url === dl)
-            if (!na) continue
-            const cues = JY.parseSrt(path.join(draftFolder, na.rel_path))
-            for (const cue of cues) {
-              const startUs = (trackOffsets[si] || 0) + Math.round(cue[0] * 1e6)
-              const durUs = Math.max(1, Math.round((cue[1] - cue[0]) * 1e6))
-              // 2026-09-16：字幕段改由 JY 标准构造器生成（《剪映轨道格式标准_2026-09-16》
-              // §3.2 唯一实现；此前本地手写段缺 track_attribute/track_render_index/
-              // visible/speed 引用等标准字段，与单/多视频路径不一致）
-              subTrack.segments.push(JY.buildSubtitleSegment(String(cue[2] || ''), startUs, durUs, materials))
+        if (!walkFor(tmp)) throw new Error('任务 ' + tid + ' 包内无 draft_content.json')
+        // (e) 数据校验 + 路径校验（不过=显式失败，不落盘）
+        const chk = JY.validateDraftPackage(pkgDir)
+        if (!chk.ok) throw new Error('任务 ' + tid + ' 草稿包校验未通过：' + chk.problems.slice(0, 5).join('；'))
+        // (f) 落盘目录名：包内 draft_name 防撞名
+        let pkgName = ''
+        try { pkgName = String(JSON.parse(fs.readFileSync(path.join(pkgDir, 'draft_meta_info.json'), 'utf-8')).draft_name || '') } catch (_) { /* 空 */ }
+        if (!pkgName) { try { pkgName = String(JSON.parse(fs.readFileSync(path.join(pkgDir, 'draft_content.json'), 'utf-8')).name || '') } catch (_) { /* 空 */ } }
+        if (!pkgName) pkgName = '服务端草稿_' + tid
+        let dirName = String(pkgName).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
+        if (taskIds.length > 1) dirName += '_' + tid
+        let draftFolder = path.join(draftRoot, dirName)
+        if (fs.existsSync(draftFolder)) draftFolder = path.join(draftRoot, dirName + '_' + stamp)
+        emit(`[${tid}] 正在落盘草稿目录...`, pct + 12)
+        fs.cpSync(pkgDir, draftFolder, { recursive: true })
+        // (g) 素材路径绝对化（包内相对路径 → 草稿目录绝对路径，剪映口径同轨 1）
+        const placed = JSON.parse(fs.readFileSync(path.join(draftFolder, 'draft_content.json'), 'utf-8'))
+        for (const k of Object.keys(placed.materials || {})) {
+          for (const it of (placed.materials[k] || [])) {
+            if (it && typeof it.path === 'string' && it.path && !path.isAbsolute(it.path)) {
+              it.path = path.join(draftFolder, it.path.split('\\').join('/'))
             }
           }
         }
+        fs.writeFileSync(path.join(draftFolder, 'draft_content.json'), JSON.stringify(placed, null, 2), 'utf-8')
+        // (h) 封面：包内 draft_cover.jpg 优先；否则第 1 秒帧现生成（失败不阻断）
+        let cover = path.join(draftFolder, 'draft_cover.jpg')
+        if (!fs.existsSync(cover)) {
+          cover = ''
+          try {
+            let firstVideo = ''
+            for (const it of (placed.materials.videos || [])) { if (it && typeof it.path === 'string' && /\.(mp4|mov|mkv|webm|avi)$/i.test(it.path)) { firstVideo = it.path; break } }
+            if (firstVideo && fs.existsSync(firstVideo)) {
+              const cp = path.join(draftFolder, 'draft_cover.jpg')
+              const rc2 = spawnSync(getFfmpegPath(), ['-y', '-ss', '1', '-i', firstVideo, '-frames:v', '1', '-q:v', '3', cp], { timeout: 15000, windowsHide: true })
+              if (rc2.status === 0 && fs.existsSync(cp)) cover = cp
+            }
+          } catch (_) { cover = '' }
+        }
+        // (i) 首页注册
+        emit(`[${tid}] 正在注册首页索引...`, pct + 14)
+        const reg = JY.registerInRootMeta({ draftFolder, draftName: dirName, durationUs: Number(placed.duration) || 0, coverPath: cover })
+        logInfo('jianying', `轨2 草稿包导入：任务=${tid} → ${draftFolder} | 注册=${reg.ok} | 警告=${chk.warnings.length}`)
+        results.push({ taskId: tid, draftFolder, warnings: chk.warnings, registered: reg.ok })
       }
-      // 6) 对齐追加：文字模板三件套轨（本机 .textpreset = 渲染真值）/花字轨/音效轨，
-      //    按各成片时长偏移到合并时间轴（tracks/materials 已在对齐步声明）
-      const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
-      const tplCache = new Map()
-      let offsetUs = 0
-      for (let i = 0; i < taskIds.length; i++) {
-        const winEnd = offsetUs + (durations[i] || 0)
-        const clips = Array.isArray(textTemplateClips[i]) ? textTemplateClips[i] : []
-        if (clips.length) {
-          const tplTrack = { attribute: 0, flag: 0, id: crypto.randomBytes(16).toString('hex'), is_default_name: true, name: '', segments: [], type: 'text' }
-          JY.appendTextTemplateSegments(tplTrack, materials, clips, presetDir, offsetUs, winEnd, tplCache)
-          if (tplTrack.segments.length) tracks.push(tplTrack)
-        }
-        const events = Array.isArray(fancyEvents[i]) ? fancyEvents[i] : []
-        if (events.length) {
-          JY.appendFancyEventTracks(tracks, materials, events, offsetUs, winEnd, {
-            effectId: fancyTemplate && fancyTemplate.jy_effect_id ? String(fancyTemplate.jy_effect_id) : '',
-            anim: fancyTemplate && L.getFancyAnim ? L.getFancyAnim(fancyTemplate) : '',
-            sfxPath: fancyTemplate ? FT.getFancySoundPath(fancyTemplate) : '',
-            gainDb: fancyTemplate ? FT.getFancySoundGainDb(fancyTemplate) : undefined,
-            probeDur: (fp) => getMediaDuration(fp),
-          })
-        }
-        offsetUs += durations[i] || 0
-        // 2026-09-16 用户裁决：半秒间隔随窗口偏移（最后一个成片后不加）
-        if (i < taskIds.length - 1) offsetUs += JY.VIDEO_GAP_US
-      }
-      // 7) render_index 按最终轨序重排（含对齐追加的轨道）
-      JY.draft_content_tracks_render_index(tracks)
-      // 8) 写草稿文件（2026-09-16 修复：写后校验存在性，防半成品残留）
-      emit('正在写入草稿文件...', 90)
-      const fwd = (s2) => String(s2).split(path.sep).join('/')
-      const draftContentPath = path.join(draftFolder, 'draft_content.json')
-      const draftMetaPath = path.join(draftFolder, 'draft_meta_info.json')
-      fs.writeFileSync(draftContentPath, JSON.stringify(merged.draft_content, null, 2), 'utf-8')
-      if (!fs.existsSync(draftContentPath)) throw new Error('draft_content.json 写入失败（文件不存在）')
-      const nowMs = Date.now()
-      const metaInfo = Object.assign({}, merged.draft_meta_info || {}, {
-        id: projectUuid,
-        draft_name: draftName,
-        draft_foldpath: fwd(draftFolder),
-        draft_rootpath: fwd(draftRoot),
-        draft_type: 'face',
-        create_time: nowMs,
-        update_time: nowMs,
-        tm_draft_modified: nowMs,
-        platform: 'windows',
-      })
-      fs.writeFileSync(draftMetaPath, JSON.stringify(metaInfo, null, 2), 'utf-8')
-      if (!fs.existsSync(draftMetaPath)) throw new Error('draft_meta_info.json 写入失败（文件不存在）')
-      // 8.5) 生成首页封面（draft_cover.jpg：取第一个视频素材第 1 秒帧；失败不阻断导出）
-      //      2026-09-16 修复（用户实测：新草稿目录无封面、首页封面串到「剪辑模板」）：此前
-      //      coverPath 恒为空 → ① 目录缺 draft_cover.jpg；② registerInRootMeta 回退继承
-      //      store[0] 的 draft_cover（指向他人目录）。口径同 jianying:export 单/多视频路径。
-      let cover = ''
-      try {
-        const firstClip = (merged.assets.find((a) => /\.(mp4|mov|mkv|webm|avi)$/i.test(String(a.rel_path || ''))) || {}).rel_path || ''
-        const coverSrc = firstClip ? path.join(draftFolder, String(firstClip)) : ''
-        if (coverSrc && fs.existsSync(coverSrc)) {
-          cover = path.join(draftFolder, 'draft_cover.jpg')
-          const rc = spawnSync(getFfmpegPath(), ['-y', '-ss', '1', '-i', coverSrc, '-frames:v', '1', '-q:v', '3', cover], { timeout: 15000, windowsHide: true })
-          if (rc.status !== 0 || !fs.existsSync(cover)) cover = ''
-        }
-      } catch (_) { cover = '' }
-      // 8.6) 草稿自检（2026-09-16：导出成功的硬判据——解析/轨道非空/素材引用全部存在/
-      //      资产文件数 ≥ 清单数；不通过即显式失败，不写半成品还报成功）
-      const verify = JY.verifyDraftFolder({ draftFolder, expectedAssetCount: merged.assets.length })
-      if (!verify.ok) throw new Error('草稿自检未通过：' + verify.problems.join('；'))
-      // 9) 首页注册 + 拉起剪映
-      emit('正在注册首页索引...', 95)
-      const reg = JY.registerInRootMeta({ draftFolder, draftName, durationUs: merged.durationUs, coverPath: cover })
       const launch = JY.launchJianying()
-      emit('导出完成', 100)
+      emit('导入完成', 100)
       return {
         success: true,
-        message: draftFolder,
-        assetCount: merged.assets.length,
-        durationUs: merged.durationUs,
-        registered: reg.ok,
-        // 2026-09-16：回传自检明细（渲染层成功提示展示）+ 封面路径（空=未生成）
-        coverPath: cover,
-        verify: { trackCounts: verify.trackCounts, pathRefs: verify.pathRefs, missing: verify.missing, assetFiles: verify.assetFiles },
+        message: results.map((r) => r.draftFolder).join('\n'),
+        results,
         launched: !!(launch.ok && !launch.running), jianyingRunning: !!(launch.ok && launch.running),
       }
-    } catch (err) { return { success: false, message: err.message } }
+    } catch (err) {
+      return { success: false, message: err.message }
+    } finally {
+      for (const t of tmpRoots) { try { fs.rmSync(t, { recursive: true, force: true }) } catch (_) { /* 尽力清理 */ } }
+    }
   })
 
 
@@ -1458,4 +1442,6 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
 module.exports = {
   createMontageFinalIpc, getOutFinalDir, getOutMontageDir, findSrtForVideo,
   buildSrtFromTiming, buildServerFxFields, buildFxMultipart, serverComposeOne, probeMedia,
+  subtitleStyleCard, cssColorFromStyle,
+  parseJianyingCachePath, getJianyingMediaCacheDir,
 }

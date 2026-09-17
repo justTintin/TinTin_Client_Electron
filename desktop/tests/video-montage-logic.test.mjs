@@ -19,21 +19,46 @@ const R = await import('../renderer/src/composables/videoMontageLogic.ts')
 
 // ── Step3 字幕/花字样式预设（2026-09-09 裁决：样式属字幕配置，字幕三行布局）──
 
-test('SUBTITLE_STYLE_PRESETS：24 格色板，首项默认白字无描边，key 全表唯一', () => {
-  assert.equal(R.SUBTITLE_STYLE_PRESETS.length, 24)
-  assert.equal(R.SUBTITLE_STYLE_PRESETS[0].key, 'white')
-  assert.equal(R.SUBTITLE_STYLE_PRESETS[0].stroke, '')
-  const keys = R.SUBTITLE_STYLE_PRESETS.map((p) => p.key)
-  assert.equal(new Set(keys).size, keys.length)
+// ── Step3 字幕样式预设（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles，
+//    渲染层不再硬编码 24 格色板，改为服务端样式对象 → UI 预设动态转换 + 离线兜底）──
+
+test('serverStyleToPreset：服务端样式对象 → UI 预设（key=id/label=name/color/stroke + 保留 serverStyle）', () => {
+  const p = R.serverStyleToPreset({
+    id: 'yellow_blk',
+    name: '黄字黑边',
+    style: { color: '#FFE135', outline: 3, outline_colour: 'black', box: 'black@0.6', fontsize: 12 },
+  })
+  assert.equal(p.key, 'yellow_blk')
+  assert.equal(p.label, '黄字黑边')
+  assert.equal(p.color, '#FFE135')
+  assert.equal(p.stroke, '#000000')
+  // 原始样式对象透传（供主进程烧制）
+  assert.equal(p.serverStyle.box, 'black@0.6')
 })
 
-test('SUBTITLE_STYLE_PRESETS 与主进程 SUBTITLE_STYLES key 一一对应（两表同步维护）', async () => {
-  const { createRequire } = await import('node:module')
-  const L = createRequire(import.meta.url)('../main/voice-tts-logic.js')
-  assert.deepEqual(
-    Object.keys(L.SUBTITLE_STYLES).sort(),
-    R.SUBTITLE_STYLE_PRESETS.map((p) => p.key).sort(),
-  )
+test('serverStyleToPreset：无描边(outline=0)→stroke 空；色名归一 hex；缺 id 回退 unknown', () => {
+  const noOutline = R.serverStyleToPreset({ id: 'w', name: '白字', style: { color: 'white' } })
+  assert.equal(noOutline.color, '#FFFFFF')
+  assert.equal(noOutline.stroke, '')
+  const noId = R.serverStyleToPreset({ style: { color: 'red' } })
+  assert.equal(noId.key, 'unknown')
+})
+
+test('serverStylesToPresets：批量转换，顺序与入参一致', () => {
+  const list = R.serverStylesToPresets([
+    { id: 'a', name: 'A', style: { color: 'white' } },
+    { id: 'b', name: 'B', style: { color: 'red', outline: 2, outline_colour: 'black' } },
+  ])
+  assert.equal(list.length, 2)
+  assert.deepEqual(list.map((p) => p.key), ['a', 'b'])
+  assert.equal(list[1].stroke, '#000000')
+})
+
+test('SUBTITLE_STYLE_PRESETS_FALLBACK：离线兜底 6 项，key 全表唯一，首项白字无描边', () => {
+  assert.equal(R.SUBTITLE_STYLE_PRESETS_FALLBACK.length, 6)
+  assert.equal(R.SUBTITLE_STYLE_PRESETS_FALLBACK[0].stroke, '')
+  const keys = R.SUBTITLE_STYLE_PRESETS_FALLBACK.map((p) => p.key)
+  assert.equal(new Set(keys).size, keys.length)
 })
 
 test('subtitlePresetTileStyle：无描边只给 color；有描边给 text-stroke+paintOrder', () => {
@@ -43,6 +68,20 @@ test('subtitlePresetTileStyle：无描边只给 color；有描边给 text-stroke
   const stroked = R.subtitlePresetTileStyle({ key: 'yellow_red', label: '', color: '#FFE135', stroke: '#CC0000' })
   assert.equal(stroked.webkitTextStroke, '2.5px #CC0000')
   assert.equal(stroked.paintOrder, 'stroke')
+})
+
+test('subtitlePresetTileStyle：服务端 box="color@opacity" → rgba 背景预览', () => {
+  const boxed = R.subtitlePresetTileStyle({
+    key: 'k', label: '', color: '#FFFFFF', stroke: '',
+    serverStyle: { box: 'black@0.6' },
+  })
+  assert.equal(boxed.background, 'rgba(0,0,0,0.6)')
+  // 无 @opacity 的纯色 box → 归一 hex 背景
+  const solid = R.subtitlePresetTileStyle({
+    key: 'k2', label: '', color: '#FFFFFF', stroke: '',
+    serverStyle: { box: 'red' },
+  })
+  assert.equal(solid.background, '#FF0000')
 })
 
 test('FANCY_STYLE_PREVIEW：7 项与 FANCY_STYLE_OPTIONS 一一对应且色对齐全', () => {
@@ -649,4 +688,19 @@ test('buildTextFxTracks count：每视频条目模板收敛到各自随机子集
     const subset = new Set(R.pickVideoStyles(tplNames, 2, vi))
     for (const it of t.items) assert.ok(subset.has(it.tplName), `条目模板应在该视频子集内：${it.tplName}`)
   })
+})
+
+// ── inputNameFromFinalPath（2026-09-17 修复：旧持久化合成任务无 inputPath 时反推输入源）──
+
+test('inputNameFromFinalPath：合成产物命名约定反推输入 basename；不合约定返空串', () => {
+  // buildFinalTasks 约定：{srcName}_final_{name}（name=输入 basename 剥 dubbed_ 前缀）
+  assert.equal(R.inputNameFromFinalPath('D:\\out\\final\\口播目录_final_video1.mp4'), 'video1.mp4')
+  assert.equal(R.inputNameFromFinalPath('\\\\srv\\final\\src_final_dubbed_x.mp4'), 'dubbed_x.mp4')
+  // 无 srcName 时约定为 final_{name}
+  assert.equal(R.inputNameFromFinalPath('C:\\final\\final_a.mp4'), 'a.mp4')
+  // 输入名自带 _final_：取首个分隔符之后段（保留完整输入名）
+  assert.equal(R.inputNameFromFinalPath('D:\\final\\src_final_final_cut.mp4'), 'final_cut.mp4')
+  // 不合约定（无 _final_）→ 空串（调用方落「该段无字幕轨」不阻断）
+  assert.equal(R.inputNameFromFinalPath('D:\\final\\plain.mp4'), '')
+  assert.equal(R.inputNameFromFinalPath(''), '')
 })

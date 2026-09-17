@@ -22,9 +22,11 @@ const {
   parseSrt,
   timestampToSec,
   appendKeywordTrack,
-  mergeJianyingManifests,
+  appendSfxTrackFromEvents,
   registerInRootMeta,
   verifyDraftFolder,
+  validateDraftPackage,
+  auditDraftStandardConformance,
   buildSubtitleSegment,
   VIDEO_GAP_US,
   SUBTITLE_TRANSFORM_Y,
@@ -151,7 +153,9 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   assert.equal(meta.draft_name, '测试工程')
   assert.equal(meta.draft_type, 'face')
   assert.equal(meta.platform, 'windows')
-  assert.equal(meta.draft_foldpath, r.message.split('\\').join('/'))
+  // 2026-09-17 对齐收尾：meta 字段名对齐标准 §1.6 骨架（draft_fold_path / draft_root_path）
+  assert.equal(meta.draft_fold_path, r.message.split('\\').join('/'))
+  assert.equal(meta.draft_root_path, getDefaultDraftRoot().split('\\').join('/'))
 
   const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
   // canvas 取第 0 段 1080x1920 → 9:16
@@ -195,6 +199,18 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   assert.equal(audioTrack.segments[0].clip, null)
   // 2026-09-16 用户裁决：BGM 覆盖整条时间轴（含片段间半秒间隔）→ 4s + 0.5s + 4s = 8.5s
   assert.equal(audioTrack.segments[0].target_timerange.duration, 8500000)
+  // 2026-09-17 对齐收尾（标准 §4.2）：音频素材 local_material_id / music_id = id
+  const audioMat = content.materials.audios[0]
+  assert.equal(audioMat.local_material_id, audioMat.id)
+  assert.equal(audioMat.music_id, audioMat.id)
+  // 2026-09-17 golden 对照抓出的存量 bug 钉住：BGM 段 material_id 必须指向 audios 素材（§7-⑤ 无悬空）
+  assert.equal(audioTrack.segments[0].material_id, audioMat.id)
+  // 2026-09-17 对齐收尾（标准 §4.3）：texts 基准字段 line_max_width + content.useLetterColor
+  assert.equal(content.materials.texts[0].line_max_width, 0.82)
+  assert.equal(JSON.parse(content.materials.texts[0].content).styles[0].useLetterColor, true)
+  // 2026-09-17 对齐收尾（标准 §0.3 条3）：本路径全走标准构造器，符合性审计预期 0 警告
+  assert.equal(r.conformance.warnings.length, 0)
+  assert.ok(r.conformance.checkedSegs >= 4)
 })
 
 test('exportMultiToDraft：未传 draftName → 命名「螺丝钉智能混剪_多片段时间轴」/单段「螺丝钉智能混剪_{basename}」', () => {
@@ -210,49 +226,6 @@ test('exportMultiToDraft：未传 draftName → 命名「螺丝钉智能混剪_�
 
 test('exportToDraft：视频不存在 → {success:false, message:"视频文件不存在"}', () => {
   assert.deepEqual(exportToDraft({ videoPath: '' }), { success: false, message: '视频文件不存在' })
-})
-
-// ── mergeJianyingManifests（from-task 多清单合并）：全轨段起点=窗口起点口径──
-
-test('mergeJianyingManifests：视频/字幕/口播段起点同窗口（content.duration 累计 + 半秒间隔）', () => {
-  const seg = (id, start, dur) => ({ id, material_id: 'm_' + id, target_timerange: { start, duration: dur }, source_timerange: { start: 0, duration: dur } })
-  const mk = (durUs, assets) => ({
-    draft_content: {
-      duration: durUs,
-      materials: { videos: [{ id: 'm_v', path: 'assets/a.mp4', duration: durUs }] },
-      tracks: [
-        { type: 'video', segments: [seg('v', 0, 0)] },
-        { type: 'text', segments: [seg('t', 0, 1000000)] },
-        { type: 'audio', segments: [seg('a', 0, 0)] },
-      ],
-    },
-    draft_meta_info: {},
-    assets,
-  })
-  const url = 'http://server/assets/a.mp4'
-  const r = mergeJianyingManifests([
-    mk(30000000, [{ rel_path: 'assets/a.mp4', download_url: url, name: 'a.mp4' }]),
-    mk(29000000, [{ rel_path: 'assets/a.mp4', download_url: url, name: 'a.mp4' }]),
-  ], '合并测试')
-  assert.ok(r)
-  // 总时长 = 30s + 半秒间隔 + 29s（间隔只加在成片之间，末尾不加）
-  assert.equal(r.durationUs, 30000000 + VIDEO_GAP_US + 29000000)
-  assert.equal(r.draft_content.duration, r.durationUs)
-  // download_url 相同 → 资产去重（两清单复用同一 rel_path）
-  assert.equal(r.assets.length, 1)
-  const vids = r.draft_content.tracks.find((t) => t.type === 'video').segments
-  const txts = r.draft_content.tracks.find((t) => t.type === 'text').segments
-  const auds = r.draft_content.tracks.filter((t) => t.type === 'audio')[0].segments
-  // 窗口起点：三轨一致（不重排、不逐轨各自累计）
-  assert.deepEqual(
-    [vids[0].target_timerange.start, txts[0].target_timerange.start, auds[0].target_timerange.start],
-    [0, 0, 0],
-  )
-  const w2 = 30000000 + VIDEO_GAP_US
-  assert.deepEqual(
-    [vids[1].target_timerange.start, txts[1].target_timerange.start, auds[1].target_timerange.start],
-    [w2, w2, w2],
-  )
 })
 
 test('exportMultiToDraft：横屏素材 → canvas ratio 16:9；BGM 不存在时静默跳过音轨', () => {
@@ -712,8 +685,8 @@ test('buildSubtitleSegment：标准字段齐全（基类/媒体/视觉/字幕标
   assert.deepEqual(seg.target_timerange, { start: 1000000, duration: 2000000 })
   assert.deepEqual(seg.common_keyframes, [])
   assert.deepEqual(seg.keyframe_refs, [])
-  // 媒体附加（§3.3）
-  assert.deepEqual(seg.source_timerange, { start: 0, duration: 2000000 })
+  // 媒体附加（§3.2）；2026-09-17 对齐收尾（标准 §3.6）：文本段 source_timerange = null
+  assert.equal(seg.source_timerange, null)
   assert.equal(seg.speed, 1.0)
   assert.equal(seg.is_tone_modify, false)
   // 视觉附加 + 字幕标准位（§3.2）
@@ -744,4 +717,107 @@ test('verifyDraftFolder：段 material_id 悬空 → ok:false 且计 dangling（
   assert.equal(v.problems.some((p) => p.includes('段素材引用悬空')), true)
   assert.equal(v.trackCounts.video, 1)
   assert.equal(v.trackCounts.text, 1)
+})
+
+// ── auditDraftStandardConformance（标准 §0.3 条3「上报不兜底」，2026-09-17 对齐收尾）──
+
+test('auditDraftStandardConformance：标准构造产物 0 警告；服务端旧格式段被列名上报', () => {
+  // ① 标准构造器产物（字幕段 + speed）→ 预期 0 警告
+  const materials = {}
+  const seg = buildSubtitleSegment('标准段', 0, 1000000, materials)
+  const ok = auditDraftStandardConformance({
+    tracks: [{ type: 'text', segments: [seg] }],
+    materials,
+  })
+  assert.equal(ok.checkedSegs, 1)
+  assert.deepEqual(ok.warnings, [])
+
+  // ② 服务端旧格式特征（from-task 实测）：大写 id、duration=0 占位、
+  //    视频段 hdr_settings=null、标准外字段（enable_video_mask 等）→ 全部上报
+  const bad = auditDraftStandardConformance({
+    tracks: [{
+      type: 'video',
+      segments: [{
+        id: '22024C9C3C0C47279A893C8350AD94DD',            // 大写 hex（§0.4 应小写）
+        material_id: '1EAAA818A4FC400BA0CD0ED8B7609250',
+        target_timerange: { start: 0, duration: 0 },        // duration=0 占位
+        source_timerange: { start: 0, duration: 0 },
+        hdr_settings: null,                                  // 视频段应为对象（§3.4）
+        enable_video_mask: false,                            // 标准外字段
+        intensifies_audio: false,
+        is_placeholder: false,
+      }],
+    }],
+    materials: { videos: [{ id: '1EAAA818A4FC400BA0CD0ED8B7609250' }] },
+  })
+  assert.equal(bad.checkedSegs, 1)
+  assert.equal(bad.warnings.some((w) => w.includes('非标准 32 位小写 hex')), true)
+  assert.equal(bad.warnings.some((w) => w.includes('duration ≤ 0')), true)
+  assert.equal(bad.warnings.some((w) => w.includes('hdr_settings 缺失或为 null')), true)
+  assert.equal(bad.warnings.some((w) => w.includes('标准外字段 enable_video_mask')), true)
+  assert.equal(bad.warnings.some((w) => w.includes('标准外字段 intensifies_audio')), true)
+  assert.equal(bad.warnings.some((w) => w.includes('标准外字段 is_placeholder')), true)
+  assert.equal(bad.warnings.some((w) => w.includes('materials.videos id 非标准')), true)
+})
+
+// ── validateDraftPackage（轨 2：服务端标准包解压后校验，2026-09-17 用户裁决）──
+
+test('validateDraftPackage：完好包通过；缺素材/悬空引用/坏 JSON 显式列出；符合性警告只上报不阻断', () => {
+  const make = (dir, { content, meta = {}, files = {} }) => {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'draft_content.json'), JSON.stringify(content), 'utf-8')
+    fs.writeFileSync(path.join(dir, 'draft_meta_info.json'), JSON.stringify(meta), 'utf-8')
+    for (const [rel, body] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+      fs.writeFileSync(path.join(dir, rel), body)
+    }
+  }
+  const baseContent = {
+    duration: 1000000,
+    materials: { videos: [{ id: 'v1', path: 'assets/a.mp4' }], audios: [] },
+    tracks: [{ type: 'video', segments: [{ id: 's1', material_id: 'v1', target_timerange: { start: 0, duration: 1000000 } }] }],
+  }
+  // ① 完好包（素材在包内）
+  const okDir = path.join(tmpRoot, 'pkg-ok')
+  make(okDir, { content: baseContent, files: { 'assets/a.mp4': 'x' } })
+  const ok = validateDraftPackage(okDir)
+  assert.equal(ok.ok, true)
+  assert.equal(ok.trackCounts.video, 1)
+  assert.equal(ok.pathRefs, 1)
+
+  // ② 缺素材文件 + 悬空引用 → 显式失败
+  const badDir = path.join(tmpRoot, 'pkg-bad')
+  make(badDir, {
+    content: {
+      ...baseContent,
+      materials: { videos: [{ id: 'v1', path: 'assets/gone.mp4' }], audios: [{ id: 'a1', path: 'assets/x.mp3' }] },
+      tracks: [{ type: 'video', segments: [{ id: 's1', material_id: 'ghost', target_timerange: { start: 0, duration: 1 } }] }],
+    },
+  })
+  const bad = validateDraftPackage(badDir)
+  assert.equal(bad.ok, false)
+  assert.equal(bad.problems.some((p) => p.includes('包内缺素材文件')), true)
+  assert.equal(bad.problems.some((p) => p.includes('段素材引用悬空')), true)
+
+  // ③ 坏 JSON
+  const badJsonDir = path.join(tmpRoot, 'pkg-badjson')
+  fs.mkdirSync(badJsonDir, { recursive: true })
+  fs.writeFileSync(path.join(badJsonDir, 'draft_content.json'), '{oops', 'utf-8')
+  fs.writeFileSync(path.join(badJsonDir, 'draft_meta_info.json'), '{}', 'utf-8')
+  const bj = validateDraftPackage(badJsonDir)
+  assert.equal(bj.ok, false)
+  assert.equal(bj.problems.some((p) => p.includes('draft_content.json 不可解析')), true)
+
+  // ④ 符合性警告只进 warnings 不阻断（大写 id 服务端段）
+  const warnDir = path.join(tmpRoot, 'pkg-warn')
+  make(warnDir, {
+    content: {
+      ...baseContent,
+      tracks: [{ type: 'video', segments: [{ ...baseContent.tracks[0].segments[0], id: 'ABCDEF0123456789ABCDEF0123456789' }] }],
+    },
+    files: { 'assets/a.mp4': 'x' },
+  })
+  const w = validateDraftPackage(warnDir)
+  assert.equal(w.ok, true)
+  assert.equal(w.warnings.some((x) => x.includes('非标准 32 位小写 hex')), true)
 })

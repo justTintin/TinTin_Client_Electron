@@ -1221,6 +1221,19 @@ export function buildFinalTasks(candidates: string[], srcName: string, outFinalD
   })
 }
 
+/** 合成产物路径 → 反推输入源 basename（旧持久化 lastComposeTasks 无 inputPath 的兜底，
+ *  2026-09-17 修复：时间轴导出按它回关联口播行/字幕 timing）。命名约定见 buildFinalTasks：
+ *  {srcName}_final_{name}（name=输入 basename 剥 dubbed_ 前缀）——取首个 '_final_'
+ *  之后段；无 srcName 形态 final_{name} 走前缀分支；产物名不合约定返回空串，
+ *  调用方落「该段无字幕轨」不阻断。 */
+export function inputNameFromFinalPath(outPath: string): string {
+  const b = pathBasename(outPath)
+  const k = b.indexOf('_final_')
+  if (k >= 0) return b.slice(k + '_final_'.length)
+  if (b.startsWith('final_')) return b.slice('final_'.length)
+  return ''
+}
+
 /** BGM 播放器时间标签（原版 format_time ms→mm:ss，lbl_bgm_time「00:00 / 00:00」口径） */
 export function fmtBgmTime(ms: number): string {
   const s = Math.floor(Math.max(0, Number(ms) || 0) / 1000)
@@ -1248,44 +1261,82 @@ export const FANCY_POSITION_OPTIONS = [
   { label: '右下角', value: 'bottom_right' },
 ]
 
-/** 字幕文字样式预设（2026-09-09 用户裁决：样式属字幕配置，图3 色系 ~24 格）。
- *  key 与主进程 SUBTITLE_STYLES（voice-tts-logic.js，drawtext 片段）一一对应，两表同步维护；
- *  color=文字色 stroke=描边色（''=无描边，即旧版白字效果）；首个为默认（与旧版一致）。 */
-export interface SubtitleStylePreset { key: string; label: string; color: string; stroke: string }
-export const SUBTITLE_STYLE_PRESETS: SubtitleStylePreset[] = [
-  { key: 'white',        label: '默认 白字', color: '#FFFFFF', stroke: '' },
-  { key: 'white_blk',    label: '白字黑边', color: '#FFFFFF', stroke: '#000000' },
-  { key: 'white_gray',   label: '白字灰边', color: '#FFFFFF', stroke: '#555555' },
-  { key: 'white_red',    label: '白字红边', color: '#FFFFFF', stroke: '#CC2222' },
-  { key: 'white_blue',   label: '白字蓝边', color: '#FFFFFF', stroke: '#2266CC' },
-  { key: 'black_white',  label: '黑字白边', color: '#111111', stroke: '#FFFFFF' },
-  { key: 'black_yellow', label: '黑字黄边', color: '#111111', stroke: '#FFD700' },
-  { key: 'yellow_blk',   label: '黄字黑边', color: '#FFE135', stroke: '#000000' },
-  { key: 'yellow_red',   label: '黄字红边', color: '#FFE135', stroke: '#CC0000' },
-  { key: 'gold_blk',     label: '金字黑边', color: '#F0C040', stroke: '#3A2000' },
-  { key: 'gold_red',     label: '金字红边', color: '#F0C040', stroke: '#CC0000' },
-  { key: 'orange_white', label: '橙字白边', color: '#FF8C1A', stroke: '#FFFFFF' },
-  { key: 'pink_blk',     label: '粉字黑边', color: '#FF7EB9', stroke: '#000000' },
-  { key: 'pink_white',   label: '粉字白边', color: '#FF7EB9', stroke: '#FFFFFF' },
-  { key: 'red_white',    label: '红字白边', color: '#FF4040', stroke: '#FFFFFF' },
-  { key: 'red_yellow',   label: '红字黄边', color: '#FF4040', stroke: '#FFE135' },
-  { key: 'blue_blk',     label: '蓝字黑边', color: '#40A0FF', stroke: '#000000' },
-  { key: 'blue_white',   label: '蓝字白边', color: '#40A0FF', stroke: '#FFFFFF' },
-  { key: 'sky_white',    label: '天蓝白边', color: '#7FD4FF', stroke: '#FFFFFF' },
-  { key: 'green_blk',    label: '绿字黑边', color: '#40FF80', stroke: '#000000' },
-  { key: 'green_white',  label: '绿字白边', color: '#40FF80', stroke: '#FFFFFF' },
-  { key: 'teal_white',   label: '青字白边', color: '#2EC4B6', stroke: '#FFFFFF' },
-  { key: 'purple_white', label: '紫字白边', color: '#C060FF', stroke: '#FFFFFF' },
-  { key: 'purple_blk',   label: '紫字黑边', color: '#C060FF', stroke: '#000000' },
+/** 字幕样式预设（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles 库）。
+ *  key=服务端 style.id，label=服务端 style.name，color/stroke 从服务端 style 对象解析；
+ *  serverStyle 保留原始服务端样式对象，供主进程 buildServerFxFields 透传。 */
+export interface SubtitleStylePreset {
+  key: string; label: string; color: string; stroke: string
+  serverStyle?: Record<string, unknown>
+}
+
+/** 服务端颜色值 → CSS hex（"white"→"#FFFFFF"，"#RRGGBB"→原样，"color@opacity"→剥离@） */
+function normalizeCssColor(raw: unknown): string {
+  const s = String(raw || '').trim()
+  if (!s) return '#FFFFFF'
+  // 剥离 @opacity（box="black@0.6" → "black"）
+  const base = s.includes('@') ? s.slice(0, s.lastIndexOf('@')) : s
+  if (base.startsWith('#')) return base.length === 7 ? base : base
+  // 常见色名映射（服务端可能用色名或 hex）
+  const named: Record<string, string> = {
+    white: '#FFFFFF', black: '#000000', red: '#FF0000', green: '#00FF00',
+    blue: '#0000FF', yellow: '#FFFF00', orange: '#FFA500', pink: '#FFC0CB',
+    purple: '#800080', teal: '#008080', gold: '#FFD700', gray: '#808080',
+  }
+  return named[base.toLowerCase()] || '#FFFFFF'
+}
+
+/** 服务端样式对象 → UI 色板预设（key/label/color/stroke + 原始 serverStyle） */
+export function serverStyleToPreset(s: { id?: string; name?: string; style?: Record<string, unknown> }): SubtitleStylePreset {
+  const st = s.style || {}
+  const color = normalizeCssColor(st.color)
+  const outline = Number(st.outline) || 0
+  const stroke = outline > 0 ? normalizeCssColor(st.outline_colour || 'black') : ''
+  return {
+    key: String(s.id || 'unknown'),
+    label: String(s.name || s.id || '未知样式'),
+    color,
+    stroke,
+    serverStyle: st,
+  }
+}
+
+/** 服务端样式列表 → UI 色板预设数组 */
+export function serverStylesToPresets(styles: Array<{ id?: string; name?: string; style?: Record<string, unknown> }>): SubtitleStylePreset[] {
+  return styles.map(serverStyleToPreset)
+}
+
+/** 离线兆底：服务端不可用时的默认预设（保持基本可用性） */
+export const SUBTITLE_STYLE_PRESETS_FALLBACK: SubtitleStylePreset[] = [
+  { key: 'std_bottom', label: '标准底部白字', color: '#FFFFFF', stroke: '' },
+  { key: 'white_blk', label: '白字黑边', color: '#FFFFFF', stroke: '#000000' },
+  { key: 'yellow_blk', label: '黄字黑边', color: '#FFE135', stroke: '#000000' },
+  { key: 'red_white', label: '红字白边', color: '#FF4040', stroke: '#FFFFFF' },
+  { key: 'blue_white', label: '蓝字白边', color: '#40A0FF', stroke: '#FFFFFF' },
+  { key: 'green_white', label: '绿字白边', color: '#40FF80', stroke: '#FFFFFF' },
 ]
 
-/** 字幕样式预设 → 色板 tile 内联样式（T 字样例；描边用 text-stroke，无描边不加） */
+/** 字幕样式预设 → 色板 tile 内联样式（T 字样例；描边用 text-stroke，背景框用 background） */
 export function subtitlePresetTileStyle(p: SubtitleStylePreset): Record<string, string> {
   const s: Record<string, string> = { color: p.color }
   if (p.stroke) {
-    // 3px 描边近似 drawtext borderw=3；深色字用外描边视觉更接近烧制效果
     s.webkitTextStroke = `2.5px ${p.stroke}`
     s.paintOrder = 'stroke'
+  }
+  // 服务端 box 背景框预览（"color@opacity" → rgba）
+  if (p.serverStyle?.box) {
+    const boxStr = String(p.serverStyle.box)
+    const atIdx = boxStr.lastIndexOf('@')
+    if (atIdx > 0) {
+      const boxColor = normalizeCssColor(boxStr.slice(0, atIdx))
+      const opacity = parseFloat(boxStr.slice(atIdx + 1)) || 0.5
+      // hex → rgba
+      const r = parseInt(boxColor.slice(1, 3), 16)
+      const g = parseInt(boxColor.slice(3, 5), 16)
+      const b = parseInt(boxColor.slice(5, 7), 16)
+      s.background = `rgba(${r},${g},${b},${opacity})`
+    } else {
+      s.background = normalizeCssColor(boxStr)
+    }
   }
   return s
 }

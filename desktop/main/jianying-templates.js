@@ -503,10 +503,19 @@ function buildRawSyncPackage(presetDir, rid, cacheRoot, opts) {
   ]
   // 原始资源收集（全部 panel 原样；JSON/lua 直拷，贴图/序列帧按文件拷贝）
   let p = null
+  let presetFile = '' // 命中的 .textpreset 源文件名（2026-09-17 用户裁决：预设位置原样打包）
   for (const f of safeReaddir(presetDir)) {
     if (!f.endsWith('.textpreset')) continue
     const cand = readJson(path.join(presetDir, f))
-    if (cand && cand.effect && String(cand.effect.resource_id || cand.effect.effect_id || '') === String(rid)) { p = cand; break }
+    if (cand && cand.effect && String(cand.effect.resource_id || cand.effect.effect_id || '') === String(rid)) { p = cand; presetFile = f; break }
+  }
+  // 2026-09-17 用户裁决：预设位置（Presets/Text_V2）的 .textpreset 源文件原样打进包
+  // （preset/<文件名>.textpreset，保持剪映原始扩展名与内容），供服务端 jy_raw 解析层拿到
+  // 剪映原始预设定义（paragraphs 富样式 / elements 装饰图标 / resources 缓存引用）——
+  // 这些在 v1 HTML 转换时已丢、Cache 素材也无法反推。字体仍走 /config/fonts 通道不入包。
+  if (presetFile) {
+    const absPreset = path.join(presetDir, presetFile)
+    if (fs.existsSync(absPreset)) files.push({ name: 'preset/' + presetFile, absPath: absPreset })
   }
   const seen = new Set()
   const rawFiles = []

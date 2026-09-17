@@ -367,10 +367,26 @@ test('getFancyAnim: anim 显式优先 → jy 语义映射 → 回退 fade', () =
   assert.equal(L.getFancyAnim(null), 'fade')
 })
 
-// ── 字幕样式预设（2026-09-09 裁决：样式属字幕配置；SUBTITLE_STYLES 查表进字幕 drawtext）──
-test('SUBTITLE_STYLES: 24 项；默认白字无描边（与旧版口径一致）', () => {
+// ── 字幕样式（2026-09-17 用户裁决：样式统一来自服务端 /subtitle_styles；
+//    本地 SUBTITLE_STYLES 降为离线兜底查表，serverStyleToDrawtext 转服务端样式→drawtext）──
+test('SUBTITLE_STYLES: 24 项离线兜底表；默认白字无描边（与旧版口径一致）', () => {
   assert.equal(Object.keys(L.SUBTITLE_STYLES).length, 24)
   assert.equal(L.SUBTITLE_STYLES.white, 'fontcolor=white')
+})
+test('serverStyleToDrawtext：color→fontcolor(hex转0x)；outline→borderw+bordercolor；box@opacity→boxcolor', () => {
+  assert.equal(L.serverStyleToDrawtext({ color: 'white' }), 'fontcolor=white')
+  assert.equal(
+    L.serverStyleToDrawtext({ color: '#FFE135', outline: 3, outline_colour: 'black' }),
+    'fontcolor=0xFFE135:borderw=3:bordercolor=black',
+  )
+  assert.equal(
+    L.serverStyleToDrawtext({ color: 'white', box: 'black@0.6' }),
+    'fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=6',
+  )
+  // 非对象/空 → 默认白字；outline 上限 20
+  assert.equal(L.serverStyleToDrawtext(null), 'fontcolor=white')
+  assert.equal(L.serverStyleToDrawtext(undefined), 'fontcolor=white')
+  assert.ok(L.serverStyleToDrawtext({ color: 'red', outline: 99 }).includes('borderw=20'))
 })
 test('buildDubFFmpegArgs: subtitleStyle 查表（white_blk → 白字黑描边）', () => {
   const args = L.buildDubFFmpegArgs({
@@ -387,6 +403,30 @@ test('buildDubFFmpegArgs: 未知 subtitleStyle 回退默认白字；缺省同旧
   })
   assert.ok(mk('no_such_key')[mk('no_such_key').indexOf('-filter_complex') + 1].includes('fontsize=h*0.035:fontcolor=white:'))
   assert.ok(mk(undefined)[mk(undefined).indexOf('-filter_complex') + 1].includes('fontsize=h*0.035:fontcolor=white:'))
+})
+test('buildDubFFmpegArgs: subtitleStyleObj 优先服务端样式（文字色/描边），box 底色沿用样式、不透明度用滑块', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true,
+    subtitleStyleObj: { color: '#FFE135', outline: 3, outline_colour: 'black', box: 'red@0.9' },
+    subtitleBoxOpacity: 0.5,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  // 文字色/描边来自服务端样式（box 已从 styleStr 剔除，由 boxStr 独立控制）
+  assert.ok(fc.includes('fontcolor=0xFFE135:borderw=3:bordercolor=black'))
+  // 背景框底色沿用服务端 box 色(red)，不透明度用客户端滑块 0.5
+  assert.ok(fc.includes('box=1:boxcolor=red@0.50:boxborderw=6'))
+})
+test('buildDubFFmpegArgs: subtitleStyleObj 无 box + 滑块=0 → 无背景框', () => {
+  const args = L.buildDubFFmpegArgs({
+    ...DUB_BASE, videoDur: 10, audioDur: 10, addSubtitles: true,
+    subtitleStyleObj: { color: 'white', outline: 2, outline_colour: 'black' },
+    subtitleBoxOpacity: 0,
+    timing: [{ text: '第一句', start: 0, end: 2 }],
+  })
+  const fc = args[args.indexOf('-filter_complex') + 1]
+  assert.ok(fc.includes('fontcolor=white:borderw=2:bordercolor=black'))
+  assert.ok(!fc.includes('box=1'))
 })
 
 // ── 特效迁 Step4 统一烧制（2026-09-09 裁决：配音链只出声音，特效在 final:mix 前烧制）──

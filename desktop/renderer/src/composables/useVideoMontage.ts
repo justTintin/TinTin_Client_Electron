@@ -40,8 +40,9 @@ import {
   parseVoiceoverResponse,
   assembledRowText,
   copyPreviewText,
-  // Step3 字幕样式预设（2026-09-09 裁决：样式属字幕配置，字幕新增自有预设色板）
-  SUBTITLE_STYLE_PRESETS,
+  // Step3 字幕样式（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles）
+  serverStylesToPresets,
+  SUBTITLE_STYLE_PRESETS_FALLBACK,
   subtitlePresetTileStyle,
   type SubtitleStylePreset,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立）
@@ -87,6 +88,7 @@ import {
   voiceStatusClass,
   fmtDur,
   pathBasename,
+  inputNameFromFinalPath,
 } from './videoMontageLogic'
 import { readCacheDir } from './useSettingsConfig'
 import { joinDefaultPath } from './settingsIntegrationLogic'
@@ -1594,6 +1596,7 @@ export function useVideoMontage() {
             addSubtitles: addSubtitles.value,
             subtitleFont: addSubtitles.value ? selectedFontFamily() : '',
             subtitleStyle: subtitleStyleKey.value,
+            subtitleStyleObj: selectedSubtitlePreset.value?.serverStyle || null,
             subtitleBoxOpacity: subtitleBgOpacity.value,
             subtitleAnim: subtitleAnimKey.value,
             fancyText: fancyEnabled.value,
@@ -1630,9 +1633,11 @@ export function useVideoMontage() {
       if (!res) throw new Error('主进程不可达')
       if ('error' in res) throw new Error(res.error)
       // 记录各成片的合成任务 id（2026-09-15：from-task 时间轴导出用，持久化跨会话）
+      // inputPath=该成片的合成输入源（2026-09-17 修复：时间轴导出按它回关联口播行/
+      // 字幕 timing——合成产物路径匹配不到 voiceRows，曾致 SRT 空串导出失败）
       if (Array.isArray(res.taskIds) && res.taskIds.length) {
         lastComposeTasks.value = res.taskIds
-          .map((tid, idx) => ({ taskId: String(tid), outputPath: String(res.results[idx] || '') }))
+          .map((tid, idx) => ({ taskId: String(tid), outputPath: String(res.results[idx] || ''), inputPath: String(candidates[idx] || '') }))
           .filter((p2) => p2.taskId && p2.outputPath)
         try { localStorage.setItem('montage.lastComposeTasks', JSON.stringify(lastComposeTasks.value)) } catch (_) { /* 忽略 */ }
       }
@@ -1704,6 +1709,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
+    /** 2026-09-17：音效来源（所选花字模板的本地 sound 声明，主进程解析文件路径；
+     *  音效轨跟随文字模板命中位置——与花字轨无关） */
+    fancyTemplate?: Record<string, unknown> | null
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {
@@ -1728,7 +1736,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     if (res && res.success) {
       // 2026-09-14 用户裁决：导出成功后自动拉起剪映（主进程 launchJianying），
       // 替代原「打开草稿文件夹」；拉起状态附在通知里
-      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean; message?: string }
+      const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; bgmIncluded?: boolean; message?: string; conformance?: { checkedSegs?: number; warnings?: string[] } }
       let tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
       // 2026-09-16：记录草稿目录路径（供「打开草稿目录」按钮使用）
       if (rx.message) lastExportDraftPath.value = String(rx.message)
@@ -1736,6 +1744,12 @@ async function exportAllToJianyingDraft(): Promise<void> {
       // （导出器回传 bgmIncluded：未选 BGM 或所选文件不存在时为 false）
       if (rx.bgmIncluded === false) {
         tail += '\n⚠️ 本次草稿未包含 BGM 轨（未选择 BGM 或所选文件不存在）'
+      }
+      // 2026-09-17 对齐收尾：符合性审计警告透出（本路径全走标准构造器，预期 0 警告；
+      // 非 0 即构造器缺陷，必须可见——不得只回传字段无人消费）
+      const cw = rx.conformance && Array.isArray(rx.conformance.warnings) ? rx.conformance.warnings : []
+      if (cw.length) {
+        tail += '\n⚠️ 格式符合性警告 ' + cw.length + ' 条（不影响打开，已记录日志）：' + cw.slice(0, 3).join('；') + (cw.length > 3 ? ' …' : '')
       }
       notify('草稿导出成功', successBody(base.draftName) + tail)
     } else {
@@ -1778,8 +1792,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
     return out
   }
 
-  /** 各成片合成任务 id（from-task 合并流数据源；随服务端合成回传并持久化跨会话） */
-  const lastComposeTasks = ref<Array<{ taskId: string; outputPath: string }>>((
+  /** 各成片合成任务 id（from-task 合并流数据源；随服务端合成回传并持久化跨会话）。
+   *  inputPath 为 2026-09-17 修复新增：合成输入源（旧持久化数据无此字段→undefined）。 */
+  const lastComposeTasks = ref<Array<{ taskId: string; outputPath: string; inputPath?: string }>>((
     () => {
       try { return JSON.parse(localStorage.getItem('montage.lastComposeTasks') || '[]') } catch (_) { return [] }
     }
@@ -1822,8 +1837,13 @@ async function exportAllToJianyingDraft(): Promise<void> {
    *  B) 无任务 → 客户端自组装流：候选素材 + 口播 wav 轨 + 字幕 + 文字模板三件套 + BGM。
    *  两路径草稿命名一致：品牌产品+日期+音频索引+轨道时间轴。 */
   async function exportMontageTracksDraft(draftName: string): Promise<void> {
-    const hasTasks = lastComposeTasks.value.length > 0
-    const cands = hasTasks ? lastComposeTasks.value.map((p2) => p2.outputPath) : await collectCandidates()
+    // 2026-09-17 用户裁决「一个按钮一条路」：本按钮=纯本地组装——本地视频/本地口播 wav/
+    // 本地 timing 生成 SRT/本地文字模板命中/本地 BGM → exportMultiToDraft。
+    // 不调服务端清单、不下载资产（原「有任务走服务端清单」分流整段删除）；
+    // 服务端包走「导入服务端草稿包」按钮（editor:exportJianyingPackage）。
+    const cands = lastComposeTasks.value.length
+      ? lastComposeTasks.value.map((p2) => p2.outputPath)
+      : await collectCandidates()
     if (!cands.length) {
       notify('无候选素材', '请先完成镜头重组与口播配音再导出')
       return
@@ -1833,10 +1853,25 @@ async function exportAllToJianyingDraft(): Promise<void> {
     const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     const fancyEvents: Array<Array<{ word: string; startUs: number; durUs: number }>> = []
     const fxWords = fancyEnabled.value ? extractTextFxWords() : []
-    let cursorUs = 0
+    let noSubClips = 0
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i]
-      const row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c)
+      // 2026-09-17 修复：候选可能是合成产物（lastComposeTasks.outputPath），直接匹配
+      // voiceRows 恒失配（曾致 SRT 空串「缺少字幕内容」导出失败）——按合成时记录的
+      // 输入源 inputPath 回关联口播行；旧持久化数据无 inputPath 时 row 落空→该段
+      // 无字幕轨（srtPaths null，导出器容忍），不再整单失败。
+      const src = String(lastComposeTasks.value[i]?.inputPath || '')
+      let row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c
+        || (src !== '' && (r.dubbedPath === src || r.path === src)))
+      if (!row && !src) {
+        // 旧持久化数据无 inputPath：按合成产物命名约定反推输入 basename 回关联；
+        // 仍失配则 row 落空→该段无字幕轨（不阻断导出）
+        const nm = inputNameFromFinalPath(c)
+        if (nm) {
+          row = voiceRows.value.find((r) => [r.path, r.dubbedPath]
+            .some((q) => !!q && (pathBasename(q) === nm || pathBasename(q) === 'dubbed_' + nm)))
+        }
+      }
       const text = String(row?.text || '').trim()
       const timingPath = row?.wavPath ? row.wavPath + '.timing.json' : ''
       let timing: Array<{ text: string; start: number; end: number }> = []
@@ -1845,8 +1880,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
         timing = r && 'items' in r ? r.items : []
       }
       const rows2 = buildSubtitleRows(text, timing, 0)
-      // 字幕 SRT（无服务端合成任务的客户端自组装流需要；from-task 流字幕由服务端清单出）
-      if (!hasTasks) {
+      // 字幕 SRT：本地 timing 生成（句级时间；字级属后续增强，见 §3.6 P1）
+      {
         const ts = (s: number) => {
           const ms = Math.round(s * 1000)
           const h = Math.floor(ms / 3600000)
@@ -1856,19 +1891,27 @@ async function exportAllToJianyingDraft(): Promise<void> {
           return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0') + ',' + String(mmm).padStart(3, '0')
         }
         const srt = rows2.map((r, k) => String(k + 1) + '\n' + ts(r.start) + ' --> ' + ts(r.end) + '\n' + r.text + '\n').join('\n')
-        const srtFile = (process.env.TEMP || 'C:/Temp') + '/jyexport_' + i + '_' + Date.now() + '.srt'
-        const w = await window.tintin?.liveclip?.writeTextFile?.({ path: srtFile, content: srt })
-        if (w && 'error' in w) {
-          notify('SRT 写入失败', String(w.error))
-          return
+        if (!rows2.length) {
+          // 无字幕内容（无口播行/文案空）：该段不出字幕轨（导出器 srtPaths null 容忍），
+          // 不作为导出失败（2026-09-17 修复：合成产物候选曾在此整单中断）
+          noSubClips++
+          srtPaths.push(null)
+        } else {
+          const srtFile = (process.env.TEMP || 'C:/Temp') + '/jyexport_' + i + '_' + Date.now() + '.srt'
+          const w = await window.tintin?.liveclip?.writeTextFile?.({ path: srtFile, content: srt })
+          if (w && 'error' in w) {
+            notify('SRT 写入失败', String(w.error))
+            return
+          }
+          srtPaths.push(srtFile)
         }
-        srtPaths.push(srtFile)
-      } else {
-        srtPaths.push(null)
       }
-      // 文字模板命中（match textfx_clips 权威指派；与合成取数同源同缓存）
+      // 文字模板命中（2026-09-17 用户裁决）：本地缓存优先（预览/合成已预取的命中，
+      // 预览位置=命中位置）；未命中本地现算（关键词×行窗口，phrase=命中关键词）。
+      // 不再调服务端 match——命中判定属客户端映射职责。
       if (textFxEnabled.value) {
-        const hits = await textFxHitsForExport(c, text, timingPath)
+        // 命中缓存键=合成输入源（与预览/合成预取同源）；合成产物路径取不到缓存
+        const hits = textFxHitsForExport(src || c, rows2)
         textTemplateClips.push(hits
           .filter((h) => h.templateId && h.end > h.start)
           .map((h) => ({
@@ -1886,7 +1929,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
       } else {
         voiceClips.push([])
       }
-      // 花字命中（fancyEnabled：命中关键词在成片内的时间窗）
+      // 花字命中（fancyEnabled：命中关键词在成片内的时间窗）——花字轨=纯文本轨（无音效职责）
       if (fancyEnabled.value && fxWords.length) {
         const evs: Array<{ word: string; startUs: number; durUs: number }> = []
         for (const r of rows2) {
@@ -1898,67 +1941,71 @@ async function exportAllToJianyingDraft(): Promise<void> {
       } else {
         fancyEvents.push([])
       }
-      cursorUs += 0
     }
     const transition = concatTransition.value || 'fade'
     const finalName = timelineDraftName()
-    if (hasTasks) {
-      // A) from-task 合并流：服务端清单（素材/字幕/口播/BGM）+ 客户端对齐轨
-      // 2026-09-16：导出进度监听（复用 onVoiceProgress 通用通道，主进程 progressChannel 推送）
-      const progressChannel = `export-jianying:progress:${(crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')}`
-      const offProgress = window.tintin?.server?.onVoiceProgress?.(progressChannel, (d: { stage?: string; value?: number }) => {
-        if (d && typeof d.value === 'number') exportProgress.value = d.value
-        if (d && d.stage) exportStage.value = String(d.stage)
-      })
-      exportBusy.value = true
-      exportProgress.value = 0
-      exportStage.value = '正在初始化导出...'
-      try {
-        const ftpl = selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null
-        const res = await window.tintin?.server?.editorExportJianyingFromTasks?.({
-          taskIds: lastComposeTasks.value.map((p2) => p2.taskId),
-          textTemplateClips,
-          fancyEvents,
-          fancyTemplate: ftpl,
-          draftName: finalName,
-          progressChannel, // 主进程进度推送通道
-        })
-        if (res && res.success) {
-          const rx = res as unknown as { launched?: boolean; jianyingRunning?: boolean; assetCount?: number; message?: string; verify?: { trackCounts?: Record<string, number>; pathRefs?: number; missing?: number; assetFiles?: number } }
-          const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
-          // 2026-09-16：记录草稿目录路径（供「打开草稿目录」按钮使用）
-          if (rx.message) lastExportDraftPath.value = String(rx.message)
-          // 2026-09-16：成功提示带自检明细（主进程 verifyDraftFolder 回传——导出成功的硬判据）
-          const v = rx.verify
-          const vsum = v ? '自检通过：视频 ' + (v.trackCounts?.video ?? 0) + ' / 文本 ' + (v.trackCounts?.text ?? 0) + ' / 音频 ' + (v.trackCounts?.audio ?? 0) + ' 段 · 素材引用 ' + (v.pathRefs ?? 0) + ' 处（缺失 ' + (v.missing ?? 0) + '）· 资产文件 ' + (v.assetFiles ?? 0) + ' 个。\n' : ''
-          notify('时间轴草稿导出成功', '已导出 ' + lastComposeTasks.value.length + ' 段成片合一的剪映时间轴草稿（素材/口播/BGM/字幕/文字模板/花字/音效轨对齐，资产 ' + (rx.assetCount ?? 0) + ' 项）。\n' + vsum + '项目名称：' + finalName + tail)
-        } else {
-          const msg = res && 'message' in res ? String(res.message || '') : '主进程不可达'
-          clientError('video-montage', '导出时间轴草稿失败', msg)
-          notify('导出失败', '导出剪映时间轴草稿时发生错误：\n' + msg)
-        }
-      } finally {
-        exportBusy.value = false
-        exportProgress.value = -1
-        exportStage.value = ''
-        if (typeof offProgress === 'function') offProgress()
-      }
-      return
-    }
-    // B) 客户端自组装流（exportMultiToDraft 全能力：素材/口播/字幕/文字模板/BGM）
+    // 本地组装（音效由主进程按所选花字模板的本地 sound 声明解析，跟随文字模板命中位置）
     await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
       srtPaths,
       transitions: transition,
       ...jianyingFxParams(),
+      fancyTemplate: selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null,
       textTemplateClips,
       voiceClips,
       bgmPath: bgmPath.value,
       bgmVolume: bgmVolume.value,
       draftName: finalName,
-      successBody: (name: string) => '已按原始轨道结构导出 ' + cands.length + ' 段候选视频（转场：' + transition + '，含口播/字幕/关键词/BGM 轨）！\n项目名称：' + name,
+      successBody: (name: string) => '已按原始轨道结构导出 ' + cands.length + ' 段候选视频（转场：' + transition + '，含口播/字幕/关键词/BGM 轨）！\n项目名称：' + name + (noSubClips ? '\n（注：' + noSubClips + ' 段无口播文案，未出字幕/关键词轨）' : ''),
     })
+  }
+
+  /** 轨 2（2026-09-17 用户裁决）：导入服务端草稿包——服务端封装好的剪映格式 zip，
+   *  客户端只做 解压→数据/路径校验→落盘剪映草稿目录（映射关系属客户端职责；
+   *  服务端给映射=服务端出草稿包，即本轨）。逐任务一个草稿。 */
+  async function exportJianyingPackageDraft(): Promise<void> {
+    const tasks = lastComposeTasks.value
+    if (!tasks.length) {
+      notify('无法导入', '没有可导入的合成任务：请先执行「服务端合成」')
+      return
+    }
+    exportBusy.value = true
+    exportProgress.value = 0
+    exportStage.value = '准备导入...'
+    const progressChannel = `jy-pkg:progress:${(crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')}`
+    const offProgress = window.tintin?.server?.onVoiceProgress?.(progressChannel, (d: { stage?: string; value?: number }) => {
+      if (typeof d?.value === 'number') exportProgress.value = d.value
+      if (d?.stage) exportStage.value = String(d.stage)
+    })
+    try {
+      const res = await window.tintin?.server?.editorExportJianyingPackage?.({
+        taskIds: tasks.map((t2) => t2.taskId),
+        progressChannel,
+      })
+      if (res && res.success) {
+        const rx = res as unknown as { results?: Array<{ taskId: string; draftFolder: string; warnings: string[]; registered: boolean }>; launched?: boolean; jianyingRunning?: boolean; message?: string }
+        const rs = rx.results || []
+        if (rs[0]?.draftFolder) lastExportDraftPath.value = String(rs[0].draftFolder)
+        const tail = rx.launched ? '（已拉起剪映）' : rx.jianyingRunning ? '（剪映已运行，草稿已在首页）' : ''
+        const lines = rs.map((r) => '任务 ' + r.taskId + ' → ' + r.draftFolder + (r.registered ? '' : '（首页注册失败，草稿仍可用）'))
+        const warnCount = rs.reduce((n, r) => n + (r.warnings?.length || 0), 0)
+        const wsum = warnCount ? '\n⚠️ 格式符合性警告 ' + warnCount + ' 条（不影响打开，已记录日志）' : ''
+        notify('服务端草稿包导入成功', '已导入 ' + rs.length + ' 个草稿：\n' + lines.join('\n') + wsum + tail)
+      } else {
+        const msg = res && 'message' in res ? String(res.message || '') : '主进程不可达'
+        clientError('video-montage', '导入服务端草稿包失败', msg)
+        notify('导入失败', '导入服务端草稿包时发生错误：\n' + msg)
+      }
+    } catch (e) {
+      clientError('video-montage', '导入服务端草稿包失败', errText(e))
+      notify('导入失败', '导入服务端草稿包时发生错误：\n' + errText(e))
+    } finally {
+      exportBusy.value = false
+      exportProgress.value = -1
+      exportStage.value = ''
+      if (typeof offProgress === 'function') offProgress()
+    }
   }
 
   /** 双击成片项内嵌预览（_preview_final_video：标题换文件名并播放） */
@@ -1999,8 +2046,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
   const fontsLoading = ref(false)
   const fancyEnabled = ref(false)
   const fancyStyle = ref('gold')
-  // 字幕样式预设 key（2026-09-09 裁决：字幕配置新增自有样式色板，key 与主进程 SUBTITLE_STYLES 同表）
-  const subtitleStyleKey = ref('white')
+  // 字幕样式（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles）
+  const subtitleStyleKey = ref('')
+  const subtitleStylePresets = ref<SubtitleStylePreset[]>(SUBTITLE_STYLE_PRESETS_FALLBACK)
   // 字幕入场动画 key（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；
   // key 与主进程 VALID_ANIMS 同表：fade/rise/slide/pop/none）
   const subtitleAnimKey = ref('fade')
@@ -2141,18 +2189,29 @@ async function exportAllToJianyingDraft(): Promise<void> {
    *  不再二次随机、不再二次请求，与预览/合成所见一致。 */
   const textFxHitsByVideo = new Map<string, Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>>()
   let lastMatchTemplateIds: string[] = []
-  /** 导出取命中（textFxEnabled 时）：优先逐视频缓存，缺失则按最近模板池取
-   *  fetchTextFxHits（rows 与预览/合成同源 → 命中 textFxHitsCache，零服务端调用） */
-  async function textFxHitsForExport(
+  /** 导出取命中（2026-09-17 用户裁决「一个按钮一条路」：导出不再依赖服务端 match）：
+   *  ① 逐视频缓存命中（预览/合成已预取的 textFxHitsByVideo）→ 直接用——预览所在位置
+   *     就是命中位置；② 未命中（跨会话）→ 纯本地现算：关键词（extractTextFxWords 密度
+   *     口径）× 字幕行窗口（命中位置=关键词所在行），phrase=命中关键词，
+   *     templateId=匹配池轮转。rows 由调用方传入（与字幕/花字同一份行数据）。 */
+  function textFxHitsForExport(
     videoPath: string,
-    text: string,
-    timingPath: string,
-  ): Promise<Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>> {
+    rows: Array<{ text: string; start: number; end: number }>,
+  ): Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> {
     const cachedByVideo = textFxHitsByVideo.get(videoPath)
     if (cachedByVideo) return cachedByVideo
-    const ids = lastMatchTemplateIds.length ? lastMatchTemplateIds : currentMatchTemplateIds()
-    const r = await fetchTextFxHits(videoPath, text, timingPath, ids)
-    return r.lines
+    const words = extractTextFxWords()
+    const pool = lastMatchTemplateIds.length ? lastMatchTemplateIds : currentMatchTemplateIds()
+    const out: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
+    for (const r of rows) {
+      for (const w of words) {
+        if (!w || !r.text.toLowerCase().includes(w.toLowerCase())) continue
+        const templateId = pool.length ? String(pool[out.length % pool.length]) : ''
+        out.push({ text: w, start: r.start, end: r.end, keywords: [w], templateId })
+      }
+    }
+    textFxHitsByVideo.set(videoPath, out)
+    return out
   }
   async function fetchTextFxHits(
     videoPath: string,
@@ -2563,10 +2622,15 @@ async function exportAllToJianyingDraft(): Promise<void> {
    *  字幕字体列表来自服务端，进 Step3 预拉一次（对照同函数 L667-669：
    *  if not _fonts_loaded → _refresh_server_fonts；失败可用「刷新字体」重拉） */
   let fontsPreloaded = false
+  let subtitleStylesPreloaded = false
   async function enterStepVoice(): Promise<void> {
     if (!fontsPreloaded) {
       fontsPreloaded = true
       void refreshFonts()
+    }
+    if (!subtitleStylesPreloaded) {
+      subtitleStylesPreloaded = true
+      void refreshSubtitleStyles()
     }
     const confirmed = assemblePlans.value
       .filter((p) => p.confirmed && p.outputPath)
@@ -2948,7 +3012,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
 
   /** 字幕效果预览（行3）：选中预设的 CSS 近似（描边 paintOrder）+ 选中字体 + 背景框 */
   const selectedSubtitlePreset = computed<SubtitleStylePreset>(
-    () => SUBTITLE_STYLE_PRESETS.find((p) => p.key === subtitleStyleKey.value) || SUBTITLE_STYLE_PRESETS[0]
+    () => subtitleStylePresets.value.find((p) => p.key === subtitleStyleKey.value) || subtitleStylePresets.value[0]
   )
   const subtitlePreviewStyle = computed<Record<string, string>>(() => {
     void fontFacesVersion.value
@@ -2997,6 +3061,24 @@ async function exportAllToJianyingDraft(): Promise<void> {
       statusText.value = '拉取服务端字体失败，字幕将使用默认字体'
     } finally {
       fontsLoading.value = false
+    }
+  }
+
+  /** 刷新字幕样式（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles）。
+   *  失败降级兆底预设（SUBTITLE_STYLE_PRESETS_FALLBACK），不阻断 UI。 */
+  async function refreshSubtitleStyles(): Promise<void> {
+    try {
+      const res = await window.tintin?.server?.voiceSubtitleStyles?.()
+      const styles = res && !('error' in res) ? res.styles || [] : []
+      if (styles.length) {
+        subtitleStylePresets.value = serverStylesToPresets(styles)
+        // 默认选中第一个（或保持当前选中，若仍在列表中）
+        if (!subtitleStyleKey.value || !subtitleStylePresets.value.some((p) => p.key === subtitleStyleKey.value)) {
+          subtitleStyleKey.value = subtitleStylePresets.value[0]?.key || ''
+        }
+      }
+    } catch (_) {
+      // 降级兆底预设，不阻断
     }
   }
 
@@ -3161,7 +3243,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     refSamples, selectedRefSample, refAudioPath, refText, selectRefAudio,
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
     addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
-    subtitleStyleKey, SUBTITLE_STYLE_PRESETS, selectedSubtitlePreset, subtitlePreviewStyle,
+    subtitleStyleKey, subtitleStylePresets, selectedSubtitlePreset, subtitlePreviewStyle,
     subtitleAnimKey,
     fontOptionStyle,
     fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
@@ -3191,6 +3273,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
     exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
     lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径（供「打开草稿目录」按钮）
+    exportJianyingPackageDraft, // 轨 2（2026-09-17）：导入服务端草稿包
     finalVideoList, finalVideoPath, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
     bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration,
     bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl,

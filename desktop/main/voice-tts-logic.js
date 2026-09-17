@@ -343,6 +343,40 @@ const SUBTITLE_STYLES = {
 }
 
 /** drawtext 文本转义（对照 L915 逐字：\\ → \\\\ 、' 、: 、, ） */
+
+/** 服务端字幕样式 → drawtext 片段（2026-09-17 用户裁决：字幕样式统一来自服务端
+ *  /subtitle_styles 库，不再用本地 SUBTITLE_STYLES 硬编码表）。
+ *  映射：color→fontcolor, outline→borderw, outline_colour→bordercolor；
+ *  box（"color@opacity"）→ box=1:boxcolor=color@opacity:boxborderw=6。 */
+function serverStyleToDrawtext(style) {
+  if (!style || typeof style !== 'object') return 'fontcolor=white'
+  const parts = []
+  // 文字色
+  const color = String(style.color || 'white').trim()
+  parts.push('fontcolor=' + (color.startsWith('#') ? color.replace('#', '0x') : color))
+  // 描边
+  const outline = Number(style.outline) || 0
+  if (outline > 0) {
+    parts.push('borderw=' + Math.min(outline, 20))
+    const oc = String(style.outline_colour || 'black').trim()
+    parts.push('bordercolor=' + (oc.startsWith('#') ? oc.replace('#', '0x') : oc))
+  }
+  // 背景框（box="color@opacity" 或 "color"）
+  if (style.box) {
+    const boxStr = String(style.box)
+    const atIdx = boxStr.lastIndexOf('@')
+    if (atIdx > 0) {
+      const boxColor = boxStr.slice(0, atIdx)
+      const boxOpacity = boxStr.slice(atIdx + 1)
+      const bc = boxColor.startsWith('#') ? boxColor.replace('#', '0x') : boxColor
+      parts.push('box=1:boxcolor=' + bc + '@' + boxOpacity + ':boxborderw=6')
+    } else {
+      const bc = boxStr.startsWith('#') ? boxStr.replace('#', '0x') : boxStr
+      parts.push('box=1:boxcolor=' + bc + ':boxborderw=6')
+    }
+  }
+  return parts.join(':')
+}
 /** 剥读音标注括号（concat_workers.py _strip_pron_annotation 逐行移植）：
  * 555(三五)电池 → 555电池；仅括号前紧贴字母/数字时识别。字幕/花字显示原文。 */
 const SUB_PRON_RE = /(?<=[0-9A-Za-z])\([^()]{1,12}\)/g
@@ -709,13 +743,31 @@ function buildSubtitleDrawtextList(o, subLines, subStarts, subEnds) {
   let boxOpacity = 0.2
   try { boxOpacity = Math.min(1.0, Math.max(0.0, Number(o.subtitleBoxOpacity))) } catch (_) { /* NaN 等 → 默认 */ }
   if (!Number.isFinite(boxOpacity)) boxOpacity = 0.2
+  // 字幕样式统一来自服务端 /subtitle_styles（2026-09-17 用户裁决）：文字色/描边
+  // 取服务端样式对象；背景框底色沿用样式的 box 色（缺省 black），不透明度以客户端
+  // 滑块为准；无服务端样式对象（离线降级）→ 回退本地 SUBTITLE_STYLES 查表。
+  const srvStyle = (o.subtitleStyleObj && typeof o.subtitleStyleObj === 'object') ? o.subtitleStyleObj : null
+  let boxColor = 'black'
+  if (srvStyle && srvStyle.box) {
+    const rawBox = String(srvStyle.box)
+    boxColor = rawBox.includes('@') ? rawBox.slice(0, rawBox.lastIndexOf('@')) : rawBox
+    if (boxColor.startsWith('#')) boxColor = boxColor.replace('#', '0x')
+  }
   const boxStr = boxOpacity > 0
-    ? `box=1:boxcolor=black@${boxOpacity.toFixed(2)}:boxborderw=6:`
+    ? `box=1:boxcolor=${boxColor || 'black'}@${boxOpacity.toFixed(2)}:boxborderw=6:`
     : ''
   // 底边贴安全框下沿再抬 2%（run L1225）
   const yExpr = `${SAFE_BOTTOM_EDGE}-text_h-h*${SUB_BOTTOM_GAP}`
-  // 文字样式预设（2026-09-09 裁决：样式属字幕配置；未知 key 回退默认白字，与旧版一致）
-  const styleStr = SUBTITLE_STYLES[o.subtitleStyle] || SUBTITLE_STYLES.white
+  // 文字样式片段（2026-09-17 用户裁决）：服务端样式对象（去 box，box 已由 boxStr
+  // 独立控制）经 serverStyleToDrawtext 转 fontcolor/borderw/bordercolor；无服务端样式
+  // 对象时回退本地 SUBTITLE_STYLES 查表（未知 key 回退默认白字，与旧版一致）
+  let styleStr
+  if (srvStyle) {
+    const { box: _box, ...rest } = srvStyle
+    styleStr = serverStyleToDrawtext(rest)
+  } else {
+    styleStr = SUBTITLE_STYLES[o.subtitleStyle] || SUBTITLE_STYLES.white
+  }
   // 入场动画（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；口径对照花字
   //  fade/rise/slide/pop，白名单复用 VALID_ANIMS；none=硬切；无效值回退 fade）
   const animRaw = String(o.subtitleAnim || '').trim().toLowerCase()
@@ -1314,6 +1366,7 @@ module.exports = {
   parseFancyWords,
   FANCY_STYLES,
   SUBTITLE_STYLES,
+  serverStyleToDrawtext,
   escapeDrawText,
   stripPronAnnotation,
   SAFE_X,

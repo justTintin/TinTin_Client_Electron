@@ -70,8 +70,6 @@ const BASELINE_UNWIRED = {
   'agent:registerArtifact':        'W11 同上',
   // ── 授权校验：服务端能力就绪，客户端无入口 ──
   'system:licenseVerify':          '授权校验 UI 未落地（等产品决策是否启用）',
-  // ── 视频合成：旧客户端自组装导出（2026-09-15 时间轴导出切换 from-task 合并流）──
-  'jianying:export':                '2026-09-15 时间轴导出切换 from-task 后暂无 UI 消费（handler+单视频导出保留待复用）',
   // ── 视频合成：成片/候选配套字幕查找（2026-09-14 导出改轨道结构——SRT 由文案
   //    +timing 现算，不再按文件配对；handler 保留供成片配对字幕场景复用）──
   'final:findSrt':                 '2026-09-14 导出改轨道结构后暂无消费场景（配对字幕查找保留待复用）',
@@ -79,7 +77,9 @@ const BASELINE_UNWIRED = {
   //    media:storageGet|SaveSettings|OpenDownloadDir|SaveFavorites /
   //    browser:exportCookies|getCookieStatus / storyboard:listScripts|saveScript /
   //    app:quit|relaunch 共 12 条通道已删（handler+preload+类型），
-  //    downloads:list / history:get 两条真死码已删，按只减不增规则移出基线 ──
+  //    downloads:list / history:get 两条真死码已删，按只减不增规则移出基线；
+  //    2026-09-16：'jianying:export' 随无任务 B 路径（客户端自组装导出）恢复接线，
+  //    按只减不增规则移出基线（接线证据：useVideoMontage.ts doJianyingExport）──
   // 注：browser:extensionInstall / extensionUninstall 由 extensions-panel.html 直接
   //     ipcRenderer.invoke 裸通道消费，不计悬空（isConsumed 的裸通道分支已覆盖）。
 };

@@ -248,14 +248,40 @@ function presetAttachClipToDraft(c) {
   }
 }
 
-/** .textpreset attach_info → 草稿 attach_info（duration/original_size/clip） */
-function presetAttachToDraft(a) {
+/** .textpreset attach_info → 草稿 attach_info（duration/original_size/clip）。
+ *  2026-09-18 用户裁决：canvasW/canvasH>0 时按当前视频画布等比钳制 clip.scale，
+ *  避免预设（多为横屏设计）照搬到竖屏画布时模板实际像素宽超出视频宽度。 */
+function presetAttachToDraft(a, canvasW = 0, canvasH = 0) {
   const s = a || {}
+  const origW = Number(s.original_size_width || 0)
+  const origH = Number(s.original_size_height || 0)
+  const clip = presetAttachClipToDraft(s.clip)
+  clampAttachClipToCanvas(clip, origW, origH, canvasW, canvasH)
   return {
     duration: Number(s.duration || 0),
-    original_size_width: Number(s.original_size_width || 0),
-    original_size_height: Number(s.original_size_height || 0),
-    clip: presetAttachClipToDraft(s.clip),
+    original_size_width: origW,
+    original_size_height: origH,
+    clip,
+  }
+}
+
+/** 文字模板元素缩放钳制（2026-09-18 用户裁决）：剪映模板元素实际像素尺寸
+ *  = original_size × clip.scale（真机范本 text_info 317.5×3.2928≈1045px 贴合 1080 画布宽佐证）。
+ *  预设 scale 是为预设设计画布生成的，直接照搬到不同比例的视频画布（如竖屏 9:16）
+ *  会让模板超出视频宽度。此处按当前画布等比钳制：任一维度实际像素超出画布即同比
+ *  缩小 scale.x/scale.y（保持纵横比），不超则原样。original_size 或画布尺寸缺失（<=0）
+ *  时不缩放（无从换算，保守保持预设观感）。纯函数、原地改 clip。 */
+function clampAttachClipToCanvas(clip, origW, origH, canvasW, canvasH) {
+  if (!clip || !clip.scale) return
+  if (!(origW > 0) || !(canvasW > 0)) return
+  const effW = origW * Math.abs(Number(clip.scale.x) || 1)
+  const effH = (origH > 0 && canvasH > 0) ? origH * Math.abs(Number(clip.scale.y) || 1) : 0
+  let factor = 1
+  if (effW > canvasW) factor = Math.min(factor, canvasW / effW)
+  if (effH > canvasH) factor = Math.min(factor, canvasH / effH)
+  if (factor < 1) {
+    clip.scale.x = (Number(clip.scale.x) || 1) * factor
+    clip.scale.y = (Number(clip.scale.y) || 1) * factor
   }
 }
 
@@ -312,7 +338,7 @@ function findArtistEffectPath(rid) {
  * 返回 { templateMaterial, textEntry, animMaterials[], flowerEffects[], extraRefs[] }
  * 或 null（preset 缺关键结构）。
  */
-function buildTemplateClipTrio(p, phrase) {
+function buildTemplateClipTrio(p, phrase, canvasW = 0, canvasH = 0) {
   if (!p || !p.effect) return null
   const eff = p.effect
   const para = (p.paragraphs || [])[0] || {}
@@ -442,7 +468,7 @@ function buildTemplateClipTrio(p, phrase) {
     })),
     text_info_resources: [{
       id: hexId(),
-      attach_info: presetAttachToDraft(para.attach_info),
+      attach_info: presetAttachToDraft(para.attach_info, canvasW, canvasH),
       text_material_id: textEntry.id,
       // 范本顺序：[花字效果, 文字动画]
       extra_material_refs: [...flowerEffects.map((m) => m.id), ...animMaterials.slice(0, 1).map((m) => m.id)],
@@ -452,7 +478,7 @@ function buildTemplateClipTrio(p, phrase) {
       .map((e) => ({
         name: String(e.element_name || hexId()),
         type: 'sticker',
-        attach_info: presetAttachToDraft(e.attach_info),
+        attach_info: presetAttachToDraft(e.attach_info, canvasW, canvasH),
         shape_param: {},
       })),
     aigc_config: { font_item: { id: hexId(), resource_id: '', path: '' } },
@@ -573,7 +599,7 @@ function draft_content_tracks_render_index(tracks) {
 }
 /** 模板实例段追加到文字模板轨（时间窗裁剪同 appendSubtitleTrack 口径；
  *  preset 解析经 cache 复用；模板缺失静默跳过——不造假）。 */
-function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache) {
+function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache, canvasW = 0, canvasH = 0) {
   for (const c of clips) {
     const startUs = offsetUs + c.startUs
     let durUs = c.durUs
@@ -586,7 +612,7 @@ function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs
       tplCache.set(c.resourceId, p)
     }
     if (!p) continue
-    const trio = buildTemplateClipTrio(p, c.phrase)
+    const trio = buildTemplateClipTrio(p, c.phrase, canvasW, canvasH)
     if (!trio) continue
     materials.text_templates.push(trio.templateMaterial)
     materials.texts.push(trio.textEntry)
@@ -907,7 +933,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。
  *  sfxPaths（2026-09-18 用户裁决）：音效池=服务端音频库剪映音效库 <2s 条目
  *  下载产物（主进程 resolveJianyingSfxPool 解析），按文字模板命中全局索引循环指派。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -991,7 +1017,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const videoTrack = newTrack('video')
     const voiceTrack = newTrack('audio')
     const voiceSegsByVideo = normalizeVoiceClips(voiceClips, clips.length)
-    // 2026-09-18 用户裁决：BGM 逐视频窗落段（间隔期静音）——收集各视频时间窗
+    // 2026-09-18 用户裁决：BGM 逐视频窗落段（间隔期静音）——收集各视频时间窗；
+    // 逐视频 BGM（bgmPaths[i] 优先，空则回退全局 bgmPath，落段时再判存在性）
     const bgmWindows = []
     let cursorUs = 0
     clips.forEach((clip, i) => {
@@ -999,7 +1026,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       materials.videos.push(videoMaterialFields({ ...clip, materialId }))
       const sp = speedMaterial(1.0)
       speeds.push(sp)
-      bgmWindows.push({ startUs: cursorUs, durUs: clip.durationUs })
+      bgmWindows.push({ startUs: cursorUs, durUs: clip.durationUs, bgmPath: (Array.isArray(bgmPaths) && bgmPaths[i]) ? String(bgmPaths[i]) : '' })
       const voiced = (voiceSegsByVideo[i] || []).length > 0
       const seg = {
         ...baseSegmentFields(materialId, cursorUs, clip.durationUs),
@@ -1089,7 +1116,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
         }
         if (tplClips && tplClips[i] && tplClips[i].length) {
           try {
-            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
+            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
           } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
           // 音效轨（2026-09-17 用户裁决·定义修正）：跟随文字模板命中位置落段
           // （位置=关键词命中位置；与花字轨无关）。2026-09-18：音效池来自服务端
@@ -1108,7 +1135,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       clips.forEach((clip, i) => {
         if (tplClips[i] && tplClips[i].length) {
           try {
-            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
+            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
           } catch (_) {}
           appendSfxForVideo(i, cursorUs, cursorUs + clip.durationUs)
         }
@@ -1143,10 +1170,15 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     // 6.5 口播音频轨（有段才入轨；音频域三轨=口播/BGM/音效）
     if (voiceTrack.segments.length) tracks.push(voiceTrack)
 
-    // 7. BGM 轨（最后一条）：2026-09-18 用户裁决——单 BGM 逐视频窗落段（第一段截断于
-    //    第一个视频结尾，不是整条时间轴；间隔期静音），源游标跨窗连续、超素材时长回环
+    // 7. BGM 轨（最后一条）：2026-09-18 用户裁决——逐视频窗落段（第一段截断于
+    //    第一个视频结尾，不是整条时间轴；间隔期静音），源游标跨窗连续、超素材时长回环。
+    //    2026-09-18 逐视频 BGM：每窗取 bgmPaths[i]（缺省回退全局 bgmPath），不同文件各成一份素材
     let bgmIncluded = false
-    if (bgmPath && fs.existsSync(bgmPath)) {
+    const hasAnyBgm = bgmWindows.some((w) => {
+      const p = w.bgmPath || bgmPath
+      return p && fs.existsSync(p)
+    })
+    if (hasAnyBgm) {
       appendBgmTrack(tracks, materials, bgmPath, bgmVolume, bgmWindows, deps)
       bgmIncluded = true
     }
@@ -1612,43 +1644,57 @@ function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 
 }
 
 /** BGM 音轨（2026-09-18 用户裁决：逐视频窗落段，不再是单段覆盖整条时间轴）：
- *  windows=[{startUs,durUs}]（各视频时间窗，不含半秒间隔——间隔期静音）；
+ *  windows=[{startUs,durUs,bgmPath?}]（各视频时间窗，不含半秒间隔——间隔期静音）；
  *  第一段截断于第一个视频结尾；源游标跨窗连续（第二段从第一段源结尾接着取），
  *  超素材时长回环切 chunk（无缝接续）；素材/段共用同一 id（golden 对照 §7-⑤）。
- *  probe 失败回退：每窗单段 source [0,窗长]（无法回环时的保守口径）。 */
+ *  2026-09-18 逐视频 BGM：每窗 bgmPath 优先、缺省回退入参 bgmPath；不同文件各缓存一份素材
+ *  + 独立源游标（跨同素材窗连续）；probe 失败回退：每窗单段 source [0,窗长]（无法回环时保守口径）。 */
 function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, windows, deps) {
   const wins = (Array.isArray(windows) ? windows : [])
-    .map((w) => ({ startUs: Math.max(0, Math.round(Number(w && w.startUs) || 0)), durUs: Math.round(Number(w && w.durUs) || 0) }))
-    .filter((w) => w.durUs > 0)
+    .map((w) => ({
+      startUs: Math.max(0, Math.round(Number(w && w.startUs) || 0)),
+      durUs: Math.round(Number(w && w.durUs) || 0),
+      // 逐视频 BGM：窗自带 bgmPath 优先，缺省回退全局单 BGM
+      path: String((w && w.bgmPath) || bgmPath || ''),
+    }))
+    .filter((w) => w.durUs > 0 && w.path && fs.existsSync(w.path))
   if (!wins.length) return
-  let bgmDurationSec = 0.0
-  if (deps && typeof deps.probeMedia === 'function') {
-    try {
-      const { durationSec } = deps.probeMedia(bgmPath)
-      bgmDurationSec = durationSec || 0
-    } catch (_) { /* 原版失败按 0 处理 */ }
-  }
-  const bgmDurUs = Math.floor(bgmDurationSec * 1000000)
 
-  // 2026-09-17 golden 对照工具抓出的存量 bug：素材与段必须共用同一个 id——
-  // 此前段用独立 materialId 而 audioMaterialFields 内部另生 id → 段引用悬空（§7-⑤ 必拦截）
-  const bgmMat = audioMaterialFields(bgmPath.split('\\').join('/'), bgmDurUs > 0 ? bgmDurUs : wins.reduce((a, w) => a + w.durUs, 0))
-  materials.audios.push(bgmMat)
+  // probe 失败（durUs<=0）时素材时长回退=该素材各窗时长之和（同旧口径）
+  const pathWinSum = new Map()
+  for (const w of wins) pathWinSum.set(w.path, (pathWinSum.get(w.path) || 0) + w.durUs)
+
+  // 每个不同 BGM 文件缓存一份素材 + 独立源游标（素材与段共用同一 id，golden §7-⑤）
+  const cache = new Map()
+  const ensureMat = (p) => {
+    const hit = cache.get(p)
+    if (hit) return hit
+    let durSec = 0
+    if (deps && typeof deps.probeMedia === 'function') {
+      try { durSec = deps.probeMedia(p).durationSec || 0 } catch (_) { /* 原版失败按 0 处理 */ }
+    }
+    const durUs = Math.floor(durSec * 1000000)
+    const mat = audioMaterialFields(p.split('\\').join('/'), durUs > 0 ? durUs : (pathWinSum.get(p) || 0))
+    materials.audios.push(mat)
+    const entry = { mat, durUs, srcCursor: 0 }
+    cache.set(p, entry)
+    return entry
+  }
 
   const track = newTrack('audio')
-  let srcCursor = 0 // 源游标：跨窗连续，回环时归零
   for (const w of wins) {
+    const e = ensureMat(w.path)
     let remaining = w.durUs
     let targetStart = w.startUs
     while (remaining > 0) {
-      // probe 失败（bgmDurUs<=0）无法回环 → 每窗单段 source [0,窗长]（保守回退）
-      const chunk = bgmDurUs > 0 ? Math.min(remaining, bgmDurUs - srcCursor) : remaining
-      if (chunk <= 0) { srcCursor = 0; continue }
+      // probe 失败（durUs<=0）无法回环 → 每窗单段 source [0,窗长]（保守回退）
+      const chunk = e.durUs > 0 ? Math.min(remaining, e.durUs - e.srcCursor) : remaining
+      if (chunk <= 0) { e.srcCursor = 0; continue }
       const sp = speedMaterial(1.0)
       materials.speeds.push(sp)
       track.segments.push({
-        ...baseSegmentFields(bgmMat.id, targetStart, chunk),
-        source_timerange: { start: srcCursor, duration: chunk },
+        ...baseSegmentFields(e.mat.id, targetStart, chunk),
+        source_timerange: { start: e.srcCursor, duration: chunk },
         speed: 1.0,
         volume: bgmVolume / 100.0,
         extra_material_refs: [sp.id],
@@ -1656,8 +1702,8 @@ function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, windows, deps) {
         clip: null,
         hdr_settings: null,
       })
-      srcCursor += chunk
-      if (bgmDurUs > 0 && srcCursor >= bgmDurUs) srcCursor = 0
+      e.srcCursor += chunk
+      if (e.durUs > 0 && e.srcCursor >= e.durUs) e.srcCursor = 0
       targetStart += chunk
       remaining -= chunk
     }

@@ -1275,6 +1275,10 @@ export function useVideoMontage() {
       localStorage.setItem('montage.bgmVolume', String(bgmVolume.value))
     } catch (_) { /* 隐私模式等写失败忽略 */ }
   })
+  // 2026-09-18 用户裁决：逐视频 BGM 指派（Step4 视频列表每行可单独选 BGM）。
+  // 键=候选视频路径（step4Candidates 口径：配音产物 dubbedPath / outputs）；值={path,name}。
+  // 未指派的行导出/合成时回退全局 bgmPath。会话级（不持久化：路径跨会话易失效）。
+  const rowBgm = ref<Record<string, { path: string; name: string }>>({})
   const finalBusy = ref(false)
   const finalMode = ref<'' | 'server' | 'local'>('') // 进行中的链路（双按钮独立 loading）
   const finalDone = ref(false)     // 三按钮启用开关（原版 btn_open_final_dir 等初始 disabled）
@@ -1285,6 +1289,9 @@ export function useVideoMontage() {
   const exportStage = ref('')      // 导出阶段文案
   // 2026-09-16：导出成功后记录草稿目录路径（供「打开草稿目录」按钮使用）
   const lastExportDraftPath = ref('')
+  // 2026-09-18 用户裁决：导出完成提示行（仿声音克隆完成提示形态：状态行「完成：…」），
+  // 「打开草稿目录」按钮内嵌该提示（自底部结果区移入）；重导时清空
+  const exportDoneMsg = ref('')
   const finalVideoList = ref<Array<{ name: string; path: string }>>([])
   const finalVideoPath = ref('')   // 首个成片（final_video_path 口径）
   const finalSelIdx = ref(-1)      // 列表选中项（原版 currentItem，默认取第一个）
@@ -1349,21 +1356,28 @@ export function useVideoMontage() {
   /** 生成结果的预览地址（相对路径拼服务端基址） */
   const bgmPreviewUrl = computed(() => toAbsolute(bgmGenUrl.value))
 
-  /** BGM 选择弹窗确认（2026-09-09 用户裁决）：音频库音频经 /audio/library/{mid}/file
-   *  下载落盘后回填 bgmPath（ffmpeg 混音/剪映导出需本地文件） */
-  async function applyLibraryBgm(mid: string, filename: string): Promise<{ path?: string; error?: string }> {
+  /** 下载音频库 BGM 到本地（仅下载不回填全局）——全局指派与逐行指派共用（2026-09-18） */
+  async function downloadLibraryBgm(mid: string): Promise<{ path?: string; error?: string }> {
     try {
       const destDir = voiceDirInput.value
         ? joinPath(resolveOutMontageDir(voiceDirInput.value), 'bgm_lib')
         : joinPath(await readCacheDir(), 'montage_cache', 'bgm_lib')
       const dl = await window.tintin?.server?.bgmDownloadUrl?.({ url: `/audio/library/${mid}/file`, destDir })
       if (!dl || !('path' in dl) || !dl.path) return { error: '下载失败（服务端不可达或文件不存在）' }
-      bgmPath.value = dl.path
-      bgmName.value = filename || pathBasename(dl.path)
       return { path: dl.path }
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) }
     }
+  }
+
+  /** BGM 选择弹窗确认（2026-09-09 用户裁决）：音频库音频经 /audio/library/{mid}/file
+   *  下载落盘后回填全局 bgmPath（ffmpeg 混音/剪映导出需本地文件） */
+  async function applyLibraryBgm(mid: string, filename: string): Promise<{ path?: string; error?: string }> {
+    const r = await downloadLibraryBgm(mid)
+    if (r.error || !r.path) return { error: r.error || '下载失败' }
+    bgmPath.value = r.path
+    bgmName.value = filename || pathBasename(r.path)
+    return { path: r.path }
   }
 
   /** 选择背景音乐（_select_bgm L1522：标题「选择背景配乐」，mp3/wav/m4a/aac） */
@@ -1378,6 +1392,49 @@ export function useVideoMontage() {
         bgmName.value = pathBasename(bgmPath.value)
       }
     })()
+  }
+
+  // ── 逐视频 BGM 指派（2026-09-18 用户裁决：Step4 视频列表每行独立选 BGM）──
+  /** 该行已指派的 BGM 显示名（未指派返回空串→模板显示占位「跟随全局 BGM」） */
+  function rowBgmName(videoPath: string): string {
+    return rowBgm.value[videoPath]?.name || ''
+  }
+  /** 指派/更新某行 BGM（path 为空=清除） */
+  function setRowBgm(videoPath: string, path: string, name = ''): void {
+    if (!videoPath) return
+    const next = { ...rowBgm.value }
+    if (path) next[videoPath] = { path, name: name || pathBasename(path) }
+    else delete next[videoPath]
+    rowBgm.value = next
+  }
+  /** 清除某行 BGM（回退跟随全局） */
+  function clearRowBgm(videoPath: string): void { setRowBgm(videoPath, '', '') }
+  /** 逐行本地文件选择（同 pickBgm，落 rowBgm 而非全局） */
+  function pickRowBgm(videoPath: string): void {
+    void (async () => {
+      const res = await window.tintin.dialog.openFile({
+        title: '选择背景配乐',
+        filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'm4a', 'aac'] }],
+      })
+      if (res) setRowBgm(videoPath, String(res), pathBasename(String(res)))
+    })()
+  }
+  /** 解析某候选视频路径的逐行 BGM 覆盖（仅行指派，不含全局回退；未指派返回空串）。
+   *  服务端合成候选=源视频 r.path，而列表键=dubbedPath——经 voiceRows 双向映射兜住 */
+  function rowBgmOverride(videoPath: string): string {
+    const direct = rowBgm.value[videoPath]?.path
+    if (direct) return direct
+    const row = voiceRows.value.find((r) => r.path === videoPath || r.dubbedPath === videoPath)
+    if (row) {
+      const key = row.dubbedPath || row.path
+      const p = rowBgm.value[key]?.path
+      if (p) return p
+    }
+    return ''
+  }
+  /** 解析某候选视频路径的有效 BGM（逐行指派优先，回退全局） */
+  function rowBgmForCandidate(videoPath: string): string {
+    return rowBgmOverride(videoPath) || bgmPath.value || ''
   }
 
   // ── BGM 试听播放器（_toggle_bgm_play/_stop_bgm_play/_on_bgm_position_changed 等；
@@ -1535,7 +1592,9 @@ export function useVideoMontage() {
       }
       const outFinalDir = resolveOutFinalDir(candidates[0])
       // 原版 src_name = 第①步素材目录名（folder_path_input basename）；本端取第③步视频输入目录名同语义
+      // 2026-09-18 用户裁决：逐任务 BGM 覆盖（行指派优先；空串=跟随请求级全局 bgmPath）
       const tasks = buildFinalTasks(candidates, srcDirName(voiceDirInput.value), outFinalDir)
+        .map((t) => ({ ...t, bgmPath: rowBgmOverride(t.videoPath) }))
       const channel = nextVoiceChannel()
       // 2026-09-09 裁决：特效配置迁 Step4，混音前统一烧制字幕/花字。
       // subtitleTexts 按候选视频映射 Step3 文案行：无对应行（如 outputs
@@ -1708,7 +1767,17 @@ export function useVideoMontage() {
 
   /** 导出全部到时间轴（2026-09-14 用户裁决：同轨道导出口径，带转场） */
 async function exportAllToJianyingDraft(): Promise<void> {
-    await exportMontageTracksDraft('螺丝钉剪辑_轨道时间轴')
+    // 2026-09-18 用户裁决：导出进度条独立全程显示（不与服务端合成 finalBusy
+    //   进度条混用）；渲染层分段驱动，完成后切换完成提示行
+    exportBusy.value = true
+    exportProgress.value = 5
+    exportStage.value = '正在扫描候选素材...'
+    exportDoneMsg.value = ''
+    try {
+      await exportMontageTracksDraft('螺丝钉剪辑_轨道时间轴')
+    } finally {
+      exportBusy.value = false
+    }
   }
 
   // ── 旧客户端自组装导出（无服务端合成任务时的 B 路径使用）──
@@ -1720,6 +1789,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     srtPaths?: Array<string | null>
     transitions?: string
     bgmPath?: string
+    /** 2026-09-18 用户裁决：逐视频 BGM（与 videoPaths 平行；空串=该窗回退全局 bgmPath） */
+    bgmPaths?: Array<string | null>
     bgmVolume?: number
     fxWords?: string[]
     fxKinds?: Array<'fancy' | 'tpl'>
@@ -1744,7 +1815,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     subtitleFontSize?: number | null
     draftName: string
     successBody: (name: string) => string
-  }): Promise<void> {
+  }): Promise<boolean> {
     // 2026-09-12 缺陷修复（用户报「两导出按钮点击毫无反应」，日志仅一条
     // Error: An object could not be cloned.）：successBody 是渲染层本地回调，此前经
     // ...base 整体展开混入 IPC payload——结构化克隆无法序列化函数 → invoke 直接
@@ -1761,7 +1832,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     } catch (e) {
       clientError('video-montage', '导出剪映草稿失败', errText(e))
       notify('导出失败', `导出剪映草稿时发生错误：\n${errText(e)}`)
-      return
+      return false
     }
     if (res && res.success) {
       // 2026-09-14 用户裁决：导出成功后自动拉起剪映（主进程 launchJianying），
@@ -1782,9 +1853,11 @@ async function exportAllToJianyingDraft(): Promise<void> {
         tail += '\n⚠️ 格式符合性警告 ' + cw.length + ' 条（不影响打开，已记录日志）：' + cw.slice(0, 3).join('；') + (cw.length > 3 ? ' …' : '')
       }
       notify('草稿导出成功', successBody(base.draftName) + tail)
+      return true
     } else {
       clientError('video-montage', '导出剪映草稿失败', res ? res.message : '主进程不可达')
       notify('导出失败', `导出剪映草稿时发生错误：\n${res ? res.message : '主进程不可达'}`)
+      return false
     }
   }
 
@@ -1959,6 +2032,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
       notify('无候选素材', '请先完成镜头重组与口播配音再导出')
       return
     }
+    exportProgress.value = 10
+    exportStage.value = `候选素材共 ${cands.length} 段，生成字幕资产...`
     const srtPaths: Array<string | null> = []
     const textTemplateClips: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>> = []
     const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
@@ -1967,6 +2042,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
     let noSubClips = 0
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i]
+      // 2026-09-18 用户裁决：导出进度条分段驱动（独立于服务端合成进度条）
+      exportStage.value = `生成字幕资产（${i + 1}/${cands.length}）...`
+      exportProgress.value = 10 + Math.round((70 * i) / cands.length)
       // 2026-09-17 用户报障③④二次修正：候选恒为当前口播行路径（配音产物/确认合成
       //  产物），按 dubbedPath/path 直配 voiceRows；basename 兜底仅跨会话重扫目录
       //  漂移（同名产物不同目录）时用，含 dubbed_ 前缀与合成产物命名约定反推。
@@ -2040,9 +2118,11 @@ async function exportAllToJianyingDraft(): Promise<void> {
     }
     const transition = concatTransition.value || 'fade'
     const finalName = timelineDraftName()
+    exportStage.value = '组装剪映时间轴草稿（转场/口播/字幕/BGM 各轨）...'
+    exportProgress.value = 85
     // 本地组装（2026-09-18 用户裁决：音效=主进程从服务端音频库剪映音效库 <2s 条目
     // 下载到资产目录 sfx/ 后按命中循环指派；空池回落花字模板本地 sound 声明）
-    await doJianyingExport({
+    const ok = await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
       srtPaths,
@@ -2055,6 +2135,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
       textTemplateClips,
       voiceClips,
       bgmPath: bgmPath.value,
+      // 2026-09-18 用户裁决：逐视频 BGM（与 cands 平行；未指派的行=空串→导出器回退全局 bgmPath）
+      bgmPaths: cands.map((c) => rowBgmForCandidate(c)),
       bgmVolume: bgmVolume.value,
       // 音效下载落盘目录：工程资产目录 sfx/（与 srt//jy_pkg/ 同级；无输入目录
       // 回落 cacheDir/montage_cache/sfx，同 SRT 口径）
@@ -2064,6 +2146,16 @@ async function exportAllToJianyingDraft(): Promise<void> {
       draftName: finalName,
       successBody: (name: string) => '已按原始轨道结构导出 ' + cands.length + ' 段候选视频（转场：' + transition + '，含口播/字幕/关键词/BGM 轨）！\n项目名称：' + name + (noSubClips ? '\n（注：' + noSubClips + ' 段无口播文案，未出字幕/关键词轨）' : ''),
     })
+    if (ok) {
+      exportProgress.value = 100
+      exportStage.value = '导出完成'
+      // 2026-09-18 用户裁决：完成提示仿声音克隆生成完成提示形态（状态行「完成：…」+ OS 弹窗）；
+      // 「打开草稿目录」按钮内嵌该提示行（自底部结果区移入）
+      exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！'
+      statusText.value = exportDoneMsg.value
+    } else {
+      statusText.value = '注意： 剪映时间轴导出失败（详见弹窗通知）'
+    }
   }
 
   /** 轨 2（2026-09-17 用户裁决）：导入服务端草稿包——服务端封装好的剪映格式 zip，
@@ -3396,6 +3488,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
     exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
     lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径（供「打开草稿目录」按钮）
+    exportDoneMsg, // 2026-09-18：导出完成提示行（内嵌「打开草稿目录」按钮）
     exportJianyingPackageDraft, // 轨 2（2026-09-17）：导入服务端草稿包
     finalVideoList, finalVideoPath, finalSelIdx, finalPreviewUrl, finalPreviewTitle,
     bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration,
@@ -3403,6 +3496,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     bgmPlaying, bgmPosMs, bgmDurMs,
     generateBgm,
     pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
+    // 2026-09-18：逐视频 BGM 指派 + 弹窗下载助手（行目标不回填全局）
+    rowBgm, rowBgmName, setRowBgm, clearRowBgm, pickRowBgm, downloadLibraryBgm, rowBgmForCandidate,
     enterStep4, startFinalMix, openFinalDir, openExportDraftDir,
     exportAllToJianyingDraft, previewFinalVideo, step4Candidates, toAbsolute,
     fmtBgmTime,

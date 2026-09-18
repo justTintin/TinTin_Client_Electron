@@ -647,6 +647,14 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const ffmpegPath = getFfmpegPath()
       const hasBgm = !!(p.bgmPath && fs.existsSync(p.bgmPath))
       const bgmVol = (Number(p.bgmVolume) || 0) / 100.0
+      // 2026-09-18 用户裁决：逐任务 BGM 覆盖（task.bgmPath 为行指派，空=跟随全局 p.bgmPath）。
+      // 有效 BGM = 行指派（存在）优先，否则回退全局；两者皆无则该任务不混音。
+      const effBgmFor = (t) => {
+        const own = t && t.bgmPath && fs.existsSync(t.bgmPath) ? t.bgmPath : ''
+        if (own) return own
+        return hasBgm ? p.bgmPath : ''
+      }
+      const anyTaskBgm = tasks.some((t) => t && t.bgmPath && fs.existsSync(t.bgmPath))
 
       // ── 特效/混音链路裁决（2026-09-11 用户终裁：按钮决定链路，开了哪些特效、
       // 是否选 BGM 都只是参数）──
@@ -664,7 +672,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const hasVoice = subTexts.some((s) => s && s.voicePath && fs.existsSync(String(s.voicePath)))
       // 无特效且无 BGM 且无配音：没有任何处理要做，本地 -c copy 直通即可（走服务端
       // 只会无谓重编一遍）；只要有参数就整条交给服务端。
-      const doServer = serverMode && (hasFx || hasBgm || hasVoice)
+      const doServer = serverMode && (hasFx || hasBgm || hasVoice || anyTaskBgm)
       let fontPathEsc = ''
       let fancyFontPath = ''
       let fancyTemplate = null
@@ -848,6 +856,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const total = tasks.length
       for (let index = 0; index < total; index++) {
         const { videoPath, outPath } = tasks[index]
+        // 2026-09-18 用户裁决：逐任务有效 BGM（行指派优先，回退全局）
+        const taskBgm = effBgmFor(tasks[index])
         fs.mkdirSync(path.dirname(outPath), { recursive: true })
 
         // 服务端统一合成（特效烧制 + BGM 混音一次 concat；终裁：失败直接报错不回退）
@@ -864,7 +874,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
               httpRequest, videoPath, outPath,
               fx: fxForTask, sub,
               videoDur: spec.durationSec, spec,
-              bgmPath: hasBgm ? p.bgmPath : '', bgmVol,
+              bgmPath: taskBgm, bgmVol,
             })
             results.push(outPath)
             composeTaskIds.push(taskId)
@@ -881,7 +891,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         emit(`正在进行最终合成配乐 (${index + 1}/${total})...`, mixBase + Math.floor(index / total * mixSpan))
 
         let args
-        if (hasBgm) {
+        if (taskBgm) {
           const hasAudio = hasAudioStream(srcVideo)
           // BGM 淡入淡出：开头 1s 淡入，结尾 2s 淡出（按视频时长定位）
           const vidDur = getMediaDuration(srcVideo)
@@ -901,7 +911,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             )
             args = [
               '-y', '-i', srcVideo,
-              '-stream_loop', '-1', '-i', p.bgmPath,
+              '-stream_loop', '-1', '-i', taskBgm,
               '-filter_complex', filterComplex,
               '-map', '0:v', '-map', '[a]',
               '-c:v', 'copy', '-c:a', 'aac', '-shortest',
@@ -910,7 +920,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           } else {
             args = [
               '-y', '-i', srcVideo,
-              '-stream_loop', '-1', '-i', p.bgmPath,
+              '-stream_loop', '-1', '-i', taskBgm,
               '-filter_complex', `[1:a]volume=${bgmVol},${bgmFades},loudnorm=I=-16:TP=-1.5:LRA=11[bgm]`,
               '-map', '0:v', '-map', '[bgm]',
               '-c:v', 'copy', '-c:a', 'aac', '-shortest',
@@ -1081,6 +1091,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             videoPaths: p.videoPaths,
             transitions: p.transitions,
             bgmPath: p.bgmPath,
+            // 2026-09-18 用户裁决：逐视频 BGM（与 videoPaths 平行；空串=该窗回退全局 bgmPath）
+            bgmPaths: Array.isArray(p.bgmPaths) ? p.bgmPaths : null,
             bgmVolume: Number(p.bgmVolume) || 50,
             srtPaths: p.srtPaths,
             fxWords: p.fxWords,

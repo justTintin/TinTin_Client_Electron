@@ -684,3 +684,25 @@ test('buildEffectBurnArgs：textFxClipOverlays → webm 输入带 libvpx-vp9 解
   assert.ok(fc.includes('[1:v]setpts=PTS-STARTPTS+1.500/TB[txc0]'))
   assert.ok(fc.includes("overlay=x=0:y=0:eof_action=repeat:enable='between(t,1.500,3.500)'"))
 })
+
+// ── buildPauseAwareTiming（2026-09-18 用户裁决：停顿感知 timing 根治字幕句界漂移）──
+
+test('buildPauseAwareTiming: 扣停顿量分配语音+句界加回 k×pause；pause=0/单句等价旧口径', () => {
+  const segs = ['第一句，共四字。', '第二句，共四字。']
+  // 语音 8s + 1 处 0.1s 停顿 = 总时长 8.1s：句界应精确落在 4.0 / 4.1
+  const t = L.buildPauseAwareTiming(segs, 8.1, 100)
+  assert.equal(t[0].start, 0)
+  assert.equal(t[0].end, 4)
+  assert.equal(t[1].start, 4.1)
+  assert.equal(t[1].end, 8.1)
+  // 三句两停顿：边界 0 / 语音段均分 + 0.1 / +0.2
+  const t3 = L.buildPauseAwareTiming(['甲。', '乙。', '丙。'], 3.2, 100)
+  assert.equal(t3[0].end, 1)
+  assert.equal(t3[1].start, 1.1)
+  assert.equal(t3[1].end, 2.1)
+  assert.equal(t3[2].start, 2.2)
+  assert.equal(t3[2].end, 3.2)
+  // pause=0 / 单句 → 与 buildFallbackTiming 逐字同口径
+  assert.deepEqual(L.buildPauseAwareTiming(segs, 8, 0), L.buildFallbackTiming(segs, 8))
+  assert.deepEqual(L.buildPauseAwareTiming(['单句。'], 2, 100), L.buildFallbackTiming(['单句。'], 2))
+})

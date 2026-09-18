@@ -244,6 +244,25 @@ function buildFallbackTiming(segs, totalDur) {
   return timing
 }
 
+/**
+ * 停顿感知句级 timing（2026-09-18 用户裁决）：totalDur 含服务端按 ((pause=ms)) 标记
+ * 插入的 (n-1) 处精确静音；先扣停顿量得语音时长按字数分配，再逐句加回 k×pauseSec
+ * 偏移——否则停顿时长被 buildFallbackTiming 按字数摊进语音段，字幕句界漂移
+ * ≈pause×(1−k/n)。pauseMs<=0 或单句等价 buildFallbackTiming。纯函数可单测。
+ */
+function buildPauseAwareTiming(segs, totalDur, pauseMs) {
+  const pauseSec = Math.max(0, Math.round(Number(pauseMs ?? 0) || 0)) / 1000
+  if (!(pauseSec > 0) || !Array.isArray(segs) || segs.length <= 1) return buildFallbackTiming(segs, totalDur)
+  const speechDur = Math.max(0, Number(totalDur) - pauseSec * (segs.length - 1))
+  const timing = buildFallbackTiming(segs, speechDur)
+  timing.forEach((t, i) => {
+    const off = i * pauseSec
+    t.start = Math.round((t.start + off) * 1000) / 1000
+    t.end = Math.round((t.end + off) * 1000) / 1000
+  })
+  return timing
+}
+
 // ── AI 改写（script_workers.py BatchAITextRewriteWorker L449-493 逐字移植）──────
 
 /** 自由度百分比 → temperature（原版 1.0 - pct/100） */
@@ -1360,6 +1379,7 @@ module.exports = {
   buildWavHeader,
   deriveHealthUrl,
   buildFallbackTiming,
+  buildPauseAwareTiming,
   rewriteTemperature,
   buildAiRewriteSystemPrompt,
   cleanRewriteContent,

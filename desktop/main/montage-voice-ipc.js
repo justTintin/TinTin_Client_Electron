@@ -283,9 +283,11 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     fs.writeFileSync(outWavPath, content)
     try {
       const totalDur = L.wavBytesDuration(content)
+      // 2026-09-18 用户裁决：停顿感知 timing——句界精确扣除/加回 pause 量，
+      // 字幕句界不再因停顿均摊漂移（单句/无停顿等价旧口径）
       const timing = segs.length <= 1
         ? [{ text: mergedText, start: 0, end: Math.round(totalDur * 1000) / 1000 }]
-        : L.buildFallbackTiming(segs, totalDur)
+        : L.buildPauseAwareTiming(segs, totalDur, pause)
       writeTimingSidecar(outWavPath, timing)
     } catch (_) { /* 写时间轴失败不阻断（原版 OSError 兜底） */ }
   }
@@ -378,6 +380,17 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
                 fs.renameSync(tmpWav, t.outWavPath)
                 // 音频变速后句级时间轴同步缩放（atempo=X → 时长×1/X，L379-380）
                 scaleTimingSidecar(t.outWavPath, 1.0 / adj.ratio)
+              }
+            }
+            // 2026-09-18 用户裁决：凑长度手段替代句间停顿——变速 clamp 拉满仍短于
+            //   视频时 apad 尾部补静音至视频时长（内部语句节奏零改动，timing/字幕
+            //   不受影响；尾部静音本无字幕，口播轨时长覆盖整段视频）
+            const audDur2 = getMediaDuration(t.outWavPath)
+            if (vidDur > 0 && audDur2 > 0 && vidDur - audDur2 > 0.05) {
+              const tmpPad = t.outWavPath + '.pad.wav'
+              const rp = await runFfmpeg(['-y', '-i', t.outWavPath, '-af', 'apad', '-t', String(vidDur), tmpPad])
+              if (rp.code === 0 && fs.existsSync(tmpPad) && fs.statSync(tmpPad).size > 0) {
+                fs.renameSync(tmpPad, t.outWavPath)
               }
             }
           }

@@ -27,7 +27,7 @@
 // 与原版的已知差异（有意）：输出目录默认切片目录可选（原版固定 outputs/live_clips）；
 // 封面编辑对话框（CoverEditDialog）简化为「重新生成封面」（改标题后重画）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, type Ref } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
 import {
@@ -49,7 +49,11 @@ interface Hotspot extends ClipPlanItem { checked: boolean }
 const videoPath = ref('')
 const videoName = ref('')
 const isDragging = ref(false)
-const analysisMode = ref<SelectOption['value']>('rule')
+// 2026-09-18 用户裁决：删除内置算法，只保留服务端 LLM 分析
+const MODE_OPTIONS: SelectOption[] = [
+  { label: 'AI 大模型 (服务端代理)', value: 'llm' },
+]
+const analysisMode = ref<'llm'>('llm') as Ref<'llm'>
 const transcribeLang = ref('zh')
 const forceReextract = ref(false)
 const analyzing = ref(false)
@@ -65,11 +69,6 @@ const audioUrl = ref('')
 const audioAvailable = ref(false)
 // 停止（软停止标志，见文件头差异说明）
 const stopRequested = ref(false)
-
-const MODE_OPTIONS: SelectOption[] = [
-  { label: '内置算法 (无需 API)', value: 'rule' },
-  { label: 'AI 大模型 (服务端代理)', value: 'llm' },
-]
 
 function pickVideo() {
   tintin()?.dialog?.openFile?.({ title: '选择直播录像', filters: [{ name: '视频', extensions: ['mp4','mov','avi','mkv','flv','ts','webm','m4v'] }] }).then((r: any) => {
@@ -159,40 +158,33 @@ async function startAnalysis() {
     transcriptSegs.value = segs
     transcript.value = text
 
-    // 3. 热点策略（纯函数）：有时间戳分段 → buildClipPlan；仅文本 → 估时兜底。
-    //    LLM 模式（原版 _llm_analyze L170-259 全链路）：分块 → 逐块 llmChat
-    //    （temperature=0.3）→ JSON 解析 → 合并；失败块跳过（原版 L230-231 同口径）。
-    if (analysisMode.value === 'llm') {
-      const chunks = buildLlmChunks(segs)
-      if (!chunks.length) { hotspots.value = wrapPlan([]); applyFilterSync(); return }
-      const llmItems: LlmPlanItem[] = []
-      let okChunks = 0
-      for (let i = 0; i < chunks.length; i++) {
-        if (stopRequested.value) return
-        llmStage.value = `正在使用大模型分析第 ${i + 1}/${chunks.length} 段字幕...`
-        analysisMsg.value = llmStage.value
-        try {
-          const res = await t?.server?.llmChat?.({
-            messages: [{ role: 'user', content: buildLlmPrompt(chunks[i]) }],
-            temperature: 0.3,
-          })
-          const content = res?.choices?.[0]?.message?.content
-          if (!content) throw new Error(res?.error || 'LLM 响应为空')
-          llmItems.push(...parseLlmPlanResponse(content))
-          okChunks += 1
-        } catch (_) { /* 失败块跳过（原版 L230-231） */ }
-      }
-      if (!okChunks) {
-        hotspots.value = []
-        analysisMsg.value = 'LLM 分析失败（服务端 /llm/chat/completions 不可达），未发现热点'
-        return
-      }
-      hotspots.value = wrapPlan(mergeLlmPlan(llmItems))
-      analysisMsg.value = `LLM 分析完成，发现 ${hotspots.value.length} 个热点片段`
-    } else {
-      hotspots.value = wrapPlan(segs.length ? buildClipPlan(segs) : buildPlanFromText(text))
-      analysisMsg.value = `分析完成，发现 ${hotspots.value.length} 个热点片段`
+    // 3. 热点策略（LLM 模式）：分块 → 逐块 llmChat（temperature=0.3）→ JSON 解析 → 合并；失败块跳过（原版 L230-231 同口径）。
+    const chunks = buildLlmChunks(segs)
+    if (!chunks.length) { hotspots.value = wrapPlan([]); applyFilterSync(); return }
+    const llmItems: LlmPlanItem[] = []
+    let okChunks = 0
+    for (let i = 0; i < chunks.length; i++) {
+      if (stopRequested.value) return
+      llmStage.value = `正在使用大模型分析第 ${i + 1}/${chunks.length} 段字幕...`
+      analysisMsg.value = llmStage.value
+      try {
+        const res = await t?.server?.llmChat?.({
+          messages: [{ role: 'user', content: buildLlmPrompt(chunks[i]) }],
+          temperature: 0.3,
+        })
+        const content = res?.choices?.[0]?.message?.content
+        if (!content) throw new Error(res?.error || 'LLM 响应为空')
+        llmItems.push(...parseLlmPlanResponse(content))
+        okChunks += 1
+      } catch (_) { /* 失败块跳过（原版 L230-231） */ }
     }
+    if (!okChunks) {
+      hotspots.value = []
+      analysisMsg.value = 'LLM 分析失败（服务端 /llm/chat/completions 不可达），未发现热点'
+      return
+    }
+    hotspots.value = wrapPlan(mergeLlmPlan(llmItems))
+    analysisMsg.value = `LLM 分析完成，发现 ${hotspots.value.length} 个热点片段`
   } finally {
     analyzing.value = false
     llmStage.value = ''

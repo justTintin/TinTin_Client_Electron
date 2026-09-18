@@ -224,6 +224,82 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   assert.ok(r.conformance.checkedSegs >= 4)
 })
 
+test('exportMultiToDraft：bgmPaths 逐视频 BGM → 各窗各素材，源游标按素材独立（2026-09-18）', () => {
+  const v1 = path.join(tmpRoot, 'p_a.mp4')
+  const v2 = path.join(tmpRoot, 'p_b.mp4')
+  fs.writeFileSync(v1, 'x'); fs.writeFileSync(v2, 'x')
+  const bgmA = path.join(tmpRoot, 'rowa.mp3')
+  const bgmB = path.join(tmpRoot, 'rowb.mp3')
+  fs.writeFileSync(bgmA, 'x'); fs.writeFileSync(bgmB, 'x')
+  const r = exportMultiToDraft({
+    videoPaths: [v1, v2],
+    bgmPaths: [bgmA, bgmB],
+    bgmVolume: 40,
+    draftName: '逐视频BGM',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  assert.equal(r.bgmIncluded, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  // 两个不同 BGM 文件 → 两份音频素材
+  assert.equal(content.materials.audios.length, 2)
+  const audioTrack = content.tracks.find((t) => t.type === 'audio')
+  assert.equal(audioTrack.segments.length, 2)
+  const matA = content.materials.audios.find((m) => m.path.endsWith('rowa.mp3'))
+  const matB = content.materials.audios.find((m) => m.path.endsWith('rowb.mp3'))
+  assert.ok(matA && matB && matA.id !== matB.id)
+  // 第一窗引用 A、第二窗引用 B；各自源游标从 0 起（独立素材，不跨素材连续）
+  assert.equal(audioTrack.segments[0].material_id, matA.id)
+  assert.deepEqual(audioTrack.segments[0].source_timerange, { start: 0, duration: 4000000 })
+  assert.equal(audioTrack.segments[1].material_id, matB.id)
+  assert.deepEqual(audioTrack.segments[1].source_timerange, { start: 0, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[1].target_timerange, { start: 4500000, duration: 4000000 })
+  assert.equal(audioTrack.segments[0].volume, 0.4)
+  assert.equal(r.conformance.warnings.length, 0)
+})
+
+test('exportMultiToDraft：bgmPaths 空串窗回退全局 bgmPath（2026-09-18）', () => {
+  const v1 = path.join(tmpRoot, 'f_a.mp4')
+  const v2 = path.join(tmpRoot, 'f_b.mp4')
+  fs.writeFileSync(v1, 'x'); fs.writeFileSync(v2, 'x')
+  const g = path.join(tmpRoot, 'global.mp3')
+  const rowB = path.join(tmpRoot, 'onlyrow.mp3')
+  fs.writeFileSync(g, 'x'); fs.writeFileSync(rowB, 'x')
+  // 窗0 空串→回退全局 global；窗1 指派 onlyrow
+  const r = exportMultiToDraft({
+    videoPaths: [v1, v2],
+    bgmPath: g,
+    bgmPaths: ['', rowB],
+    bgmVolume: 50,
+    draftName: '回退',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  assert.equal(r.bgmIncluded, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  const audioTrack = content.tracks.find((t) => t.type === 'audio')
+  const matG = content.materials.audios.find((m) => m.path.endsWith('global.mp3'))
+  const matRow = content.materials.audios.find((m) => m.path.endsWith('onlyrow.mp3'))
+  assert.equal(audioTrack.segments[0].material_id, matG.id)
+  assert.equal(audioTrack.segments[1].material_id, matRow.id)
+})
+
+test('exportMultiToDraft：仅逐行 BGM（全局空）仍落轨；均无 BGM 则 bgmIncluded=false（2026-09-18）', () => {
+  const v1 = path.join(tmpRoot, 'g_a.mp4')
+  fs.writeFileSync(v1, 'x')
+  const rowOnly = path.join(tmpRoot, 'rowonly.mp3')
+  fs.writeFileSync(rowOnly, 'x')
+  const r1 = exportMultiToDraft({ videoPaths: [v1], bgmPaths: [rowOnly], bgmVolume: 50, draftName: '仅逐行', deps: DEPS })
+  assert.equal(r1.success, true)
+  assert.equal(r1.bgmIncluded, true)
+  const c1 = JSON.parse(fs.readFileSync(path.join(r1.message, 'draft_content.json'), 'utf-8'))
+  assert.ok(c1.tracks.some((t) => t.type === 'audio'))
+  // 全局空 + 逐行空/文件不存在 → 不落 BGM 轨
+  const r2 = exportMultiToDraft({ videoPaths: [v1], bgmPaths: [''], bgmVolume: 50, draftName: '无BGM', deps: DEPS })
+  assert.equal(r2.success, true)
+  assert.equal(r2.bgmIncluded, false)
+})
+
 test('exportMultiToDraft：未传 draftName → 命名「螺丝钉智能混剪_多片段时间轴」/单段「螺丝钉智能混剪_{basename}」', () => {
   const v1 = path.join(tmpRoot, 'clip1.mp4')
   const v2 = path.join(tmpRoot, 'clip2.mp4')
@@ -456,6 +532,23 @@ test('presetAttachToDraft：scale/transform 拆对象 + flip 补空（范本同�
   assert.deepEqual(presetAttachToDraft(null).clip.scale, { x: 1, y: 1 })
 })
 
+test('presetAttachToDraft：按当前视频画布等比钳制 scale（2026-09-18 文字模板超宽修复）', () => {
+  const attach = { clip: { scale_x: 4, scale_y: 2, rotation: 0, transform_x: 0, transform_y: 0 }, duration: 1000, original_size_width: 300, original_size_height: 100 }
+  // 宽度超出：effW=300×4=1200 > 1080 → factor=0.9，等比缩小 x/y；original_size 不变
+  const d = presetAttachToDraft(attach, 1080, 1920)
+  assert.equal(d.original_size_width, 300)
+  assert.ok(Math.abs(d.clip.scale.x - 3.6) < 1e-9, `scale.x 应钳到 3.6，实际 ${d.clip.scale.x}`)
+  assert.ok(Math.abs(d.clip.scale.y - 1.8) < 1e-9, `scale.y 等比钳到 1.8，实际 ${d.clip.scale.y}`)
+  // 均不超出 → 原样（factor=1）
+  assert.deepEqual(presetAttachToDraft(attach, 1920, 1080).clip.scale, { x: 4, y: 2 })
+  // 画布尺寸缺失（0）→ 原样（向后兼容旧口径，无从换算不强缩）
+  assert.deepEqual(presetAttachToDraft(attach).clip.scale, { x: 4, y: 2 })
+  // 高度超出触发：effH=100×2=200 > 150 → factor=0.75，x 亦等比 ×0.75
+  const dh = presetAttachToDraft(attach, 100000, 150)
+  assert.ok(Math.abs(dh.clip.scale.y - 1.5) < 1e-9, `scale.y 应钳到 1.5，实际 ${dh.clip.scale.y}`)
+  assert.ok(Math.abs(dh.clip.scale.x - 3) < 1e-9, `scale.x 等比钳到 3，实际 ${dh.clip.scale.x}`)
+})
+
 test('buildTemplateClipTrio：effect/resources/attach 逐字段映射 + texts 填充 + panel 推导引用', () => {
   const { dirs } = writeFixturePreset(tmpRoot)
   const p = findTextPreset(path.join(tmpRoot, 'JianyingPro', 'User Data', 'Presets', 'Text_V2'), TPL_RID)
@@ -517,6 +610,20 @@ test('buildTemplateClipTrio：effect/resources/attach 逐字段映射 + texts �
   // 空短语回退预设原文
   const trio2 = buildTemplateClipTrio(p, '  ')
   assert.equal(JSON.parse(trio2.textEntry.content).text, '超级推荐')
+})
+
+test('buildTemplateClipTrio：传画布尺寸→模板 attach scale 按画布钳制（超宽修复端到端）', () => {
+  writeFixturePreset(tmpRoot)
+  const p = findTextPreset(path.join(tmpRoot, 'JianyingPro', 'User Data', 'Presets', 'Text_V2'), TPL_RID)
+  // fixture 主体 original_size_width=275, scale_x≈2.3907 → effW≈657.45；画布宽 500 触发钳制
+  const trio = buildTemplateClipTrio(p, '199元', 500, 1200)
+  const att = trio.templateMaterial.text_info_resources[0].attach_info
+  assert.equal(att.original_size_width, 275, 'original_size 不随钳制改变')
+  // 钳制后实际像素宽 = 275 × scale.x ≈ 画布宽 500（不超）
+  assert.ok(Math.abs(275 * att.clip.scale.x - 500) < 1e-6, `钳制后 effW 应≈500，实际 ${275 * att.clip.scale.x}`)
+  // 不传画布（默认 0）→ 保持预设原 scale（向后兼容）
+  const trio0 = buildTemplateClipTrio(p, '199元')
+  assert.ok(Math.abs(trio0.templateMaterial.text_info_resources[0].attach_info.clip.scale.x - 2.390739679336548) < 1e-9)
 })
 
 test('exportMultiToDraft：textTemplateClips → 原生模板轨三件套 + tpl 蓝字轨/贴纸轨替代', () => {

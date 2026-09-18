@@ -95,11 +95,13 @@ const {
   bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
   exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
   lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径
+  exportDoneMsg, // 2026-09-18：导出完成提示行（内嵌「打开草稿目录」按钮）
   exportJianyingPackageDraft, // 轨 2（2026-09-17）：导入服务端草稿包
   finalVideoList, finalSelIdx,
-  bgmSource,
   bgmPlaying, bgmPosMs, bgmDurMs,
   pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
+  // 2026-09-18：逐视频 BGM 指派（行名/指派/清除/本地选择）+ 弹窗下载助手
+  rowBgmName, setRowBgm, clearRowBgm, pickRowBgm, downloadLibraryBgm, rowBgmForCandidate,
   enterStep4, startFinalMix, openFinalDir, openExportDraftDir,
   exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
   fmtBgmTime,
@@ -114,6 +116,13 @@ const {
 /** 本地路径 → file URL（previewFinalVideo 同口径） */
 function toFileUrl(p: string): string {
   return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23')
+}
+
+/** 逐视频 BGM 行播放条 src（2026-09-18 用户裁决）：该行生效 BGM=逐行指派优先、
+ *  未指派回退全局（同导出/合成口径）；无生效 BGM 返空串（不渲染播放条） */
+function rowBgmAudioSrc(videoPath: string): string {
+  const p = rowBgmForCandidate(videoPath)
+  return p ? toFileUrl(p) : ''
 }
 
 /** 预览块画幅（2026-09-11 用户裁决）：竖屏模式下预览块也竖起来，不再是横向块里
@@ -313,8 +322,13 @@ const {
 } = ag
 
 // 生成完成自动归档本地后回填 BGM 路径（混音/剪映导出走同一本地链路）
+// 2026-09-18 用户裁决：AI 生成 BGM 集成进「选择 BGM」弹窗右栏——生成结果按弹窗当前
+// 目标回填（target 非空=逐行指派到该视频；空=回填全局 bgmPath）
 watch(bgmLocal, (p) => {
-  if (p) { bgmPath.value = p; bgmName.value = pathBasename(p) }
+  if (!p) return
+  const target = bgmPickDlg.value.target
+  if (target) setRowBgm(target, p, pathBasename(p))
+  else { bgmPath.value = p; bgmName.value = pathBasename(p) }
 })
 
 /** 生成面板内联播放条（2026-09-15 用户裁决：删「播放生成的 BGM」按钮，<audio controls>
@@ -324,10 +338,13 @@ const agBgmAudioSrc = computed(() => bgmLocal.value
   ? toFileUrl(bgmLocal.value)
   : bgmUrl.value ? toAbsolute(bgmUrl.value) : '')
 
-/** BGM 选择弹窗（同音频生成页左栏布局：搜索/分类/标签/列表/分页；单击选中，双击或 ▶ 试听） */
-const bgmPickDlg = ref<{ show: boolean; pickedMid: string; busy: boolean; error: string }>({ show: false, pickedMid: '', busy: false, error: '' })
-function openBgmPickDlg(): void {
+/** BGM 选择弹窗（2026-09-18 用户裁决：左栏音频库列表 + 右栏 AI 生成，2:1）。
+ *  target='' 指派全局 BGM；target=视频路径 指派该视频逐行 BGM。 */
+const bgmPickDlg = ref<{ show: boolean; target: string; pickedMid: string; busy: boolean; error: string }>({ show: false, target: '', pickedMid: '', busy: false, error: '' })
+function openBgmPickDlg(target = ''): void {
   bgmPickDlg.value.show = true
+  bgmPickDlg.value.target = target
+  bgmPickDlg.value.pickedMid = ''
   bgmPickDlg.value.error = ''
   // 2026-09-10 用户裁决：BGM 选择弹窗默认分类「音乐」（列表状态与音频生成页共享，
   // 仅在打开弹窗时置分类并刷新，不影响音频生成页自身默认「全部」）
@@ -340,15 +357,29 @@ function openBgmPickDlg(): void {
   void loadBgmTags()
 }
 function confirmBgmPick(): void {
+  if (bgmPickDlg.value.busy) return
+  const target = bgmPickDlg.value.target
+  // 2026-09-18 用户裁决：AI 生成结果可直接「确定」应用（无需先保存到 BGM 库再回左栏选）——
+  // 未选左栏条目但右栏已生成本地文件时，直接按弹窗目标回填生成结果并关闭
   const it = listRows.value.find((r) => r.mid === bgmPickDlg.value.pickedMid)
-  if (!it || bgmPickDlg.value.busy) return
+  if (!it) {
+    const gen = bgmLocal.value
+    if (!gen) { bgmPickDlg.value.error = '请先在左栏选择音频，或在右栏生成 BGM'; return }
+    if (target) setRowBgm(target, gen, pathBasename(gen))
+    else { bgmPath.value = gen; bgmName.value = pathBasename(gen) }
+    bgmPickDlg.value.show = false
+    return
+  }
   bgmPickDlg.value.busy = true
   bgmPickDlg.value.error = ''
-  void applyLibraryBgm(it.mid, it.filename).then((r) => {
+  const done = (r: { path?: string; error?: string }): void => {
     bgmPickDlg.value.busy = false
     if (r && r.error) { bgmPickDlg.value.error = r.error; return }
+    if (target && r && r.path) setRowBgm(target, r.path, it.filename || pathBasename(r.path))
     bgmPickDlg.value.show = false
-  })
+  }
+  if (target) void downloadLibraryBgm(it.mid).then(done)
+  else void applyLibraryBgm(it.mid, it.filename).then(done)
 }
 
 // ─ 页尾上传新样本（VoiceClone 底部上传区同款同处理：dropzone 点击/拖拽选文件，
@@ -1151,39 +1182,13 @@ function scoreClass(score: number | undefined): string {
           </div>
         </div>
 
-        <!-- 1. BGM input -->
+        <!-- 1. BGM input（全局）：2026-09-18 用户裁决——AI 生成 BGM 已集成进「选择BGM」弹窗右栏，
+             删除独立「AI 生成 BGM」按钮与内联面板；「选择BGM」弹窗 target='' 指派全局 BGM -->
         <div class="row">
           <label class="label"> 背景音乐 (BGM):</label>
           <input :value="bgmPath" placeholder="选择混剪背景音乐 (mp3/wav)，选空则无BGM..." readonly class="input grow" @click="pickBgm" />
           <!-- 2026-09-10 用户裁决：删「选择背景音乐」按钮（点击输入框已可上传）；保留「选择BGM」弹音频库 -->
-          <TButton label="选择BGM" size="small" variant="secondary" @click="openBgmPickDlg" />
-          <!-- 本端保留功能：AI 生成 BGM（生成后自动归档本地，自动填入输入框作为已选 BGM） -->
-          <TButton label="AI 生成 BGM" size="small" :variant="bgmSource === 'ai' ? 'primary' : 'secondary'" @click="bgmSource = bgmSource === 'ai' ? 'local' : 'ai'" />
-        </div>
-        <div v-if="bgmSource === 'ai'" class="ai-bgm-panel">
-          <!-- 2026-09-09 用户裁决：AI 生成 BGM 改音频生成页「生成 BGM」同款布局
-               （结构化口径 style/mood/duration；生成后自动归档本地并回填 BGM 路径） -->
-          <div class="row">
-            <label class="label">风格:</label>
-            <TSelect v-model="bgmStyle" class="ag-style-select" :options="bgmStyleOptions" :disabled="bgmBusy" />
-            <label class="label">时长(秒):</label>
-            <input v-model.number="bgmDuration" class="input ag-num-input" type="number" min="5" max="30" step="5" :disabled="bgmBusy" />
-          </div>
-          <div class="row">
-            <label class="label">情绪:</label>
-            <TSelect v-model="bgmMood" class="ag-tag-select" :options="bgmMoodOptions" :disabled="bgmBusy" />
-            <label class="label">场景:</label>
-            <TSelect v-model="bgmScene" class="ag-tag-select" :options="bgmSceneOptions" :disabled="bgmBusy" />
-          </div>
-          <div class="row agb-gen-row">
-            <TButton label="生成 BGM" :loading="bgmBusy" :disabled="bgmBusy" @click="generateBgm()" />
-          </div>
-          <p v-if="bgmResultLabel" class="agb-result">{{ bgmResultLabel }}</p>
-          <div class="row">
-            <TButton label="保存到 BGM 库" variant="secondary" size="small" :loading="bgmSaving" :disabled="!bgmUrl || bgmSaving" @click="saveBgmToLib" />
-            <TButton label="打开位置" variant="secondary" size="small" :disabled="!bgmLocal" title="在资源管理器中打开生成的 BGM 本地文件（outputs/ai_audio）" @click="openBgmLocation" />
-            <audio v-if="agBgmAudioSrc" :src="agBgmAudioSrc" controls class="grow" />
-          </div>
+          <TButton label="选择BGM" size="small" variant="secondary" @click="openBgmPickDlg('')" />
         </div>
 
         <!-- BGM 试听一行（2026-09-10 用户裁决：播放控制在 前、设置在后）：
@@ -1196,6 +1201,24 @@ function scoreClass(score: number | undefined): string {
           <label class="label" title="BGM 增益 0-200%，100%=原音量；拖动实时改变试听音量">BGM 增益:</label>
           <input v-model.number="bgmVolume" type="range" min="0" max="200" step="1" class="vd4-gain" @input="onBgmVolumeInput" />
           <span class="vd4-gain-label">{{ bgmVolume }} %</span>
+        </div>
+
+        <!-- 2026-09-18 用户裁决：逐视频 BGM 指派列表（上一步整个视频列表）——默认最多 10 行高，
+             多则滚动、少则不撑满；每行 = 序号+视频名 + BGM 输入框（点击选本地文件）+ 选择BGM 按钮 -->
+        <div class="vd4-rowbgm">
+          <div class="vd4-rowbgm-title">逐视频 BGM（未设置的行跟随上方全局 BGM）</div>
+          <div class="vd4-rowbgm-list">
+            <div v-for="(c, i) in step4Candidates" :key="c" class="vd4-rowbgm-item">
+              <span class="vd4-rowbgm-name" :title="c">{{ i + 1 }}. {{ pathBasename(c) }}</span>
+              <input :value="rowBgmName(c)" readonly class="input grow vd4-rowbgm-input"
+                placeholder="跟随全局 BGM（点击选本地文件）" @click="pickRowBgm(c)" />
+              <audio v-if="rowBgmAudioSrc(c)" :src="rowBgmAudioSrc(c)" controls preload="none"
+                class="vd4-rowbgm-audio" :title="`试听该行生效 BGM（${rowBgmName(c) ? '逐行指派' : '跟随全局'}）`" />
+              <TButton label="选择BGM" size="small" variant="secondary" @click="openBgmPickDlg(c)" />
+              <TButton v-if="rowBgmName(c)" label="清除" size="small" plain @click="clearRowBgm(c)" />
+            </div>
+            <div v-if="!step4Candidates.length" class="muted vd4-rowbgm-empty">暂无视频，请先完成上一步镜头重组与口播配音</div>
+          </div>
         </div>
 
         <!-- 2026-09-14 服务端 /montage/concat 新增 lut_restore（默认 false=不还原 LUT）：
@@ -1232,20 +1255,28 @@ function scoreClass(score: number | undefined): string {
               :disabled="finalBusy || exportBusy"
               :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
               @click="exportAllToJianyingDraft" />
-            <!-- 轨 2（2026-09-17 用户裁决）：服务端封装好的剪映格式草稿 zip → 解压校验 → 落盘剪映 -->
+            <!-- 轨 2（2026-09-17 用户裁决）：服务端封装好的剪映格式草稿 zip → 解压校验 → 落盘剪映
+                 2026-09-18 用户裁决：暂时禁止使用（恒禁用）；恢复时把 :disabled 改回
+                 "finalBusy || exportBusy"、title 改回原文案即可 -->
             <TButton label="导入服务端草稿包" variant="secondary" class="vd4-run vd4-grow"
-              :disabled="finalBusy || exportBusy"
-              :title="exportBusy ? exportStage : '逐个合成任务下载服务端封装好的剪映格式草稿包，解压校验后放入剪映草稿目录（每任务一个草稿）'"
+              :disabled="true"
+              title="该功能暂时停用"
               @click="exportJianyingPackageDraft" />
+          </div>
+          <!-- 2026-09-18 用户裁决：导出剪映时间轴进度条+完成提示独立于服务端合成，
+               紧跟方案一按钮（不放到服务端合成下面） -->
+          <div v-if="exportBusy" class="pbar"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
+          <div v-if="exportBusy && exportStage" class="muted" style="margin-top:4px;font-size:12px">{{ exportStage }}</div>
+          <div v-if="exportDoneMsg" class="row left" style="gap: var(--space-2); margin-top: 4px">
+            <span class="concat-status-line">{{ exportDoneMsg }}</span>
+            <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" size="small" @click="openExportDraftDir" />
           </div>
           <div class="vd4-scheme-line">方案二，服务端合成视频，时间较长</div>
           <TButton label="服务端合成" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
             :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
         </div>
+        <!-- 服务端合成进度条（独立于导出进度；导出进度/完成提示已移至方案一按钮下方） -->
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
-        <!-- 2026-09-16：导出剪映时间轴进度条（独立于 finalBusy） -->
-        <div v-if="exportBusy" class="pbar"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
-        <div v-if="exportBusy && exportStage" class="muted" style="margin-top:4px;font-size:12px">{{ exportStage }}</div>
 
         <!-- 结果区：左 成片列表 + 三按钮；右 视频预览 -->
         <div class="vd4-result">
@@ -1261,8 +1292,6 @@ function scoreClass(score: number | undefined): string {
             </ul>
             <div class="vd4-btns">
               <TButton label="打开视频输出目录" variant="secondary" :disabled="!finalDone" class="grow" @click="openFinalDir" />
-              <!-- 2026-09-16：导出成功后显示「打开草稿目录」按钮 -->
-              <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" class="grow" @click="openExportDraftDir" />
             </div>
           </div>
         </div><!-- /vd4-result -->
@@ -1465,7 +1494,7 @@ function scoreClass(score: number | undefined): string {
             </div>
             <input v-model.number="cloneParamsDlg.pause" type="range" min="0" max="3000" step="100" class="grow" />
             <div class="row between cp-labels"><span>0 关</span><span>1500ms</span><span>3000ms</span></div>
-            <span class="cp-tip">句间插入服务端停顿标记（((pause=毫秒))），精确控制停顿；每处标记将拆段分别合成，文案较长时耗时增加</span>
+            <span class="cp-tip">句间插入服务端停顿标记（((pause=毫秒))），精确控制停顿；每处标记将拆段分别合成，文案较长时耗时增加。2026-09-18：凑音频长度不再依赖停顿（变速拉满仍不足时客户端自动尾部补静音至视频时长）；设了停顿字幕也会精确对齐</span>
           </div>
           <div class="modal-actions">
             <TButton label="取消" plain @click="closeCloneParams" />
@@ -1480,7 +1509,10 @@ function scoreClass(score: number | undefined): string {
     <teleport to="body">
       <div v-if="bgmPickDlg.show" class="modal-mask" @click.self="bgmPickDlg.show = false">
         <div class="modal modal-wide bgm-pick">
-          <span class="modal-title">选择 BGM</span>
+          <span class="modal-title">选择 BGM{{ bgmPickDlg.target ? '（当前视频）' : '（全局）' }}</span>
+          <!-- 2026-09-18 用户裁决：左右 2:1 分栏——左=音频库列表，右=AI 生成 BGM -->
+          <div class="bgm-pick-cols">
+          <div class="bgm-pick-left">
           <div class="row">
             <input v-model="listQuery" class="input grow" placeholder="搜索音频（语义检索，如：激昂的背景音乐）" :disabled="listLoading" @keydown.enter="doSearch()" />
             <TButton label="搜索" :loading="listLoading" :disabled="listLoading" @click="doSearch()" />
@@ -1521,10 +1553,42 @@ function scoreClass(score: number | undefined): string {
             <input v-model.number="listPageSize" class="input bgm-page-input" type="number" min="10" max="200" step="10" :disabled="listLoading" @change="doSearch()" />
             <audio v-show="playingMid" ref="listAudioEl" controls class="bgm-pick-audio" />
           </div>
+          </div><!-- /bgm-pick-left -->
+          <!-- 2026-09-18 用户裁决：右栏 = AI 生成 BGM（自原内联面板移入；生成结果按弹窗目标回填） -->
+          <div class="bgm-pick-right">
+            <div class="bgm-pick-right-title">AI 生成 BGM</div>
+            <div class="row">
+              <label class="label">风格:</label>
+              <TSelect v-model="bgmStyle" class="ag-style-select" :options="bgmStyleOptions" :disabled="bgmBusy" />
+            </div>
+            <div class="row">
+              <label class="label">时长(秒):</label>
+              <input v-model.number="bgmDuration" class="input ag-num-input" type="number" min="5" max="30" step="5" :disabled="bgmBusy" />
+            </div>
+            <div class="row">
+              <label class="label">情绪:</label>
+              <TSelect v-model="bgmMood" class="ag-tag-select" :options="bgmMoodOptions" :disabled="bgmBusy" />
+            </div>
+            <div class="row">
+              <label class="label">场景:</label>
+              <TSelect v-model="bgmScene" class="ag-tag-select" :options="bgmSceneOptions" :disabled="bgmBusy" />
+            </div>
+            <div class="row agb-gen-row">
+              <TButton label="生成 BGM" :loading="bgmBusy" :disabled="bgmBusy" @click="generateBgm()" />
+            </div>
+            <p v-if="bgmResultLabel" class="agb-result">{{ bgmResultLabel }}</p>
+            <div class="row">
+              <TButton label="保存到 BGM 库" variant="secondary" size="small" :loading="bgmSaving" :disabled="!bgmUrl || bgmSaving" @click="saveBgmToLib" />
+              <TButton label="打开位置" variant="secondary" size="small" :disabled="!bgmLocal" title="在资源管理器中打开生成的 BGM 本地文件（outputs/ai_audio）" @click="openBgmLocation" />
+            </div>
+            <audio v-if="agBgmAudioSrc" :src="agBgmAudioSrc" controls class="bgm-pick-right-audio" />
+            <p class="bgm-pick-right-tip">生成后自动落盘；可直接点「确定」应用{{ bgmPickDlg.target ? '到当前视频行' : '为全局 BGM' }}，无需先保存到 BGM 库。</p>
+          </div><!-- /bgm-pick-right -->
+          </div><!-- /bgm-pick-cols -->
           <div v-if="bgmPickDlg.error" class="error-msg">⚠ {{ bgmPickDlg.error }}</div>
           <div class="modal-actions">
             <TButton label="取消" plain @click="bgmPickDlg.show = false" />
-            <TButton label="确定" :loading="bgmPickDlg.busy" :disabled="!bgmPickDlg.pickedMid || bgmPickDlg.busy" @click="confirmBgmPick" />
+            <TButton label="确定" :loading="bgmPickDlg.busy" :disabled="(!bgmPickDlg.pickedMid && !bgmLocal) || bgmPickDlg.busy" @click="confirmBgmPick" />
           </div>
         </div>
       </div>
@@ -1973,7 +2037,7 @@ function scoreClass(score: number | undefined): string {
 .agb-result { margin: 0; font-size: 12px; color: var(--muted-foreground); white-space: pre-line; }
 
 /* BGM 选择弹窗（音频生成页左栏同款） */
-.bgm-pick { width: min(900px, 92vw); }
+.bgm-pick { width: min(1200px, 94vw); }
 .bgm-kind-select { width: 170px; flex: none; }
 .bgm-tag-input { max-width: 140px; }
 .bgm-page-input { width: 64px; }
@@ -2013,13 +2077,37 @@ function scoreClass(score: number | undefined): string {
   white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto;
 }
 
-/* Step4 AI 生成 BGM 面板 */
-.ai-bgm-panel {
-  display: flex; flex-direction: column; gap: var(--space-3);
-  padding: var(--space-4); background: var(--surface-container);
-  border: 1px solid var(--border); border-radius: var(--radius-md);
+/* 2026-09-18 用户裁决：选择 BGM 弹窗左右 2:1 分栏（左=音频库列表，右=AI 生成 BGM） */
+.bgm-pick-cols { display: flex; gap: var(--space-3); align-items: stretch; }
+.bgm-pick-left { flex: 2 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.bgm-pick-right {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-2);
+  padding-left: var(--space-3); border-left: 1px solid var(--border);
 }
-.ai-bgm-panel audio { flex: 1; min-width: 200px; height: 36px; }
+.bgm-pick-right-title { font-size: 13px; font-weight: 600; color: var(--foreground); }
+.bgm-pick-right .row { gap: 6px; }
+.bgm-pick-right .ag-style-select,
+.bgm-pick-right .ag-tag-select,
+.bgm-pick-right .ag-num-input { width: auto; flex: 1 1 auto; min-width: 0; }
+.bgm-pick-right-audio { width: 100%; height: 36px; }
+.bgm-pick-right-tip { margin: 0; font-size: 11px; color: var(--muted-foreground); }
+
+/* 2026-09-18 用户裁决：Step4 逐视频 BGM 指派列表（最多 10 行高，多则滚动、少则不撑满） */
+.vd4-rowbgm { display: flex; flex-direction: column; margin-top: var(--space-2); }
+.vd4-rowbgm-title { font-size: 12px; font-weight: 600; color: var(--muted-foreground); margin-bottom: 4px; }
+.vd4-rowbgm-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 340px; overflow-y: auto;
+  padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-md);
+}
+.vd4-rowbgm-item { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.vd4-rowbgm-name {
+  flex: 0 0 160px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 12px; color: var(--foreground);
+}
+.vd4-rowbgm-input { cursor: pointer; }
+.vd4-rowbgm-audio { flex: 0 0 240px; height: 32px; }
+.vd4-rowbgm-empty { padding: 12px; text-align: center; font-size: 12px; }
 
 /* Step4 特效包装/字幕分组（2026-09-09 裁决：花字/文字模板自 Step3 迁入；
    2026-09-13 裁决：字幕拆出单独成组置于背景音乐上方，两盒共用本样式） */

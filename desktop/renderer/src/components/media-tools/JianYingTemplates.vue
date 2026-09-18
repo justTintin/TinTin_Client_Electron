@@ -201,12 +201,16 @@ const isTextLane = computed(() => {
 })
 
 function switchGroup(g: Group) {
+  // 2026-09-18 报障修复：字体页签状态未复位致切 tab 无反应——
+  // 内容区 v-else-if="fontsTab" 常驻字体面板、各 tab active 也带 !fontsTab 前缀
+  fontsTab.value = false
   activeGroup.value = g.group
   const first = (g.lanes || [])[0]
   if (first) activeLane.value = g.group + '/' + first.lane
   selection.clear()
 }
 function switchLane(l: Lane, groupName?: string) {
+  fontsTab.value = false // 同 switchGroup：离开字体页签必须复位
   const gn = groupName || activeGroup.value
   activeGroup.value = gn
   activeLane.value = gn + '/' + l.lane

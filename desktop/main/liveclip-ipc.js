@@ -72,6 +72,18 @@ function createLiveclipIpc(ipcMain) {
     }
   })
 
+  // ── 文件存在性探测（2026-09-18：渲染层消费字幕后处理资产前需探命中——
+  //     智能混剪 srt/ 资产目录复用判定；exists=存在且非空）──
+  ipcMain.handle('liveclip:fileExists', async (_event, payload) => {
+    try {
+      const p = String((payload || {}).path || '')
+      if (!p) return _err('缺少 path')
+      return { ok: true, exists: fs.existsSync(p) && fs.statSync(p).size > 0 }
+    } catch (e) {
+      return _err((e && e.message) || String(e))
+    }
+  })
+
   // ── 切片烧字幕临时 SRT（写入系统临时目录，路径主进程生成）──
   ipcMain.handle('liveclip:writeTempText', async (_event, payload) => {
     try {

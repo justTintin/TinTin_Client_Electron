@@ -434,6 +434,9 @@ declare interface TintinBridgeServer {
        *  voice 轨上传（voice_mode=replace 替换原声），不再本地预先替换原声；
        *  本地链路不使用该字段——已由 dubVideos 替换进视频） */
       voicePath?: string
+      /** 字幕重切段后处理资产路径（2026-09-18 用户裁决：克隆完成即生成 srt/ 资产；
+       *  主进程存在性校验命中则优先上传该 SRT 作 subtitle_srt，缺失回退 timing 现建） */
+      srtPath?: string
       /** 文字模板命中行（服务端 /text_templates/match 选中行；2026-09-11 用户裁决：
        *  本地烧制与预览同源——仅本地合成链路预取，服务端链路由 concat 自行命中） */
       fxLines?: Array<{ text: string; start: number; end: number; keywords?: string[] }>
@@ -471,11 +474,16 @@ declare interface TintinBridgeServer {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
-    /** 2026-09-17：音效来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板命中位置） */
+    /** 2026-09-17：音效兜底来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板命中位置） */
     fancyTemplate?: Record<string, unknown> | null
+    /** 2026-09-18 用户裁决：音效池=服务端音频库剪映音效库 <2s 条目，主进程下载
+     *  落盘目录（工程资产目录 sfx/；缺省回落临时目录） */
+    sfxDestDir?: string
     /** 2026-09-17 用户报障①：服务端字幕样式对象 + UI 背景不透明度百分比 → 字幕轨文本样式 */
     subtitleStyle?: Record<string, unknown> | null
     subtitleBoxOpacity?: number | null
+    /** 2026-09-18 用户裁决：字幕字号（第四步「字号」下拉；缺省 10 号） */
+    subtitleFontSize?: number | null
     draftName?: string
   }): Promise<{ success: boolean; message: string; bgmIncluded?: boolean; schemaVersion?: { source: string; new_version: string; version: number; generator_app_version: string }; conformance?: { checkedSegs?: number; warnings?: string[] } }>
   /** 轨 2（2026-09-17 用户裁决）：服务端标准包导入——from-task 一步聚合包（含建草稿，
@@ -667,6 +675,8 @@ declare interface TintinBridgeLiveclip {
   writeImageFile(payload: { path: string; base64: string }): Promise<{ ok?: boolean; path?: string; error?: string }>
   writeTextFile(payload: { path: string; content: string }): Promise<{ ok?: boolean; path?: string; error?: string }>
   writeTempText(payload: { basename: string; content: string }): Promise<{ path?: string; error?: string }>
+  /** 文件存在性探测（2026-09-18：字幕后处理资产复用判定；exists=存在且非空） */
+  fileExists(payload: { path: string }): Promise<{ ok?: boolean; exists?: boolean; error?: string }>
 }
 declare interface TintinBridgeShell {
   openExternal(url: string): void

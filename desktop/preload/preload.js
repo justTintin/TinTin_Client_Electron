@@ -324,6 +324,7 @@ const liveclip = {
   writeImageFile: (payload) => ipcRenderer.invoke('liveclip:writeImageFile', payload),
   writeTextFile:  (payload) => ipcRenderer.invoke('liveclip:writeTextFile', payload),
   writeTempText:  (payload) => ipcRenderer.invoke('liveclip:writeTempText', payload),
+  fileExists:     (payload) => ipcRenderer.invoke('liveclip:fileExists', payload),
 }
 
 // ── 视频评价预测记录库（prediction:*，对照 video_prediction_manager.py）──

@@ -5870,7 +5870,7 @@ export interface paths {
          *     **模式 B（资产 + 语义清单 JSON）已按用户裁决删除**（PRD-E-1.2 v6.0）：
          *     客户端已有分资产下载渠道，不需要单独的全量下载接口；并轨结束，仅保留本模式。
          *
-         *     `jianying_cache_dir`（可选，query）：客户端剪映的**「媒体缓存」目录**
+         *     `jianying_cache_dir`（**必填**，query）：客户端剪映的**「媒体缓存」目录**
          *     （全局设置 → 媒体缓存，如 `C:/Users/<用户>/AppData/Local/JianyingPro/User Data/Cache`）。
          *     文字模板的 `text_templates[].path` / `resources[].file_path` 指向剪映自己的媒体缓存，
          *     preset 来自别的机器时前缀需对齐 → 传了就把前缀替换成该目录；不传保持原样。
@@ -22378,7 +22378,9 @@ export interface operations {
     };
     export_jianying_editor_export_jianying__draft_id__post: {
         parameters: {
-            query?: never;
+            query?: {
+                jianying_cache_dir?: string;
+            };
             header?: never;
             path: {
                 draft_id: string;

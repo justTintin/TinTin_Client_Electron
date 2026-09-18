@@ -23,6 +23,7 @@ const {
   timestampToSec,
   appendKeywordTrack,
   appendSfxTrackFromEvents,
+  appendTextTemplateSegments,
   jianyingSubtitleStyleFromServer,
   registerInRootMeta,
   verifyDraftFolder,
@@ -32,6 +33,8 @@ const {
   VIDEO_GAP_US,
   SUBTITLE_TRANSFORM_Y,
   SUBTITLE_ALIGNMENT,
+  SUBTITLE_FONT_SIZE_DEFAULT,
+  TEXT_TEMPLATE_TRANSFORM_Y,
 } = await import('../main/jianying-exporter.js')
 
 // ── TRANSITION_MAP（对照原版 8 项资源 ID，禁止自拟）──
@@ -172,7 +175,7 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   assert.equal(content.materials.transitions.length, 1)
   assert.equal(content.materials.transitions[0].name, '推近')
   assert.equal(content.materials.transitions[0].resource_id, '6724226861666144779')
-  assert.equal(content.materials.speeds.length, 4) // 视频2 + 字幕1 + BGM1
+  assert.equal(content.materials.speeds.length, 5) // 视频2 + 字幕1 + BGM2（2026-09-18：逐视频窗各一段）
   // 视频轨 2 段顺序排布；转场挂「前一个」片段 extra_material_refs（[speed, 转场]）
   const videoTrack = content.tracks.find((t) => t.type === 'video')
   assert.equal(videoTrack.segments.length, 2)
@@ -194,12 +197,17 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   // （pyJianYingDraft ClipSettings(transform_y=-0.8) 口径，clip.transform 单位=半画布）
   assert.deepEqual(textTrack.segments[0].clip.transform, { x: 0, y: SUBTITLE_TRANSFORM_Y })
   assert.equal(content.materials.texts[0].alignment, SUBTITLE_ALIGNMENT)
-  // BGM 音轨：volume=30/100、覆盖整条时间轴、clip=null（audio_segment.py）
+  // BGM 音轨：volume=30/100、clip=null（audio_segment.py）
   const audioTrack = content.tracks.find((t) => t.type === 'audio')
   assert.equal(audioTrack.segments[0].volume, 0.3)
   assert.equal(audioTrack.segments[0].clip, null)
-  // 2026-09-16 用户裁决：BGM 覆盖整条时间轴（含片段间半秒间隔）→ 4s + 0.5s + 4s = 8.5s
-  assert.equal(audioTrack.segments[0].target_timerange.duration, 8500000)
+  // 2026-09-18 用户裁决：单 BGM 逐视频窗落段（第一段截断于第一个视频结尾，
+  // 不是整条时间轴；间隔期静音）；源游标跨窗连续（第二段从 4s 处接着取）
+  assert.equal(audioTrack.segments.length, 2)
+  assert.deepEqual(audioTrack.segments[0].target_timerange, { start: 0, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[0].source_timerange, { start: 0, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[1].target_timerange, { start: 4500000, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[1].source_timerange, { start: 4000000, duration: 4000000 })
   // 2026-09-17 对齐收尾（标准 §4.2）：音频素材 local_material_id / music_id = id
   const audioMat = content.materials.audios[0]
   assert.equal(audioMat.local_material_id, audioMat.id)
@@ -209,6 +217,8 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   // 2026-09-17 对齐收尾（标准 §4.3）：texts 基准字段 line_max_width + content.useLetterColor
   assert.equal(content.materials.texts[0].line_max_width, 0.82)
   assert.equal(JSON.parse(content.materials.texts[0].content).styles[0].useLetterColor, true)
+  // 2026-09-18 用户裁决：字幕字号默认 10 号（原缺省 8 实测偏小；第四步「字号」可覆写）
+  assert.equal(JSON.parse(content.materials.texts[0].content).styles[0].size, 10)
   // 2026-09-17 对齐收尾（标准 §0.3 条3）：本路径全走标准构造器，符合性审计预期 0 警告
   assert.equal(r.conformance.warnings.length, 0)
   assert.ok(r.conformance.checkedSegs >= 4)
@@ -609,6 +619,118 @@ test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的�
   assert.ok(content.materials.audios.some((a) => String(a.path).endsWith('voice_1.wav')))
 })
 
+// ── 2026-09-18 本地导出三修复：BGM 回环 / 音效池循环指派 / 文字模板居中上 ──
+
+test('exportMultiToDraft：BGM 短于视频窗 → 窗内回环切 chunk（源游标连续无缝接续）', () => {
+  const v1 = path.join(tmpRoot, 'loop_a.mp4')
+  const v2 = path.join(tmpRoot, 'loop_b.mp4')
+  const bgm = path.join(tmpRoot, 'short.mp3')
+  fs.writeFileSync(v1, 'x'); fs.writeFileSync(v2, 'x'); fs.writeFileSync(bgm, 'x')
+  const r = exportMultiToDraft({ videoPaths: [v1, v2], bgmPath: bgm, bgmVolume: 50, deps: DEPS })
+  assert.equal(r.success, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  const at = content.tracks.filter((t) => t.type === 'audio')
+  assert.equal(at.length, 1)
+  // BGM 素材 probe=10s（非 .mp4 分支不适用；.mp3 → 10s）不够回环？——DEPS 非 .mp4
+  // 返 10s：窗 4s+4s 共需源 8s < 10s → 2 段不回环。改用 .mp4 命名 BGM 触发 4s probe：
+  const bgm4 = path.join(tmpRoot, 'short4.mp4')
+  fs.writeFileSync(bgm4, 'x')
+  const r2 = exportMultiToDraft({ videoPaths: [v1, v2], bgmPath: bgm4, bgmVolume: 50, deps: DEPS })
+  assert.equal(r2.success, true)
+  const c2 = JSON.parse(fs.readFileSync(path.join(r2.message, 'draft_content.json'), 'utf-8'))
+  const at2 = c2.tracks.filter((t) => t.type === 'audio')
+  assert.equal(at2.length, 1)
+  // BGM 素材 4s，每窗 4s：窗1=[0,4s) src[0,4s)；窗2 起点 4.5s，源游标已满归零
+  // → src[0,4s)（回环无缝：若不归零会越界）；共 2 段、同素材 id（不重复入素材库）
+  assert.equal(at2[0].segments.length, 2)
+  assert.deepEqual(at2[0].segments[0].source_timerange, { start: 0, duration: 4000000 })
+  assert.deepEqual(at2[0].segments[1].target_timerange, { start: 4500000, duration: 4000000 })
+  assert.deepEqual(at2[0].segments[1].source_timerange, { start: 0, duration: 4000000 })
+  assert.equal(at2[0].segments[0].material_id, at2[0].segments[1].material_id)
+  assert.equal(c2.materials.audios.length, 1)
+})
+
+test('appendSfxTrackFromEvents：音效池按事件全局索引循环指派；段长=min(素材长,事件窗)；空池不落轨', () => {
+  const s1 = path.join(tmpRoot, 'sfx1.mp3')
+  const s2 = path.join(tmpRoot, 'sfx2.mp3')
+  const s3 = path.join(tmpRoot, 'sfx3.mp3')
+  fs.writeFileSync(s1, 'x'); fs.writeFileSync(s2, 'x'); fs.writeFileSync(s3, 'x')
+  const pool = [s1, s2, s3]
+  const tracks = []
+  const materials = { audios: [], speeds: [] }
+  const probeCache = new Map()
+  const opts = (off) => ({ sfxPool: pool, eventOffset: off, probeCache, probeDur: () => 1.0 })
+  const evs = (n) => Array.from({ length: n }, (_, k) => ({ phrase: 'p' + k, startUs: k * 1000000, durUs: 3000000 }))
+  // 视频1：事件全局索引 0,1 → sfx1,sfx2
+  appendSfxTrackFromEvents(tracks, materials, evs(2), 0, 4000000, opts(0))
+  // 视频2：全局索引续 2,3,4 → sfx3,sfx1(回环),sfx2
+  appendSfxTrackFromEvents(tracks, materials, evs(3), 4500000, 8500000, opts(2))
+  assert.equal(tracks.length, 2)
+  const pathsOf = (tr) => tr.segments.map((s) => materials.audios.find((a) => a.id === s.material_id).path)
+  assert.deepEqual(pathsOf(tracks[0]), [s1, s2])
+  assert.deepEqual(pathsOf(tracks[1]), [s3, s1, s2])
+  // 段长=min(素材 1s, 事件窗 3s)=1s；时间轴落点=合并系偏移+局部 startUs
+  assert.equal(tracks[0].segments[0].target_timerange.duration, 1000000)
+  assert.equal(tracks[1].segments[0].target_timerange.start, 4500000)
+  assert.equal(tracks[1].segments[2].target_timerange.start, 6500000)
+  // 空池/文件全缺失 → 不落轨（不造假）
+  const t2 = []
+  appendSfxTrackFromEvents(t2, { audios: [], speeds: [] }, evs(1), 0, null, { sfxPool: [], probeDur: () => 1 })
+  appendSfxTrackFromEvents(t2, { audios: [], speeds: [] }, evs(1), 0, null, { sfxPool: [path.join(tmpRoot, 'gone.mp3')], probeDur: () => 1 })
+  assert.equal(t2.length, 0)
+})
+
+test('exportMultiToDraft：sfxPaths 音效池 → 文字模板命中位置落音效轨（跨视频全局循环）', () => {
+  writeFixturePreset(tmpRoot)
+  const v1 = path.join(tmpRoot, 'dubbed_s1.mp4')
+  const v2 = path.join(tmpRoot, 'dubbed_s2.mp4')
+  const sfxA = path.join(tmpRoot, 'tt_sfx_A.mp3')
+  const sfxB = path.join(tmpRoot, 'tt_sfx_B.mp3')
+  fs.writeFileSync(v1, 'x'); fs.writeFileSync(v2, 'x'); fs.writeFileSync(sfxA, 'x'); fs.writeFileSync(sfxB, 'x')
+  const srt = path.join(tmpRoot, 's.srt')
+  fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:02,000\n限时上新199元\n', 'utf-8')
+  const r = exportMultiToDraft({
+    videoPaths: [v1, v2],
+    srtPaths: [srt, srt],
+    textTemplateClips: [
+      [{ phrase: '199元', startUs: 500000, durUs: 1500000, resourceId: TPL_RID }],
+      [{ phrase: '199元', startUs: 300000, durUs: 1000000, resourceId: TPL_RID }],
+    ],
+    sfxPaths: [sfxA, sfxB],
+    subtitleFontSize: 12,
+    draftName: '音效池测试',
+    // BGM 缺失分支不受影响；音效素材 probe：.mp3 → 10s（非 .mp4 分支）→ 段长受事件窗限制
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  // 音效轨=独立音频轨（每视频一条，含段才入轨）；指派：全局索引 0→sfxA、1→sfxB
+  const audioTracks = content.tracks.filter((t) => t.type === 'audio')
+  assert.equal(audioTracks.length, 2)
+  const matOf = (tr) => tr.segments.map((s) => content.materials.audios.find((a) => a.id === s.material_id).path)
+  assert.ok(matOf(audioTracks[0])[0].endsWith('tt_sfx_A.mp3'))
+  assert.ok(matOf(audioTracks[1])[0].endsWith('tt_sfx_B.mp3'))
+  // 段长=min(素材 probe 10s, 事件窗)：视频1 事件窗 1.5s → 1500000
+  assert.equal(audioTracks[0].segments[0].target_timerange.duration, 1500000)
+  // 时间轴落点：视频2 音效=4s+0.5s(间隔)+0.3s(局部)=4800000
+  assert.equal(audioTracks[1].segments[0].target_timerange.start, 4800000)
+  // 字号设置透传：字幕轨 texts size=12（第四步「字号」下拉覆写默认 10）
+  assert.equal(JSON.parse(content.materials.texts[0].content).styles[0].size, 12)
+})
+
+test('appendTextTemplateSegments：段默认位置=居中上（TEXT_TEMPLATE_TRANSFORM_Y，2026-09-18 用户裁决）', () => {
+  writeFixturePreset(tmpRoot)
+  const presetDir = path.join(tmpRoot, 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
+  const track = { segments: [] }
+  const materials = { text_templates: [], texts: [], speeds: [] }
+  appendTextTemplateSegments(track, materials, [
+    { phrase: '199元', startUs: 0, durUs: 1500000, resourceId: TPL_RID },
+  ], presetDir, 0, 4000000, new Map())
+  assert.equal(track.segments.length, 1)
+  assert.deepEqual(track.segments[0].clip.transform, { x: 0, y: TEXT_TEMPLATE_TRANSFORM_Y })
+  assert.equal(TEXT_TEMPLATE_TRANSFORM_Y, 0.6)
+})
+
 // ── registerInRootMeta / verifyDraftFolder（2026-09-16：固定基线不克隆他人条目 + 草稿自检）──
 
 test('registerInRootMeta：固定基线构建条目（不继承 store[0] 脏字段），覆写 11 项 + 置顶 + 同路径去重', () => {
@@ -697,6 +819,14 @@ test('buildSubtitleSegment：标准字段齐全（基类/媒体/视觉/字幕标
   assert.equal(materials.texts[0].alignment, SUBTITLE_ALIGNMENT)
   assert.equal(materials.texts[0].type, 'text')
   assert.equal(JSON.parse(materials.texts[0].content).text, '测试字幕')
+  // 2026-09-18 用户裁决：字号默认 10 号；opts.fontSize（第四步「字号」下拉）覆写
+  assert.equal(SUBTITLE_FONT_SIZE_DEFAULT, 10)
+  assert.equal(JSON.parse(materials.texts[0].content).styles[0].size, 10)
+  buildSubtitleSegment('大字幕', 0, 1000000, materials, { fontSize: 15 })
+  assert.equal(JSON.parse(materials.texts[1].content).styles[0].size, 15)
+  // 非法字号回落默认（不产出 size<=0 的草稿字段）
+  buildSubtitleSegment('回落', 0, 1000000, materials, { fontSize: 0 })
+  assert.equal(JSON.parse(materials.texts[2].content).styles[0].size, 10)
 })
 
 test('verifyDraftFolder：段 material_id 悬空 → ok:false 且计 dangling（标准 §7-⑤）', () => {

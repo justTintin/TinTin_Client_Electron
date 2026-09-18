@@ -134,7 +134,7 @@ const API_ENDPOINTS = {
     webDownload: '/material/web_download', webDownloadStatus: (id) => `/material/web_download/${id}`,
     enqueueAnalysis: '/material/enqueue_analysis', scan: '/material/scan'
   },
-  montage: { split: '/montage/split', concat: '/montage/concat', bgm: '/montage/bgm', auto: '/montage/auto-mix' },
+  montage: { split: '/montage/split', concat: '/montage/concat', bgm: '/montage/bgm', auto: '/montage/auto' }, // 2026-09-18 契约对齐：live 与 generated 契约均无 /montage/auto-mix，实路径=/montage/auto
   audio:   { genBgm: '/audio/gen/bgm', genSfx: '/audio/gen/sfx', bgmUpload: '/audio/bgm/upload', libraryUpload: '/audio/library/upload', sfxAnalyze: '/sfx/analyze' },
   prompt:  { video: '/prompt/video' },
   vsr:     { enhance: '/vsr/enhance', remove: '/vsr/remove' },

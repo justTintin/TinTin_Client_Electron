@@ -89,7 +89,17 @@ import {
   fmtDur,
   pathBasename,
   inputNameFromFinalPath,
+  // 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）
+  planSubtitleLines,
+  mapLinesToTiming,
+  serializeSrtRows,
 } from './videoMontageLogic'
+// 原客户端 SentenceSplitterLLMWorker 机器（LLM 拆句 + 漏字校验回退本地）
+import {
+  SENTENCE_SPLIT_SYSTEM_PROMPT,
+  extractLlmLines,
+  extractLlmContent,
+} from './voiceCloneLogic'
 import { readCacheDir } from './useSettingsConfig'
 import { joinDefaultPath } from './settingsIntegrationLogic'
 
@@ -1535,6 +1545,7 @@ export function useVideoMontage() {
       //   已保存 events 烧制（不重算）→ 预览所见即成片所做
       // voicePath：配音 wav（2026-09-11 voice 接线：仅服务端链路消费，随 concat
       //   voice 轨上传；本地链路已由 dubVideos 替换进视频，不消费）
+      const srtDirNow = await subtitleAssetDir()
       const subtitleTexts = candidates
         .map((c) => {
           // 服务端链路候选=源视频（r.path）；本地链路=配音产物（r.dubbedPath）
@@ -1545,12 +1556,15 @@ export function useVideoMontage() {
             text: row.text.trim(),
             timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '',
             voicePath: row.wavPath || '',
+            // 2026-09-18 用户裁决：字幕重切段后处理资产路径（克隆完成即生成）——
+            // 主进程存在性校验命中则优先上传该 SRT，缺失回退 buildSrtFromTiming
+            srtPath: joinPath(srtDirNow, pathBasename(c).replace(/\.[^.]+$/, '') + '.srt'),
             fxLines: [] as Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>,
             matchId: '',
           }
         })
         .filter((x): x is {
-          videoPath: string; text: string; timingPath: string; voicePath: string
+          videoPath: string; text: string; timingPath: string; voicePath: string; srtPath: string
           fxLines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>
           matchId: string
         } => !!x)
@@ -1716,13 +1730,18 @@ async function exportAllToJianyingDraft(): Promise<void> {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
-    /** 2026-09-17：音效来源（所选花字模板的本地 sound 声明，主进程解析文件路径；
-     *  音效轨跟随文字模板命中位置——与花字轨无关） */
+    /** 2026-09-17：音效兜底来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板
+     *  命中位置——与花字轨无关）。2026-09-18 用户裁决：音效主来源=服务端音频库
+     *  剪映音效库 <2s 条目（主进程下载落 sfxDestDir 后按命中循环指派） */
     fancyTemplate?: Record<string, unknown> | null
+    /** 2026-09-18：音效池下载落盘目录（工程资产目录 sfx/；缺省回落临时目录） */
+    sfxDestDir?: string
     /** 2026-09-17 用户报障①：第四步选中的服务端字幕样式对象（/subtitle_styles 成员）
      *  + UI 背景不透明度百分比 → 主进程映射为草稿字幕轨文本样式 */
     subtitleStyle?: Record<string, unknown> | null
     subtitleBoxOpacity?: number | null
+    /** 2026-09-18 用户裁决：字幕字号（缺省 10 号）→ 草稿 texts size */
+    subtitleFontSize?: number | null
     draftName: string
     successBody: (name: string) => string
   }): Promise<void> {
@@ -1870,6 +1889,56 @@ async function exportAllToJianyingDraft(): Promise<void> {
     await scanVoiceDir({ dirs })
   }
 
+  /** 字幕资产目录（2026-09-18 用户裁决：srt/ 与 dubbed//bgm_ai/ 同级；
+   *  克隆后后处理/导出/合成三处同源，提取复用） */
+  async function subtitleAssetDir(): Promise<string> {
+    return voiceDirInput.value
+      ? joinPath(resolveOutMontageDir(voiceDirInput.value), 'srt')
+      : joinPath(await readCacheDir(), 'montage_cache', 'srt')
+  }
+
+  /** 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）：
+   *  LLM 重切文案为字幕行（漏字/拼接一致性校验不过回退本地规则拆句）+ TTS 句级
+   *  timing 字符位置映射 → SRT 资产落 srt/<候选 basename>.srt。资产已存在直接复用
+   *  （不重复调 LLM；dubbed_ 前缀产物回退剥前缀同名资产）；best-effort：离线/LLM
+   *  失败回落本地切段，写失败/无行返回空串由调用方回退旧口径。 */
+  async function ensureProcessedSrt(text: string, wavPath: string, candidate: string): Promise<string> {
+    try {
+      const src = String(text || '').trim()
+      if (!src || !candidate) return ''
+      const dir = await subtitleAssetDir()
+      const stem = pathBasename(candidate).replace(/\.[^.]+$/, '')
+      const nmIn = inputNameFromFinalPath(candidate)
+      for (const nm of [stem, nmIn]) {
+        if (!nm) continue
+        const hit = joinPath(dir, nm + '.srt')
+        const ex = await window.tintin?.liveclip?.fileExists?.({ path: hit })
+        if (ex?.exists) return hit
+      }
+      const tr = await window.tintin?.server?.finalReadTiming?.({ timingPath: String(wavPath || '') + '.timing.json' })
+      const timing = tr && 'items' in tr ? tr.items : []
+      let llmLines: string[] | null = null
+      try {
+        const resp = await window.tintin?.server?.llmChat?.({
+          messages: [
+            { role: 'system', content: SENTENCE_SPLIT_SYSTEM_PROMPT },
+            { role: 'user', content: src },
+          ],
+          temperature: 0.2,
+        })
+        const lines = extractLlmLines(extractLlmContent(resp))
+        if (lines.length) llmLines = lines
+      } catch (_) { llmLines = null }
+      const rows = mapLinesToTiming(planSubtitleLines(src, llmLines), timing)
+      if (!rows.length) return ''
+      const file = joinPath(dir, stem + '.srt')
+      const w = await window.tintin?.liveclip?.writeTextFile?.({ path: file, content: serializeSrtRows(rows) })
+      return w?.ok ? file : ''
+    } catch (_) {
+      return ''
+    }
+  }
+
   /** 导出到剪映时间轴（2026-09-15 用户裁决双路径）：
    *  A) 有服务端合成任务 → from-task 合并流：素材/字幕/口播/BGM 由服务端清单出
    *     （assets 逐个下载落草稿目录），客户端对齐追加文字模板三件套/花字/音效轨；
@@ -1920,39 +1989,17 @@ async function exportAllToJianyingDraft(): Promise<void> {
         timing = r && 'items' in r ? r.items : []
       }
       const rows2 = buildSubtitleRows(text, timing, 0)
-      // 字幕 SRT：本地 timing 生成（句级时间；字级属后续增强，见 §3.6 P1）
+      // 字幕 SRT：消费声音克隆完成后即生成的后处理资产（2026-09-18 用户裁决：
+      //   后处理时点前移至克隆完成，导出与服务端合成均为纯消费者）。资产命中→
+      //   直接用；缺失（旧会话/未跑克隆）→ 现场重切段回写；文案空/写失败 → 该段
+      //   不出字幕轨（导出器 srtPaths null 容忍，2026-09-17 修复：合成产物候选曾在此整单中断）
       {
-        const ts = (s: number) => {
-          const ms = Math.round(s * 1000)
-          const h = Math.floor(ms / 3600000)
-          const m = Math.floor(ms % 3600000 / 60000)
-          const sec = Math.floor(ms % 60000 / 1000)
-          const mmm = ms % 1000
-          return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0') + ',' + String(mmm).padStart(3, '0')
-        }
-        const srt = rows2.map((r, k) => String(k + 1) + '\n' + ts(r.start) + ' --> ' + ts(r.end) + '\n' + r.text + '\n').join('\n')
-        if (!rows2.length) {
-          // 无字幕内容（无口播行/文案空）：该段不出字幕轨（导出器 srtPaths null 容忍），
-          // 不作为导出失败（2026-09-17 修复：合成产物候选曾在此整单中断）
+        const srtFile = text ? await ensureProcessedSrt(text, row?.wavPath || '', c) : ''
+        if (srtFile) {
+          srtPaths.push(srtFile)
+        } else {
           noSubClips++
           srtPaths.push(null)
-        } else {
-          // 2026-09-18 用户裁决：SRT 是每段候选视频的字幕资产，落工程资产目录
-          //   （混剪输出根下 srt/ 子目录，与 dubbed//bgm_ai/ 同级；无输入目录
-          //   回落 cacheDir/montage_cache/srt，同 BGM 下载 L1320 口径）；
-          //   文件名=候选视频 basename（重导覆盖为最新）；父目录由主进程
-          //   writeTextFile 递归创建（不再自拼系统临时目录，渲染层 process.env
-          //   不可靠曾致 C:/Temp ENOENT）
-          const srtDir = voiceDirInput.value
-            ? joinPath(resolveOutMontageDir(voiceDirInput.value), 'srt')
-            : joinPath(await readCacheDir(), 'montage_cache', 'srt')
-          const srtFile = joinPath(srtDir, pathBasename(c).replace(/\.[^.]+$/, '') + '.srt')
-          const w = await window.tintin?.liveclip?.writeTextFile?.({ path: srtFile, content: srt })
-          if (!w?.ok) {
-            notify('SRT 写入失败', String(w?.error || '字幕文件写入桥接不可用'))
-            return
-          }
-          srtPaths.push(srtFile)
         }
       }
       // 文字模板命中（2026-09-17 用户裁决）：本地缓存优先（预览/合成已预取的命中，
@@ -1993,7 +2040,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     }
     const transition = concatTransition.value || 'fade'
     const finalName = timelineDraftName()
-    // 本地组装（音效由主进程按所选花字模板的本地 sound 声明解析，跟随文字模板命中位置）
+    // 本地组装（2026-09-18 用户裁决：音效=主进程从服务端音频库剪映音效库 <2s 条目
+    // 下载到资产目录 sfx/ 后按命中循环指派；空池回落花字模板本地 sound 声明）
     await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
@@ -2003,10 +2051,16 @@ async function exportAllToJianyingDraft(): Promise<void> {
       fancyTemplate: selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null,
       subtitleStyle: plainJson(selectedSubtitlePreset.value?.serverStyle || null) as Record<string, unknown> | null,
       subtitleBoxOpacity: subtitleBgOpacity.value,
+      subtitleFontSize: subtitleFontSize.value,
       textTemplateClips,
       voiceClips,
       bgmPath: bgmPath.value,
       bgmVolume: bgmVolume.value,
+      // 音效下载落盘目录：工程资产目录 sfx/（与 srt//jy_pkg/ 同级；无输入目录
+      // 回落 cacheDir/montage_cache/sfx，同 SRT 口径）
+      sfxDestDir: voiceDirInput.value
+        ? joinPath(resolveOutMontageDir(voiceDirInput.value), 'sfx')
+        : joinPath(await readCacheDir(), 'montage_cache', 'sfx'),
       draftName: finalName,
       successBody: (name: string) => '已按原始轨道结构导出 ' + cands.length + ' 段候选视频（转场：' + transition + '，含口播/字幕/关键词/BGM 轨）！\n项目名称：' + name + (noSubClips ? '\n（注：' + noSubClips + ' 段无口播文案，未出字幕/关键词轨）' : ''),
     })
@@ -2109,6 +2163,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
   // 字幕入场动画 key（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；
   // key 与主进程 VALID_ANIMS 同表：fade/rise/slide/pop/none）
   const subtitleAnimKey = ref('fade')
+  // 2026-09-18 用户裁决：字幕字号（剪映草稿 texts content styles[].size），默认 10 号
+  // （原导出器缺省 8 实测偏小）；第四步「字号」下拉覆写，预览同比例缩放
+  const subtitleFontSize = ref(10)
   // 花字位置/字幕背景/模板（L224-352；模板首项「自定义 (下方样式)」value=''）
   const fancyPosition = ref('upper_middle')
   // 字幕背景不透明度默认 20%（2026-09-15 用户裁决：背景里的透明默认设计为 20%，原 0.5）
@@ -2939,6 +2996,13 @@ async function exportAllToJianyingDraft(): Promise<void> {
           voiceRows.value[t.rowIdx].progress = 0
         }
       }
+      // 2026-09-18 用户裁决：字幕重切段后处理在声音克隆完成后立即执行——逐条成功
+      //   克隆生成 SRT 资产（LLM 重切段 + timing 映射）落 srt/，供本地剪映导出与
+      //   服务端合成 subtitle_srt 上传消费；best-effort，失败不阻断克隆结果
+      for (const t of tasks) {
+        const wav = res.results[t.videoPath]
+        if (wav) await ensureProcessedSrt(t.text, wav, t.videoPath)
+      }
       return { ok: Object.keys(res.results).length, failures: res.failures }
     } finally {
       voiceBusy.value = false
@@ -3074,7 +3138,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
   const subtitlePreviewStyle = computed<Record<string, string>>(() => {
     void fontFacesVersion.value
     const st = subtitlePresetTileStyle(selectedSubtitlePreset.value)
-    st.fontSize = '18px'
+    // 2026-09-18：预览字号随「字号」设置同比例缩放（10 号→18px=原观感基准）
+    st.fontSize = `${Math.round(subtitleFontSize.value * 1.8)}px`
     st.fontWeight = '700'
     st.lineHeight = '1.5'
     st.textAlign = 'center'
@@ -3302,6 +3367,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
     addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
     subtitleStyleKey, subtitleStylePresets, selectedSubtitlePreset, subtitlePreviewStyle,
     subtitleAnimKey,
+    subtitleFontSize,
     fontOptionStyle,
     fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
     fancyTemplateId, fancyTemplates, fancyPreviews,

@@ -59,6 +59,16 @@ const SUBTITLE_TRANSFORM_Y = -0.8
 // 字幕文本水平对齐：0=左 1=居中 2=右（materials.texts[].alignment）
 const SUBTITLE_ALIGNMENT = 1
 
+// 2026-09-18 用户裁决：字幕字号默认 10 号（原 textMaterial 缺省 8.0 实测偏小）；
+// 第四步「字号」下拉可覆写（opts.fontSize → texts content styles[].size）。
+const SUBTITLE_FONT_SIZE_DEFAULT = 10
+
+// 2026-09-18 用户裁决：文字模板段默认位置=居中上（不是居中）。真机 text_template
+// 段 clip.transform={0,0}、位置靠素材 attach_info 承载；本地预设 attach 多为 0 →
+// 段落剪映正中。段级补默认 transform.y（半画布量纲，y 正=上，同
+// SUBTITLE_TRANSFORM_Y 口径；真机字幕段实测 y≈-0.67 参照）。
+const TEXT_TEMPLATE_TRANSFORM_Y = 0.6
+
 /** 大写无连字符 uuid（draft_meta_info.draft_id 用，对照 str(uuid.uuid4()).upper()） */
 function newId() {
   return randomUUID().replace(/-/g, '').toUpperCase()
@@ -507,22 +517,35 @@ function normalizeVoiceClips(voiceClips, videoCount) {
 /** 音效轨（2026-09-17 用户裁决·定义修正）：独立音频轨，**跟随文字模板命中位置**落段
  *  （位置=关键词命中位置；与花字轨无关——花字轨是纯文本轨）。
  *  events=[{word|phrase,startUs,durUs}] 为该成片局部系；offsetUs=合并时间轴起点；
- *  opts.probeDur(path)=秒（主进程 ffprobe 注入）；sfxPath 不存在→不落轨（不造假）。 */
+ *  2026-09-18 用户裁决：音效来源=服务端音频库「剪映音效库」中时长 <2s 的条目池
+ *  （sfxPool=[文件路径]，主进程下载落资产目录后注入），按事件全局索引
+ *  （opts.eventOffset + 本视频内序号）循环指派；空池/文件缺失→不落轨（不造假）。
+ *  opts.probeDur(path)=秒（主进程 ffprobe 注入）；opts.probeCache=Map（跨视频复用探测）。 */
 function appendSfxTrackFromEvents(tracks, materials, events, offsetUs, limitEndUs, opts = {}) {
-  const sfxPath = String(opts.sfxPath || '')
-  if (!sfxPath || !fs.existsSync(sfxPath)) return
+  const pool = (Array.isArray(opts.sfxPool) ? opts.sfxPool : []).filter((p) => p && fs.existsSync(String(p)))
+  if (!pool.length) return
   const list = Array.isArray(events) ? events : []
   if (!list.length) return
-  const sfxDurSec = Math.max(0.05, Number(opts.probeDur ? opts.probeDur(sfxPath) : 0) || 0.5)
-  const sfxDurUs = Math.round(sfxDurSec * 1e6)
+  const base = Math.max(0, Math.round(Number(opts.eventOffset) || 0))
+  const probeCache = opts.probeCache instanceof Map ? opts.probeCache : new Map()
+  const probeDur = (fp) => {
+    if (probeCache.has(fp)) return probeCache.get(fp)
+    let sec = 0
+    try { sec = Number(opts.probeDur ? opts.probeDur(fp) : 0) || 0 } catch (_) { sec = 0 }
+    probeCache.set(fp, sec)
+    return sec
+  }
   const gainDb = Number(opts.gainDb)
   const volume = Number.isFinite(gainDb) ? Math.min(1, Math.max(0, Math.pow(10, gainDb / 20))) : 1.0
   const sfxTrack = newTrack('audio')
-  for (const ev of list) {
+  list.forEach((ev, idx) => {
+    const sfxPath = String(pool[(base + idx) % pool.length])
+    // 段长=min(素材实际时长, 事件窗)——音效素材 <2s，事件窗更长时按素材长落段
+    const sfxDurUs = Math.round(Math.max(0.05, probeDur(sfxPath) || 0.5) * 1e6)
     const startUs = offsetUs + Math.max(0, Math.round(Number(ev.startUs) || 0))
     let durUs = Math.min(sfxDurUs, Math.max(1, Math.round(Number(ev.durUs) || 0)))
     if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = limitEndUs - startUs
-    if (durUs <= 0) continue
+    if (durUs <= 0) return
     const mat = audioMaterialFields(sfxPath, durUs)
     materials.audios.push(mat)
     const ssp = speedMaterial(1.0)
@@ -537,7 +560,7 @@ function appendSfxTrackFromEvents(tracks, materials, events, offsetUs, limitEndU
       clip: null,
       hdr_settings: null,
     })
-  }
+  })
   if (sfxTrack.segments.length) tracks.push(sfxTrack)
 }
 
@@ -575,13 +598,16 @@ function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs
     }
     const sp = speedMaterial(1.0)
     if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
-    track.segments.push({
+    const tplSeg = {
       ...baseSegmentFields(trio.templateMaterial.id, startUs, durUs),
       ...mediaSegmentFields(durUs, sp.id),
       ...visualSegmentFields(),
       source_timerange: null, // 文本段（标准 §3.6）：source_timerange = null
       extra_material_refs: [sp.id, ...trio.extraRefs],
-    })
+    }
+    // 2026-09-18 用户裁决：文字模板默认位置=居中上（见 TEXT_TEMPLATE_TRANSFORM_Y 注释）
+    if (tplSeg.clip && tplSeg.clip.transform) tplSeg.clip.transform = { x: 0, y: TEXT_TEMPLATE_TRANSFORM_Y }
+    track.segments.push(tplSeg)
   }
 }
 
@@ -878,8 +904,10 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  textTemplateClips（2026-09-15 用户裁决）：逐视频文字模板命中
  *  [{phrase,startUs,durUs,resourceId}]（match textfx_clips 权威指派）→
  *  剪映原生文字模板三件套轨（text_templates+texts+segment）；有命中的视频
- *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPath = '', sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, deps }) {
+ *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。
+ *  sfxPaths（2026-09-18 用户裁决）：音效池=服务端音频库剪映音效库 <2s 条目
+ *  下载产物（主进程 resolveJianyingSfxPool 解析），按文字模板命中全局索引循环指派。 */
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -963,12 +991,15 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const videoTrack = newTrack('video')
     const voiceTrack = newTrack('audio')
     const voiceSegsByVideo = normalizeVoiceClips(voiceClips, clips.length)
+    // 2026-09-18 用户裁决：BGM 逐视频窗落段（间隔期静音）——收集各视频时间窗
+    const bgmWindows = []
     let cursorUs = 0
     clips.forEach((clip, i) => {
       const materialId = hexId()
       materials.videos.push(videoMaterialFields({ ...clip, materialId }))
       const sp = speedMaterial(1.0)
       speeds.push(sp)
+      bgmWindows.push({ startUs: cursorUs, durUs: clip.durationUs })
       const voiced = (voiceSegsByVideo[i] || []).length > 0
       const seg = {
         ...baseSegmentFields(materialId, cursorUs, clip.durationUs),
@@ -1014,6 +1045,28 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     const tplClips = normalizeTextTemplateClips(textTemplateClips, clips.length)
     const tplTrack = tplClips ? newTrack('text') : null
     const tplCache = new Map()
+    // 2026-09-18 音效池（服务端剪映音效库 <2s 条目）：全局事件索引跨视频连续，
+    // 池内循环指派；probeCache 跨视频复用 ffprobe 探测
+    const sfxPool = (Array.isArray(sfxPaths) ? sfxPaths : (sfxPaths ? [sfxPaths] : []))
+      .map((s) => String(s || '')).filter((s) => s && fs.existsSync(s))
+    let sfxEventCursor = 0
+    const sfxProbeCache = new Map()
+    const appendSfxForVideo = (i, offsetUs, limitEndUs) => {
+      const evs = (tplClips && tplClips[i]) || []
+      if (!evs.length) return
+      if (sfxPool.length) {
+        try {
+          appendSfxTrackFromEvents(tracks, materials, evs, offsetUs, limitEndUs, {
+            sfxPool,
+            eventOffset: sfxEventCursor,
+            gainDb: sfxGainDb,
+            probeCache: sfxProbeCache,
+            probeDur: (fp) => (deps && typeof deps.probeMedia === 'function' ? (deps.probeMedia(fp).durationSec || 0) : 0),
+          })
+        } catch (_) { /* 音效轨失败不阻断导出 */ }
+      }
+      sfxEventCursor += evs.length
+    }
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     if (srtPaths) {
       const subtitleTrack = newTrack('text')
@@ -1026,7 +1079,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
-          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim, subtitleStyle: subStyleMapped })
+          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim, subtitleStyle: subStyleMapped, fontSize: subtitleFontSize })
           for (const kind of effKinds) {
             appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache, {
               anim: textAnim,
@@ -1037,16 +1090,11 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
         if (tplClips && tplClips[i] && tplClips[i].length) {
           try {
             appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
-            // 音效轨（2026-09-17 用户裁决·定义修正）：跟随文字模板命中位置落段
-            // （位置=关键词命中位置；与花字轨无关）。sfxPath 由调用方解析（本地音效文件）
-            if (sfxPath) {
-              appendSfxTrackFromEvents(tracks, materials, tplClips[i], cursorUs, cursorUs + clip.durationUs, {
-                sfxPath,
-                gainDb: sfxGainDb,
-                probeDur: (fp) => (deps && typeof deps.probeMedia === 'function' ? (deps.probeMedia(fp).durationSec || 0) : 0),
-              })
-            }
           } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
+          // 音效轨（2026-09-17 用户裁决·定义修正）：跟随文字模板命中位置落段
+          // （位置=关键词命中位置；与花字轨无关）。2026-09-18：音效池来自服务端
+          // 音频库剪映音效库 <2s 条目（sfxPaths 主进程解析注入）
+          appendSfxForVideo(i, cursorUs, cursorUs + clip.durationUs)
         }
         cursorUs += clip.durationUs
         // 2026-09-16 用户裁决：视频片段之间添加半秒间隔，所有轨道同步
@@ -1062,6 +1110,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
           try {
             appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache)
           } catch (_) {}
+          appendSfxForVideo(i, cursorUs, cursorUs + clip.durationUs)
         }
         cursorUs += clip.durationUs
         // 2026-09-16 用户裁决：视频片段之间添加半秒间隔，所有轨道同步
@@ -1094,10 +1143,11 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmV
     // 6.5 口播音频轨（有段才入轨；音频域三轨=口播/BGM/音效）
     if (voiceTrack.segments.length) tracks.push(voiceTrack)
 
-    // 7. BGM 轨（最后一条）：覆盖整条时间轴
+    // 7. BGM 轨（最后一条）：2026-09-18 用户裁决——单 BGM 逐视频窗落段（第一段截断于
+    //    第一个视频结尾，不是整条时间轴；间隔期静音），源游标跨窗连续、超素材时长回环
     let bgmIncluded = false
     if (bgmPath && fs.existsSync(bgmPath)) {
-      appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, deps)
+      appendBgmTrack(tracks, materials, bgmPath, bgmVolume, bgmWindows, deps)
       bgmIncluded = true
     }
 
@@ -1481,6 +1531,8 @@ function buildSubtitleSegment(textContent, startUs, durUs, materials, opts = {})
   const ss = opts.subtitleStyle && typeof opts.subtitleStyle === 'object' ? opts.subtitleStyle : null
   const mat = textMaterial(textContent, {
     alignment: SUBTITLE_ALIGNMENT,
+    // 2026-09-18 用户裁决：字号=第四步设置（opts.fontSize），缺省 10 号
+    size: Number(opts.fontSize) > 0 ? Number(opts.fontSize) : SUBTITLE_FONT_SIZE_DEFAULT,
     colorHex: (ss && ss.colorHex) || '#FFFFFF',
     strokeColorHex: (ss && ss.strokeColorHex) || '',
     strokeWidth: (ss && ss.strokeWidth) || 0,
@@ -1559,8 +1611,16 @@ function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 
   }
 }
 
-/** BGM 音轨覆盖整条时间轴（_append_bgm_track L375-425；v2 素材/片段结构） */
-function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, deps) {
+/** BGM 音轨（2026-09-18 用户裁决：逐视频窗落段，不再是单段覆盖整条时间轴）：
+ *  windows=[{startUs,durUs}]（各视频时间窗，不含半秒间隔——间隔期静音）；
+ *  第一段截断于第一个视频结尾；源游标跨窗连续（第二段从第一段源结尾接着取），
+ *  超素材时长回环切 chunk（无缝接续）；素材/段共用同一 id（golden 对照 §7-⑤）。
+ *  probe 失败回退：每窗单段 source [0,窗长]（无法回环时的保守口径）。 */
+function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, windows, deps) {
+  const wins = (Array.isArray(windows) ? windows : [])
+    .map((w) => ({ startUs: Math.max(0, Math.round(Number(w && w.startUs) || 0)), durUs: Math.round(Number(w && w.durUs) || 0) }))
+    .filter((w) => w.durUs > 0)
+  if (!wins.length) return
   let bgmDurationSec = 0.0
   if (deps && typeof deps.probeMedia === 'function') {
     try {
@@ -1568,26 +1628,41 @@ function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, totalDurationUs, 
       bgmDurationSec = durationSec || 0
     } catch (_) { /* 原版失败按 0 处理 */ }
   }
-  if (bgmDurationSec <= 0) bgmDurationSec = totalDurationUs / 1000000.0 + 60.0 // 足够长
+  const bgmDurUs = Math.floor(bgmDurationSec * 1000000)
 
   // 2026-09-17 golden 对照工具抓出的存量 bug：素材与段必须共用同一个 id——
   // 此前段用独立 materialId 而 audioMaterialFields 内部另生 id → 段引用悬空（§7-⑤ 必拦截）
-  const bgmMat = audioMaterialFields(bgmPath.split('\\').join('/'), Math.floor(bgmDurationSec * 1000000))
+  const bgmMat = audioMaterialFields(bgmPath.split('\\').join('/'), bgmDurUs > 0 ? bgmDurUs : wins.reduce((a, w) => a + w.durUs, 0))
   materials.audios.push(bgmMat)
-  const sp = speedMaterial(1.0)
-  materials.speeds.push(sp)
+
   const track = newTrack('audio')
-  track.segments.push({
-    ...baseSegmentFields(bgmMat.id, 0, totalDurationUs),
-    source_timerange: { start: 0, duration: totalDurationUs },
-    speed: 1.0,
-    volume: bgmVolume / 100.0,
-    extra_material_refs: [sp.id],
-    is_tone_modify: false,
-    clip: null,
-    hdr_settings: null,
-  })
-  tracks.push(track)
+  let srcCursor = 0 // 源游标：跨窗连续，回环时归零
+  for (const w of wins) {
+    let remaining = w.durUs
+    let targetStart = w.startUs
+    while (remaining > 0) {
+      // probe 失败（bgmDurUs<=0）无法回环 → 每窗单段 source [0,窗长]（保守回退）
+      const chunk = bgmDurUs > 0 ? Math.min(remaining, bgmDurUs - srcCursor) : remaining
+      if (chunk <= 0) { srcCursor = 0; continue }
+      const sp = speedMaterial(1.0)
+      materials.speeds.push(sp)
+      track.segments.push({
+        ...baseSegmentFields(bgmMat.id, targetStart, chunk),
+        source_timerange: { start: srcCursor, duration: chunk },
+        speed: 1.0,
+        volume: bgmVolume / 100.0,
+        extra_material_refs: [sp.id],
+        is_tone_modify: false,
+        clip: null,
+        hdr_settings: null,
+      })
+      srcCursor += chunk
+      if (bgmDurUs > 0 && srcCursor >= bgmDurUs) srcCursor = 0
+      targetStart += chunk
+      remaining -= chunk
+    }
+  }
+  if (track.segments.length) tracks.push(track)
 }
 
 /** 解析 srt 为 [startSec, endSec, text] 列表（_parse_srt L428-466） */
@@ -1707,6 +1782,8 @@ module.exports = {
   normalizeVoiceClips,
   SUBTITLE_TRANSFORM_Y,
   SUBTITLE_ALIGNMENT,
+  SUBTITLE_FONT_SIZE_DEFAULT,
+  TEXT_TEMPLATE_TRANSFORM_Y,
   buildSubtitleSegment,
   VIDEO_GAP_US,
 }

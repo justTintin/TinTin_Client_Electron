@@ -381,6 +381,12 @@ function buildServerFxFields(fx, srt, matchId) {
         delete styleObj.box
       }
       fields.subtitle_style = JSON.stringify(styleObj)
+      // 2026-09-18 契约对齐（live /openapi.json 实测）：/montage/concat 收 subtitle_style_id
+      // （字幕样式库 id，见 GET /subtitle_styles）。渲染层预设 key=服务端 style.id
+      // （serverStylesToPresets），经 fx.subtitleStyle 透传 → 服务端可按 id 直取库条目，
+      // 与 subtitle_style JSON 双保险。仅服务端样式对象存在时发——离线兜底本地键
+      // （'std_bottom' 等）不发，防误命中库 id。
+      if (fx.subtitleStyle) fields.subtitle_style_id = String(fx.subtitleStyle)
     } else {
       fields.subtitle_style = JSON.stringify({ box_opacity: boxOpacity })
     }
@@ -471,6 +477,18 @@ function audioCtype(filePath) {
  *  产物校验防两处实测坑：未就绪 200+0B 空体、就绪产物截断 moov 缺失。
  *  配音轨（2026-09-11 统一合成契约提案③）：口播 wav 随 concat voice 字段上传 +
  *  voice_mode=replace（替换原声；契约默认同值，显式固定）；不再本地预热 dub 产物。 */
+/** 字幕重切段后处理资产（2026-09-18 用户裁决：声音克隆完成后即生成 srt/ 资产）→
+ *  subtitle_srt 文本：srtPath 存在且非空直读；缺失/读失败返回空串由调用方
+ *  回退 buildSrtFromTiming 旧口径。纯 fs 可单测。 */
+function readProcessedSrtAsset(sub) {
+  const p = String((sub && sub.srtPath) || '')
+  if (!p) return ''
+  try {
+    if (!fs.existsSync(p) || fs.statSync(p).size <= 0) return ''
+    return String(fs.readFileSync(p, 'utf-8'))
+  } catch (_) { return '' }
+}
+
 async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, videoDur, spec, bgmPath, bgmVol }) {
   let fields = {}
   if (fx && sub) {
@@ -482,7 +500,10 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
         if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
       }
     } catch (_) { timing = null }
-    fields = buildServerFxFields(fx, buildSrtFromTiming(sub.text, timing, videoDur), sub.matchId)
+    // 2026-09-18 用户裁决：字幕重切段后处理在克隆完成即执行 → 合成上传优先消费
+    //   该 SRT 资产（LLM 重切段 + timing 映射的单一事实源）；缺失回退旧口径现建
+    const srtText = readProcessedSrtAsset(sub) || buildSrtFromTiming(sub.text, timing, videoDur)
+    fields = buildServerFxFields(fx, srtText, sub.matchId)
   }
   // 回传源规格：否则服务端按默认 1080x1920@30 改写产物（实测坑）
   if (spec && spec.width > 0 && spec.height > 0) {
@@ -594,7 +615,10 @@ function subtitleStyleCard(t) {
     animSignature: '',
     category: String(t.scenario || ''),
     tags: Array.isArray(t.tags) ? t.tags : [],
-    preview: String(t.preview || ''),
+    // 2026-09-18 契约对齐：服务端新增 GET /subtitle_styles/{sid}/preview.png（实测
+    // 200 image/png）；库条目 preview 字段现为空串 → 回落该端点真图预览，
+    // 卡片 <img @error> 再回落 CSS 文字动画
+    preview: String(t.preview || '') || (t.id ? '/subtitle_styles/' + encodeURIComponent(String(t.id)) + '/preview.png' : ''),
     previewWebm: '',
     cssStyle: cssParts.join(';'),
     raw: t,
@@ -981,6 +1005,48 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
+  // ── 音效池解析（2026-09-18 用户裁决）：文字模板音效来源=服务端音频库「剪映
+  //  上传的音效库」中时长 <2s 的条目（GET /audio/library?kind=音效，字段 duration_s，
+  //  实测 source=jianying-sfx/tags 含 sfx_id），文件端点 /audio/library/{id}/file；
+  //  下载落工程资产目录 sfx/（tt_sfx_<id>.<ext> 缓存复用，重导不重下）。
+  //  失败/空池返回 paths=[]（调用方回落花字模板本地 sound 声明）。 ──
+  async function resolveJianyingSfxPool({ hitCount = 0, destDir = '' }) {
+    try {
+      if (!(hitCount > 0) || typeof httpRequest !== 'function') return { paths: [] }
+      const res = await httpRequest('GET', '/audio/library?kind=' + encodeURIComponent('音效') + '&size=500', { timeout: 15000 })
+      const d = res && res.data
+      const items = Array.isArray(d) ? d : (Array.isArray(d && d.items) ? d.items : [])
+      // 筛选剪映音效库 <2s 条目；id 排序保证多次导出指派稳定
+      const cand = items
+        .filter((t) => t && t.id && Number(t.duration_s) > 0 && Number(t.duration_s) < 2)
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      if (!cand.length) return { paths: [] }
+      // 按命中数循环取唯一池（命中多于候选时整池复用，导出器内按全局索引循环指派）
+      const picked = cand.slice(0, Math.max(1, Math.min(hitCount, cand.length)))
+      const dir = String(destDir || '').trim()
+      if (!dir) return { paths: [] }
+      fs.mkdirSync(dir, { recursive: true })
+      const paths = []
+      for (const t of picked) {
+        const ext = String(t.media_type || 'mp3').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'mp3'
+        const dest = path.join(dir, `tt_sfx_${String(t.id).replace(/[^\w-]/g, '_')}.${ext}`)
+        try {
+          if (!fs.existsSync(dest) || fs.statSync(dest).size <= 0) {
+            const r = await httpRequest('GET', '/audio/library/' + encodeURIComponent(String(t.id)) + '/file', { timeout: 30000 })
+            const buf = Buffer.from(r.raw || '')
+            if (buf.length <= 0) continue
+            fs.writeFileSync(dest, buf)
+          }
+          paths.push(dest)
+        } catch (_) { /* 单条失败跳过（池内其余可用） */ }
+      }
+      return { paths }
+    } catch (err) {
+      try { logInfo('jianying-export', '音效池解析失败（回落花字模板 sound）: ' + ((err && err.message) || err)) } catch (_) {}
+      return { paths: [] }
+    }
+  }
+
   // ── jianying:export — 剪映专业版草稿导出（_export_to_jianying_draft / _export_all）──
   // mode 'single'：单视频（export_to_draft）；mode 'multi'：多片段时间轴（export_multi_to_draft，
   // transitions 沿用第②步转场下拉 key，默认 fade）。
@@ -988,6 +1054,28 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     try {
       const p = payload || {}
       const deps = { probeMedia }
+      // 2026-09-18 用户裁决：音效池=服务端音频库剪映音效库 <2s 条目（下载到
+      // 资产目录 sfx/）；空池回落花字模板本地 sound 声明（过渡来源兜底）
+      let sfxPaths = []
+      let sfxGainDb = null
+      if (p.mode === 'multi') {
+        const hitCount = (Array.isArray(p.textTemplateClips) ? p.textTemplateClips : [])
+          .reduce((a, l) => a + (Array.isArray(l) ? l.length : 0), 0)
+        if (hitCount > 0) {
+          const pool = await resolveJianyingSfxPool({ hitCount, destDir: p.sfxDestDir })
+          sfxPaths = pool.paths || []
+        }
+      }
+      if (!sfxPaths.length) {
+        try {
+          const ft = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
+          const s = ft && FT.getFancySoundPath ? FT.getFancySoundPath(ft) : ''
+          if (s && fs.existsSync(s)) {
+            sfxPaths = [s]
+            sfxGainDb = FT.getFancySoundGainDb ? FT.getFancySoundGainDb(ft) : null
+          }
+        } catch (_) { /* 花字兜底失败 → 无音效（不造假） */ }
+      }
       const res = p.mode === 'multi'
         ? JY.exportMultiToDraft({
             videoPaths: p.videoPaths,
@@ -1011,23 +1099,15 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             // 2026-09-15：逐视频口播 wav → 独立口播轨（对应素材段自动静音）
             voiceClips: p.voiceClips,
             // 2026-09-17 用户裁决·定义修正：音效轨跟随「文字模板命中位置」（与花字轨无关）。
-            // 音效文件由所选花字模板的本地 sound 声明解析（过渡来源；素材音效库接入为终态）
-            sfxPath: (() => {
-              try {
-                const ft = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
-                const s = ft && FT.getFancySoundPath ? FT.getFancySoundPath(ft) : ''
-                return s && fs.existsSync(s) ? s : ''
-              } catch (_) { return '' }
-            })(),
-            sfxGainDb: (() => {
-              try {
-                const ft = p.fancyTemplate && typeof p.fancyTemplate === 'object' ? p.fancyTemplate : null
-                return ft && FT.getFancySoundGainDb ? FT.getFancySoundGainDb(ft) : null
-              } catch (_) { return null }
-            })(),
+            // 2026-09-18 用户裁决：音效池=服务端音频库剪映音效库 <2s 条目（见上方
+            // resolveJianyingSfxPool）；空池回落花字模板本地 sound 声明
+            sfxPaths,
+            sfxGainDb,
             // 2026-09-17 用户报障①：第四步选中的服务端字幕样式 + UI 背景不透明度透传导出器
             subtitleStyle: p.subtitleStyle && typeof p.subtitleStyle === 'object' ? p.subtitleStyle : null,
             subtitleBoxOpacity: p.subtitleBoxOpacity ?? null,
+            // 2026-09-18 用户裁决：字幕字号（第四步「字号」下拉，缺省 10 号）
+            subtitleFontSize: p.subtitleFontSize ?? null,
             draftName: p.draftName,
             deps,
           })
@@ -1458,6 +1538,7 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
 module.exports = {
   createMontageFinalIpc, getOutFinalDir, getOutMontageDir, findSrtForVideo,
   buildSrtFromTiming, buildServerFxFields, buildFxMultipart, serverComposeOne, probeMedia,
+  readProcessedSrtAsset,
   subtitleStyleCard, cssColorFromStyle,
   parseJianyingCachePath, getJianyingMediaCacheDir,
 }

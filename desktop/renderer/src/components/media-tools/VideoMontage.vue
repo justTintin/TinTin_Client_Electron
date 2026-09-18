@@ -71,6 +71,7 @@ const {
   // 字幕样式（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles）
   subtitleStyleKey, subtitleStylePresets, subtitlePreviewStyle, fontOptionStyle,
   subtitleAnimKey,
+  subtitleFontSize,
   fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立；随机样式默认 3 个）
   lutRestore, lutId, lutList, lutListLoading, loadLuts, textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
@@ -436,6 +437,9 @@ const SUBTITLE_ANIM_OPTIONS = [
   { label: '无动画', value: 'none' },
 ]
 const subtitleAnimOptions = SUBTITLE_ANIM_OPTIONS
+/** 字幕字号下拉（2026-09-18 用户裁决：默认 10 号，置于「动画」后；
+ *  值=剪映草稿 texts content styles[].size，预览同比例缩放） */
+const subtitleFontSizeOptions = [6, 8, 10, 12, 15, 20, 25, 30].map((v) => ({ label: String(v), value: v }))
 /** 花字模板下拉（原版 fancy_template_combo：首项「自定义 (下方样式)」value=''，L269-274；
  *  2026-09-09 服务端对接：服务端模板库条目加「（服务端）」来源后缀，排在本地模板前） */
 const fancyTemplateOptions = computed(() => [
@@ -1127,6 +1131,9 @@ function scoreClass(score: number | undefined): string {
             <label class="param-label">动画:</label>
             <TSelect v-model="subtitleAnimKey" :options="subtitleAnimOptions" class="w130"
               title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
+            <label class="param-label">字号:</label>
+            <TSelect v-model="subtitleFontSize" :options="subtitleFontSizeOptions" class="w90"
+              title="字幕字号（剪映草稿文本 size，默认 10 号）。&#10;值越大字幕越大，效果预览同比例缩放。" />
             <label class="param-label">样式:</label>
             <div class="sub-style-grid" title="字幕样式来自服务端 /subtitle_styles 库（烧制时以 ffmpeg drawtext 或服务端引擎实现，效果以成品为准）">
               <button v-for="p in subtitleStylePresets" :key="p.key" type="button" class="sub-style-tile"
@@ -1213,20 +1220,27 @@ function scoreClass(score: number | undefined): string {
             <span v-if="!lutList.length" class="muted">{{ lutListLoading ? '加载中…' : '服务端 LUT 库为空（可用 /config/luts 上传 .cube）' }}</span>
           </div>
         </div>
-        <div class="row between" style="gap: var(--space-2)">
-          <TButton label="服务端合成" class="vd4-run vd4-grow" :loading="finalBusy && finalMode === 'server'"
+        <!-- 2026-09-18 用户裁决：动作区加导出方案引导文案，竖排：
+             标题「请选择导出方案」→ 方案一文案 → 其两按钮 → 方案二文案 → 服务端合成按钮 -->
+        <div class="vd4-schemes">
+          <div class="vd4-scheme-title">请选择导出方案</div>
+          <div class="vd4-scheme-line">方案一，速度快，可以在剪映里编辑，需要本地安装剪映，</div>
+          <div class="row" style="gap: var(--space-2)">
+            <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
+                 导出到剪映时间轴紧随服务端合成之后 -->
+            <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
+              :disabled="finalBusy || exportBusy"
+              :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
+              @click="exportAllToJianyingDraft" />
+            <!-- 轨 2（2026-09-17 用户裁决）：服务端封装好的剪映格式草稿 zip → 解压校验 → 落盘剪映 -->
+            <TButton label="导入服务端草稿包" variant="secondary" class="vd4-run vd4-grow"
+              :disabled="finalBusy || exportBusy"
+              :title="exportBusy ? exportStage : '逐个合成任务下载服务端封装好的剪映格式草稿包，解压校验后放入剪映草稿目录（每任务一个草稿）'"
+              @click="exportJianyingPackageDraft" />
+          </div>
+          <div class="vd4-scheme-line">方案二，服务端合成视频，时间较长</div>
+          <TButton label="服务端合成" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
             :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
-          <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
-               导出到剪映时间轴紧随服务端合成之后 -->
-          <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
-            :disabled="finalBusy || exportBusy"
-            :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
-            @click="exportAllToJianyingDraft" />
-          <!-- 轨 2（2026-09-17 用户裁决）：服务端封装好的剪映格式草稿 zip → 解压校验 → 落盘剪映 -->
-          <TButton label="导入服务端草稿包" variant="secondary" class="vd4-run vd4-grow"
-            :disabled="finalBusy || exportBusy"
-            :title="exportBusy ? exportStage : '逐个合成任务下载服务端封装好的剪映格式草稿包，解压校验后放入剪映草稿目录（每任务一个草稿）'"
-            @click="exportJianyingPackageDraft" />
         </div>
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
         <!-- 2026-09-16：导出剪映时间轴进度条（独立于 finalBusy） -->
@@ -2115,6 +2129,10 @@ function scoreClass(score: number | undefined): string {
 /* 开始混音合成（原版 action_button 高 40 全宽，L116） */
 .vd4-run { width: 100%; height: 40px; margin-top: var(--space-2); }
 .vd4-grow { flex: 1; width: auto; }
+/* 2026-09-18 用户裁决：导出方案引导区（标题 + 方案一/二文案 + 各自按钮竖排） */
+.vd4-schemes { display: flex; flex-direction: column; }
+.vd4-scheme-title { margin-top: var(--space-2); font-size: 13px; font-weight: 600; color: var(--foreground); }
+.vd4-scheme-line { margin-top: 6px; font-size: 12px; color: var(--muted-foreground); }
 /* 结果区（原版 result_box：rgba(255,255,255,0.03) + border rgba(255,255,255,0.1)，L116 → token 化） */
 .vd4-result {
   display: flex; gap: 15px; padding: 10px; margin-top: var(--space-2);

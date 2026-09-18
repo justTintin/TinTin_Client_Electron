@@ -113,6 +113,20 @@ test('buildServerFxFields: subtitleStyleObj + 滑块=0 → 删 box（无背景�
   assert.ok(!('box' in st))
 })
 
+test('buildServerFxFields: 服务端样式对象+预设 key → subtitle_style_id 透传；离线兜底不发（2026-09-18 契约对齐）', () => {
+  // live /openapi.json：/montage/concat 收 subtitle_style_id（字幕样式库 id，见 GET /subtitle_styles）
+  const f = M.buildServerFxFields({
+    addSubtitles: true,
+    subtitleStyle: 'top_title', // 渲染层预设 key=服务端 style.id
+    subtitleStyleObj: { color: '#FFD700', outline: 3 },
+  }, '')
+  assert.equal(f.subtitle_style_id, 'top_title')
+  assert.ok(String(f.subtitle_style).includes('#FFD700'))
+  // 无服务端样式对象（离线兜底本地键）→ 不发 id，防误命中库 id
+  const g = M.buildServerFxFields({ addSubtitles: true, subtitleStyle: 'std_bottom' }, '')
+  assert.ok(!('subtitle_style_id' in g))
+})
+
 test('buildServerFxFields: 花字 → fancy_timing=subtitle_sync + 模板序列化 + id', () => {
   const f = M.buildServerFxFields({
     fancyText: true,
@@ -444,6 +458,13 @@ test('subtitleStyleCard：box="color@opacity" → rgba 背景；无 outline → 
   assert.deepEqual(card.tags, [])
 })
 
+test('subtitleStyleCard: preview 空 → 回落 /subtitle_styles/{id}/preview.png（2026-09-18 新增端点）；非空原样', () => {
+  const card = M.subtitleStyleCard({ id: 'top_title', name: '顶部大字标题', style: { color: 'white' }, preview: '' })
+  assert.equal(card.preview, '/subtitle_styles/top_title/preview.png')
+  const card2 = M.subtitleStyleCard({ id: 'x', name: 'x', style: {}, preview: '/static/a.png' })
+  assert.equal(card2.preview, '/static/a.png')
+})
+
 // ── parseJianyingCachePath / getJianyingMediaCacheDir（2026-09-17 服务端契约：from-task 导出必填 jianying_cache_dir）──
 
 test('parseJianyingCachePath：globalSetting ini currentCachePath → 媒体缓存根；无键/空文 → 空串', () => {
@@ -465,4 +486,23 @@ test('getJianyingMediaCacheDir：设置值 currentCachePath 优先，无设置�
   try { if (fs.existsSync(cfg)) want = M.parseJianyingCachePath(fs.readFileSync(cfg, 'utf-8')) } catch (_) { /* 回退 */ }
   if (!want) want = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Cache')
   assert.equal(dir, want.split('\\').join('/'))
+})
+
+// ── readProcessedSrtAsset（2026-09-18 字幕重切段后处理资产优先消费）──
+
+test('readProcessedSrtAsset: srtPath 存在非空直读；缺失/空文件/无 srtPath → 空串回退', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srtasset-'))
+  try {
+    const f = path.join(dir, 'a.srt')
+    const body = '1\n00:00:00,000 --> 00:00:01,000\n一\n'
+    fs.writeFileSync(f, body)
+    assert.equal(M.readProcessedSrtAsset({ srtPath: f }), body)
+    const empty = path.join(dir, 'e.srt')
+    fs.writeFileSync(empty, '')
+    assert.equal(M.readProcessedSrtAsset({ srtPath: empty }), '', '空文件应回退')
+    assert.equal(M.readProcessedSrtAsset({ srtPath: path.join(dir, 'nope.srt') }), '', '不存在应回退')
+    assert.equal(M.readProcessedSrtAsset({}), '', '无 srtPath 应回退')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

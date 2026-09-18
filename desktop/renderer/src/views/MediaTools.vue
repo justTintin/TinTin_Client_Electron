@@ -43,7 +43,7 @@ const router = useRouter()
 const GROUPS = ['文案脚本模板', '图形', '音频', '视频'] as const
 
 const GROUP_TOOLS: Record<string, ToolItem[]> = {
-  文案脚本模板: [
+  '文案脚本模板': [
     // 2026-08-30 用户裁决：分镜脚本创作 自原「方案脚本」组划归媒体工具；
     // 2026-09-05 用户裁决：删除「产品知识」卡（文案生成已迁运营工具·产品资料页）
     { id: 'storyboard',  title: '分镜脚本创作', desc: '文案 → 分镜 → 引用素材 → 保存脚本库', group: '文案脚本模板', emoji: '🎬', accent: 'linear-gradient(135deg,#F97316 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/ops-tools/OtStoryboard.vue')) },
@@ -52,11 +52,11 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     // 2026-09-18 用户裁决：视频转文字迁入
     { id: 'video-transcribe', title: '视频转文字', desc: '视频语音自动转写', group: '文案脚本模板', emoji: '📄', accent: 'linear-gradient(135deg,#6366F1 0%,#A855F7 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoTranscribe.vue')) },
   ],
-  图形: [
+  '图形': [
     { id: 'cover-design',   title: '封面制作',   desc: '商品封面图快速制作', group: '图形', emoji: '🎨', accent: 'linear-gradient(135deg,#EC4899 0%,#F43F5E 100%)', kind: 'comp', wip: true, comp: defineAsyncComponent(() => import('@/components/media-tools/CoverMaker.vue')) },
     { id: 'image-matting',  title: '图像抠图',   desc: '智能抠图 / 去除背景', group: '图形', emoji: '✂️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#06B6D4 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ImageMatting.vue')) },
   ],
-  视频：[
+  '视频': [
     { id: 'video-montage', title: '智能混剪', desc: '4 步流水线：镜头切割/重组/口播配音/特效', group: '视频', emoji: '✂️', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoMontage.vue')) },
     { id: 'viral-clone',     title: '仿爆款',     desc: '拆解爆款→复刻脚本→替换本店产品', group: '视频', emoji: '🔥', accent: 'linear-gradient(135deg,#F43F5E 0%,#F59E0B 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/ViralClone.vue')) },
     { id: 'live-slice',    title: '直播切片', desc: '视频分析热点发现→切片与封面生成', group: '视频', emoji: '📡', accent: 'linear-gradient(135deg,#EF4444 0%,#DC2626 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/LiveClip.vue')) },
@@ -64,7 +64,7 @@ const GROUP_TOOLS: Record<string, ToolItem[]> = {
     { id: 'subtitle-removal',  title: '视频去水印字幕', desc: '去除字幕 / 台标水印',  group: '视频', emoji: '🔤', accent: 'linear-gradient(135deg,#F59E0B 0%,#EF4444 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/SubtitleRemoval.vue')) },
     { id: 'video-download',   title: '参考视频下载', desc: '粘贴 YouTube/B 站 链接选档位下载', group: '视频', emoji: '⬇️', accent: 'linear-gradient(135deg,#0EA5E9 0%,#6366F1 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VideoDownload.vue')) },
   ],
-  音频: [
+  '音频': [
     { id: 'audio-gen',   title: '音频生成', desc: 'AI 生成 BGM / 音效，一键入库', group: '音频', emoji: '🔊', accent: 'linear-gradient(135deg,#14B8A6 0%,#0EA5E9 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/AudioGen.vue')) },
     { id: 'voice-clone', title: '声音克隆', desc: '克隆音色生成配音',       group: '音频', emoji: '🎵', accent: 'linear-gradient(135deg,#8B5CF6 0%,#EC4899 100%)', kind: 'comp', comp: defineAsyncComponent(() => import('@/components/media-tools/VoiceClone.vue')) },
   ],

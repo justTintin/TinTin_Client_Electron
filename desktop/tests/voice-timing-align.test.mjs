@@ -93,40 +93,48 @@ test('scaleTimingSidecar：null/零值行不被 Number(null)=0 清零放大（�
 
 // ── 2026-09-19 用户方案：whisperx 字级流 → 文案对齐 → timing 行（真值替换估算）──
 
-test('alignCopyToWords：单字中文 1:1 锚定；ASR 合并/错字 → 无 span 降级（回退整段窗口），不错位', () => {
-  const copy = '罗技PRO X 2耳机，记忆泡沫。'
-  const words = [
-    { word: '罗', start: 0, end: 0.2 },
-    { word: '技', start: 0.2, end: 0.4 },
-    { word: 'Lightspeed', start: 0.4, end: 1.4 },   // ASR 合并了 PRO X 2 LIGHTSPEED
-    { word: '耳机', start: 1.4, end: 1.8 },
-    { word: '技以', start: 2.0, end: 2.4 },   // ASR 错字（应=记忆）
-    { word: '泡沫', start: 2.4, end: 2.8 },
-  ]
-  const chars = M.alignCopyToWords(copy, words)
-  const byC = (c) => chars.filter((x) => x.c === c)
-  assert.equal(byC('罗')[0].start, 0)
-  assert.equal(byC('技')[0].end, 0.4)
-  // ASR 把 PRO X 2 LIGHTSPEED 合并成 Lightspeed：P/R/O/X/2 首字不匹配 → null（降级）
-  byC('P').forEach((x) => assert.equal(x.start, null))
-  // 耳机 首字匹配 → 整 token span
-  assert.deepEqual([byC('耳')[0].start, byC('耳')[0].end], [1.4, 1.8])
-  // ASR 错字（技以≠记忆）：记 无 span；泡沫 首字匹配
-  byC('记').forEach((x) => assert.equal(x.start, null))
-  assert.ok(byC('泡').some((x) => x.start !== null), '泡沫 应锚定')
+// ── 2026-09-19 用户方案：cues+字级词流 → timing 行（服务端双返回直接取用，零切片）──
+
+test('buildRowsFromCues：cues 原样为行；行内可见字符与时间窗词流 1:1 配对（标点 null）', () => {
+  const rows = M.buildRowsFromCues(
+    [
+      { text: '粉色控的终极梦想来了，', start: 0.06, end: 2.282 },
+      { text: '专业级无感延迟，', start: 7.646, end: 9.388 },
+    ],
+    [
+      { word: '粉', start: 0.06, end: 0.3 },
+      { word: '色', start: 0.3, end: 0.5 },
+      { word: '无', start: 7.65, end: 7.9 },
+      { word: '感', start: 7.9, end: 8.1 },
+      { word: '延', start: 8.15, end: 8.4 },
+      { word: '迟', start: 8.4, end: 8.7 },
+    ],
+  )
+  assert.equal(rows.length, 2)
+  // 行=服务端 cue 原样（文案原文+真值窗口），零切片零改写
+  assert.equal(rows[0].text, '粉色控的终极梦想来了，')
+  assert.deepEqual([rows[0].start, rows[0].end], [0.06, 2.282])
+  assert.deepEqual([rows[1].start, rows[1].end], [7.646, 9.388])
+  // 行 chars 与行文本逐字对应，可见字符按序吃词流
+  rows.forEach((r) => assert.equal(r.chars.length, Array.from(r.text).length))
+  assert.equal(rows[0].chars[0].start, 0.06)              // 粉
+  assert.equal(rows[1].chars[3].start, 7.65)              // 无
+  // 标点不占词流
+  const wan = rows[1].chars.find((x) => x.c === '延')
+  assert.equal(wan.start, 8.15)
 })
 
-test('charsToTimingRows：句读分行、行带 chars、无命中行内插补窗保证 end>start', () => {
-  const copy = 'abcdef。ghijkl。'
-  const chars = [
-    ...M.alignCopyToWords('abcdef', [{ word: 'abcdef', start: 0, end: 3 }]),
-    { c: '。', start: null, end: null },
-    ...M.alignCopyToWords('ghijkl', [{ word: 'ghijkl', start: 4, end: 7 }]),
-    { c: '。', start: null, end: null },
-  ]
-  const rows = M.charsToTimingRows(copy, chars)
+test('buildRowsFromCues：无效 cue 丢弃；词流为空 → 行保留但 chars 全 null', () => {
+  const rows = M.buildRowsFromCues(
+    [
+      { text: '正常', start: 1, end: 2 },
+      { text: '坏行', start: 5, end: 3 },   // end<=start 丢弃
+      { text: '无词', start: 3, end: 4 },
+    ],
+    [],
+  )
   assert.equal(rows.length, 2)
-  assert.deepEqual([rows[0].start, rows[0].end], [0, 3])
-  assert.deepEqual([rows[1].start, rows[1].end], [4, 7])
-  rows.forEach((r) => assert.equal(r.chars.length, r.text.length))
+  assert.equal(rows[0].text, '正常')
+  assert.equal(rows[1].text, '无词')
+  assert.ok(rows[1].chars.every((c) => c.start === null))
 })

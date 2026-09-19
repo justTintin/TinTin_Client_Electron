@@ -868,73 +868,43 @@ function scaleTimingSidecar(wavPath, factor) {
   } catch (_) { /* 对照 _scale_timing_sidecar 兜底 */ }
 }
 
-/** 文案 → 字级对齐（2026-09-19 用户方案·纯函数可单测）：首字锚定 + 前瞻窗口的
- *  模糊对齐——每个文案可见字符在词流前方 LOOKAHEAD 内找首字符匹配的 word，
- *  命中则取该 word 的 [start,end] 为字符 span 并消耗词游标；未命中（ASR 漏/错字、
- *  拉丁 token 被合并）→ span=null 且不消耗词游标（对 ASR 错字免疫，不错位扩散）。
- *  标点/空白无时长（span=null）。返回与文案逐字对应的 chars 数组。 */
-function alignCopyToWords(copy, words) {
-  const r3 = (x) => Math.round(x * 1000) / 1000
-  const isSep = (ch) => /\s/.test(ch) || /[\p{P}\p{S}]/u.test(ch)
-  const ws = (Array.isArray(words) ? words : [])
-    .map((w) => ({ w: String((w && w.word) || ''), start: Number(w && w.start) || 0, end: Number(w && w.end) || 0 }))
-    .filter((x) => x.w)
-  const src = Array.from(String(copy || ''))
-  const chars = src.map((c) => ({ c, start: null, end: null }))
-  const LOOKAHEAD = 8
-  let j = 0 // word 游标（命中才前进）
-  for (let ci = 0; ci < src.length; ci++) {
-    const c = src[ci]
-    if (isSep(c)) continue
-    let found = -1
-    for (let d = 0; d < LOOKAHEAD && j + d < ws.length; d++) {
-      if (ws[j + d].w[0].toLowerCase() === c.toLowerCase()) { found = d; break }
+/** cues + 字级词流 → timing 行（2026-09-19 用户方案·纯函数可单测）：
+ *  cues=服务端 subtitle 对齐产物（文案原文+实测真值），原样为行；
+ *  每行 chars=该行时间窗内的词流与行可见字符顺序 1:1 配对（标点/空白 span=null），
+ *  供 matchKeywordHits 取「词首末字符实测起止」做文字模板命中窗口。 */
+function buildRowsFromCues(cues, words) {
+  const rows = []
+  for (const cue of Array.isArray(cues) ? cues : []) {
+    const text = String((cue && cue.text) || '').trim()
+    const start = Number(cue && cue.start) || 0
+    const end = Number(cue && cue.end) || 0
+    if (!text || !(end > start)) continue
+    const inWin = (Array.isArray(words) ? words : []).filter((w) => {
+      if (!w) return false
+      const ws = Number(w.start), we = Number(w.end)
+      return Number.isFinite(ws) && Number.isFinite(we) && ws >= start - 0.05 && we <= end + 0.05
+    })
+    const chars = []
+    let wi = 0
+    for (const c of Array.from(text)) {
+      if (/[\p{P}\p{S}\s]/u.test(c)) { chars.push({ c, start: null, end: null }); continue }
+      // 首字锚定：剩余词流前方 4 词内找首字匹配（ASR 漏/错字 → 该字符 span=null
+      // 跳过，不错位——实测「专业级无感延迟」ASR 仅识别后四字也能对齐）
+      let found = -1
+      for (let d = 0; d < 4 && wi + d < inWin.length; d++) {
+        const first = Array.from(String(inWin[wi + d].word || inWin[wi + d].w || ''))[0] || ''
+        if (first.toLowerCase() === c.toLowerCase()) { found = d; break }
+      }
+      if (found >= 0) {
+        const w = inWin[wi + found]
+        chars.push({ c, start: Number(w.start) || 0, end: Number(w.end) || 0 })
+        wi += found + 1
+      } else {
+        chars.push({ c, start: null, end: null })
+      }
     }
-    if (found >= 0) {
-      const t = ws[j + found]
-      chars[ci].start = r3(t.start)
-      chars[ci].end = r3(t.end)
-      j += found + 1
-    }
+    rows.push({ text, start, end, chars })
   }
-  return chars
+  return rows
 }
-
-/** 字级 chars 流 → timing 行（纯函数可单测）：按句读分行——。！？；后必断，
- *  ，、：后累计 ≥8 字符才断（弱标点不产生碎行）；行 text 与 chars 逐字对应。
- *  行 start/end=行内首末有限 span；无任何命中字符的行按前后行线性内插
- *  （保证每行 end>start，writeTimingSidecar 合法性门禁可整体通过）。 */
-function charsToTimingRows(copy, chars) {
-  const r3 = (x) => Math.round(x * 1000) / 1000
-  const src = Array.from(String(copy || ''))
-  let cur = []
-  const raw = []
-  const flush = () => {
-    if (!cur.length) return
-    const text = cur.map((x) => x.c).join('')
-    const fin = cur.filter((x) => Number.isFinite(Number(x.start)) && Number.isFinite(Number(x.end)) && Number(x.end) > Number(x.start))
-    raw.push({ text, chars: cur, start: fin.length ? Number(fin[0].start) : null, end: fin.length ? Number(fin[fin.length - 1].end) : null })
-    cur = []
-  }
-  for (let i = 0; i < src.length; i++) {
-    cur.push(chars[i] || { c: src[i], start: null, end: null })
-    const ch = src[i]
-    if (/[。！？；]/.test(ch)) flush()
-    else if (/[，、：]/.test(ch) && cur.length >= 8) flush()
-  }
-  flush()
-  // 无命中字符的行：前后行内插补窗（头=0/下行起点，尾=上行终点/+0.5s）
-  let prevEnd = null
-  for (let i = 0; i < raw.length; i++) {
-    const r = raw[i]
-    if (r.start !== null) { prevEnd = r.end; continue }
-    let next = null
-    for (let k = i + 1; k < raw.length; k++) { if (raw[k].start !== null) { next = raw[k].start; break } }
-    r.start = prevEnd !== null ? prevEnd : 0
-    r.end = next !== null ? Math.max(next, r.start + 0.2) : r.start + 0.5
-    r.start = r3(r.start); r.end = r3(r.end)
-    prevEnd = r.end
-  }
-  return raw.map(({ text, start, end, chars }) => ({ text, start, end, chars }))
-}
-module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar, alignCopyToWords, charsToTimingRows }
+module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar, buildRowsFromCues }

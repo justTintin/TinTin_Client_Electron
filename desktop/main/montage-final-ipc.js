@@ -523,6 +523,15 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
     //   该 SRT 资产（LLM 重切段 + timing 映射的单一事实源）；缺失回退旧口径现建
     const srtText = readProcessedSrtAsset(sub) || buildSrtFromTiming(sub.text, timing, videoDur)
     fields = buildServerFxFields(fx, srtText, Array.isArray(sub.fxLines) ? sub.fxLines : [])
+    // 2026-09-19（用户方案）：字级 timing 随 concat 上传——subtitle_rows=timing.json
+    //   全量行 JSON（whisperx 字级对齐后每行带 chars 字级 spans），服务端可按字级
+    //   精确烧制文字模板/字幕；缺失/损坏不传（服务端回退自身口径）
+    try {
+      const rowsArr = JSON.parse(fs.readFileSync(String(sub.timingPath || ''), 'utf-8'))
+      if (Array.isArray(rowsArr) && rowsArr.length && rowsArr.every((x) => x && x.text)) {
+        fields.subtitle_rows = JSON.stringify(rowsArr)
+      }
+    } catch (_) { /* timing 缺失/损坏 → 不传 rows */ }
   }
   // 回传源规格：否则服务端按默认 1080x1920@30 改写产物（实测坑）
   if (spec && spec.width > 0 && spec.height > 0) {
@@ -544,6 +553,12 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
   if (voicePath && fs.existsSync(voicePath)) {
     fields.voice_mode = 'replace'
     extraFiles.push({ name: 'voice', path: voicePath, ctype: audioCtype(voicePath) })
+  }
+  // 字幕文件上传（2026-09-19 用户方案）：重切段 SRT 资产以文件形式随 concat 上传
+  // （契约字段 subtitle_srt_file；与 subtitle_srt 文本字段双保险，服务端按需取用）
+  const srtAsset = String((sub && sub.srtPath) || '')
+  if (srtAsset && fs.existsSync(srtAsset) && fs.statSync(srtAsset).size > 0) {
+    extraFiles.push({ name: 'subtitle_srt_file', path: srtAsset, ctype: 'application/x-subrip' })
   }
   const { body, contentType } = buildFxMultipart(fields, videoPath, extraFiles)
   const res = await httpRequest('POST', '/montage/concat', {

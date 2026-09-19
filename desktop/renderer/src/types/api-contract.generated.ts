@@ -2789,8 +2789,9 @@ export interface paths {
         };
         /**
          * 列出 ComfyUI 工作流文件
-         * @description 返回工作流列表，扫描两个目录：
-         *     - comfy/workflows/                （服务端执行用的工作流）
+         * @description 返回工作流列表，扫描目录（按序）：
+         *     - server/workflows/comfy/         （服务端自有接入资产，comfy 外置后首选）
+         *     - comfy/workflows/                （旧布局兜底）
          *     - comfy/user/default/workflows/   （ComfyUI WebUI 用户保存的工作流）
          */
         get: operations["comfyui_workflows_comfyui_workflows_get"];
@@ -5152,6 +5153,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/product-library/items/{item_id}/keywords/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Item Keywords
+         * @description AI 生成单个产品的关键词（覆盖该产品 keywords，产品资料可再手动编辑）。
+         */
+        post: operations["generate_item_keywords_api_product_library_items__item_id__keywords_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/product-library/clients/{machine_id}/items/{item_id}/keywords/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Item Keywords
+         * @description AI 生成单个产品的关键词（覆盖该产品 keywords，产品资料可再手动编辑）。
+         */
+        post: operations["generate_item_keywords_api_product_library_clients__machine_id__items__item_id__keywords_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/product-library/keywords/generate-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Keywords Generate Batch
+         * @description 批量生成产品关键词（后台线程；进度查 /keywords/generate-batch/status）。
+         */
+        post: operations["keywords_generate_batch_api_product_library_keywords_generate_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/product-library/keywords/generate-batch/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Keywords Generate Batch Status */
+        get: operations["keywords_generate_batch_status_api_product_library_keywords_generate_batch_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/product-image/generate": {
         parameters: {
             query?: never;
@@ -6108,6 +6186,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/subtitles/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare
+         * @description 句级字幕 → 服务端统一断句的细粒度字幕（cues + SRT 文本）。
+         */
+        post: operations["prepare_subtitles_prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/voice/samples": {
         parameters: {
             query?: never;
@@ -6458,7 +6556,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/text_templates/keywords": {
+    "/text_templates/keywords/builtin": {
         parameters: {
             query?: never;
             header?: never;
@@ -6466,16 +6564,15 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get Common Keywords
-         * @description 全局常用关键词列表（V-FANCY-3 决策3/10：纯文本词表）。
+         * Get Builtin Keywords
+         * @description 内置命中词表（只读，2026-09-19 产品关键词库 tab 展示用）。
+         *
+         *     _FANCY_KEYWORDS（内置卖点词）+ _KEYWORD_SYNONYMS（语义命中同义表）。
+         *     与 /text_templates/keywords（可维护自定义词库）互补，本端点只读不写。
          */
-        get: operations["get_common_keywords_text_templates_keywords_get"];
+        get: operations["get_builtin_keywords_text_templates_keywords_builtin_get"];
         put?: never;
-        /**
-         * Save Common Keywords
-         * @description 全量保存全局常用关键词（覆盖旧值）。
-         */
-        post: operations["save_common_keywords_text_templates_keywords_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6590,43 +6687,6 @@ export interface paths {
          *     NAS 镜像。v1 模板的布局层（HTML）原地保留，不重传。
          */
         post: operations["upgrade_template_assets_text_templates_templates__template_id__assets_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/text_templates/match": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Match Keywords Preview
-         * @description **独立的关键词命中判定**（不建任务/不出片/不碰队列；2026-09-11 用户需求）。
-         *
-         *     使用场景：声音克隆完成后、合成之前——拿当次字幕自查命中情况：
-         *     「这个视频命中几个关键词、命中哪些词、合成时会加几个文字模板动画」。
-         *     与 `/montage/concat` 的命中模式**共用 plan_match_selection** → 预览所见即合成所做。
-         *
-         *     请求：POST /text_templates/match
-         *       {"subtitle_rows":[{"text":"只要199元","start":8.5,"end":10.0}, ...]}   ← 或 {"srt": "..."}
-         *       {"keywords":["快充"], "density":"high", "llm_fill":false}
-         *     返回：
-         *       {"lines":[{"index","start","end","text","hit","matched_keywords","phrase",
-         *                  "hit_by","selected","source"}],
-         *        "summary":{"total_lines","hit_lines","matched_keywords","target","will_animate",
-         *                   "llm_added","fallback_added","thinned_out","span","density","capped",
-         *                   "phrases":[...]},
-         *        "events":[[t0,t1,**短语**]...]}
-         *     **2026-09-12 口径**：① 命中 = 语义命中（`semantic=true` 默认，LLM 判定意思相近，
-         *     失败自动回退离线同义词匹配）；② 事件/短语产出的是**短语**（关键词式），不是整句字幕。
-         */
-        post: operations["match_keywords_preview_text_templates_match_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -10957,9 +11017,16 @@ export interface components {
             text_template_match_selling_points: string;
             /**
              * Text Template Match Id
+             * @description ⚠ 历史兼容（match 接口已移除 2026-09-19）：在途客户端的存档回执，TTL 7 天；新集成请改传 text_template_match_events
              * @default
              */
             text_template_match_id: string;
+            /**
+             * Text Template Match Events
+             * @description 客户端本地命中事件直传（方案 A，2026-09-19）：JSON 数组字符串 [{"word":"大容量","start":1.0,"end":2.5,"template_id":"jy_x"?}, ...]；传入后按事件烧制、跳过服务端命中（词源=客户端产品关键词）
+             * @default
+             */
+            text_template_match_events: string;
             /**
              * Text Template Match Binds
              * @default
@@ -11813,6 +11880,11 @@ export interface components {
              * @default
              */
             selling_points: string;
+            /**
+             * Keywords
+             * @default []
+             */
+            keywords: string[];
         };
         /** ItemUpdate */
         ItemUpdate: {
@@ -11842,11 +11914,44 @@ export interface components {
             features?: string | null;
             /** Selling Points */
             selling_points?: string | null;
-        };
-        /** KeywordsBody */
-        KeywordsBody: {
             /** Keywords */
-            keywords: string[];
+            keywords?: string[] | null;
+        };
+        /** KeywordGenBatchBody */
+        KeywordGenBatchBody: {
+            /**
+             * Model
+             * @default deepseek-v4-flash
+             */
+            model: string;
+            /**
+             * Count
+             * @default 12
+             */
+            count: number;
+            /**
+             * Only Empty
+             * @default true
+             */
+            only_empty: boolean;
+            /**
+             * Limit
+             * @default 20
+             */
+            limit: number;
+        };
+        /** KeywordGenBody */
+        KeywordGenBody: {
+            /**
+             * Model
+             * @default deepseek-v4-flash
+             */
+            model: string;
+            /**
+             * Count
+             * @default 12
+             */
+            count: number;
         };
         /** LabelSave */
         LabelSave: {
@@ -12033,70 +12138,6 @@ export interface components {
              */
             duration: number;
         };
-        /**
-         * MatchIn
-         * @description 关键词命中预览入参（合成之前自查："这个视频命中几个关键词/会有几个动画"）。
-         */
-        MatchIn: {
-            /**
-             * Subtitle Rows
-             * @description 字幕行 [{"text","start","end"}]（与 srt 二选一）
-             */
-            subtitle_rows?: {
-                [key: string]: unknown;
-            }[] | null;
-            /**
-             * Srt
-             * @description SRT 文本（与 subtitle_rows 二选一）
-             * @default
-             */
-            srt: string;
-            /**
-             * Keywords
-             * @description 本次关键词（缺省用服务端「常用关键词」库）
-             */
-            keywords?: string[] | null;
-            /**
-             * Density
-             * @description low/mid/high（每 30 秒 3/6/10，保底 3）
-             * @default high
-             */
-            density: string;
-            /**
-             * Duration
-             * @description 时长（秒）；缺省取字幕末行 t1
-             */
-            duration?: number | null;
-            /**
-             * Llm Fill
-             * @description 是否按合成口径用 LLM 补足到保底数量（默认 false=只看关键词命中）
-             * @default false
-             */
-            llm_fill: boolean;
-            /**
-             * Semantic
-             * @description 命中判定用 LLM 语义（意思相近即命中，2026-09-12 起）；false=仅离线同义词匹配
-             * @default true
-             */
-            semantic: boolean;
-            /**
-             * Selling Points
-             * @description 产品卖点（2026-09-12 起）：命中词表与保底挑行都围绕它；缺省时保底会让 LLM 先从字幕归纳卖点
-             */
-            selling_points?: string[] | null;
-            /**
-             * Template Ids
-             * @description 候选文字模板 id（与合成 `text_template_match_ids` 同源）：返回的 textfx_clips 会按序轮换标注 template_id；合成时每个事件从候选里随机取一个模板
-             */
-            template_ids?: string[] | null;
-            /**
-             * Binds
-             * @description 事件级模板绑定（2026-09-15 用户裁决：一个关键词绑一支模板）：[{"text":"大容量","template_id":"jy_xxx"}, ...]——事件短语与 text 一致 → 渲染固定用该模板（不随机）；未绑定回退候选池随机。随 match_id 一并存档，合成复用时绑定关系不丢
-             */
-            binds?: {
-                [key: string]: unknown;
-            }[] | null;
-        };
         /** MatchRequest */
         MatchRequest: {
             /** Tags */
@@ -12147,6 +12188,52 @@ export interface components {
             /** Base Url */
             base_url: string;
         };
+        /**
+         * PrepareIn
+         * @description 三选一输入（与 /montage/concat 同口径）+ 字号/画布。
+         */
+        PrepareIn: {
+            /**
+             * Srt
+             * @default
+             */
+            srt: string;
+            /** Rows */
+            rows?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Fontsize */
+            fontsize?: number | null;
+            /**
+             * Width
+             * @default 1080
+             */
+            width: number;
+            /**
+             * Height
+             * @default 1920
+             */
+            height: number;
+            /**
+             * Subtitle Style
+             * @default
+             */
+            subtitle_style: string;
+            /**
+             * Subtitle Style Id
+             * @default
+             */
+            subtitle_style_id: string;
+        };
+        /** ProductDetailOut */
+        ProductDetailOut: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            item: components["schemas"]["ProductItemOut"];
+        };
         /** ProductImageRequest */
         ProductImageRequest: {
             /**
@@ -12195,6 +12282,119 @@ export interface components {
              */
             machine_id: string;
         };
+        /** ProductItemOut */
+        ProductItemOut: {
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Category
+             * @default
+             */
+            category: string;
+            /**
+             * Brand
+             * @default
+             */
+            brand: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /**
+             * Goods No
+             * @default
+             */
+            goods_no: string;
+            /**
+             * Spec No
+             * @default
+             */
+            spec_no: string;
+            /**
+             * Spec Name
+             * @default
+             */
+            spec_name: string;
+            /**
+             * Barcode
+             * @default
+             */
+            barcode: string;
+            /**
+             * Stock Num
+             * @default
+             */
+            stock_num: string;
+            /**
+             * Available Num
+             * @default
+             */
+            available_num: string;
+            /**
+             * Warehouse
+             * @default
+             */
+            warehouse: string;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+            /**
+             * Features
+             * @default
+             */
+            features: string;
+            /**
+             * Selling Points
+             * @default
+             */
+            selling_points: string;
+            /**
+             * Keywords
+             * @default []
+             */
+            keywords: string[];
+            /**
+             * Created At
+             * @default 0
+             */
+            created_at: number;
+            /**
+             * Updated At
+             * @default 0
+             */
+            updated_at: number;
+        };
+        /** ProductListOut */
+        ProductListOut: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            /** Items */
+            items: components["schemas"]["ProductItemOut"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Page
+             * @default 1
+             */
+            page: number;
+            /**
+             * Page Size
+             * @default 50
+             */
+            page_size: number;
+        };
         /**
          * ProductRef
          * @description 脚本绑定的产品（品牌/型号/品类），供检索素材时带产品上下文。
@@ -12220,6 +12420,32 @@ export interface components {
              * @default
              */
             name: string;
+        };
+        /** ProductSearchOut */
+        ProductSearchOut: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            /** Items */
+            items: components["schemas"]["ProductItemOut"][];
+        };
+        /** ProductWriteOut */
+        ProductWriteOut: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            item?: components["schemas"]["ProductItemOut"] | null;
+            /** Updated At */
+            updated_at?: number | null;
         };
         /** PullRequest */
         PullRequest: {
@@ -20115,7 +20341,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductListOut"];
                 };
             };
             /** @description Validation Error */
@@ -20148,7 +20374,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductWriteOut"];
                 };
             };
             /** @description Validation Error */
@@ -20186,7 +20412,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductListOut"];
                 };
             };
             /** @description Validation Error */
@@ -20219,7 +20445,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductWriteOut"];
                 };
             };
             /** @description Validation Error */
@@ -20250,7 +20476,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductDetailOut"];
                 };
             };
             /** @description Validation Error */
@@ -20285,7 +20511,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductWriteOut"];
                 };
             };
             /** @description Validation Error */
@@ -20347,7 +20573,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductDetailOut"];
                 };
             };
             /** @description Validation Error */
@@ -20382,7 +20608,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductWriteOut"];
                 };
             };
             /** @description Validation Error */
@@ -20679,7 +20905,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductSearchOut"];
                 };
             };
             /** @description Validation Error */
@@ -20711,7 +20937,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ProductSearchOut"];
                 };
             };
             /** @description Validation Error */
@@ -21160,6 +21386,129 @@ export interface operations {
         };
     };
     library_stats_api_product_library_stats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    generate_item_keywords_api_product_library_items__item_id__keywords_generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeywordGenBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_item_keywords_api_product_library_clients__machine_id__items__item_id__keywords_generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeywordGenBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    keywords_generate_batch_api_product_library_keywords_generate_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeywordGenBatchBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    keywords_generate_batch_status_api_product_library_keywords_generate_batch_status_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -22888,6 +23237,39 @@ export interface operations {
             };
         };
     };
+    prepare_subtitles_prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrepareIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_samples_voice_samples_get: {
         parameters: {
             query?: never;
@@ -23516,7 +23898,7 @@ export interface operations {
             };
         };
     };
-    get_common_keywords_text_templates_keywords_get: {
+    get_builtin_keywords_text_templates_keywords_builtin_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -23532,39 +23914,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-        };
-    };
-    save_common_keywords_text_templates_keywords_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["KeywordsBody"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -23775,39 +24124,6 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": components["schemas"]["Body_upgrade_template_assets_text_templates_templates__template_id__assets_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    match_keywords_preview_text_templates_match_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MatchIn"];
             };
         };
         responses: {

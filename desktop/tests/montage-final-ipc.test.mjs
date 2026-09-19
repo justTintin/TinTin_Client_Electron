@@ -524,8 +524,32 @@ test('buildServerFxFields: 方案A词表层——fxLines 去重出 text_template
   assert.deepEqual(JSON.parse(f.fancy_words), ['低延迟', '大容量'])
   assert.equal(f.text_template_match_enabled, 'true')
   assert.deepEqual(JSON.parse(f.text_template_match_ids), ['a', 'b'])
+  // 事件直传（服务端 2026-09-19 新增）：事件不去重（同词不同时间=不同事件），
+  // 秒单位原样下发，template_id 随事件携带 → 服务端按事件烧制跳过自有命中
+  assert.deepEqual(JSON.parse(f.text_template_match_events), [
+    { word: '低延迟', start: 0, end: 3, template_id: 'a' },
+    { word: '低延迟', start: 5, end: 7, template_id: 'b' },
+    { word: '大容量', start: 3, end: 5, template_id: 'c' },
+  ])
   // match_id 不再下发（/text_templates/match 下线，回执复用机制作废）
   assert.ok(!('text_template_match_id' in f))
+})
+
+test('buildServerFxFields: 事件直传容错——无效窗口/空词事件被过滤，零命中不传 events', () => {
+  const f = M.buildServerFxFields(
+    { textFxEnabled: true, textTemplateMatchIds: ['a'] },
+    '',
+    [
+      { text: '低延迟', start: 0, end: 0, templateId: 'a' }, // end<=start → 过滤
+      { text: '', start: 1, end: 2 }, // 空词 → 过滤
+      { text: '防水', start: 1.5, end: 2.5 }, // 无 templateId → 事件保留但省略字段
+    ],
+  )
+  assert.deepEqual(JSON.parse(f.text_template_match_events), [{ word: '防水', start: 1.5, end: 2.5 }])
+  assert.equal(f.text_template_words, JSON.stringify(['防水']))
+  const f0 = M.buildServerFxFields({ textFxEnabled: true }, 'srt', [])
+  assert.ok(!('text_template_match_events' in f0), '零命中不传 events')
+  assert.ok(!('text_template_words' in f0))
 })
 
 test('buildServerFxFields: 无命中不传词表；textFx 关闭则文字模板块整块缺席', () => {

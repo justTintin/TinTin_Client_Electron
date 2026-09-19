@@ -348,11 +348,19 @@ function buildSrtFromTiming(text, timing, videoDur) {
  *    `text_template_words` / `fancy_words`（JSON 数组串，2026-09-11 前同格式），
  *    服务端按词表命中 → 成片词源与预览一致。match_id 复用机制作废（不再下发）。 */
 function buildServerFxFields(fx, srt, hits = []) {
-  // 命中词表（去重保序）：fxLines=渲染层 resolveKeywordHits 产物（词+时间+模板）
+  // 命中事件（方案A）：fxLines=渲染层 resolveKeywordHits 产物（词+时间+模板，秒单位）。
+  // 过滤无效窗口/空词；词表（去重保序）从有效事件派生，两字段口径恒一致
+  const events = (Array.isArray(hits) ? hits : [])
+    .map((h) => ({
+      word: String((h && (h.text || h.word)) || '').trim(),
+      start: Math.max(0, Math.round((Number(h && h.start) || 0) * 1000) / 1000),
+      end: Math.round((Number(h && h.end) || 0) * 1000) / 1000,
+      ...(h && h.templateId ? { template_id: String(h.templateId) } : {}),
+    }))
+    .filter((e) => e.word && e.end > e.start)
   const hitWords = []
-  for (const h of Array.isArray(hits) ? hits : []) {
-    const w = String((h && (h.text || h.word)) || '').trim()
-    if (w && !hitWords.includes(w)) hitWords.push(w)
+  for (const e of events) {
+    if (!hitWords.includes(e.word)) hitWords.push(e.word)
   }
   const fields = {}
   // 字幕数据随任一依赖字幕的特效下发（不依赖 burn_subtitle 开关）
@@ -431,6 +439,11 @@ function buildServerFxFields(fx, srt, hits = []) {
         fields.text_template_match_ids = JSON.stringify(fx.textTemplateMatchIds.map((x) => String(x)))
       }
       if (hitWords.length) fields.text_template_words = JSON.stringify(hitWords)
+      // 事件直传（2026-09-19 服务端新增 text_template_match_events，方案A·事件层）：
+      // 按客户端命中事件烧制、跳过服务端命中 → 预览=成片逐事件一致。单位=秒；
+      // template_id 可选（缺省服务端从 match_ids 池随机）。与词表并存（事件优先，
+      // 旧服务端不识别 events 时仍可回落词表口径）。
+      if (events.length) fields.text_template_match_events = JSON.stringify(events)
       const md = String(fx.matchDensity || '').trim().toLowerCase()
       if (md === 'low' || md === 'mid' || md === 'high') fields.text_template_match_density = md
     }

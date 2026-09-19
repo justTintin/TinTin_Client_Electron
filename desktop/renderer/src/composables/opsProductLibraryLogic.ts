@@ -255,6 +255,14 @@ export function markdownListLines(raw: unknown): string[] {
     .filter(Boolean)
 }
 
+/** 型号剥离商品编码（2026-09-19 用户报障：产品库 model 尾部带【981-001277】类编码，
+ *  生成口播文案弹窗「型号」不应填充——编码对文案生成无意义，念稿还会读出）。
+ *  剥离尾部一组或多组全角【…】段（清单列样式：型号【编码】）；名称中段的
+ *  圆括号变体（如"(粉色)"）是规格描述，保留不动 */
+export function stripProductCodeFromModel(raw: unknown): string {
+  return String(raw ?? '').replace(/(?:\s*【[^】]*】)+\s*$/, '').trim()
+}
+
 /** 核心卖点摘要（firstMarkdownLine 的卖点语义别名；原直接截断显示已废弃） */
 export function firstSellingPoint(raw: unknown, maxLen = 48): string {
   return firstMarkdownLine(raw, maxLen)

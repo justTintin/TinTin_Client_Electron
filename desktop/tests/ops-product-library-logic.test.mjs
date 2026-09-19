@@ -258,3 +258,18 @@ test('markdownListLines：与 firstMarkdownLine 首条一致（同剥离口径�
   const raw = '- **材质**：高品质硅胶\n- **厚度**：约0.5mm'
   assert.equal(M.markdownListLines(raw)[0], M.firstMarkdownLine(raw))
 })
+
+test('stripProductCodeFromModel：型号剥离尾部商品编码（2026-09-19 用户报障）', () => {
+  // 截图样例：PRO X 2 LIGHTSPEED无线游戏耳机(粉色)【981-001277】
+  assert.equal(
+    M.stripProductCodeFromModel('PRO X 2 LIGHTSPEED无线游戏耳机(粉色)【981-001277】'),
+    'PRO X 2 LIGHTSPEED无线游戏耳机(粉色)',
+  )
+  // 多组编码段一并剥离；名称中段圆括号规格（粉色）保留
+  assert.equal(M.stripProductCodeFromModel('无线耳机【981-001277】【X1】'), '无线耳机')
+  assert.equal(M.stripProductCodeFromModel(' G502 '), 'G502')
+  // 无编码 / 空值原样（trim）
+  assert.equal(M.stripProductCodeFromModel('MX Master 3S'), 'MX Master 3S')
+  assert.equal(M.stripProductCodeFromModel(''), '')
+  assert.equal(M.stripProductCodeFromModel(undefined), '')
+})

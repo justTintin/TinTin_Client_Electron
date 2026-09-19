@@ -12,7 +12,7 @@ import TSelect from '@/components/common/TSelect.vue'
 import StepPreviewPane, { type StepPreviewItem } from './StepPreviewPane.vue'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import VdStepBar from './VdStepBar.vue'
-import { markdownListLines } from '@/composables/opsProductLibraryLogic'
+import { markdownListLines, stripProductCodeFromModel } from '@/composables/opsProductLibraryLogic'
 import { copyPreviewText, SHOT_TYPE_COLORS, SHOT_TYPE_LABELS } from '@/composables/videoMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 import { montageShellKey } from './montageUiContext'
@@ -97,7 +97,9 @@ function planMenuView(): void { const i = planMenu.value.index; closePlanMenu();
 function onPickProduct(it: PickerItem): void {
   productDlg.value.brand = String(it.brand || '')
   productDlg.value.product = String(it.category || '')
-  productDlg.value.model = String(it.model || it.goods_no || '')
+  // 2026-09-19 用户报障：型号不填商品编码（【981-001277】类尾部段剥离）；
+  // goods_no 本身是编码，不再作为型号兜底
+  productDlg.value.model = stripProductCodeFromModel(it.model)
   // 核心卖点逐条拼入补充卖点（多行，可继续手改/留空）
   productDlg.value.extra = markdownListLines(it.selling_points).join('\n')
 }

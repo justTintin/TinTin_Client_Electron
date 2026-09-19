@@ -164,20 +164,6 @@ const step2PreviewItems = computed<StepPreviewItem[]>(() => assemblePlans.value.
   }
 }))
 
-/** Step3 右栏：每条待配音视频一块——配音完成切换配音后视频并点亮，进行中显进度 */
-const step3PreviewItems = computed<StepPreviewItem[]>(() => voiceRows.value.map((r, i) => {
-  const target = (r.dubbedPath && r.dubbedPath.endsWith('.mp4')) ? r.dubbedPath : r.path
-  const generating = r.status === 'generating'
-  return {
-    badge: `第 ${i + 1} 条`,
-    src: target ? toFileUrl(target) : '',
-    placeholder: '待确认合成产物',
-    tag: generating ? `配音中 ${r.progress}%` : (r.dubbedPath ? '已配音' : (r.wavPath ? '声音已克隆' : '待配音')),
-    tagClass: r.dubbedPath ? 'ok' : (generating ? 'busy' : ''),
-    tip: r.name,
-  }
-}))
-
 /** Step4 右栏：合成完成→成片直播；否则候选视频 + 特效叠加预览（样式随左侧配置实时联动） */
 const step4PreviewItems = computed<StepPreviewItem[]>(() => {
   if (finalDone.value && finalVideoList.value.length) {
@@ -295,25 +281,6 @@ function onSplitDown(e: MouseEvent): void {
 // ── 面板注入（须晚于 vdLeftStyle/previewAspect 声明；setup 期一次性绑定）──
 provide(montageShellKey, { s, step, go, vdLeftStyle, onSplitDown, previewAspect })
 
-/** TTS 引擎下拉选项（2026-09-09 用户裁决：默认 idexttts，对齐声音克隆页裁决；
- *  QwenTTS 待服务端实现，禁用占位） */
-const TTS_ENGINE_OPTIONS = [
-  { label: 'IndexTTS（快速/情感）', value: 'idexttts' },
-  { label: 'QwenTTS（待服务端实现）', value: 'qwentts', disabled: true },
-]
-/** 情感预设选项（IndexTTS emo_text 常用值，同声音克隆页） */
-const TTS_EMO_OPTIONS = [
-  { label: '开心', value: '开心' },
-  { label: '悲伤', value: '悲伤' },
-  { label: '激动', value: '激动' },
-  { label: '温柔', value: '温柔' },
-  { label: '愤怒', value: '愤怒' },
-  { label: '恐惧', value: '恐惧' },
-  { label: '惊讶', value: '惊讶' },
-  { label: '厌恶', value: '厌恶' },
-  { label: '平静', value: '平静' },
-]
-
 // ── Step4 BGM 选择弹窗 + AI 生成 BGM（2026-09-09 用户裁决：复用音频生成页域，
 //    独立实例与 AudioGen 页互不影响；AI 生成用「生成 BGM」同款结构化布局，
 //    生成/选中后回填 bgmPath 本地混音链路）──
@@ -391,37 +358,6 @@ function confirmBgmPick(): void {
   else void applyLibraryBgm(it.mid, it.filename).then(done)
 }
 
-// ─ 页尾上传新样本（VoiceClone 底部上传区同款同处理：dropzone 点击/拖拽选文件，
-//   useFilePicker 统一拖拽；选中后名称自动带出（去扩展名））──
-const nsDragging = ref(false)
-const {
-  fileName: nsFileName,
-  pickFile: pickNsFile,
-  onDrop: onNsDrop,
-  onDragOver: onNsDragOver,
-  onDragLeave: onNsDragLeave,
-} = useFilePicker({
-  dialogTitle: '选择音频文件上传为样本',
-  filters: [{ name: '音频', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }],
-  onPicked: (p) => {
-    nsFilePath.value = p
-    const base = pathBasename(p).replace(/\.[^.]+$/, '')
-    if (base && !nsName.value) nsName.value = base
-  },
-})
-function onNsDropForward(e: DragEvent): void {
-  onNsDrop(e)
-  nsDragging.value = false
-}
-
-
-// 参考声音下拉（用户裁决 2026-09-03：声音样本从服务端取，GET /voice/samples 与 VoiceClone 页同源；
-// 尾项保留本地上传；选中样本自动带出参考文案（selectSample 口径））
-const refAudioOptions = computed(() => [
-  ...refSamples.value.map((s) => ({ label: s.name, value: `sample:${s.id}` })),
-  ...(refSamples.value.length ? [] : [{ label: '未找到预设声音样本', value: '' }]),
-])
-function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) }
 /** 花字样式下拉（原版 fancy_style_combo 7 项） */
 const fancyStyleOptions = FANCY_STYLE_OPTIONS
 /** 花字位置下拉（原版 fancy_position_combo 8 项，L335-339） */
@@ -560,148 +496,7 @@ function scoreClass(score: number | undefined): string {
 
     <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一）；
          2026-09-10 用户需求「界面统一+联动预览」：左操作区 + 右逐条点亮预览 -->
-    <template v-else-if="step === 2">
-      <section class="card">
-        <div class="vd-unified">
-        <div class="vd-unified-left" :style="vdLeftStyle">
-        <VdStepBar :step="step" @go="go" />
-        <!-- 1. 视频输入目录行：2026-09-08 用户裁决删除——口播配音无视频输入功能，
-             配音对象自动取 Step2 已确认合成产物所在目录 -->
-
-        <!-- 2. 参考声音（对齐 VoiceClone 页形态：样本下拉 + 常驻播放条换 src；
-             声音样本数据源 = 服务端 GET /voice/samples；选中样本自动带出参考文案） -->
-        <div class="row ref-row">
-          <label class="label">参考声音:</label>
-          <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : ''" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
-          <!-- 2026-09-09 用户裁决：播放条放到样本下拉框后面（同行右侧）。2026-09-11
-               实测修复：TSelect 根默认 width:100% 会独占整行把播放条挤到下一行 →
-               行内归位为弹性填充（.ref-row 规则） -->
-          <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
-        </div>
-
-        <!-- 3. 参考文案行（2026-09-11 用户裁决：单行显示不全 → 两行 textarea） -->
-        <div class="row">
-          <label class="label">参考文案:</label>
-          <textarea v-model="refText" rows="2" class="input grow ref-text" placeholder="可选，填入样本台词..."></textarea>
-        </div>
-
-        <!-- TTS API 与推理参数行：2026-09-08 用户裁决删除（TTS 地址自动跟随系统设置，
-             ttsSteps/ttsCfg 存而不用；ttsSpeedMin/Max 保留默认值 0.9~1.2 随克隆请求发送） -->
-
-        <!-- 4. 表格标题行（L177-196；2026-09-10 用户裁决：TTS 引擎/克隆/文案设置组移到「开始批量克隆」前面） -->
-        <div class="row">
-          <span class="card-title"> 待合成视频列表与配音文案映射 (在配音文案栏直接输入):</span>
-        </div>
-
-        <!-- 5. 待合成视频表（L198-208 两列：序号 | 视频/配音/文案/状态/操作；行结构对照 dialogs.py VoiceRowDetailWidget L392-459） -->
-        <table v-if="voiceRows.length" class="tbl voice-table">
-          <thead>
-            <tr>
-              <th class="w-idx">序号</th>
-              <th>视频/配音/文案/状态/操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, i) in voiceRows" :key="row.path">
-              <td class="ta-c">{{ i + 1 }}</td>
-              <td>
-                <div class="vd-detail">
-                  <!-- 行 1：文件名 + 状态 + 操作（2026-09-10 用户裁决：删行内 ▶ 播放按钮，视频预览已在右侧统一预览栏） -->
-                  <div class="vd-top">
-                    <span class="vd-name" :title="row.path">视频: {{ row.name }}</span>
-                    <span class="spacer"></span>
-                    <span v-if="row.status === 'generating'" class="vd-progress-text">{{ row.progress }}%</span>
-                    <span class="vd-status" :class="voiceStatusClass(row)">{{ voiceStatusText(row) }}</span>
-                    <!-- 2026-09-11 用户裁决：原 emoji 图标（🔊💾⚖↻🎬📽）与全局按钮体系
-                         不统一、含义不明 → 统一为 TButton 文字小按钮（显示作用），
-                         成组右对齐（.vd-actions，窄宽度换行后仍贴右）；
-                         二次裁决：删「导出」「试看」两按钮（不需要） -->
-                    <div class="vd-actions">
-                      <!-- 2026-09-15 用户裁决：试听按钮 → 行内原生播放条（<audio controls>，
-                           即浏览器原生控件：播放/进度拖动/时长/音量），生成后就地试听；
-                           key 带 voiceDurSec——重生成覆写同路径 wav 时强制重建元素避开媒体缓存 -->
-                      <audio
-                        v-if="row.wavPath"
-                        :key="row.wavPath + '|' + (row.voiceDurSec || 0)"
-                        class="vd-voice-audio"
-                        controls
-                        preload="none"
-                        :src="toFileUrl(row.wavPath)"
-                        :title="`试听克隆声音（${fmtDur(row.voiceDurSec)}）`"
-                      />
-                      <audio v-else class="vd-voice-audio" controls preload="none" disabled title="尚未生成克隆声音" />
-                      <TButton label="编辑" variant="secondary" size="small" title="对比与编辑文案（双击配音文案栏同效）" @click="openEditDlg(i)" />
-                      <TButton label="重生成" variant="secondary" size="small" :disabled="row.status === 'generating'" :title="row.status === 'generating' ? '生成中，请稍候' : '仅重新生成该声音'" @click="regenVoice(i)" />
-                      <TButton :label="row.lengthMode === 'video' ? '时长:视频' : '时长:音频'" variant="secondary" size="small" :title="lengthModeTip(row)" @click="toggleLengthMode(i)" />
-                    </div>
-                  </div>
-                  <!-- 行 2：原文 + 视频时长（dialogs.py L424-439） -->
-                  <div class="vd-row2">
-                    <span class="vd-tag muted-tag">原文:</span>
-                    <span class="vd-orig">{{ row.originalText || '(无)' }}</span>
-                    <span v-if="row.durationSec > 0" class="vd-dur-vid">{{ fmtDur(row.durationSec) }}</span>
-                  </div>
-                  <!-- 行 3：修改后 + 配音文案编辑框 + 克隆音频时长（dialogs.py L441-459；绿背景 = 已生成，L1718-1745） -->
-                  <div class="vd-row3">
-                    <span class="vd-tag accent-tag">修改后:</span>
-                    <input
-                      class="vd-edit" :class="{ 'has-wav': row.wavPath }"
-                      :value="row.text"
-                      placeholder="双击可弹窗编辑大段文案，留空则不克隆此视频的声音"
-                      @change="row.text = ($event.target as HTMLInputElement).value"
-                      @dblclick="openEditDlg(i)"
-                    />
-                    <span class="vd-dur-voice" :class="{ none: !row.voiceDurSec }">{{ row.voiceDurSec > 0 ? fmtDur(row.voiceDurSec) : '--:--' }}</span>
-                  </div>
-                  <progress v-if="row.status === 'generating'" class="vd-progress" :value="row.progress" max="100" />
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
-
-        <!-- 2026-09-10 用户裁决：克隆按钮变短，与设置组（TTS 引擎/声音克隆/文案生成/AI 改文案）同行、
-             整行靠右（克隆=主操作居最右）；原独立 voice-clone-box 全宽框取消 -->
-        <!-- 2026-09-10 用户裁决：声音设置组靠左、克隆主操作靠右（两端对齐） -->
-        <div class="row between clone-row">
-          <div class="row">
-            <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
-            <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
-            <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
-            <TButton label="一键AI修改全部文案" size="small" :loading="rewriteBusy" @click="batchAiRewrite" />
-          </div>
-          <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
-        </div>
-
-        <!-- 7. 配音动作已迁 Step4 统一合成（2026-09-09 用户裁决：Step3 只合成口播声音，
-             配音+特效烧制+BGM 混音在第四步点「开始混音合成」一键完成） -->
-
-        <!-- 克隆批量进度（主进程逐条 emitRow 聚合为整体百分比；文案+进度条对照确认合成形态） -->
-        <template v-if="voiceBusy">
-          <div class="concat-status-line">{{ statusText }}</div>
-          <progress class="vd-progress split-progress" :value="voiceProgress" max="100" />
-        </template>
-
-        <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；2026-09-09 裁决：合成声音即可跳第四步） -->
-        <div class="row between">
-          <TButton label="上一步：镜头重组" plain @click="go(1)" />
-          <TButton label="下一步：特效包装" icon="right" title="生成口播声音后即可进入；配音/特效/混音在第四步统一合成"
-            :disabled="!voiceRows.some(r => r.wavPath)" @click="go(3)" />
-        </div>
-        </div><!-- /vd-unified-left -->
-
-<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
-
-        <!-- 右栏：每条待配音视频一块（配音完成切换配音后视频并点亮；进行中显进度，实时联动） -->
-        <div class="vd-unified-right">
-          <StepPreviewPane title="配音预览" :items="step3PreviewItems"
-            :aspect="previewAspect"
-            empty-text="确认合成完成后，Step2 的成片视频会出现在这里逐条预览配音效果" />
-        </div>
-        </div><!-- /vd-unified -->
-      </section>
-    </template>
+    <MontageStep3Panel v-else-if="step === 2" />
 
     <!-- Step 4: 特效包装（step4_final_view.py L14-196 逐控件；另保留本端 AI 生成 BGM）；
          2026-09-09 用户裁决：烧制字幕/花字/文字模板特效配置自 Step3 迁入此处，随混音统一烧制，
@@ -1014,49 +809,6 @@ function scoreClass(score: number | undefined): string {
     <!-- 页尾上传新样本（2026-09-08 用户裁决：放在扫描失败提示之下，整个界面最底部；
       VoiceClone 底部上传区同款同处理：dropzone 点击/拖拽选文件，
       字段（名称自动带出/文字可 ASR 识别）→ 上传服务端 → 刷新下拉并自动选中） -->
-    <div v-if="step === 2" class="ns-section">
-      <div class="ns-title">没有想要的样本？上传音频创建新样本</div>
-      <div
-        class="dropzone"
-        :class="{ 'is-active': nsDragging, 'has-file': !!nsFilePath }"
-        @click="pickNsFile"
-        @drop.prevent="onNsDropForward"
-        @dragover.prevent="onNsDragOver(); nsDragging = true"
-        @dragleave.prevent="onNsDragLeave(); nsDragging = false"
-      >
-        <svg v-if="!nsFilePath" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
-        </svg>
-        <div class="dropzone__text">
-          <template v-if="!nsFilePath">
-            <span class="dropzone__main">点击选择音频或拖拽到此处</span>
-            <span class="dropzone__hint">支持 MP3 / WAV / M4A / FLAC</span>
-          </template>
-          <template v-else>
-            <span class="dropzone__main">{{ nsFileName }}</span>
-            <span class="dropzone__hint">点击重新选择</span>
-          </template>
-        </div>
-      </div>
-      <div v-if="nsFilePath" class="ns-fields">
-        <div class="ns-field">
-          <label class="ns-label">样本名称 *</label>
-          <input v-model="nsName" class="input" placeholder="例：小美-温柔女声" />
-        </div>
-        <div class="ns-field">
-          <div class="ns-field-head">
-            <label class="ns-label">对应文字（可选）</label>
-            <TButton label="识别参考文字" size="small" :loading="nsTranscribing" :disabled="!nsFilePath" @click="transcribeNewSample" />
-          </div>
-          <textarea v-model="nsText" class="input ns-textarea" rows="2" placeholder="与参考音频一致的文字；也可点击右侧按钮自动识别"></textarea>
-        </div>
-        <div class="ns-actions">
-          <TButton label="上传为样本" icon="upload" :loading="nsBusy" :disabled="!nsFilePath || !nsName.trim()" @click="uploadNewSampleRef" />
-        </div>
-        <div v-if="nsError" class="ns-msg ns-err">{{ nsError }}</div>
-        <div v-if="nsSuccess" class="ns-msg ns-ok">{{ nsSuccess }}</div>
-      </div>
-    </div>
 
     <!-- 镜头片段预览弹层（内置 Plyr 播放器，支持本地路径 + 服务端 URL） -->
     <VideoPreview :visible="!!previewUrl" :src="previewUrl" :loading="previewTranscoding" @close="closePreview" @ended="onSeqEnded" />
@@ -1128,66 +880,11 @@ function scoreClass(score: number | undefined): string {
 
     <!-- 文案生成设置弹窗（原版 _show_ai_rewrite_settings L3317-3405 文案逐字） -->
     <teleport to="body">
-      <div v-if="aiRewriteDlg.show" class="modal-mask" @click.self="closeRewriteSettings">
-        <div class="modal">
-          <span class="modal-title">文案生成设置</span>
-          <span class="rw-title">文案生成自由度设置</span>
-          <span class="rw-desc">{{ AI_REWRITE_DESC }}</span>
-          <div class="row">
-            <span class="muted">0%</span>
-            <input v-model.number="aiRewriteDlg.pct" type="range" min="0" max="100" step="1" class="grow" />
-            <span class="muted">100%</span>
-          </div>
-          <span class="rw-value">当前: {{ aiRewriteDlg.pct }}%</span>
-          <div class="modal-actions">
-            <TButton label="取消" plain @click="closeRewriteSettings" />
-            <TButton label="保存" @click="saveRewriteSettings" />
-          </div>
-        </div>
-      </div>
     </teleport>
 
     <!-- 设置声音克隆弹窗（2026-09-09 用户裁决：对齐声音克隆页 IndexTTS 参数——语速/情感/情感强度；
       保存后克隆声音时随每次 TTS 请求发送） -->
     <teleport to="body">
-      <div v-if="cloneParamsDlg.show" class="modal-mask" @click.self="closeCloneParams">
-        <div class="modal">
-          <span class="modal-title">设置声音克隆</span>
-          <span class="hint">以下参数在克隆声音时随每次 TTS 请求发送（当前引擎：IndexTTS）</span>
-          <div class="cp-field">
-            <div class="row between">
-              <span class="label">语速（duration_factor）</span>
-              <span class="cp-value">{{ cloneParamsDlg.factor.toFixed(1) }}x</span>
-            </div>
-            <input v-model.number="cloneParamsDlg.factor" type="range" min="0.5" max="2" step="0.1" class="grow" />
-            <div class="row between cp-labels"><span>0.5x 慢</span><span>1.0x 正常</span><span>2.0x 快</span></div>
-          </div>
-          <div class="cp-field">
-            <span class="label">情感选择（emo_text，可选）</span>
-            <TSelect :model-value="cloneParamsDlg.emo" :options="TTS_EMO_OPTIONS" placeholder="不选择则使用样本默认情感" @update:model-value="(v: string | number) => (cloneParamsDlg.emo = String(v))" />
-          </div>
-          <div class="cp-field">
-            <div class="row between">
-              <span class="label">情感强度（emo_alpha）</span>
-              <span class="cp-value">{{ cloneParamsDlg.alpha.toFixed(1) }}</span>
-            </div>
-            <input v-model.number="cloneParamsDlg.alpha" type="range" min="0" max="1" step="0.1" class="grow" />
-          </div>
-          <div class="cp-field">
-            <div class="row between">
-              <span class="label">句间停顿（毫秒）</span>
-              <span class="cp-value">{{ cloneParamsDlg.pause > 0 ? cloneParamsDlg.pause + 'ms' : '默认（无额外停顿）' }}</span>
-            </div>
-            <input v-model.number="cloneParamsDlg.pause" type="range" min="0" max="3000" step="100" class="grow" />
-            <div class="row between cp-labels"><span>0 关</span><span>1500ms</span><span>3000ms</span></div>
-            <span class="cp-tip">句间插入服务端停顿标记（((pause=毫秒))），精确控制停顿；每处标记将拆段分别合成，文案较长时耗时增加。2026-09-18：凑音频长度不再依赖停顿（变速拉满仍不足时客户端自动尾部补静音至视频时长）；设了停顿字幕也会精确对齐</span>
-          </div>
-          <div class="modal-actions">
-            <TButton label="取消" plain @click="closeCloneParams" />
-            <TButton label="保存" @click="saveCloneParams" />
-          </div>
-        </div>
-      </div>
     </teleport>
 
     <!-- BGM 选择弹窗（2026-09-09 用户裁决：同音频生成页左栏布局——搜索/分类/标签/列表/分页；
@@ -1282,27 +979,6 @@ function scoreClass(score: number | undefined): string {
 
     <!-- 配音文案编辑弹窗（原版 TextEditDialog，dialogs.py L31-80 文案逐字；⚖ 对比按钮同入口附原文对照） -->
     <teleport to="body">
-      <div v-if="editDlg.show" class="modal-mask" @click.self="editDlg.show = false">
-        <div class="modal modal-wide">
-          <span class="modal-title">{{ editDlg.title }}</span>
-          <!-- 2026-09-11 用户裁决：对比改左右并排 1:1（左=原文只读栏、右=修改编辑栏；
-               原「配音文案编辑:」提示行删除——两栏标签已自明） -->
-          <div class="edit-cols">
-            <div v-if="editDlg.original" class="edit-col">
-              <span class="vd-tag muted-tag">原文:</span>
-              <div class="vd-orig">{{ editDlg.original }}</div>
-            </div>
-            <div class="edit-col">
-              <span class="vd-tag accent-tag">修改后:</span>
-              <textarea v-model="editDlg.content" class="modal-textarea modal-copy"></textarea>
-            </div>
-          </div>
-          <div class="modal-actions">
-            <TButton label="确定" @click="saveEditDlg" />
-            <TButton label="取消" plain @click="editDlg.show = false" />
-          </div>
-        </div>
-      </div>
     </teleport>
   </div>
 </template>

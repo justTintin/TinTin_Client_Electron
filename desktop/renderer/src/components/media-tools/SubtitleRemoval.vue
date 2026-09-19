@@ -26,6 +26,7 @@ import {
 } from '@/composables/vsrQuadLogic'
 import { useVsrRemoval, type VsrMode } from '@/composables/useVsrRemoval'
 import { drawQuads } from './vsrQuadCanvas'
+import VsrFrameScrubber from './VsrFrameScrubber.vue'
 
 // ── 业务编排（模式/用途/选区/提交/轮询/取消）──
 const vm = useVsrRemoval()
@@ -117,10 +118,6 @@ async function captureFrameFromVideo(v: HTMLVideoElement): Promise<void> {
   }
 }
 
-// ── 时间轴把手：拖拽把手 → 逐帧 seek 预览视频（框选随帧更新）──
-const scrubEl = ref<HTMLElement | null>(null)
-// 拖拽态用 ref：模板需要它切换把手 grabbing 光标
-const scrubbing = ref(false)
 function seekToTime(t: number): void {
   const v = previewVideo.value
   if (!v || !Number.isFinite(t)) return
@@ -131,58 +128,6 @@ function seekToTime(t: number): void {
   v.currentTime = clamped
   currentT.value = clamped
 }
-function scrubRatio(clientX: number): number {
-  const el = scrubEl.value
-  if (!el || !durationS.value) return 0
-  const rect = el.getBoundingClientRect()
-  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-}
-function scrubDown(e: PointerEvent): void {
-  if (!durationS.value) return
-  scrubbing.value = true
-  seekToTime(scrubRatio(e.clientX) * durationS.value)
-}
-function scrubMove(e: PointerEvent): void {
-  if (!scrubbing.value) return
-  seekToTime(scrubRatio(e.clientX) * durationS.value)
-}
-function scrubUp(): void {
-  scrubbing.value = false
-}
-const scrubPct = computed(() =>
-  durationS.value ? `${(currentT.value / durationS.value) * 100}%` : '0%')
-function fmtTime(s: number): string {
-  if (!Number.isFinite(s) || s < 0) s = 0
-  const m = Math.floor(s / 60)
-  const sec = s - m * 60
-  return `${String(m).padStart(2, '0')}:${sec.toFixed(2).padStart(5, '0')}`
-}
-
-// ── 帧刻度细分（fps>0 时把手按帧间隔显示刻度线，拖拽对齐到帧）──
-const totalFrames = computed(() =>
-  fps.value > 0 ? Math.max(0, Math.round(durationS.value * fps.value)) : 0)
-const frameIdx = computed(() =>
-  fps.value > 0 ? Math.max(0, Math.floor(currentT.value * fps.value)) : -1)
-/** 刻度步长（帧）：控制在约 32 条以内，并归整到友好步长（1/2/5×10^k） */
-const tickStep = computed(() => {
-  const total = totalFrames.value
-  if (total <= 0) return 0
-  const step = Math.max(1, Math.ceil(total / 32))
-  const mag = Math.pow(10, Math.floor(Math.log10(step)))
-  const norm = step / mag
-  const nice = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10
-  return nice * mag
-})
-const tickList = computed(() => {
-  const step = tickStep.value
-  const total = totalFrames.value
-  if (step <= 0 || total <= 0) return [] as number[]
-  const out: number[] = []
-  for (let f = 0; f <= total; f += step) out.push(f)
-  return out
-})
-const frameTickPct = (f: number) =>
-  totalFrames.value ? `${(f / totalFrames.value) * 100}%` : '0%'
 
 const { filePath: srcPath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
   useFilePicker({
@@ -420,37 +365,21 @@ const statusText = computed(() => {
             />
           </div>
           <div v-else class="frame-loading">{{ srcPath ? '等待视频就绪；拖动下方把手到目标帧后，可在此帧上框选' : '先在右侧选择视频，此处将显示预览帧' }}</div>
-          <!-- 时间轴把手：拖拽到目标帧（逐帧），当前帧同步到上方预览 -->
-          <div
-            ref="scrubEl"
-            class="frame-scrub"
-            :class="{ 'is-disabled': !srcPath, 'is-scrubbing': scrubbing }"
-            @pointerdown.prevent="scrubDown"
-            @pointermove="scrubMove"
-            @pointerup="scrubUp"
-            @pointerleave="scrubUp"
-          >
-            <div class="frame-scrub__track">
-              <span
-                v-for="(f, i) in tickList"
-                :key="i"
-                class="frame-scrub__tick"
-                :style="{ left: frameTickPct(f) }"
-              />
-              <div class="frame-scrub__fill" :style="{ width: scrubPct }" />
-              <div class="frame-scrub__handle" :style="{ left: scrubPct }" />
-            </div>
-            <div class="frame-scrub__meta">
-              <template v-if="fps > 0">
-                <span class="frame-scrub__time">F{{ frameIdx }} / {{ totalFrames }}</span>
-                <span class="frame-scrub__dur">{{ fmtTime(currentT) }} · {{ fps.toFixed(0) }}fps</span>
-              </template>
-              <template v-else>
-                <span class="frame-scrub__time">{{ fmtTime(currentT) }}</span>
-                <span class="frame-scrub__dur">/ {{ fmtTime(durationS) }}</span>
-              </template>
-            </div>
-          </div>
+      <!-- 时间轴把手：已迁 VsrFrameScrubber.vue（铁律 10 P6 纯搬迁）；逐帧量化/预览视频 seek 留在本组件 -->
+      <VsrFrameScrubber
+        :duration-s="durationS"
+        :fps="fps"
+        :current-t="currentT"
+        :disabled="!srcPath"
+        @seek="seekToTime"
+      />
+      <VsrFrameScrubber
+        :duration-s="durationS"
+        :fps="fps"
+        :current-t="currentT"
+        :disabled="!srcPath"
+        @seek="seekToTime"
+      />
         </div>
       </div>
 
@@ -632,25 +561,30 @@ const statusText = computed(() => {
   transition: border-color var(--duration-fast) var(--easing-default),
     background var(--duration-fast) var(--easing-default);
 }
+
 .dropzone:hover,
 .dropzone.is-active {
   border-color: var(--primary);
   background: color-mix(in srgb, var(--primary) 12%, var(--surface-container));
 }
+
 .dropzone.has-file {
   border-style: solid;
   color: var(--foreground);
 }
+
 .dropzone__text {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
+
 .dropzone__main {
   font-size: var(--font-size-body);
   font-weight: var(--font-weight-medium);
   color: var(--foreground);
 }
+
 .dropzone__hint {
   font-size: var(--font-size-caption);
   color: var(--muted-foreground);
@@ -662,16 +596,19 @@ const statusText = computed(() => {
   grid-template-columns: 1fr 1fr;
   gap: var(--space-4);
 }
+
 .form-field {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
+
 .form-label {
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   color: var(--foreground-muted);
 }
+
 .text-input {
   width: 100%;
   height: var(--size-input-height);
@@ -685,13 +622,16 @@ const statusText = computed(() => {
   transition: border-color var(--duration-fast) var(--easing-default),
     box-shadow var(--duration-fast) var(--easing-default);
 }
+
 .text-input::placeholder {
   color: var(--muted-foreground);
 }
+
 .text-input:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px var(--ring);
 }
+
 .text-input:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -706,6 +646,7 @@ const statusText = computed(() => {
      视频加载后整体可见，时间轴不用滚动即可拖拽 */
   align-items: start;
 }
+
 .vsr-preview {
   min-width: 0;
   min-height: 0;
@@ -717,12 +658,14 @@ const statusText = computed(() => {
   display: flex;
   flex-direction: column;
 }
+
 .vsr-panel {
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
+
 /* 隐藏抓帧源视频（须参与渲染否则 drawImage 取帧会空白：不可 display:none，用移出视口方式） */
 .preview-src {
   position: fixed;
@@ -732,80 +675,6 @@ const statusText = computed(() => {
   height: 1px;
   opacity: 0;
   pointer-events: none;
-}
-/* 时间轴把手（逐帧拖拽；2026-09-07 用户裁决：做成明显把手形态，加大热区好拖） */
-.frame-scrub {
-  padding: var(--space-2) var(--space-2) var(--space-3);
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
-}
-.frame-scrub.is-scrubbing {
-  cursor: grabbing;
-}
-.frame-scrub.is-scrubbing .frame-scrub__handle {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 22%, transparent);
-}
-.frame-scrub.is-disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.frame-scrub__track {
-  position: relative;
-  height: 22px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--foreground) 8%, var(--surface-container-high));
-  border: 1px solid var(--border-subtle);
-}
-.frame-scrub__tick {
-  position: absolute;
-  top: 5px;
-  bottom: 5px;
-  width: 1px;
-  background: color-mix(in srgb, var(--foreground) 22%, transparent);
-  pointer-events: none;
-}
-.frame-scrub__fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--primary) 30%, transparent);
-}
-.frame-scrub__handle {
-  position: absolute;
-  top: 50%;
-  width: 18px;
-  height: 28px;
-  margin-left: -9px;
-  transform: translateY(-50%);
-  border-radius: 6px;
-  background: var(--surface);
-  border: 2px solid var(--primary);
-  box-sizing: border-box;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
-  /* 抓握纹理：竖向棱纹，看起来可拖 */
-  background-image: repeating-linear-gradient(
-    to right,
-    transparent 0 3px,
-    color-mix(in srgb, var(--primary) 45%, transparent) 3px 5px
-  );
-  background-position: center;
-  background-size: 9px 12px;
-  background-repeat: no-repeat;
-}
-.frame-scrub__meta {
-  display: flex;
-  align-items: baseline;
-  gap: 4px;
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--muted-foreground);
-  font-variant-numeric: tabular-nums;
-}
-.frame-scrub__time {
-  color: var(--foreground);
 }
 
 /* 帧预览与框选画布 */
@@ -822,12 +691,14 @@ const statusText = computed(() => {
   border-radius: var(--radius-lg);
   padding: var(--space-3);
 }
+
 .frame-loading {
   padding: var(--space-8);
   text-align: center;
   font-size: var(--font-size-caption);
   color: var(--muted-foreground);
 }
+
 .frame-wrap {
   position: relative;
   /* 画面尺寸规则（2026-09-07 用户裁决）：等比缩放，横屏不超预览区宽度、
@@ -836,6 +707,7 @@ const statusText = computed(() => {
   align-self: center;
   line-height: 0;
 }
+
 .frame-img {
   /* 竖屏时高度上限 = 预览区定高 − 时间轴与内边距（约 96px），宽度随等比自动收 */
   max-width: 100%;
@@ -843,6 +715,7 @@ const statusText = computed(() => {
   border-radius: var(--radius-md);
   display: block;
 }
+
 .frame-canvas {
   position: absolute;
   inset: 0;
@@ -857,6 +730,7 @@ const statusText = computed(() => {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
 }
+
 .regions-card__head {
   display: flex;
   align-items: center;
@@ -865,6 +739,7 @@ const statusText = computed(() => {
   flex-wrap: wrap;
   padding-bottom: var(--space-2);
 }
+
 .regions-card__title {
   display: inline-flex;
   align-items: center;
@@ -873,6 +748,7 @@ const statusText = computed(() => {
   font-weight: var(--font-weight-semibold);
   color: var(--foreground);
 }
+
 .regions-card__count {
   min-width: 18px;
   height: 18px;
@@ -887,14 +763,17 @@ const statusText = computed(() => {
   font-weight: var(--font-weight-semibold);
   font-variant-numeric: tabular-nums;
 }
+
 .regions-card__hint {
   font-weight: var(--font-weight-regular);
   color: var(--muted-foreground);
 }
+
 .regions-card__actions {
   display: inline-flex;
   gap: var(--space-2);
 }
+
 .regions-card__list {
   display: flex;
   flex-wrap: wrap;
@@ -902,12 +781,14 @@ const statusText = computed(() => {
   padding-top: var(--space-2);
   border-top: 1px dashed var(--border-subtle);
 }
+
 .regions-card__empty {
   padding: var(--space-3) 0 var(--space-2);
   font-size: var(--font-size-caption);
   color: var(--muted-foreground);
   text-align: center;
 }
+
 /* 区块内小按钮（添加/删除/清空统一形态） */
 .mini-btn {
   height: 26px;
@@ -923,38 +804,47 @@ const statusText = computed(() => {
     background var(--duration-fast) var(--easing-default),
     color var(--duration-fast) var(--easing-default);
 }
+
 .mini-btn:hover:not(:disabled) {
   border-color: var(--primary);
   color: var(--primary);
 }
+
 .mini-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
 .mini-btn--primary {
   border-color: color-mix(in srgb, var(--primary) 40%, transparent);
   background: color-mix(in srgb, var(--primary) 10%, var(--surface-container));
   color: var(--primary);
 }
+
 .mini-btn--primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--primary) 18%, var(--surface-container));
 }
+
 .mini-btn--danger {
   color: var(--error);
 }
+
 .mini-btn--danger:hover:not(:disabled) {
   border-color: var(--error);
   color: var(--error);
   background: color-mix(in srgb, var(--error) 8%, var(--surface-container));
 }
+
 .mini-btn--ghost {
   background: transparent;
   color: var(--muted-foreground);
 }
+
 .mini-btn--ghost:hover:not(:disabled) {
   color: var(--foreground);
   border-color: var(--foreground-muted);
 }
+
 .region-chip {
   display: inline-flex;
   align-items: center;
@@ -970,14 +860,17 @@ const statusText = computed(() => {
     background var(--duration-fast) var(--easing-default),
     box-shadow var(--duration-fast) var(--easing-default);
 }
+
 .region-chip:hover {
   border-color: color-mix(in srgb, var(--primary) 50%, var(--border));
 }
+
 .region-chip.is-active {
   border-color: var(--primary);
   background: color-mix(in srgb, var(--primary) 8%, var(--surface-container));
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 16%, transparent);
 }
+
 .region-chip__idx {
   min-width: 18px;
   height: 18px;
@@ -991,16 +884,19 @@ const statusText = computed(() => {
   font-weight: var(--font-weight-semibold);
   font-variant-numeric: tabular-nums;
 }
+
 .region-chip.is-active .region-chip__idx {
   background: var(--primary);
   color: var(--primary-foreground);
 }
+
 .region-chip__coord {
   font-family: var(--font-mono);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
 .region-chip__close {
   display: inline-flex;
   align-items: center;
@@ -1014,10 +910,12 @@ const statusText = computed(() => {
   transition: color var(--duration-fast) var(--easing-default),
     background var(--duration-fast) var(--easing-default);
 }
+
 .region-chip__close:hover:not(:disabled) {
   color: var(--error);
   background: color-mix(in srgb, var(--error) 12%, transparent);
 }
+
 .region-chip__close:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -1029,6 +927,7 @@ const statusText = computed(() => {
   align-items: center;
   gap: var(--space-4);
 }
+
 .status-badge {
   margin-left: auto;
   padding: 2px var(--space-3);
@@ -1038,14 +937,17 @@ const statusText = computed(() => {
   background: var(--surface-container-high);
   color: var(--foreground-muted);
 }
+
 .status-badge.status-processing {
   color: var(--info);
   background: rgba(59, 130, 246, 0.15);
 }
+
 .status-badge.status-done {
   color: var(--success);
   background: rgba(16, 185, 129, 0.15);
 }
+
 .status-badge.status-failed {
   color: var(--error);
   background: rgba(239, 68, 68, 0.15);
@@ -1058,6 +960,7 @@ const statusText = computed(() => {
   border-radius: var(--radius-full);
   overflow: hidden;
 }
+
 .progress-bar__fill {
   height: 100%;
   background: var(--primary);
@@ -1088,16 +991,19 @@ const statusText = computed(() => {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
 }
+
 .result__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
+
 .result__title {
   font-size: var(--font-size-lead);
   font-weight: var(--font-weight-semibold);
   color: var(--foreground);
 }
+
 .result__save {
   margin: 0;
   overflow: hidden;
@@ -1108,12 +1014,14 @@ const statusText = computed(() => {
   font-size: var(--font-size-caption);
   color: var(--foreground-muted);
 }
+
 .result__url {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
 }
+
 .result__url-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -1126,6 +1034,7 @@ const statusText = computed(() => {
   font-size: 11px;
   color: var(--foreground-muted);
 }
+
 .result-video {
   width: 100%;
   max-height: 360px;

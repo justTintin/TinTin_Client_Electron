@@ -11,7 +11,7 @@
 // 选中并填充右侧字段——clickToPick 开启（工作台弹窗壳仍保留按钮口径）。
 import WbPickerPanel from './WbPickerPanel.vue'
 import { fetchProducts, type PickerItem } from '@/composables/useWorkbenchPickers'
-import { markdownListLines } from '@/composables/opsProductLibraryLogic'
+import { markdownListLines, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
 
 defineProps<{ active: boolean; clickToPick?: boolean }>()
 const emit = defineEmits<{
@@ -41,6 +41,12 @@ function specLines(it: PickerItem): string[] {
 /** 核心卖点全文（selling_points 同格式，逐条剥离标记） */
 function pointLines(it: PickerItem): string[] {
   return markdownListLines(it.selling_points)
+}
+
+/** 产品资料关联关键词（2026-09-19 架构：导出/合成时客户端据此命中花字/文字模板；
+ *  与 onPickProduct 填充、导出命中同一解析口径 parseProductKeywords） */
+function keywordList(it: PickerItem): string[] {
+  return parseProductKeywords(it)
 }
 </script>
 
@@ -94,6 +100,22 @@ function pointLines(it: PickerItem): string[] {
             <span v-for="(l, i) in pointLines(item)" :key="'pt' + i" class="pv-tag pv-tag--accent">{{ l }}</span>
           </div>
           <div v-else class="pv-none">暂无核心卖点</div>
+        </div>
+
+        <!-- 关键词卡片（2026-09-19 用户要求：核心卖点下方展示产品资料关联关键词——
+             即导出/合成时命中花字/文字模板的词源；未关联时导出侧 LLM 兜底提词） -->
+        <div class="pv-card">
+          <div class="pv-card-head">
+            <svg class="pv-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"/>
+              <line x1="7" y1="7" x2="7.01" y2="7"/>
+            </svg>
+            <span>关键词</span>
+          </div>
+          <div v-if="keywordList(item).length" class="pv-tags">
+            <span v-for="(k, i) in keywordList(item)" :key="'kw' + i" class="pv-tag pv-tag--keyword">{{ k }}</span>
+          </div>
+          <div v-else class="pv-none">暂无关联关键词（导出时将由 LLM 自动提取）</div>
         </div>
       </div>
     </template>
@@ -191,6 +213,12 @@ function pointLines(it: PickerItem): string[] {
 .pv-tag--accent {
   border-color: color-mix(in srgb, var(--primary) 30%, transparent);
   background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+/* 关键词标签（2026-09-19：绿色系与核心卖点的主色系区分——语义=命中词源） */
+.pv-tag--keyword {
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
 }
 
 .pv-none {

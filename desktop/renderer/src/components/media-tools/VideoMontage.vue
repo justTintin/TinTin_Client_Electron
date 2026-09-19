@@ -292,6 +292,7 @@ function scoreClass(score: number | undefined): string {
       2026-09-08 用户裁决：产品选择区与填写区合二为一不再二次弹窗——左侧内嵌
       WbPickProductPanel，选中自动回填右侧表单，仍可手改；填写区高度加高。
       2026-09-11 用户裁决：三块（产品列表｜产品详情｜填写表单）宽度 1:1:1。
+      2026-09-19 用户裁决改判：三块宽度 1:1.5:1（详情中栏加宽，核心卖点下新增关键词展示）。
       2026-09-13 改调 /copywriting/voiceover：时长不再手填，逐条按成片时长 duration_s 传入） -->
     <teleport to="body">
       <div v-if="productDlg.show" class="modal-mask" @click.self="closeProductDlg">
@@ -511,14 +512,16 @@ function scoreClass(score: number | undefined): string {
   padding: 20px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
 }
 .modal-wide { width: 600px; }
-/* 口播弹窗三块 1:1:1（2026-09-11 用户裁决）：左列=内嵌产品选择区（其内部
-   列表 : 详情预览 = 对半），右列=填写表单——列表 : 详情 : 表单 ≈ 1 : 1 : 1 */
+/* 口播弹窗三块 1:1.5:1（2026-09-19 用户裁决，原 2026-09-11 的 1:1:1 作废）：
+   左列=内嵌产品选择区（其内部列表 : 详情预览 = 40 : 60），右列=填写表单
+   ——列表 : 详情 : 表单 ≈ 1 : 1.5 : 1 */
 .modal-pick { width: 80vw; max-width: 90vw; height: 80vh; }
 .pick-layout { flex: 1 1 auto; min-height: 0; display: flex; gap: var(--space-4); }
-.pick-left { flex: 1 1 66.67%; min-width: 0; min-height: 0; }
-/* 面板默认列表 : 预览 = 54 : 46（工作台弹窗口径不变），本弹窗内覆写为对半 */
-.pick-left :deep(.picker-side) { flex: 0 0 50%; }
-.pick-right { flex: 1 1 33.33%; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
+.pick-left { flex: 1 1 71.43%; min-width: 0; min-height: 0; }
+/* 面板默认列表 : 预览 = 54 : 46（工作台弹窗口径不变），本弹窗内覆写为 40 : 60
+   ——与外层 71.43 : 28.57 相乘 = 列表 : 详情 : 表单 ≈ 1 : 1.5 : 1（2026-09-19 用户裁决） */
+.pick-left :deep(.picker-side) { flex: 0 0 60%; }
+.pick-right { flex: 1 1 28.57%; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 2px; }
 .pick-right .modal-field { flex: 0 0 auto; }
 /* 2026-09-09 用户裁决：字段换行（label 上、输入框下占满整行） */
 .pick-right .modal-field--stack { flex-direction: column; align-items: stretch; gap: 6px; }

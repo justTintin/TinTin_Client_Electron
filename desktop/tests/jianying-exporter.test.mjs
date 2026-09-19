@@ -699,8 +699,9 @@ test('exportMultiToDraft：无命中（空 clips）→ 回退旧 tpl 蓝字轨 +
   assert.equal(content.materials.texts.filter(isBlueKeywordText).length, 1) // 旧蓝字轨回退
 })
 
-test('exportMultiToDraft：预设缺失（模板零成段）→ tpl 蓝字轨兜底 + textTpl* 诊断回传（2026-09-19 根因④）', () => {
-  // 不写 fixture preset → Text_V2 无任何 .textpreset → findTextPreset 全空、模板段零产出
+test('exportMultiToDraft：预设缺失 → 同一命中（词+时间点）落纯文本兜底段 + textTpl* 诊断回传（2026-09-19 用户裁决修正）', () => {
+  // 不写 fixture preset → Text_V2 无任何 .textpreset → findTextPreset 全空
+  // fxWords 置空：兜底=服务端命中原样落段（词+时间点不变），与本地词表无关
   const v = path.join(tmpRoot, 'dubbed_t4.mp4')
   fs.writeFileSync(v, 'x')
   const srt = path.join(tmpRoot, 't4.srt')
@@ -708,7 +709,7 @@ test('exportMultiToDraft：预设缺失（模板零成段）→ tpl 蓝字轨兜
   const r = exportMultiToDraft({
     videoPaths: [v],
     srtPaths: [srt],
-    fxWords: ['199元'],
+    fxWords: [],
     fxKinds: ['tpl'],
     tplEffectId: TPL_RID,
     textTemplateClips: [
@@ -718,13 +719,18 @@ test('exportMultiToDraft：预设缺失（模板零成段）→ tpl 蓝字轨兜
     deps: DEPS,
   })
   assert.equal(r.success, true)
-  // 诊断回传：输入命中非空（expected）、预设零成段（appended=0）、蓝字兜底 1 段
+  // 诊断回传：输入命中非空（expected）、预设零成段（appended=0）、纯文本兜底 1 段
   assert.equal(r.textTplExpected, true)
   assert.equal(r.textTplAppended, 0)
   assert.equal(r.textTplKwFallbackSegs, 1)
   const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
   assert.equal(content.materials.text_templates.length, 0)
-  assert.equal(content.materials.texts.filter(isBlueKeywordText).length, 1, '预设缺失时蓝字轨应兜底补建，关键词不再全灭')
+  assert.equal(content.materials.texts.filter(isBlueKeywordText).length, 1, '预设缺失时同一命中应落纯文本兜底段，关键词不丢')
+  // 时间点=服务端命中原值（第一窗内局部 0.5s 起，1.5s 长），不因兜底重排
+  const fallbackText = content.materials.texts.filter(isBlueKeywordText)[0]
+  assert.equal(JSON.parse(fallbackText.content).text, '199元')
+  const kwTrack = content.tracks.find((t) => t.type === 'text' && t.segments.some((s) => s.material_id === fallbackText.id))
+  assert.deepEqual(kwTrack.segments[0].target_timerange, { start: 500000, duration: 1500000 })
 })
 
 test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的素材段静音（音频三轨体系）', () => {

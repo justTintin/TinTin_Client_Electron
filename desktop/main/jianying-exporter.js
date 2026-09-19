@@ -601,10 +601,14 @@ function draft_content_tracks_render_index(tracks) {
 }
 /** 模板实例段追加到文字模板轨（时间窗裁剪同 appendSubtitleTrack 口径；
  *  preset 解析经 cache 复用；模板缺失静默跳过——不造假）。 */
-function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache, canvasW = 0, canvasH = 0) {
+function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache, canvasW = 0, canvasH = 0, fallback = null) {
   // 2026-09-19 修复（用户报障「关键词不显示」）：返回实际追加段数——此前预设查不到
-  // （Text_V2 目录缺失 / resource_id 不匹配）逐命中静默 continue，模板轨零产出无任何信号
+  // （Text_V2 目录缺失 / resource_id 不匹配）逐命中静默 continue，模板轨零产出无任何信号。
+  // fallback={tracks,cache,opts}（2026-09-19 用户裁决修正）：预设查不到 ≠ 关键词丢弃——
+  // 关键词命中=服务端权威（词+时间点），模板只是渲染样式层；同一命中原样落纯文本
+  // 关键词段（纯色蓝字），显示保证不丢。返回 {appended, fallbackSegs}
   let appended = 0
+  let fallbackSegs = 0
   for (const c of clips) {
     const startUs = offsetUs + c.startUs
     let durUs = c.durUs
@@ -616,7 +620,13 @@ function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs
       p = findTextPreset(presetDir, c.resourceId)
       tplCache.set(c.resourceId, p)
     }
-    if (!p) continue
+    if (!p) {
+      if (fallback) {
+        appendKeywordSegment(fallback.tracks, materials, c.phrase, startUs, durUs, fallback.cache, 'tpl', fallback.opts)
+        fallbackSegs++
+      }
+      continue
+    }
     const trio = buildTemplateClipTrio(p, c.phrase, canvasW, canvasH)
     if (!trio) continue
     materials.text_templates.push(trio.templateMaterial)
@@ -641,7 +651,7 @@ function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs
     track.segments.push(tplSeg)
     appended++
   }
-  return appended
+  return { appended, fallbackSegs }
 }
 
 /** 贴纸素材（materials.stickers 成员；pyJianYingDraft StickerSegment.export_material） */
@@ -1116,10 +1126,10 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
       const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
       const hasTplClips = textTplExpected
       const effKinds = hasTplClips ? kwKinds.filter((k) => k !== 'tpl') : kwKinds
-      // 2026-09-19 修复（用户报障「关键词不显示」根因④）：'tpl' 蓝字轨为原生模板让位
-      // （effKinds 过滤）后，若 Text_V2 预设查不到 → 模板段零产出且兜底已让位 =
-      // 关键词全灭且无任何提示。逐视频登记让位窗口，模板零产出时按词表兜底补建。
-      const tplDeferredKw = []
+      // 2026-09-19 用户裁决修正：预设查不到 → 同一服务端命中（词+时间点）原样落纯文本
+      // 关键词段（fallback 由 appendTextTemplateSegments 逐命中调用），不再整轨让位、
+      // 不再换数据源重匹配。fxTrackCache.tpl 复用为兜底蓝字轨（与旧口径同一轨道复用键）
+      const tplFallback = { tracks, cache: fxTrackCache, opts: { anim: textAnim, effectId: tplEffectId } }
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
@@ -1130,11 +1140,12 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
               effectId: kind === 'fancy' ? fancyEffectId : tplEffectId,
             })
           }
-          if (hasTplClips && kwKinds.includes('tpl')) tplDeferredKw.push({ srt: srtPaths[i], from: cursorUs, to: cursorUs + clip.durationUs })
         }
         if (tplClips && tplClips[i] && tplClips[i].length) {
           try {
-            textTplAppended += appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
+            const r = appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight, tplFallback)
+            textTplAppended += r.appended
+            textTplKwFallbackSegs += r.fallbackSegs
           } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
           // 音效轨（2026-09-17 用户裁决·定义修正）：跟随文字模板命中位置落段
           // （位置=关键词命中位置；与花字轨无关）。2026-09-18：音效池来自服务端
@@ -1145,22 +1156,20 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
         // 2026-09-16 用户裁决：视频片段之间添加半秒间隔，所有轨道同步
         if (i < clips.length - 1) cursorUs += VIDEO_GAP_US
       })
-      // 模板三件套零产出 → 让位的 'tpl' 关键词轨兜底补建（词表非空且 SRT 有命中才成段）
-      if (tplDeferredKw.length && !textTplAppended) {
-        for (const d of tplDeferredKw) {
-          appendKeywordTrack(tracks, materials, d.srt, kwWords, 'tpl', d.from, d.to, fxTrackCache, { anim: textAnim, effectId: tplEffectId })
-        }
-        textTplKwFallbackSegs = fxTrackCache.tpl ? fxTrackCache.tpl.segments.length : 0
-      }
       if (!subtitleTrack.segments.length) tracks.splice(tracks.indexOf(subtitleTrack), 1)
       if (tplTrack && tplTrack.segments.length) tracks.push(tplTrack)
     } else if (tplClips && tplClips.some((l) => l.length)) {
-      // 无字幕轨输入时模板轨独立成轨（时间轴累计口径与上方一致）
+      // 无字幕轨输入时模板轨独立成轨（时间轴累计口径与上方一致）；关键词显示保证
+      // 与字幕轨无关——预设缺失兜底照常（2026-09-19 用户裁决）
+      const fxTrackCacheSolo = {}
+      const tplFallback = { tracks, cache: fxTrackCacheSolo, opts: { anim: textAnim, effectId: tplEffectId } }
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (tplClips[i] && tplClips[i].length) {
           try {
-            textTplAppended += appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
+            const r = appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight, tplFallback)
+            textTplAppended += r.appended
+            textTplKwFallbackSegs += r.fallbackSegs
           } catch (_) {}
           appendSfxForVideo(i, cursorUs, cursorUs + clip.durationUs)
         }
@@ -1218,9 +1227,9 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
     // bgmIncluded：BGM 轨是否实际生成（未选/文件不存在时为 false，渲染层据实提示）
     // conformance：标准符合性自检（本路径全部走标准构造器，预期 0 警告；非 0 即构造器缺陷）
     const conformance = auditDraftStandardConformance(content)
-    // 2026-09-19 模板轨诊断回传（用户报障「关键词不显示」零信号根因④）：
-    // expected=输入命中非空；appended=预设实际成段数（预设缺失/不匹配=0）；
-    // kwFallbackSegs=模板零产出时 'tpl' 蓝字轨兜底段数。渲染层据实提示，不再静默
+    // 2026-09-19 模板轨诊断回传（用户报障「关键词不显示」零信号根因）：
+    // expected=输入命中非空；appended=预设实际成段数（原生模板样式）；
+    // kwFallbackSegs=预设缺失时同一命中落纯文本段的兜底段数（显示保证）。渲染层据实提示
     return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA, bgmIncluded, conformance, textTplExpected, textTplAppended, textTplKwFallbackSegs }
   } catch (e) {
     return { success: false, message: e && e.message ? e.message : String(e) }
@@ -1637,10 +1646,33 @@ const KEYWORD_TRACK_STYLES = {
   fancy: { color: '#FFD700' },
   tpl:   { color: '#4FC3F7' },
 }
+/** 单个关键词纯文本段（纯色+粗体；appendKeywordTrack 与「模板预设缺失兜底」共用——
+ *  2026-09-19 用户裁决：关键词命中=服务端权威（词+时间点），文字模板只是渲染样式层，
+ *  预设查不到时同一命中原样落纯文本段，显示保证不丢） */
+function appendKeywordSegment(tracks, materials, text, startUs, durUs, cache, kind, opts = {}) {
+  let track = cache[kind]
+  if (!track) {
+    track = newTrack('text')
+    tracks.push(track)
+    cache[kind] = track
+  }
+  const st = KEYWORD_TRACK_STYLES[kind] || KEYWORD_TRACK_STYLES.tpl
+  const mat = textMaterial(String(text || ''), { colorHex: st.color, bold: true, effectStyleId: opts.effectId || '' })
+  materials.texts.push(mat)
+  const sp = speedMaterial(1.0)
+  if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
+  const seg = {
+    ...baseSegmentFields(mat.id, startUs, durUs),
+    ...mediaSegmentFields(durUs, sp.id),
+    ...visualSegmentFields(),
+    source_timerange: null, // 文本段（标准 §3.6）：source_timerange = null
+  }
+  decorateTextSegment(seg, materials, opts)
+  track.segments.push(seg)
+}
 function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 0, limitEndUs = null, cache = {}, opts = {}) {
   const hitWords = (Array.isArray(words) ? words : []).map((w) => String(w).trim()).filter(Boolean)
   if (!hitWords.length) return
-  const st = KEYWORD_TRACK_STYLES[kind] || KEYWORD_TRACK_STYLES.tpl
   for (const [startSec, endSec, textContent] of parseSrt(srtPath)) {
     const lower = textContent.toLowerCase()
     const hits = hitWords.filter((w) => lower.includes(w.toLowerCase()))
@@ -1650,24 +1682,7 @@ function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 
     if (durUs <= 0) continue
     if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = Math.max(0, limitEndUs - startUs)
     if (durUs <= 0) continue
-    let track = cache[kind]
-    if (!track) {
-      track = newTrack('text')
-      tracks.push(track)
-      cache[kind] = track
-    }
-    const mat = textMaterial(hits.join(' '), { colorHex: st.color, bold: true, effectStyleId: opts.effectId || '' })
-    materials.texts.push(mat)
-    const sp = speedMaterial(1.0)
-    if (Array.isArray(materials.speeds)) materials.speeds.push(sp)
-    const seg = {
-      ...baseSegmentFields(mat.id, startUs, durUs),
-      ...mediaSegmentFields(durUs, sp.id),
-      ...visualSegmentFields(),
-      source_timerange: null, // 文本段（标准 §3.6）：source_timerange = null
-    }
-    decorateTextSegment(seg, materials, opts)
-    track.segments.push(seg)
+    appendKeywordSegment(tracks, materials, hits.join(' '), startUs, durUs, cache, kind, opts)
   }
 }
 

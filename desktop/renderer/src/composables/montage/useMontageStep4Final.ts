@@ -552,14 +552,15 @@ async function exportAllToJianyingDraft(): Promise<void> {
         tail += '\n⚠️ 格式符合性警告 ' + cw.length + ' 条（不影响打开，已记录日志）：' + cw.slice(0, 3).join('；') + (cw.length > 3 ? ' …' : '')
       }
       // 2026-09-19 模板轨诊断透出（导出器回传 textTpl* 三字段，用户报障「关键词不显示」）：
-      // 输入命中非空但预设零成段 → 已回退蓝字轨兜底或整链缺席，据实告知不再静默
+      // 关键词命中=服务端权威（词+时间点），模板只是渲染样式层——预设缺失时同一命中
+      // 已落纯文本段兜底（kwFallbackSegs），只缺原生模板样式，据实告知
       const rxDiag = rx as unknown as { textTplExpected?: boolean; textTplAppended?: number; textTplKwFallbackSegs?: number }
       if (rxDiag.textTplExpected && !rxDiag.textTplAppended) {
-        clientError('video-montage', '文字模板轨零成段', `预设库查不到命中模板（Text_V2）；蓝字轨兜底段数=${rxDiag.textTplKwFallbackSegs ?? 0}`)
+        clientError('video-montage', '原生文字模板样式缺席', `预设库查不到命中模板（Text_V2）；纯文本兜底段数=${rxDiag.textTplKwFallbackSegs ?? 0}`)
         if (rxDiag.textTplKwFallbackSegs) {
-          tail += '\n⚠️ 原生文字模板在本机剪映预设库找不到（Text_V2），已回退为纯色关键词文字轨（非模板样式）'
+          tail += '\n⚠️ 原生文字模板在本机剪映预设库（Text_V2）找不到，关键词已按纯色文本样式显示（词与时间点不变，仅模板样式缺席）'
         } else {
-          tail += '\n⚠️ 原生文字模板轨整链缺席：本机剪映预设库（Text_V2）查不到命中模板，且关键词词表与文案无命中'
+          tail += '\n⚠️ 文字模板轨整链缺席：本机剪映预设库（Text_V2）查不到命中模板，且命中窗口均无效'
         }
       }
       notify('草稿导出成功', successBody(base.draftName) + tail)
@@ -826,13 +827,12 @@ async function exportAllToJianyingDraft(): Promise<void> {
         fancyEvents.push([])
       }
     }
-    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：①花字/文字模板开启但
-    // 本地词表为空 → 提取器（价格/数字参数/卖点词典）没认出任何词，整链无源；
-    // ②文字模板开启但逐视频命中全空 → 明确告知不再静默出片；命中条件=词表命中且
-    // 模板池非空（jy_ 池）
-    if ((fancyEnabled.value || textFxEnabled.value) && cands.length && !extractTextFxWords().length) {
-      clientError('video-montage', '导出关键词词表为空', '本地卖点词提取器未从口播文案提取到任何词（花字/关键词模板轨将整链缺席）')
-      notify('关键词词表为空', '本次口播文案未提取到任何卖点词，花字与关键词文字模板轨将整链缺席。\n提取器识别范围：价格（如「199元」「低至99」）、数字参数（如「5000毫安」「30天」）、常见卖点词（如「防水」「快充」「大容量」）。\n可改写文案补充卖点表述后重试。')
+    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：①花字开启但本地词表为空 →
+    // 花字轨缺席（花字词源=本地提取器，唯一硬依赖；关键词命中主链=服务端 match，模板
+    // 轨不依赖本地词表）；②文字模板开启但逐视频命中全空 → 明确告知不再静默出片
+    if (fancyEnabled.value && cands.length && !extractTextFxWords().length) {
+      clientError('video-montage', '导出花字词表为空', '本地卖点词提取器未从口播文案提取到任何词（花字轨将缺席）')
+      notify('花字词表为空', '本次口播文案未提取到任何卖点词，花字轨将缺席。\n提取器识别范围：价格（如「199元」「低至99」）、数字参数（如「5000毫安」「30天」）、常见卖点词（如「防水」「快充」「大容量」）。\n可改写文案补充卖点表述后重试。')
     } else if (textFxEnabled.value && cands.length && textTemplateClips.every((t) => !t.length)) {
       const reason = activeTextPool.value.length
         ? '关键词与文案无命中（可调高「关键词密度」或更换模板池后重试）'

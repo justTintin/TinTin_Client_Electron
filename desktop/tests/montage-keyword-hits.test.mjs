@@ -39,12 +39,13 @@ test('parseLlmKeywords：JSON 数组解析 + 去重 + 截断', () => {
   assert.deepEqual(M.parseLlmKeywords('', 8), [])
 })
 
-test('parseProductKeywords：产品资料关联词防御解析（string[]/分隔串/多字段名）', () => {
+test('parseProductKeywords：严格读取 keywords 字段（2026-09-19 服务端实测 ProductItemOut.keywords: string[]；铁律6 不猜测不兜底）', () => {
   assert.deepEqual(P.parseProductKeywords({ keywords: ['防水', '快充'] }), ['防水', '快充'])
   assert.deepEqual(P.parseProductKeywords({ keywords: '防水、快充,长续航；轻便' }), ['防水', '快充', '长续航', '轻便'])
-  assert.deepEqual(P.parseProductKeywords({ product_keywords: '降噪' }), ['降噪'])
-  assert.deepEqual(P.parseProductKeywords({ '关键词': '大容量' }), ['大容量'])
   assert.deepEqual(P.parseProductKeywords({ keywords: [' ', '', '防水', '防水'] }), ['防水'])
+  // 其余候选字段名不再回退（服务端实测字段=keywords，契约已声明 ProductSearchOut/ProductItemOut）
+  assert.deepEqual(P.parseProductKeywords({ product_keywords: '降噪' }), [])
+  assert.deepEqual(P.parseProductKeywords({ '关键词': '大容量' }), [])
   assert.deepEqual(P.parseProductKeywords({}), [])
   assert.deepEqual(P.parseProductKeywords(null), [])
 })

@@ -296,9 +296,10 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
       // 2026-09-09 裁决：特效配置迁 Step4，混音前统一烧制字幕/花字。
       // subtitleTexts 按候选视频映射 Step3 文案行：无对应行（如 outputs
       // 未配音排列视频）不烧字幕/花字，直通混音。
-      // fxLines：文字模板命中行（服务端 match 结果，本地烧制素材下载与 drawtext 兜底消费）
-      // matchId（2026-09-13 接口对齐）：match 响应回执，服务端 concat 按它直接复用
-      //   已保存 events 烧制（不重算）→ 预览所见即成片所做
+      // fxLines：关键词命中行（2026-09-19 架构：产品资料关联词客户端命中 +
+      // LLM 兜底，resolveKeywordHits 产物；素材下载与 drawtext 兜底消费）。
+      // matchId 已删除（2026-09-13 引入的 match 响应回执，随 /text_templates/match
+      // 下线而作废；服务端 concat 无 match_id 时按其旧口径自行命中）
       // voicePath：配音 wav（2026-09-11 voice 接线：仅服务端链路消费，随 concat
       //   voice 轨上传；本地链路已由 dubVideos 替换进视频，不消费）
       const srtDirNow = await subtitleAssetDir()
@@ -316,18 +317,14 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
             // 主进程存在性校验命中则优先上传该 SRT，缺失回退 buildSrtFromTiming
             srtPath: joinPath(srtDirNow, pathBasename(c).replace(/\.[^.]+$/, '') + '.srt'),
             fxLines: [] as Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>,
-            matchId: '',
           }
         })
         .filter((x): x is {
           videoPath: string; text: string; timingPath: string; voicePath: string; srtPath: string
           fxLines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>
-          matchId: string
         } => !!x)
       // 文字模板命中预取（2026-09-19 架构：/text_templates/match 删除，客户端不再调用——
-      // 命中=产品资料关联关键词（客户端字幕行窗口命中），产品未关联词 → LLM 兜底提词。
-      // match_id 回执不复存在（st.matchId 恒空串），服务端 concat 无 match_id 时
-      // 退回旧口径自行命中）
+      // 命中=产品资料关联关键词（客户端字幕行窗口命中），产品未关联词 → LLM 兜底提词）
       if (textFxEnabled.value && subtitleTexts.length) {
         statusText.value = '正在判定关键词命中...'
         const empty: string[] = []

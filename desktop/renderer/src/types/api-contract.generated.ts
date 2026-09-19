@@ -6186,26 +6186,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/subtitles/prepare": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Prepare
-         * @description 句级字幕 → 服务端统一断句的细粒度字幕（cues + SRT 文本）。
-         */
-        post: operations["prepare_subtitles_prepare_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/voice/samples": {
         parameters: {
             query?: never;
@@ -11349,6 +11329,26 @@ export interface components {
              * @default
              */
             task_id: string;
+            /**
+             * Subtitle
+             * @default false
+             */
+            subtitle: boolean;
+            /**
+             * Subtitle Text
+             * @default
+             */
+            subtitle_text: string;
+            /**
+             * Fontsize
+             * @default 0
+             */
+            fontsize: number;
+            /**
+             * Width
+             * @default 1080
+             */
+            width: number;
         };
         /** Body_transcriptions_v1_audio_transcriptions_post */
         Body_transcriptions_v1_audio_transcriptions_post: {
@@ -12188,43 +12188,6 @@ export interface components {
             /** Base Url */
             base_url: string;
         };
-        /**
-         * PrepareIn
-         * @description 三选一输入（与 /montage/concat 同口径）+ 字号/画布。
-         */
-        PrepareIn: {
-            /**
-             * Srt
-             * @default
-             */
-            srt: string;
-            /** Rows */
-            rows?: {
-                [key: string]: unknown;
-            }[] | null;
-            /** Fontsize */
-            fontsize?: number | null;
-            /**
-             * Width
-             * @default 1080
-             */
-            width: number;
-            /**
-             * Height
-             * @default 1920
-             */
-            height: number;
-            /**
-             * Subtitle Style
-             * @default
-             */
-            subtitle_style: string;
-            /**
-             * Subtitle Style Id
-             * @default
-             */
-            subtitle_style_id: string;
-        };
         /** ProductDetailOut */
         ProductDetailOut: {
             /**
@@ -12619,6 +12582,8 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+            /** Keywords */
+            keywords?: boolean | null;
             /**
              * Time
              * @default 12:00
@@ -23216,39 +23181,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    prepare_subtitles_prepare_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PrepareIn"];
-            };
-        };
         responses: {
             /** @description Successful Response */
             200: {

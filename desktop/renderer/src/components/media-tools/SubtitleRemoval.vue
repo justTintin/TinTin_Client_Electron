@@ -1,330 +1,91 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// SubtitleRemoval.vue — 视频去水印字幕（M4 quad 框选移植）
-// 交互对齐原客户端 gui/subtitle_removal_page_v14.py：
-//   · 预览帧上四点框选（InteractivePreviewLabelV14 L254-532）：
-//     多框 / 拖拽移动 / 顶点调整 / 旋转（去水印）/ 删除
-//   · 每框无独立用途项——用途全局二选一（去字幕=轴对齐矩形 / 去水印=可旋转
-//     四边形+水印文字，对照 purpose_combo L1033-1047）
-//   · sub_areas 契约入参（编组在 vsrQuadLogic.ts 纯函数，L1294-1309 同源）
-//   · 上传进度（对照 _ProgressFileReader L57-72）+ 主动取消（worker.stop L103-114）
-// 本组件只做绘制与事件转发；业务编排在 useVsrRemoval.ts。
+// SubtitleRemoval.vue — 视频去水印字幕（M4 quad 框选移植）UI 层
+// 交互对齐原客户端 gui/subtitle_removal_page_v14.py（预览帧四点框选：
+//   多框/拖拽移动/顶点调整/旋转/删除；用途全局二选一；sub_areas 契约
+//   编组在 vsrQuadLogic.ts 纯函数）。
+// 铁律 10 P7（2026-09-19）：预览画布/选区交互/提交编排整簇迁入
+//   useVsrPreviewPane.ts（vm 参数注入，函数体逐字不变）；本组件保留
+//   vm 创建与模板解构，模板与样式零改动。
 // ═══════════════════════════════════════════════════════════════
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import TButton from '@/components/common/TButton.vue'
-import TSelect, { type SelectOption } from '@/components/common/TSelect.vue'
-import { useFilePicker } from '@/composables/useFilePicker'
-import {
-  type Quad,
-  type VsrPurpose,
-  applyRotation,
-  dragVertex,
-  hitTestQuad,
-  moveQuad,
-  rotateHandleIndex,
-  widgetToFrame,
-} from '@/composables/vsrQuadLogic'
-import { useVsrRemoval, type VsrMode } from '@/composables/useVsrRemoval'
-import { drawQuads } from './vsrQuadCanvas'
+import TSelect from '@/components/common/TSelect.vue'
 import VsrFrameScrubber from './VsrFrameScrubber.vue'
+import { useVsrRemoval } from '@/composables/useVsrRemoval'
+import { useVsrPreviewPane } from '@/composables/useVsrPreviewPane'
 
-// ── 业务编排（模式/用途/选区/提交/轮询/取消）──
 const vm = useVsrRemoval()
+const pane = useVsrPreviewPane(vm)
 const {
-  mode, purpose, watermarkText, setMode, setPurpose,
-  boxes, activeIndex, allowRotation, isSmart, isSelectMode,
-  addBox, deleteActiveBox, setActiveIndex, updateActiveQuad, resetBoxes, boxLabel,
-  canStart, cancelled, status, progress, errorMsg, resultUrl, resultFullUrl, resultPath, isProcessing, uploadPercent,
-  submit, cancel, resetResult, setFrameSize, setFile,
-  // 2026-09-07 用户裁决：完成后自动保存到原视频同目录（对齐原客户端），
-  // 按钮变「打开目录」；自动保存失败时回退手动「下载视频」
-  downloadResult, downloading, openResultDir, autoSaving,
-} = vm
-
-/** 复制结果地址（不点下载也可自行取用；仿 AudioGen BGM 的 URL 展示口径） */
-const urlCopied = ref(false)
-async function copyResultUrl(): Promise<void> {
-  if (!resultFullUrl.value) return
-  try {
-    await navigator.clipboard.writeText(resultFullUrl.value)
-    urlCopied.value = true
-    setTimeout(() => { urlCopied.value = false }, 1500)
-  } catch (_) { /* 副本失败静默 */ }
-}
-
-// ── 模式/用途选项 ──
-const modeOptions: SelectOption[] = [
-  { label: '标注选区（在预览帧上框选）', value: 'select' },
-  { label: '智能识别（服务端自动检测）', value: 'smart' },
-]
-const purposeOptions: SelectOption[] = [
-  { label: '去字幕（轴对齐矩形）', value: 'subtitle' },
-  { label: '去水印（可旋转四边形）', value: 'watermark' },
-]
-function onModeChange(v: string | number) { setMode(v as VsrMode) }
-function onPurposeChange(v: string | number) { setPurpose(v as VsrPurpose) }
-
-// ── 文件选择 + 预览帧抽取 ──
-const framePath = ref('')
-// 2026-09-06 用户要求：界面仅保留「抓帧预览 + 一个拖拽把手」，删除上方可见播放器。
-// 隐藏 <video> 仅作为逐帧 seek 的抓帧源（无可见播放控件）。
-const previewVideo = ref<HTMLVideoElement | null>(null)
-const durationS = ref(0)
-const currentT = ref(0)
-const fps = ref(0) // 帧率（ffprobe 探测；>0 时把手按帧刻度细分，拖拽对齐到帧）
-
-/** 重置框选预览：探测帧率（把手按帧刻度细分），清空选区与结果，等待预览视频按当前帧抓帧 */
-async function extractPreviewFrame(path: string): Promise<void> {
-  resetBoxes()
-  framePath.value = ''
-  currentT.value = 0
-  resetResult()
-  fps.value = 0
-  try {
-    const info = await window.tintin.ffmpeg.probe(path)
-    fps.value = Number(info?.fps) || 0
-    if (info?.duration) durationS.value = info.duration
-  } catch (e) {
-    fps.value = 0
-  }
-}
-
-// ── 抓帧源视频事件（loadedmetadata → 时长；loadeddata → 首帧；seeked → 当前帧）──
-function onPreviewLoaded(e: Event): void {
-  durationS.value = (e.target as HTMLVideoElement).duration || 0
-}
-function onPreviewLoadedData(e: Event): void {
-  void captureFrameFromVideo(e.target as HTMLVideoElement)
-}
-function onPreviewSeeked(e: Event): void {
-  void captureFrameFromVideo(e.target as HTMLVideoElement)
-}
-
-/** 把预览视频当前帧绘制为 dataURL 作为框选帧（分辨率 = 视频真实分辨率，框坐标跨帧一致） */
-async function captureFrameFromVideo(v: HTMLVideoElement): Promise<void> {
-  if (!v || !v.videoWidth || !v.videoHeight) return
-  try {
-    const c = document.createElement('canvas')
-    c.width = v.videoWidth
-    c.height = v.videoHeight
-    const ctx = c.getContext('2d')
-    if (!ctx) return
-    ctx.drawImage(v, 0, 0, c.width, c.height)
-    framePath.value = c.toDataURL('image/jpeg', 0.85)
-    await nextTick()
-    syncCanvas()
-  } catch (err) {
-    console.warn('[subtitle-removal] 抓取当前帧失败:', err)
-  }
-}
-
-function seekToTime(t: number): void {
-  const v = previewVideo.value
-  if (!v || !Number.isFinite(t)) return
-  // 按帧量化：把任意时间对齐到最接近的帧（fps>0 时生效），实现逐帧拖拽
-  let target = t
-  if (fps.value > 0) target = Math.round(t * fps.value) / fps.value
-  const clamped = Math.max(0, Math.min(target, durationS.value || 0))
-  v.currentTime = clamped
-  currentT.value = clamped
-}
-
-const { filePath: srcPath, fileName, isDragging, pickFile, onDrop, onDragOver, onDragLeave, resolveSrc } =
-  useFilePicker({
-    dialogTitle: '选择视频',
-    filters: [{ name: '视频', extensions: ['mp4', 'mov', 'webm', 'mkv', 'avi'] }],
-    onPicked: (path) => { setFile(path); void extractPreviewFrame(path) },
-  })
-
-// ── 画布与坐标映射（帧像素 = 预览图 natural 尺寸）──
-const canvasRef = ref<HTMLCanvasElement | null>(null)
-const imgRef = ref<HTMLImageElement | null>(null)
-let resizeObserver: ResizeObserver | null = null
-
-function displayMapping() {
-  const canvas = canvasRef.value
-  if (!canvas) return null
-  return { w: canvas.width, h: canvas.height, offsetX: 0, offsetY: 0 }
-}
-function frameSizeNow() {
-  const img = imgRef.value
-  if (!img || !img.naturalWidth) return null
-  return { w: img.naturalWidth, h: img.naturalHeight }
-}
-
-function onImgLoad(): void {
-  const img = imgRef.value
-  if (img) setFrameSize(img.naturalWidth, img.naturalHeight)
-  syncCanvas()
-  observeResize()
-}
-
-function syncCanvas(): void {
-  const img = imgRef.value
-  const canvas = canvasRef.value
-  if (!img || !canvas) return
-  canvas.width = img.clientWidth
-  canvas.height = img.clientHeight
-  redraw()
-}
-
-function observeResize(): void {
-  const img = imgRef.value
-  if (!img || resizeObserver || typeof ResizeObserver === 'undefined') return
-  resizeObserver = new ResizeObserver(() => syncCanvas())
-  resizeObserver.observe(img)
-}
-onBeforeUnmount(() => { resizeObserver?.disconnect(); resizeObserver = null })
-
-/** 重绘全部选区（拖拽中绘制实时框） */
-function redraw(): void {
-  const canvas = canvasRef.value
-  const ctx = canvas?.getContext('2d')
-  const display = displayMapping()
-  const frame = frameSizeNow()
-  if (!canvas || !ctx || !display || !frame) return
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  if (!isSelectMode.value) return
-  drawQuads(ctx, {
-    boxes: boxes.value,
-    activeIndex: activeIndex.value,
-    display,
-    frame,
-    allowRotation: allowRotation.value,
-    draggingQuad: draggingQuad.value,
-  })
-}
-
-watch([boxes, activeIndex, isSelectMode, framePath], redraw, { deep: true })
-
-// ── 拖拽状态（绘制层临时态；提交数据仍以 boxes 为准）──
-type DragMode = null | 'move' | 'rotate' | `vertex-${number}`
-const dragMode = ref<DragMode>(null)
-let dragStartQuad: Quad | null = null
-let dragStartWidget: { x: number; y: number } | null = null
-let rotateStartAngle = 0
-const draggingQuad = ref<Quad | null>(null)
-const hoverHandle = ref('')
-
-function relPos(e: MouseEvent): { x: number; y: number } {
-  const rect = canvasRef.value!.getBoundingClientRect()
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top }
-}
-
-function onDown(e: MouseEvent): void {
-  if (!framePath.value || isProcessing.value || isSmart.value) return
-  const display = displayMapping()
-  const frame = frameSizeNow()
-  if (!display || !frame) return
-  const { x: mx, y: my } = relPos(e)
-  const hit = hitTestQuad({
-    mx, my, boxes: boxes.value, activeIndex: activeIndex.value,
-    display, frame, allowRotation: allowRotation.value,
-  })
-  if (!hit) return // 原版空白按下无动作（不新增框，见 _add_box 按钮语义）
-  if (hit.index !== activeIndex.value) setActiveIndex(hit.index)
-  dragStartQuad = boxes.value[hit.index].map((p) => [p[0], p[1]] as [number, number])
-  dragStartWidget = { x: mx, y: my }
-  const handle = hit.handle as 'move' | `vertex-${number}`
-  dragMode.value = handle
-  // 右下角顶点 = 旋转把手：进入整体旋转模式（对照 mousePressEvent L413-424）
-  if (handle.startsWith('vertex-')) {
-    const vi = Number(handle.split('-')[1])
-    if (vi === rotateHandleIndex(dragStartQuad, allowRotation.value)) {
-      dragMode.value = 'rotate'
-      const cx = dragStartQuad.reduce((s, p) => s + p[0], 0) / 4
-      const cy = dragStartQuad.reduce((s, p) => s + p[1], 0) / 4
-      const fpt = widgetToFrame(mx, my, display, frame)
-      if (fpt) rotateStartAngle = Math.atan2(fpt.y - cy, fpt.x - cx)
-    }
-  }
-}
-
-function onMove(e: MouseEvent): void {
-  if (!framePath.value || isProcessing.value || isSmart.value) return
-  const display = displayMapping()
-  const frame = frameSizeNow()
-  if (!display || !frame) return
-  const { x: mx, y: my } = relPos(e)
-
-  // 拖拽中：几何计算全部走 vsrQuadLogic 纯函数（对照 mouseMoveEvent L426-498）
-  const mode = dragMode.value
-  if (mode !== null && dragStartQuad && dragStartWidget) {
-    const curF = widgetToFrame(mx, my, display, frame)
-    const startF = widgetToFrame(dragStartWidget.x, dragStartWidget.y, display, frame)
-    if (!curF || !startF) return
-    if (mode === 'rotate') {
-      const cx = dragStartQuad.reduce((s, p) => s + p[0], 0) / 4
-      const cy = dragStartQuad.reduce((s, p) => s + p[1], 0) / 4
-      const delta = Math.atan2(curF.y - cy, curF.x - cx) - rotateStartAngle
-      draggingQuad.value = applyRotation(dragStartQuad, delta, frame)
-    } else if (mode === 'move') {
-      draggingQuad.value = moveQuad(dragStartQuad, curF.x - startF.x, curF.y - startF.y, frame)
-    } else {
-      draggingQuad.value = dragVertex(
-        dragStartQuad, Number(mode.split('-')[1]), curF.x, curF.y, frame, allowRotation.value,
-      )
-    }
-    redraw()
-    return
-  }
-
-  // 悬停光标提示（对照 L500-517）
-  const hit = hitTestQuad({
-    mx, my, boxes: boxes.value, activeIndex: activeIndex.value,
-    display, frame, allowRotation: allowRotation.value,
-  })
-  hoverHandle.value = hit ? hit.handle : ''
-}
-
-function onUp(): void {
-  if (draggingQuad.value) updateActiveQuad(draggingQuad.value)
-  dragMode.value = null
-  dragStartQuad = null
-  dragStartWidget = null
-  draggingQuad.value = null
-  redraw()
-}
-
-const cursorStyle = computed(() => {
-  if (isSmart.value || isProcessing.value) return 'default'
-  if (dragMode.value === 'rotate') return 'grabbing'
-  if (hoverHandle.value === 'move') return 'move'
-  if (hoverHandle.value.startsWith('vertex-')) {
-    const quad = boxes.value[activeIndex.value]
-    if (!quad) return 'crosshair'
-    const vi = Number(hoverHandle.value.split('-')[1])
-    if (vi === rotateHandleIndex(quad, allowRotation.value)) return 'grab'
-    const cx = quad.reduce((s, p) => s + p[0], 0) / 4
-    const cy = quad.reduce((s, p) => s + p[1], 0) / 4
-    return (quad[vi][0] - cx) * (quad[vi][1] - cy) >= 0 ? 'nwse-resize' : 'nesw-resize'
-  }
-  return 'crosshair'
-})
-
-// ── 选区列表辅助 ──
-function removeBoxAt(i: number): void {
-  setActiveIndex(i)
-  deleteActiveBox()
-}
-
-// ── 提交 / 取消 / 结果 ──
-const statusText = computed(() => {
-  if (cancelled.value) return vm.CANCELLED_STATUS_TEXT
-  switch (status.value) {
-    case 'queued':
-      return uploadPercent.value < 100 ? `上传中 ${uploadPercent.value}%` : '排队中'
-    case 'processing':
-      return `处理中 ${progress.value}%`
-    case 'done':
-      return '已完成'
-    case 'failed':
-      return '失败'
-    default:
-      return ''
-  }
-})
-
+  mode,
+  purpose,
+  watermarkText,
+  setMode,
+  setPurpose,
+  boxes,
+  activeIndex,
+  allowRotation,
+  isSmart,
+  isSelectMode,
+  addBox,
+  deleteActiveBox,
+  setActiveIndex,
+  updateActiveQuad, resetBoxes,
+  boxLabel,
+  canStart,
+  cancelled,
+  status,
+  progress,
+  errorMsg,
+  resultUrl,
+  resultFullUrl,
+  resultPath,
+  isProcessing,
+  uploadPercent,
+  submit,
+  cancel,
+  resetResult,
+  setFrameSize,
+  setFile,
+  downloadResult,
+  downloading,
+  openResultDir,
+  autoSaving,
+  urlCopied,
+  copyResultUrl,
+  modeOptions,
+  purposeOptions,
+  onModeChange,
+  onPurposeChange,
+  framePath,
+  previewVideo,
+  durationS,
+  currentT,
+  fps,
+  extractPreviewFrame,
+  onPreviewLoaded,
+  onPreviewLoadedData,
+  onPreviewSeeked,
+  captureFrameFromVideo,
+  seekToTime,
+  srcPath,
+  fileName,
+  isDragging,
+  pickFile,
+  onDrop,
+  onDragOver,
+  onDragLeave,
+  resolveSrc,
+  canvasRef,
+  imgRef,
+  onImgLoad,
+  onDown,
+  onMove,
+  onUp,
+  cursorStyle,
+  removeBoxAt,
+  statusText,
+} = pane
 </script>
 
 <template>

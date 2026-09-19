@@ -498,8 +498,30 @@ function buildTemplateClipTrio(p, phrase, canvasW = 0, canvasH = 0) {
  * 条目 {phrase, startUs, durUs, resourceId}；resourceId 容错剥 'jy_' 前缀；
  * 非法条目丢弃。返回 Array<Array> 或 null（无输入）。
  */
-function normalizeTextTemplateClips(textTemplateClips, videoCount) {
-  if (!Array.isArray(textTemplateClips)) return null
+/** 花字事件归一化（2026-09-19 用户裁决「统一」：词源=服务端命中）：
+ *  逐视频 [{word,startUs,durUs}]（startUs 为视频内局部系，与 textTemplateClips 同口径）；
+ *  null/缺省 → null（调用方回落 fxWords×SRT 旧路径，兼容旧 payload） */
+function normalizeFancyEvents(fancyEvents, videoCount) {
+  if (!Array.isArray(fancyEvents)) return []
+  const out = []
+  for (let i = 0; i < videoCount; i++) {
+    const arr = Array.isArray(fancyEvents[i]) ? fancyEvents[i] : []
+    const list = []
+    for (const ev of arr) {
+      if (!ev) continue
+      const word = String(ev.word ?? ev.text ?? '').trim()
+      const startUs = Math.max(0, Math.round(Number(ev.startUs ?? ev.start ?? 0)))
+      const durUs = Math.round(Number(ev.durUs ?? ev.duration ?? 0))
+      if (!word || durUs <= 0) continue
+      list.push({ word, startUs, durUs })
+    }
+    list.sort((a, b) => a.startUs - b.startUs)
+    out.push(list)
+  }
+  return out
+}
+
+function normalizeTextTemplateClips(textTemplateClips, videoCount) {  if (!Array.isArray(textTemplateClips)) return null
   const out = []
   for (let i = 0; i < videoCount; i++) {
     const arr = Array.isArray(textTemplateClips[i]) ? textTemplateClips[i] : []
@@ -950,7 +972,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。
  *  sfxPaths（2026-09-18 用户裁决）：音效池=服务端音频库剪映音效库 <2s 条目
  *  下载产物（主进程 resolveJianyingSfxPool 解析），按文字模板命中全局索引循环指派。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, voiceClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
+function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, fancyEvents = null, voiceClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -1125,7 +1147,11 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
       const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []
       const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
       const hasTplClips = textTplExpected
-      const effKinds = hasTplClips ? kwKinds.filter((k) => k !== 'tpl') : kwKinds
+      // 花字事件（2026-09-19 用户裁决「统一」）：词源=服务端命中（与文字模板同源）——
+      // 事件存在时 fxWords×SRT 的旧花字重匹配让位（数据源唯一，不再双轨重复落词）
+      const fancyEvClips = normalizeFancyEvents(fancyEvents, clips.length)
+      const hasFancyEvents = fancyEvClips.some((l) => l.length)
+      const effKinds = kwKinds.filter((k) => (k !== 'tpl' || !hasTplClips) && (k !== 'fancy' || !hasFancyEvents))
       // 2026-09-19 用户裁决修正：预设查不到 → 同一服务端命中（词+时间点）原样落纯文本
       // 关键词段（fallback 由 appendTextTemplateSegments 逐命中调用），不再整轨让位、
       // 不再换数据源重匹配。fxTrackCache.tpl 复用为兜底蓝字轨（与旧口径同一轨道复用键）
@@ -1140,6 +1166,17 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
               effectId: kind === 'fancy' ? fancyEffectId : tplEffectId,
             })
           }
+        }
+        // 花字事件轨（2026-09-19 用户裁决「统一」）：服务端命中（词+时间点）原样落段，
+        // 与字幕 SRT 是否存在无关；词+时间不再经本地词典×SRT 重推导
+        for (const ev of fancyEvClips[i] || []) {
+          const startUs = cursorUs + ev.startUs
+          let durUs = ev.durUs
+          const winEnd = cursorUs + clip.durationUs
+          if (startUs >= winEnd) continue
+          if (startUs + durUs > winEnd) durUs = Math.max(0, winEnd - startUs)
+          if (durUs <= 0) continue
+          appendKeywordSegment(tracks, materials, ev.word, startUs, durUs, fxTrackCache, 'fancy', { anim: textAnim, effectId: fancyEffectId })
         }
         if (tplClips && tplClips[i] && tplClips[i].length) {
           try {

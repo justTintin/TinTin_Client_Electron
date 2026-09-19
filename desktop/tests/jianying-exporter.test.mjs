@@ -733,6 +733,37 @@ test('exportMultiToDraft：预设缺失 → 同一命中（词+时间点）落�
   assert.deepEqual(kwTrack.segments[0].target_timerange, { start: 500000, duration: 1500000 })
 })
 
+test('exportMultiToDraft：fancyEvents → 服务端命中原样落花字段（2026-09-19 统一词源；fxWords 不再参与）', () => {
+  const v = path.join(tmpRoot, 'dubbed_f1.mp4')
+  fs.writeFileSync(v, 'x')
+  const srt = path.join(tmpRoot, 'f1.srt')
+  fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:02,000\n限时上新199元\n', 'utf-8')
+  const r = exportMultiToDraft({
+    videoPaths: [v],
+    srtPaths: [srt],
+    fxWords: [], // 本地词表空：花字仍须按事件落段（词源已统一为服务端命中）
+    fxKinds: ['fancy'],
+    fancyEvents: [
+      [{ word: '199元', startUs: 500000, durUs: 1500000 }],
+    ],
+    draftName: '花字事件统一测试',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  // 花字段=事件原值（词+时间点），不依赖本地词表×SRT 重匹配
+  const goldTexts = content.materials.texts.filter((t) => {
+    try { return JSON.parse(t.content).text === '199元' } catch (_) { return false }
+  })
+  assert.equal(goldTexts.length, 1, '事件应原样落一个花字段')
+  // 颜色=花字金 FFD700（KEYWORD_TRACK_STYLES.fancy）
+  const st = JSON.parse(goldTexts[0].content).styles[0]
+  assert.equal(st.fill.content.solid.color[0], 1)
+  assert.ok(Math.abs(st.fill.content.solid.color[1] - 215 / 255) < 1e-9)
+  const fancyTrack = content.tracks.find((t) => t.type === 'text' && t.segments.some((s) => s.material_id === goldTexts[0].id))
+  assert.deepEqual(fancyTrack.segments[0].target_timerange, { start: 500000, duration: 1500000 })
+})
+
 test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的素材段静音（音频三轨体系）', () => {
   const v1 = path.join(tmpRoot, 'dubbed_v1.mp4')
   const v2 = path.join(tmpRoot, 'dubbed_v2.mp4')

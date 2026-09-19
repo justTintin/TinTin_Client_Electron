@@ -498,6 +498,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
     tplEffectId?: string
     /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
+    /** 2026-09-19 用户裁决「统一」：花字轨词源=服务端命中（与文字模板同源
+     *  textFxHitsForExport；离线兜底=本地提取器）——逐视频事件（词+时间点）原样落段 */
+    fancyEvents?: Array<Array<{ word: string; startUs: number; durUs: number }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
     /** 2026-09-17：音效兜底来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板
@@ -749,7 +752,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
     const textTemplateClips: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>> = []
     const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     const fancyEvents: Array<Array<{ word: string; startUs: number; durUs: number }>> = []
-    const fxWords = fancyEnabled.value ? extractTextFxWords() : []
     let noSubClips = 0
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i]
@@ -794,9 +796,11 @@ async function exportAllToJianyingDraft(): Promise<void> {
       // 文字模板命中（2026-09-17 用户裁决）：本地缓存优先（预览/合成已预取的命中，
       // 预览位置=命中位置）；未命中本地现算（关键词×行窗口，phrase=命中关键词）。
       // 不再调服务端 match——命中判定属客户端映射职责。
+      // 关键词命中一次取数（2026-09-19 用户裁决「统一」）：服务端 match 权威
+      // （textFxHitsByVideo 缓存；离线兜底=本地提取器现算）——文字模板与花字轨同源
+      // 分流，不再各自为政（花字此前只吃本地词典 fxWords，服务端命中从未参与）
+      const hits = textFxHitsForExport(c, rows2)
       if (textFxEnabled.value) {
-        // 命中缓存键=候选自身（与预览/合成预取同源键）；未命中本地现算
-        const hits = textFxHitsForExport(c, rows2)
         textTemplateClips.push(hits
           .filter((h) => h.templateId && h.end > h.start)
           .map((h) => ({
@@ -814,25 +818,27 @@ async function exportAllToJianyingDraft(): Promise<void> {
       } else {
         voiceClips.push([])
       }
-      // 花字命中（fancyEnabled：命中关键词在成片内的时间窗）——花字轨=纯文本轨（无音效职责）
-      if (fancyEnabled.value && fxWords.length) {
-        const evs: Array<{ word: string; startUs: number; durUs: number }> = []
-        for (const r of rows2) {
-          for (const w of fxWords) {
-            if (r.text.toLowerCase().includes(w.toLowerCase())) evs.push({ word: w, startUs: Math.round(r.start * 1e6), durUs: Math.round((r.end - r.start) * 1e6) })
-          }
-        }
-        fancyEvents.push(evs)
+      // 花字事件=同一命中（词+时间点）原样落段（2026-09-19 用户裁决「统一」）。
+      // 原实现：fxWords×行 重匹配且 fancyEvents 组装后从未传给导出器（死变量）——
+      // 草稿花字轨此前实际只吃过本地词典，服务端命中从未参与
+      if (fancyEnabled.value) {
+        fancyEvents.push(hits
+          .filter((h) => h.end > h.start)
+          .map((h) => ({
+            word: h.text,
+            startUs: Math.round(h.start * 1e6),
+            durUs: Math.round((h.end - h.start) * 1e6),
+          })))
       } else {
         fancyEvents.push([])
       }
     }
-    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：①花字开启但本地词表为空 →
-    // 花字轨缺席（花字词源=本地提取器，唯一硬依赖；关键词命中主链=服务端 match，模板
-    // 轨不依赖本地词表）；②文字模板开启但逐视频命中全空 → 明确告知不再静默出片
-    if (fancyEnabled.value && cands.length && !extractTextFxWords().length) {
-      clientError('video-montage', '导出花字词表为空', '本地卖点词提取器未从口播文案提取到任何词（花字轨将缺席）')
-      notify('花字词表为空', '本次口播文案未提取到任何卖点词，花字轨将缺席。\n提取器识别范围：价格（如「199元」「低至99」）、数字参数（如「5000毫安」「30天」）、常见卖点词（如「防水」「快充」「大容量」）。\n可改写文案补充卖点表述后重试。')
+    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：花字/关键词统一词源=
+    // 服务端命中（离线兜底=本地提取器）。花字全空=服务端无命中，或离线且本地兜底
+    // 词表也空 → 据实告知不再静默；文字模板命中全空 → 命中判定结果告知
+    if (fancyEnabled.value && cands.length && fancyEvents.every((t) => !t.length)) {
+      clientError('video-montage', '导出花字轨为空', `候选 ${cands.length} 段均无关键词命中（服务端 match 无命中，或离线且本地兜底词表为空）`)
+      notify('花字轨无命中', '本次导出花字轨为空：服务端关键词无命中；若服务端离线，本地兜底词表也未从文案提取到卖点词（识别范围：价格/数字参数/常见卖点词）。')
     } else if (textFxEnabled.value && cands.length && textTemplateClips.every((t) => !t.length)) {
       const reason = activeTextPool.value.length
         ? '关键词与文案无命中（可调高「关键词密度」或更换模板池后重试）'
@@ -857,6 +863,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
       subtitleBoxOpacity: subtitleBgOpacity.value,
       subtitleFontSize: subtitleFontSize.value,
       textTemplateClips,
+      // 2026-09-19 用户裁决「统一」：花字轨词源=服务端命中（与文字模板同源），逐视频
+      // 事件（词+时间点）随导出下发——导出器按事件落段，不再 fxWords×SRT 重匹配
+      fancyEvents,
       voiceClips,
       bgmPath: bgmPath.value,
       // 2026-09-18 用户裁决：逐视频 BGM（与 cands 平行；未指派的行=空串→导出器回退全局 bgmPath）

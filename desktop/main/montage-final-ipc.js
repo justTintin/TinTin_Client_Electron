@@ -1108,6 +1108,8 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             videoEffectName: p.videoEffectName,
             // 2026-09-15：原生文字模板命中（match textfx_clips 权威指派）→ 三件套轨
             textTemplateClips: p.textTemplateClips,
+            // 2026-09-19 用户裁决「统一」：花字轨词源=服务端命中（与文字模板同源）→ 按事件落段
+            fancyEvents: p.fancyEvents,
             // 2026-09-15：逐视频口播 wav → 独立口播轨（对应素材段自动静音）
             voiceClips: p.voiceClips,
             // 2026-09-17 用户裁决·定义修正：音效轨跟随「文字模板命中位置」（与花字轨无关）。

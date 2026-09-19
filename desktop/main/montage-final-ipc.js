@@ -341,16 +341,19 @@ function buildSrtFromTiming(text, timing, videoDur) {
  *    burn_subtitle 只决定「是否把字幕烧进画面」，与传不传字幕数据无关
  *    （/guide：花字 subtitle_sync 与文字模板命中均「需同任务字幕」，命中在合成
  *    请求内做、服务端不保存待命中的字幕 → 必须随请求带全）；
- *  · 2026-09-11 用户裁决：不再传本地提取的词表（text_template_words）——关键词
- *    命中由服务端自行完成（常用关键词∪内置卖点词；不足由 LLM 从字幕行补足，
- *    text_template_match_llm 默认开）；客户端也不再预传词表到 /text_templates/keywords；
- *  · match 模式必填 text_template_match_ids（客户端模板池，命中行从池中随机选一），
- *    漏传则服务端无池可用（/guide 决策1/11）。
- *  · 2026-09-13 接口对齐（用户裁决：预览=成片一致）：渲染层已预取 /text_templates/match
- *    回执 match_id（服务端保存 events 7 天）→ concat 改传 text_template_match_id，
- *    服务端直接用保存的 events 烧制不重算；此时不再传 match_enabled/ids/density。
- *    无 match_id（预取失败/离线）→ 退回旧口径由 concat 自行命中。 */
-function buildServerFxFields(fx, srt, matchId) {
+ *  · 2026-09-11 曾停发词表（text_template_words，当时命中全在服务端）；
+ *  · 2026-09-19 架构（方案A·词表层，docs/客户端服务端接口对齐 Q1）：match 接口下线
+ *    → 词源回到客户端（产品资料关联关键词，未关联词时 LLM 兜底提词），命中结果
+ *    fxLines 随 payload 下发 → 本函数从 fxLines 去重出词表，恢复下发
+ *    `text_template_words` / `fancy_words`（JSON 数组串，2026-09-11 前同格式），
+ *    服务端按词表命中 → 成片词源与预览一致。match_id 复用机制作废（不再下发）。 */
+function buildServerFxFields(fx, srt, hits = []) {
+  // 命中词表（去重保序）：fxLines=渲染层 resolveKeywordHits 产物（词+时间+模板）
+  const hitWords = []
+  for (const h of Array.isArray(hits) ? hits : []) {
+    const w = String((h && (h.text || h.word)) || '').trim()
+    if (w && !hitWords.includes(w)) hitWords.push(w)
+  }
   const fields = {}
   // 字幕数据随任一依赖字幕的特效下发（不依赖 burn_subtitle 开关）
   if (srt && (fx.addSubtitles || fx.fancyText || fx.textFxEnabled)) {
@@ -393,6 +396,8 @@ function buildServerFxFields(fx, srt, matchId) {
   }
   if (fx.fancyText) {
     fields.fancy_enabled = 'true'
+    // 2026-09-19 方案A·词表层：花字词源与文字模板同源（客户端命中词表）
+    if (hitWords.length) fields.fancy_words = JSON.stringify(hitWords)
     fields.fancy_style = String(fx.fancyStyle || 'gold')
     fields.fancy_position = String(fx.fancyPosition || 'upper_middle')
     fields.fancy_timing = 'subtitle_sync'
@@ -417,16 +422,15 @@ function buildServerFxFields(fx, srt, matchId) {
       fields.text_template_id = String(fx.textTemplateId)
     } else {
       // 随机样式 → 关键词命中模式：match_enabled（总开关）+ match_ids（客户端模板
-      // 池，命中行从池中随机选一）+字幕。2026-09-19 架构：/text_templates/match 下线
-      // → match_id 不再下发（2026-09-13 的「预取回执复用」机制作废），服务端 concat
-      // 无 match_id 时按其旧口径自行命中（常用词∪内置卖点词 + LLM 从字幕补足）。
-      // ⚠️ 已登记待对齐：该自行命中与客户端产品关联词命中是两套判定 → 预览≠成片，
-      //    且产品关联词未参与服务端链路（见 docs/客户端服务端接口对齐_2026-09-19.md Q1）。
+      // 池，命中行从池中随机选一）+ 词表（text_template_words，2026-09-19 方案A·
+      // 词表层恢复下发，见函数头）+字幕。2026-09-19 架构：/text_templates/match 下线
+      // → match_id 不再下发（2026-09-13 的「预取回执复用」机制作废），服务端按词表
+      // 命中，不再需要 match_id。
       fields.text_template_match_enabled = 'true'
       if (Array.isArray(fx.textTemplateMatchIds) && fx.textTemplateMatchIds.length) {
         fields.text_template_match_ids = JSON.stringify(fx.textTemplateMatchIds.map((x) => String(x)))
       }
-      if (matchId) fields.text_template_match_id = String(matchId)
+      if (hitWords.length) fields.text_template_words = JSON.stringify(hitWords)
       const md = String(fx.matchDensity || '').trim().toLowerCase()
       if (md === 'low' || md === 'mid' || md === 'high') fields.text_template_match_density = md
     }
@@ -505,7 +509,7 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
     // 2026-09-18 用户裁决：字幕重切段后处理在克隆完成即执行 → 合成上传优先消费
     //   该 SRT 资产（LLM 重切段 + timing 映射的单一事实源）；缺失回退旧口径现建
     const srtText = readProcessedSrtAsset(sub) || buildSrtFromTiming(sub.text, timing, videoDur)
-    fields = buildServerFxFields(fx, srtText, sub.matchId)
+    fields = buildServerFxFields(fx, srtText, Array.isArray(sub.fxLines) ? sub.fxLines : [])
   }
   // 回传源规格：否则服务端按默认 1080x1920@30 改写产物（实测坑）
   if (spec && spec.width > 0 && spec.height > 0) {

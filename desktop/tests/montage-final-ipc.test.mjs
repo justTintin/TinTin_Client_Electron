@@ -177,23 +177,23 @@ test('buildServerFxFields: lutRestore 勾选 → lut_restore=true；默认/未�
   assert.equal(sfx.text_template_match_enabled, 'true', '与文字模板字段互不干扰')
 })
 
-test('buildServerFxFields: random + matchId → match_enabled/ids 仍传 + match_id（2026-09-13 文档口径）', () => {
-  // 文档：传 match_id 时勾选 id 仍以 text_template_match_ids 为准 → 两者都传；
-  // 服务端用保存的 events 烧制不重算（预览=成片一致），保留 7 天过期 400 重 match
+test('buildServerFxFields: match_id 已随 /text_templates/match 下线作废，任何入参都不再下发（2026-09-19）', () => {
+  // 2026-09-13 曾有「预取回执 match_id 复用」口径；match 接口删除后该机制作废，
+  // 服务端 concat 无 match_id 时按词表（text_template_words）或旧口径自行命中
   const f = M.buildServerFxFields(
     { textFxEnabled: true, textTemplateId: 'random', textTemplateMatchIds: ['tt_1', 'tt_5'], matchDensity: 'mid' },
-    '', 'mt_abc123',
+    '',
   )
   assert.equal(f.text_template_enabled, 'true')
   assert.equal(f.text_template_match_enabled, 'true')
   assert.deepEqual(JSON.parse(f.text_template_match_ids), ['tt_1', 'tt_5'])
-  assert.equal(f.text_template_match_id, 'mt_abc123')
+  assert.ok(!('text_template_match_id' in f))
 })
 
-test('buildServerFxFields: 指定模板 + matchId → 仍走 text_template_id（matchId 不适用指定模式）', () => {
+test('buildServerFxFields: 指定模板 → 仍走 text_template_id（match 模式字段不适用）', () => {
   const f = M.buildServerFxFields(
     { textFxEnabled: true, textTemplateId: 'tt_3' },
-    '', 'mt_abc123',
+    '',
   )
   assert.equal(f.text_template_id, 'tt_3')
   assert.ok(!('text_template_match_id' in f))
@@ -505,4 +505,35 @@ test('readProcessedSrtAsset: srtPath 存在非空直读；缺失/空文件/无 s
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ── 方案A·词表层（2026-09-19）：词源=产品关联词/LLM 兜底 → fxLines 去重词表随 concat 下发 ──
+
+test('buildServerFxFields: 方案A词表层——fxLines 去重出 text_template_words/fancy_words', () => {
+  const hits = [
+    { text: '低延迟', start: 0, end: 3, templateId: 'a' },
+    { text: '低延迟', start: 5, end: 7, templateId: 'b' }, // 重复词去重
+    { text: '大容量', start: 3, end: 5, templateId: 'c' },
+  ]
+  const f = M.buildServerFxFields(
+    { textFxEnabled: true, fancyText: true, textTemplateMatchIds: ['a', 'b'] },
+    '1\n00:00:00,000 --> 00:00:02,000\n第一句',
+    hits,
+  )
+  assert.deepEqual(JSON.parse(f.text_template_words), ['低延迟', '大容量'])
+  assert.deepEqual(JSON.parse(f.fancy_words), ['低延迟', '大容量'])
+  assert.equal(f.text_template_match_enabled, 'true')
+  assert.deepEqual(JSON.parse(f.text_template_match_ids), ['a', 'b'])
+  // match_id 不再下发（/text_templates/match 下线，回执复用机制作废）
+  assert.ok(!('text_template_match_id' in f))
+})
+
+test('buildServerFxFields: 无命中不传词表；textFx 关闭则文字模板块整块缺席', () => {
+  const f1 = M.buildServerFxFields({ textFxEnabled: true, textTemplateMatchIds: ['a'] }, 'srt', [])
+  assert.ok(!('text_template_words' in f1), '零命中不应传空词表（语义待服务端定义，宁缺勿错）')
+  const f2 = M.buildServerFxFields({ fancyText: true, textFxEnabled: false }, 'srt', [
+    { text: '防水', start: 0, end: 1 },
+  ])
+  assert.ok(!('text_template_words' in f2), 'textFx 关闭不应有文字模板块')
+  assert.deepEqual(JSON.parse(f2.fancy_words), ['防水'], '花字词表独立生效')
 })

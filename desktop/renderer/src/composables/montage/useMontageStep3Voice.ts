@@ -35,12 +35,14 @@ export interface MontageStep3Context {
   step4Candidates: Ref<string[]>
   collectCandidates: (useSource?: boolean) => Promise<string[]>
   ensureProcessedSrt: (text: string, wavPath: string, candidate: string) => Promise<string>
+  /** 产品信息（2026-09-19 架构：关键词命中词源=产品资料关联关键词，透传 textfx 子编排） */
+  sharedProductInfo: Ref<{ brand: string; product: string; model: string; extra: string; keywords: string[] }>
 }
 
 export function useMontageStep3Voice(ctx: MontageStep3Context) {
   const { statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
-    step4Candidates, collectCandidates, ensureProcessedSrt } = ctx
+    step4Candidates, collectCandidates, ensureProcessedSrt, sharedProductInfo } = ctx
 
   // ── Step3 口播配音（对照 step3_voice_view.py 逐控件 + VoiceCloneWorker api 模式 +
   // VideoDubbingWorker；TTS 直连用户可改 apiUrl，初值跟随 server_url + /indextts/tts；
@@ -90,13 +92,13 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
   const fancyPreviews = ref<Record<string, string>>({})
   const fancyTemplatesLoading = ref(false)
   // ── 文字模板 textfx（已迁 montage/useMontageTextFx.ts，铁律 10 E3b 纯搬迁）──
-  const tfx = useMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates })
+  const tfx = useMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo })
   const {
     textFxEnabled, lutRestore, lutId, lutList, lutListLoading, loadLuts,
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
-    textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates, extractTextFxWords,
-    fetchTextFxHits, currentMatchTemplateIds, refreshTextFxTracks,
+    textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates,
+    resolveKeywordHits, currentMatchTemplateIds, refreshTextFxTracks,
   } = tfx
 
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
@@ -879,7 +881,7 @@ function clearVoiceProgressListener(): void {
     textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
-    loadLuts, loadCatalogLanes, extractTextFxWords, fetchTextFxHits,
+    loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,
     loadRefSamples, selectRefAudio, pickNewSampleFile, transcribeNewSample,

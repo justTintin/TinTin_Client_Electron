@@ -308,56 +308,8 @@ declare interface TintinBridgeServer {
   fancyServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
   /** 服务端文字模板库（GET /text_templates/templates，响应 {items,total}；与花字独立体系；离线 null） */
   textfxServerTemplates(): Promise<{ templates: Array<Record<string, unknown> & { template_id: string; name: string }>; total: number } | { error: string } | null>
-  /** 关键词命中判定（POST /text_templates/match；2026-09-11 服务端新增，合成之前自查：
-   *  「这个视频命中几个关键词、合成时会加几个动画」；与 /montage/concat 命中模式共用
-   *  选择逻辑（预览所见即合成所做）。离线 null；400（空字幕等）→ {error}） */
-  textfxMatchKeywords(payload: {
-    /** 字幕行（与 srt 二选一，本端一律传行数组） */
-    rows?: Array<{ text: string; start: number; end: number }>
-    srt?: string
-    /** 本次关键词（缺省用服务端「常用关键词」库——本端不传，由服务端判定） */
-    keywords?: string[]
-    /** 密集度 low/mid/high（每 30 秒 3/6/10，保底 3；缺省 high） */
-    density?: string
-    /** 时长（秒）；本端不传——与合成端同口径由服务端取字幕末行 t1 */
-    /** 候选文字模板 id（与 concat text_template_match_ids 同源，2026-09-13 接口对齐）：
-     *  返回 textfx_clips 按序轮换标注 template_id；服务端保存 events 7 天供 match_id 复用 */
-    templateIds?: string[]
-    duration?: number
-    /** 按合成口径用 LLM 补足到保底数量（本端 true=预览所见即合成所做） */
-    llmFill?: boolean
-  }): Promise<{
-    lines: Array<{
-      index: number
-      start: number
-      end: number
-      text: string
-      /** 命中关键词（含内置卖点词） */
-      hit: boolean
-      matched_keywords: string[]
-      /** 合成时会加文字模板动画 */
-      selected: boolean
-      /** keyword/llm/fallback */
-      source: string
-    }>
-    summary: {
-      total_lines: number
-      hit_lines: number
-      /** 命中词列表（去重；实测 2026-09-11 为字符串数组） */
-      matched_keywords: string[]
-      target: number
-      will_animate: number
-      llm_added: number
-      fallback_added: number
-      thinned_out: number
-      span?: number
-      density?: string
-      capped?: boolean
-    }
-    events: Array<[number, number, string]>
-    keywords_used?: { user: string[]; builtin_count: number }
-    llm_fill?: boolean
-  } | { error: string } | null>
+  // textfxMatchKeywords 已删除（2026-09-19 架构：服务端 /text_templates/match 下线，
+  // 客户端不再调用关键词命中——词源=产品资料关联关键词，产品未关联词 LLM 兜底提词）
   /** 订阅模板预览图生成进度 */
   fancyOnPreviewProgress(cb: (d: { idx: number; total: number }) => void): () => void
   /** 服务端字体列表（GET /config/fonts） */

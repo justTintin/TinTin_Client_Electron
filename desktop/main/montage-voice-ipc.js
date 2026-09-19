@@ -555,40 +555,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     }
   })
 
-  // ── textfx:matchKeywords — 关键词命中判定（POST /text_templates/match）──
-  // 2026-09-11 服务端新增（/guide：合成之前自查「这个视频命中几个关键词、合成时会加
-  // 几个动画」；与 /montage/concat 命中模式共用计划选择逻辑 → 预览所见即合成所做）。
-  // 不建任务/不出片/不碰队列；空字幕/非法行 → 400（错误上抛渲染层呈空轨，不造数）。
-  ipcMain.handle('textfx:matchKeywords', async (_e, payload) => {
-    try {
-      const p = payload && typeof payload === 'object' ? payload : {}
-      const body = {}
-      if (Array.isArray(p.rows) && p.rows.length) {
-        body.subtitle_rows = p.rows.map((r) => ({
-          text: String((r && r.text) || ''),
-          start: Number(r && r.start) || 0,
-          end: Number(r && r.end) || 0,
-        }))
-      } else if (typeof p.srt === 'string' && p.srt.trim()) {
-        body.srt = p.srt
-      } else {
-        return { error: '缺少字幕（rows/srt 二选一）' }
-      }
-      if (Array.isArray(p.keywords) && p.keywords.length) body.keywords = p.keywords.map((k) => String(k))
-      // 2026-09-13 接口对齐：勾选模板候选随 match 下发（与 concat text_template_match_ids
-      // 同源）——返回 textfx_clips 逐事件标注 template_id，预览/素材/concat 三方同源
-      if (Array.isArray(p.templateIds) && p.templateIds.length) body.template_ids = p.templateIds.map((k) => String(k))
-      if (typeof p.density === 'string' && p.density) body.density = p.density
-      if (Number.isFinite(Number(p.duration)) && Number(p.duration) > 0) body.duration = Number(p.duration)
-      body.llm_fill = !!p.llmFill
-      // LLM 补足服务端最长 15s，30s 覆盖网络往返
-      const res = await httpRequest('POST', '/text_templates/match', { body, timeout: 30000 })
-      return res.data
-    } catch (err) {
-      if (isExpectedOfflineError(err)) return null
-      return { error: err.message }
-    }
-  })
+  // ── textfx:matchKeywords 已删除（2026-09-19 架构：服务端 /text_templates/match 下线，
+  // 客户端不再调用关键词命中——词源=产品资料关联关键词（渲染层对字幕行命中），
+  // 产品未关联词时渲染层走 LLM 兜底（llm:chat）提词 ──
 
   // ── fancy:ensurePreviews — 补齐缺失的模板预览图（逐个 ffmpeg 生成，后台调用）──
   // 2026-09-09 对齐：payload.templates 可选传入服务端 /fancy/templates 模板（与本地

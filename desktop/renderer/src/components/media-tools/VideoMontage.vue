@@ -23,7 +23,7 @@ import MontageStep2Panel from './MontageStep2Panel.vue'
 import MontageStep3Panel from './MontageStep3Panel.vue'
 import MontageStep1Panel from './MontageStep1Panel.vue'
 import { montageShellKey } from './montageUiContext'
-import { markdownListLines, stripProductCodeFromModel } from '@/composables/opsProductLibraryLogic'
+import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
 import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/videoMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
@@ -227,6 +227,9 @@ function onPickProduct(it: PickerItem): void {
   // 2026-09-19 用户报障：型号不填商品编码（【981-001277】类尾部段剥离）；
   // goods_no 本身是编码，不再作为型号兜底
   productDlg.value.model = stripProductCodeFromModel(it.model)
+  // 2026-09-19 架构：产品资料关联关键词随选择带回（导出/合成时客户端据此命中；
+  // 手动填写的产品无关联词 → 导出时 LLM 兜底提词）
+  productDlg.value.keywords = parseProductKeywords(it)
   // 核心卖点逐条拼入补充卖点（多行，可继续手改/留空）
   productDlg.value.extra = markdownListLines(it.selling_points).join('\n')
 }

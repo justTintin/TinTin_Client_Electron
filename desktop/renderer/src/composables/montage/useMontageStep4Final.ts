@@ -43,7 +43,7 @@ export interface MontageStep4Context {
   loadTextTemplates: Step3Api["loadTextTemplates"]
   refreshTextFxTracks: Step3Api["refreshTextFxTracks"]
   currentMatchTemplateIds: Step3Api["currentMatchTemplateIds"]
-  fetchTextFxHits: Step3Api["fetchTextFxHits"]
+  resolveKeywordHits: Step3Api["resolveKeywordHits"]
   scanVoiceDir: Step3Api["scanVoiceDir"]
   activeTextPool: Step3Api["activeTextPool"]
   activeTextCount: Step3Api["activeTextCount"]
@@ -77,7 +77,7 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
     sharedProductInfo, splitResolution, voiceRows, voiceDirInput,
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
-    currentMatchTemplateIds, fetchTextFxHits,
+    currentMatchTemplateIds, resolveKeywordHits,
     scanVoiceDir, activeTextPool,
     activeTextCount, selectedFancyTemplate, selectedSubtitlePreset, selectedFontFamily,
     addSubtitles, subtitleStyleKey, subtitleBgOpacity, subtitleAnimKey, fancyEnabled,
@@ -324,29 +324,22 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
           fxLines: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>
           matchId: string
         } => !!x)
-      // 文字模板命中预取（2026-09-13 接口对齐：两种链路都预取——本地用 events/clips
-      // 下素材+兜底；服务端把 match 回执 match_id 随 concat 下发，服务端直接用保存的
-      // events 烧制不重算 → 预览=成片一致。离线/失败 → 本地空数组不烧 / 服务端无
-      // match_id 退回旧口径由 concat 自行命中）
+      // 文字模板命中预取（2026-09-19 架构：/text_templates/match 删除，客户端不再调用——
+      // 命中=产品资料关联关键词（客户端字幕行窗口命中），产品未关联词 → LLM 兜底提词。
+      // match_id 回执不复存在（st.matchId 恒空串），服务端 concat 无 match_id 时
+      // 退回旧口径自行命中）
       if (textFxEnabled.value && subtitleTexts.length) {
-        statusText.value = '正在获取文字模板命中...'
-        // 勾选模板随 match 下发（与 concat text_template_match_ids 同源）：
-        // 随机=当次随机池子集；指定=该模板自身
-        const matchTemplateIds = currentMatchTemplateIds()
-        // 串行取数 + 失败归集（2026-09-12 日志实锤：并行 3 连击期间服务端 match
-        // 500/ECONNRESET 全灭 → textFxHits=0 → 成片既无关键词也无动画且无提示；
-        // 串行+单点重试降连击压力，失败不再静默）
-        const failed: string[] = []
+        statusText.value = '正在判定关键词命中...'
+        const empty: string[] = []
         for (const st of subtitleTexts) {
-          const r = await fetchTextFxHits(st.videoPath, st.text, st.timingPath, matchTemplateIds)
-          st.fxLines = r.lines
-          st.matchId = r.matchId
-          if (!r.ok) failed.push(pathBasename(st.videoPath))
+          st.fxLines = await resolveKeywordHits(st.text, st.timingPath)
+          if (!st.fxLines.length) empty.push(pathBasename(st.videoPath))
         }
-        if (failed.length) {
-          // 如实透出（铁律：服务端 5xx 定性归因服务端）：不静默产出无文字模板的成片
-          clientError('video-montage', '文字模板关键词获取失败', `服务端 /text_templates/match 异常（500/连接中断），以下视频本次未烧文字模板：${failed.join('、')}`)
-          notify('文字模板未生效', `服务端关键词命中接口异常（500/连接中断），以下视频本次合成不含文字模板：\n${failed.join('\n')}\n\n可稍后重试合成。`)
+        if (empty.length) {
+          // 如实透出（不静默产出无文字模板的成片）：零命中=产品未关联词且 LLM 兜底
+          // 未提取到可用词，或命中词与文案无交集
+          clientError('video-montage', '关键词零命中', `以下视频未命中任何关键词：${empty.join('、')}`)
+          notify('文字模板未生效', `以下视频本次合成不含文字模板（无关键词命中：产品未关联关键词且 LLM 兜底未提取到词，或命中词与文案无交集）：\n${empty.join('\n')}`)
         }
       }
       const hasFx = addSubtitles.value || fancyEnabled.value || textFxEnabled.value
@@ -496,8 +489,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     tplEffectId?: string
     /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
-    /** 2026-09-19 用户裁决「统一」：花字轨词源=服务端 match（与文字模板同源
-     *  fetchTextFxHits；LLM 兜底在服务端）——逐视频事件（词+时间点）原样落段 */
+    /** 2026-09-19 用户裁决「统一」：花字轨词源=产品资料关联关键词（与文字模板同源
+     *  resolveKeywordHits；产品未关联词时 LLM 兜底提词）——逐视频事件（词+时间点）原样落段 */
     fancyEvents?: Array<Array<{ word: string; startUs: number; durUs: number }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
@@ -785,15 +778,15 @@ async function exportAllToJianyingDraft(): Promise<void> {
           srtPaths.push(null)
         }
       }
-      // 关键词命中取数（2026-09-19 用户裁决：词源统一=服务端 match，LLM 兜底在服务端；
-      // 本地词典兜底停用——服务端失败/无命中即无关键词轨，实测服务端接口效果）。
-      // fetchTextFxHits 内部：timing 读取+行组装+两级缓存（rows+ids 键，预览/合成所见
-      // 即导出所做）+3 次重试；串行取数（2026-09-12：并发连击曾致服务端 match 500）
+      // 关键词命中取数（2026-09-19 架构：/text_templates/match 删除，客户端不再调用）：
+      // 词源=产品资料关联关键词（产品库选择带回 sharedProductInfo.keywords），客户端
+      // 对字幕行窗口命中；产品未关联词 → LLM 兜底提词（/llm/chat/completions）。
+      // resolveKeywordHits 内部：timing 读取+行组装+LLM 文案级缓存；串行取数
+      //（2026-09-12：并发连击曾致服务端 500 的教训）
       const hits: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
       if (textFxEnabled.value || fancyEnabled.value) {
-        exportStage.value = `关键词命中判定（服务端 match，${i + 1}/${cands.length}）...`
-        const fx = await fetchTextFxHits(c, text, timingPath, currentMatchTemplateIds())
-        if (fx.ok) hits.push(...fx.lines)
+        exportStage.value = `关键词命中判定（${i + 1}/${cands.length}）...`
+        hits.push(...await resolveKeywordHits(text, timingPath))
       }
       if (textFxEnabled.value) {
         textTemplateClips.push(hits

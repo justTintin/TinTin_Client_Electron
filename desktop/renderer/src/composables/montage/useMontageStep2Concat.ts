@@ -577,11 +577,11 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
 
   // ── 口播文案（2026-09-13 改调 POST /copywriting/voiceover：产品信息弹窗 → 逐条
   //    传 product_desc + duration_s，服务端自持 prompt 按时长控字数；客户端不再拼 prompt）──
-  const sharedProductInfo = ref({ brand: '', product: '', model: '', extra: '' })
+  const sharedProductInfo = ref({ brand: '', product: '', model: '', extra: '', keywords: [] as string[] })
   const productDlg = ref<{
     show: boolean; target: 'all' | number
-    brand: string; product: string; model: string; extra: string
-  }>({ show: false, target: 'all', brand: '', product: '', model: '', extra: '' })
+    brand: string; product: string; model: string; extra: string; keywords: string[]
+  }>({ show: false, target: 'all', brand: '', product: '', model: '', extra: '', keywords: [] })
   const copyViewDlg = ref({ show: false, title: '', content: '' })
 
   function openProductDlg(target: 'all' | number): void {
@@ -630,6 +630,7 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
     sharedProductInfo.value = {
       brand: d.brand.trim(), product: d.product.trim(),
       model: d.model.trim(), extra: d.extra.trim(),
+      keywords: d.keywords.slice(),
     }
     const info = sharedProductInfo.value
     if (!info.brand && !info.product && !info.model && !info.extra) {

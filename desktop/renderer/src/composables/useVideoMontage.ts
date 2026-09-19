@@ -156,7 +156,7 @@ export function useVideoMontage() {
   const step3 = useMontageStep3Voice({
     statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
-    step4Candidates,
+    step4Candidates, sharedProductInfo,
     collectCandidates: (useSource?: boolean) => step4.collectCandidates(useSource),
     ensureProcessedSrt: (text: string, wavPath: string, candidate: string) =>
       step4.ensureProcessedSrt(text, wavPath, candidate),
@@ -174,7 +174,7 @@ export function useVideoMontage() {
     textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
-    loadLuts, loadCatalogLanes, extractTextFxWords, fetchTextFxHits,
+    loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,
     loadRefSamples, selectRefAudio, pickNewSampleFile, transcribeNewSample,
@@ -194,7 +194,7 @@ export function useVideoMontage() {
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
     sharedProductInfo, splitResolution, voiceRows, voiceDirInput,
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
-    currentMatchTemplateIds, fetchTextFxHits,
+    currentMatchTemplateIds, resolveKeywordHits,
     scanVoiceDir, activeTextPool,
     activeTextCount, selectedFancyTemplate, selectedSubtitlePreset, selectedFontFamily,
     addSubtitles, subtitleStyleKey, subtitleBgOpacity, subtitleAnimKey, fancyEnabled,

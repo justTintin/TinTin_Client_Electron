@@ -192,9 +192,8 @@ const server = {
   fancyServerTemplates: () => ipcRenderer.invoke('fancy:serverTemplates'),
     // 服务端文字模板库（GET /text_templates/templates；与花字独立体系，仅供选择/预览，烧制待服务端接口）
     textfxServerTemplates: () => ipcRenderer.invoke('textfx:serverTemplates'),
-    // 关键词命中判定（POST /text_templates/match；合成前自查「命中几个关键词/会有几个动画」，
-    // 与 /montage/concat 命中模式共用选择逻辑 → 预览所见即合成所做；离线 null）
-    textfxMatchKeywords: (p) => ipcRenderer.invoke('textfx:matchKeywords', p),
+    // textfxMatchKeywords 已删除（2026-09-19 架构：服务端 /text_templates/match 下线，
+    // 客户端不再调用关键词命中——词源=产品资料关联关键词，产品未关联词 LLM 兜底提词）
   fancyEnsurePreviews:  (p) => ipcRenderer.invoke('fancy:ensurePreviews', p),
   fancyOnPreviewProgress: (cb) => {
     const listener = (_e, d) => cb(d)

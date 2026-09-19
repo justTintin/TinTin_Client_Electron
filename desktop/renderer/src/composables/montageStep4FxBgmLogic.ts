@@ -526,6 +526,66 @@ export function extractFancyWordsFromText(text: string, maxWords = FANCY_MAX_PER
   return words
 }
 
+// ── 关键词命中（2026-09-19 架构：服务端 /text_templates/match 删除）──
+// 词源=产品资料关联关键词（客户端命中）；产品无关联词 → LLM 兜底提词。
+
+/** 产品关键词 × 字幕行命中（原 textFxHitsForExport 内核复活为纯函数）：
+ *  逐行扫描，词在行文本中出现即命中（窗口=该行时间区间）；
+ *  templateId=候选池轮转（渲染样式层，与命中判定解耦）。 */
+export function matchKeywordHits(
+  words: string[],
+  rows: Array<{ text: string; start: number; end: number }>,
+  templatePool: string[] = [],
+): Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> {
+  const clean = (Array.isArray(words) ? words : []).map((w) => String(w || '').trim()).filter(Boolean)
+  const out: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
+  for (const r of Array.isArray(rows) ? rows : []) {
+    for (const w of clean) {
+      if (!w || !String(r.text || '').toLowerCase().includes(w.toLowerCase())) continue
+      const templateId = templatePool.length ? String(templatePool[out.length % templatePool.length]) : ''
+      out.push({ text: w, start: r.start, end: r.end, keywords: [w], templateId })
+    }
+  }
+  return out
+}
+
+/** LLM 关键词提取系统提示词（只要求 JSON 数组输出，防御解析见 parseLlmKeywords） */
+export const LLM_KEYWORDS_SYSTEM_PROMPT
+  = '你是电商短视频关键词提取器。从口播文案中提取至多 {max} 个卖点关键词（词或短语，每个不超过8个字，'
+  + '不要整句），用于在视频中做花字/文字模板展示。只输出 JSON 字符串数组，例如 ["大容量","快充","199元"]，'
+  + '不要输出任何解释或其他内容。'
+
+/** LLM 回复 → 关键词数组（防御解析：JSON 数组优先，失败回退引号/顿号/逗号切分；
+ *  去重去空、截断 maxWords） */
+export function parseLlmKeywords(content: string, maxWords = 8): string[] {
+  const raw = String(content || '').trim()
+  if (!raw) return []
+  let list: unknown[] = []
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) list = parsed
+  } catch (_) {
+    const m = /\[[\s\S]*\]/.exec(raw) // 截取首个 JSON 数组片段再试
+    if (m) {
+      try {
+        const parsed = JSON.parse(m[0])
+        if (Array.isArray(parsed)) list = parsed
+      } catch (_) { /* 落下方文本切分 */ }
+    }
+  }
+  if (!list.length) {
+    list = raw.replace(/["'\[\]]/g, ' ').split(/[,，、;；\n]/)
+  }
+  const out: string[] = []
+  for (const it of list) {
+    const w = String(it ?? '').trim()
+    if (!w || out.includes(w)) continue
+    out.push(w)
+    if (out.length >= maxWords) break
+  }
+  return out
+}
+
 // ── 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）──────────
 // 服务端无字幕重切段端点（live /openapi.json 仅 whisper ASR，识别文本不可作
 // 字幕文本）→ 走「本地 + LLM」：复用原客户端 SentenceSplitterLLMWorker 机器

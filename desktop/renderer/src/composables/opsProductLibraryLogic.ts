@@ -263,6 +263,23 @@ export function stripProductCodeFromModel(raw: unknown): string {
   return String(raw ?? '').replace(/(?:\s*【[^】]*】)+\s*$/, '').trim()
 }
 
+/** 产品资料关联关键词解析（2026-09-19 架构：服务端在产品资料中关联关键词，客户端
+ *  据此命中；契约字段名未定，防御式读取 keywords / product_keywords / 关键词）。
+ *  接受 string[] 或分隔字符串（顿号/逗号/分号/换行），去空去重 */
+export function parseProductKeywords(item: Record<string, unknown> | null | undefined): string[] {
+  const src = item ? (item.keywords ?? item.product_keywords ?? item['关键词']) : null
+  const list = Array.isArray(src)
+    ? src
+    : (src == null ? [] : String(src).split(/[,，、;；\n]/))
+  const out: string[] = []
+  for (const it of list) {
+    const w = String(it ?? '').trim()
+    if (!w || out.includes(w)) continue
+    out.push(w)
+  }
+  return out
+}
+
 /** 核心卖点摘要（firstMarkdownLine 的卖点语义别名；原直接截断显示已废弃） */
 export function firstSellingPoint(raw: unknown, maxLen = 48): string {
   return firstMarkdownLine(raw, maxLen)

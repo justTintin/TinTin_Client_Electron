@@ -82,6 +82,12 @@ const BASELINE_UNWIRED = {
   //    按只减不增规则移出基线（接线证据：useVideoMontage.ts doJianyingExport）──
   // 注：browser:extensionInstall / extensionUninstall 由 extensions-panel.html 直接
   //     ipcRenderer.invoke 裸通道消费，不计悬空（isConsumed 的裸通道分支已覆盖）。
+  // ── 2026-09-19 智能混剪拆分（铁律 10 Phase3 P5）后如实显形的历史缺口：
+  //    统一合成裁决（2026-09-11 用户终裁）后，渲染层 BGM 混音走 finalMix 一次合成，
+  //    /montage/bgm 单曲混音代理不再有直调消费者（原 Shell 头注释中的渠道字样
+  //    曾被 isConsumed 的字符串分支误计为消费；拆分后注释更新，断层如实显形）。
+  //    handler 留作服务端 /montage/bgm 遗留端点代理，待产品裁决废弃或复用。──
+  'montage:bgm':                    '统一合成（finalMix）改造后渲染层无直调消费者；/montage/bgm 遗留端点代理保留待裁决',
 };
 
 const BASELINE_DEAD = {

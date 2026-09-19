@@ -1,14 +1,11 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// VideoMontage.vue — 智能混剪·服务端四步向导（M8 条目⑥ UI 层）
-// 四步（对照原客户端 gui/video_montage_page.py steps_text L257，严格一致）：
-//   1.素材解析(镜头智能分割) → 2.AI 编排(镜头重组) → 3.口播配音 → 4.合成(特效包装)
-// 链路全部走服务端：montage:split / montage:concat / montage:bgm
-// 注：原客户端「卡点成片」属独立「一键成片」页（compile_video_page.py tab3，
-//     BeatMontageController），不在智能混剪向导内，本端亦不纳入。
-// 组件只绘制 + 事件转发；选段/载荷/轮询/下载业务全部在 useVideoMontage
-// （纯函数 videoMontageLogic.ts，IRON-06/07 分层）。
-// 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（重按按钮即重试）。
+// VideoMontage.vue — 智能混剪·服务端四步向导 Shell（M8 条目⑥ UI 层）
+// 四步：1.素材解析 → 2.AI 编排 → 3.口播配音 → 4.特效包装（对照 steps_text L257）。
+// 铁律 10 拆分（2026-09-19）：编排状态在 useVideoMontage（纯逻辑在
+//   videoMontageLogic 桶 + montage/* 子模块），四步 UI 在 MontageStep1-4Panel.vue
+//   （经 montageShellKey inject，模板/样式逐字搬迁）；本组件仅保留向导步序、
+//   分栏拖拽、右栏画幅与页尾状态条，只绘制 + 事件转发（IRON-06/07 分层）。
 // ═══════════════════════════════════════════════════════════════
 import { ref, reactive, computed, provide, onMounted, onActivated, onUnmounted, watch, nextTick } from 'vue'
 import TButton from '@/components/common/TButton.vue'
@@ -40,81 +37,38 @@ function go(i: number) {
 }
 
 const s = useVideoMontage()
-
 const {
   // 共享
-  polling, activeTaskId, statusText, cancelPolling, concatProgress,
+  polling, activeTaskId, statusText, cancelPolling,
   // Step1 素材解析（镜头智能分割）
-  srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
-  scenes, scoreFilter, filteredScenes, checkedCount,
-  splitBusy, splitError, splitMsg, splitProgress, splitResolution,
-  selectFolder, onDrop, removeVideo, runSplit,
-  updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
-  previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
+  splitResolution,
+  closePreview,
+  previewUrl, previewTranscoding,
   // Step2 镜头重组
-  assembleLogic, concatLayout, durationLimit, DURATION_LIMITS, batchCount, recBatchCount,
-  concatFps, FPS_OPTIONS, splitFps,
-  concatTransition, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
-  concatBusy, confirmBusy, copyBusy, concatError,
-  assemblePlans, currentPlanIdx, currentPlan, hasUnconfirmed, confirmedPaths,
-  runConcat, planRowText, selectPlan,
-  onDetailDragStart, onDetailDragEnd, onDetailDrop, toggleClipDeleted,
-  confirmAllPrecompose, confirmPlanSingle,
+  concatLayout, DURATION_LIMITS,
+  confirmBusy, copyBusy,
+  currentPlan,
+  toggleClipDeleted,
+  confirmPlanSingle,
   openProductDlg, productDlg, closeProductDlg, productDlgGenerate,
   copyViewDlg, viewPlanCopy, closeCopyView,
-  planMenu, openPlanMenu, closePlanMenu,
-  seqClips, seqIdx, seqSrc,
+  planMenu, closePlanMenu,
   onSeqEnded,
-  concatResults,
   // Step3 口播配音（对照 step3_voice_view.py 逐控件）
-  voiceDirInput, voiceRows,
-  refSamples, selectedRefSample, refAudioPath, refText, refPreviewUrl, loadRefSamples,
-  nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
-  transcribeNewSample, uploadNewSampleRef,
-  ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
-  addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
+  loadRefSamples,
   // 字幕样式（2026-09-17 用户裁决：字幕样式统一来自服务端 /subtitle_styles）
-  subtitleStyleKey, subtitleStylePresets, subtitlePreviewStyle, fontOptionStyle,
-  subtitleAnimKey,
-  subtitleFontSize,
-  fancyEnabled, fancyStyle, fancyPosition, subtitleBgOpacity,
+  fancyStyle,
   // 文字模板（2026-09-09 裁决：服务端 textfx 体系，与花字独立；随机样式默认 3 个）
-  lutRestore, lutId, lutList, lutListLoading, loadLuts, textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
-  textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
-  textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
-  voiceProgress,
+  loadLuts,
+  loadTextTemplates,
   fancyTemplateId, fancyTemplates, fancyPreviews,
   loadFancyTemplates,
-  FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS, AI_REWRITE_DESC,
-  aiRewriteDlg, openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
-  ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
-  cloneParamsDlg, openCloneParams, closeCloneParams, saveCloneParams,
-  editDlg, openEditDlg, saveEditDlg,
-    voiceBusy, rewriteBusy,
-  scanVoiceDir, enterStepVoice,
-    batchAiRewrite, startSynthesizeVoice,
-  regenVoice, exportVoice, playDubbedVideo,
-  toggleLengthMode, lengthModeTip,
-  voiceStatusText, voiceStatusClass, pathBasename,
+  FANCY_STYLE_OPTIONS, FANCY_POSITION_OPTIONS, SUBTITLE_BG_OPTIONS,
+  enterStepVoice,
   // Step4 特效包装（对照 step4_final_view.py 逐控件）
-  bgmPath, bgmName, bgmVolume, finalBusy, finalMode, finalDone, finalProgress,
-  exportBusy, exportProgress, exportStage, // 2026-09-16：导出剪映时间轴进度
-  lastExportDraftPath, // 2026-09-16：导出成功后草稿目录路径
-  exportDoneMsg, // 2026-09-18：导出完成提示行（内嵌「打开草稿目录」按钮）
-  exportJianyingPackageDraft, // 轨 2（2026-09-17）：导入服务端草稿包
-  finalVideoList, finalSelIdx,
-  bgmPlaying, bgmPosMs, bgmDurMs,
-  pickBgm, applyLibraryBgm, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm,
   // 2026-09-18：逐视频 BGM 指派（行名/指派/清除/本地选择）+ 弹窗下载助手
-  rowBgmName, setRowBgm, clearRowBgm, pickRowBgm, downloadLibraryBgm, rowBgmForCandidate,
-  enterStep4, startFinalMix, openFinalDir, openExportDraftDir,
-  exportAllToJianyingDraft, step4Candidates, toAbsolute: vdToAbsolute,
-  fmtBgmTime,
-  selectRefAudio,
-  fmtDur,
-  planDurText,
+  enterStep4,
   // 景别分类
-  SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = s
 
 

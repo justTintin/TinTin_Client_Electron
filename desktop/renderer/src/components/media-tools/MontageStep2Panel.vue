@@ -285,6 +285,27 @@ function scoreClass(score: number | undefined): string {
         </div>
         </div><!-- /vd-unified -->
       </section>
+    <!-- 预合成列表右键菜单（原版 _show_assembled_context_menu L5412-5434 三项，查看文案仅已生成时显示） -->
+    <teleport to="body">
+      <div v-if="planMenu.show" class="ctx-mask" @click="closePlanMenu" @contextmenu.prevent="closePlanMenu">
+        <div class="ctx-menu" :style="{ left: planMenu.x + 'px', top: planMenu.y + 'px' }" @click.stop>
+          <button class="ctx-item" @click="planMenuConfirm">完成： 确认合成视频</button>
+          <button class="ctx-item" @click="planMenuGen"> 生成口播文案</button>
+          <button v-if="planMenu.hasCopy" class="ctx-item" @click="planMenuView"> 查看文案</button>
+        </div>
+      </div>
+    </teleport>
+
+
+    <!-- 镜头详情右键菜单（原版 _on_source_context_menu L5843-5851） -->
+    <teleport to="body">
+      <div v-if="detailMenu.show" class="ctx-mask" @click="closeDetailMenu" @contextmenu.prevent="closeDetailMenu">
+        <div class="ctx-menu" :style="{ left: detailMenu.x + 'px', top: detailMenu.y + 'px' }" @click.stop>
+          <button v-if="detailMenu.deleted" class="ctx-item" @click="menuToggleDeleted">↩ 恢复镜头</button>
+          <button v-else class="ctx-item" @click="menuToggleDeleted"> 标记删除（不参与合成和预览）</button>
+        </div>
+      </div>
+    </teleport>
 </template>
 
 <style scoped>

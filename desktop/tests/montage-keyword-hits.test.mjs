@@ -67,3 +67,24 @@ test('matchKeywordHits：一字幕段只出一条文字模板（词表序优先�
   assert.equal(out[1].text, '防水')
   assert.equal(out[1].templateId, 't2')
 })
+
+test('matchKeywordHits：row.chars 存在时命中窗口=词首末字符实测起止（字级精度）', () => {
+  const rows = [{
+    text: '专业级无感延迟，',
+    start: 7.646, end: 9.388,
+    chars: [
+      { c: '专', start: 7.646, end: 7.9 },
+      { c: '业', start: 7.9, end: 8.1 },
+      { c: '级', start: 8.1, end: 8.3 },
+      { c: '无', start: 8.35, end: 8.6 },
+      { c: '感', start: 8.6, end: 8.85 },
+      { c: '延', start: 8.9, end: 9.1 },
+      { c: '迟', start: 9.1, end: 9.35 },
+      { c: '，', start: null, end: null },
+    ],
+  }]
+  const out = M.matchKeywordHits(['无感延迟'], rows, ['t1'])
+  assert.deepEqual([out[0].start, out[0].end], [8.35, 9.35])
+  const out2 = M.matchKeywordHits(['无感延迟'], [{ text: '专业级无感延迟，', start: 7.646, end: 9.388 }], ['t1'])
+  assert.deepEqual([out2[0].start, out2[0].end], [7.646, 9.388])
+})

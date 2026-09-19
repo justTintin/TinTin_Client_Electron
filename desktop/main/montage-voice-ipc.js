@@ -371,10 +371,10 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         if (measured) timing = alignTimingToSpeech(timing, measured, totalDur)
       } catch (_) { /* 实测失败回退估算 timing */ }
       writeTimingSidecar(outWavPath, timing)
-      // 2026-09-19（用户方案·whisperx 字级对齐）：POST /whisper/transcribe
-      //   （fmt=srt + subtitle=true + subtitle_text=文案原文）→ 服务端按原文做
-      //   字级强制对齐，返回 SRT（文本=文案原字零失真、时间=实测真值，粒度=文案
-      //   句读），解析后覆写上面的估算 timing。字幕/关键词命中/事件直传全链受益。
+      // 2026-09-19（用户方案·whisperx 字级对齐）：POST /whisper/transcribe（fmt=json，
+      //   单次调用）→ 返回 segments[].words[] 字级时间戳流；客户端把文案可见字符与
+      //   词流按序对齐（alignCopyToWords），按句读分行（charsToTimingRows）后覆写
+      //   上面的估算 timing——行带 chars 字级 spans，文字模板命中窗口=词首末字符真值。
       //   best-effort：离线/失败/超时保留估算 timing，不阻断克隆。
       try {
         const aligned = await transcribeAlignedRows(outWavPath, text)
@@ -384,17 +384,19 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   }
 
   /** whisperx 字级对齐（2026-09-19 用户方案）：上传合成 wav + 文案原文 →
-   *  POST /whisper/transcribe（fmt=srt + subtitle=true + subtitle_text）→
-   *  服务端按原文对齐返回 SRT（文案原字+实测时间）→ 解析为行数组；
-   *  失败/超时（5 分钟）/无有效行 → null（调用方保留估算 timing） */
+   *  POST /whisper/transcribe（mode=raw,subtitle 单次调用）→ 一次返回双份：
+   *  raw=segments[].words[] 字级流；subtitle=cues[]（文案原文+实测真值，
+   *  {text,start,end} 即 timing 行形状）。行直接取 cues；chars 字级 spans 由
+   *  alignCopyToWords(文案, words) 生成后按 cue 顺序切片挂行（文字模板命中
+   *  窗口=词首末字符真值）。无 cues 回退本地句读分行；失败/超时（5 分钟）/
+   *  无有效行 → null（调用方保留估算 timing） */
   async function transcribeAlignedRows(wavPath, text) {
     const boundary = '----TintinAlign' + Math.random().toString(16).substring(2)
     const parts = []
     const putField = (k, v) => parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`))
     putField('language', 'zh')
-    putField('fmt', 'srt')
-    putField('subtitle', 'true')
-    putField('subtitle_text', String(text || ''))
+    putField('fmt', 'json')
+    putField('mode', 'raw,subtitle')
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path.basename(wavPath).replace(/"/g, '')}"\r\nContent-Type: audio/wav\r\n\r\n`))
     parts.push(fs.readFileSync(wavPath))
     parts.push(Buffer.from('\r\n'))
@@ -407,8 +409,41 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     const raw = res && res.raw && res.raw.length
       ? Buffer.from(res.raw).toString('utf-8')
       : String((res && res.data) ?? '')
-    if (!raw.includes('-->')) return null
-    const rows = parseSrtText(raw)
+    let j = null
+    try { j = JSON.parse(raw) } catch (_) { return null }
+    const words = []
+    for (const seg of (j && Array.isArray(j.segments)) ? j.segments : []) {
+      if (Array.isArray(seg.words)) words.push(...seg.words)
+    }
+    const allChars = alignCopyToWords(String(text || ''), words)
+    // subtitle cues 优先：文案原文+真值窗口；chars=按 cue 顺序切片的全局字级 spans
+    if (j && Array.isArray(j.cues) && j.cues.length) {
+      const src = Array.from(String(text || ''))
+      const rows = []
+      let p = 0
+      for (const cue of j.cues) {
+        const L = Array.from(String(cue.text || '')).length
+        if (!L) continue
+        let segText = src.slice(p, p + L).join('')
+        if (segText !== String(cue.text)) {
+          // 服务端规整导致切片不一致 → 从 p 起顺序搜索 cue 文本真实起点
+          const found = src.slice(p).join('').indexOf(String(cue.text))
+          if (found >= 0) p += found
+          else continue // 找不到归属的 cue 丢弃（不造数）
+          segText = src.slice(p, p + L).join('')
+        }
+        rows.push({
+          text: segText,
+          start: Number(cue.start) || 0,
+          end: Number(cue.end) || 0,
+          chars: allChars.slice(p, p + L),
+        })
+        p += L
+      }
+      if (rows.length) return rows
+    }
+    // 无 cues（旧服务端）→ 本地句读分行兜底
+    const rows = charsToTimingRows(String(text || ''), allChars)
     return rows.length ? rows : null
   }
 
@@ -818,29 +853,88 @@ function scaleTimingSidecar(wavPath, factor) {
         t.end = Math.round(e * factor * 1000) / 1000
         touched = true
       }
+      // 字级 spans 同步缩放（timing 行可带 chars：whisperx 字级时间戳）
+      if (Array.isArray(t.chars)) {
+        for (const c of t.chars) {
+          const cs = Number(c.start), ce = Number(c.end)
+          if (Number.isFinite(cs) && Number.isFinite(ce)) {
+            c.start = Math.round(cs * factor * 1000) / 1000
+            c.end = Math.round(ce * factor * 1000) / 1000
+          }
+        }
+      }
     }
     if (touched) fs.writeFileSync(p, JSON.stringify(timing, null, 1))
   } catch (_) { /* 对照 _scale_timing_sidecar 兜底 */ }
 }
 
-/** SRT 文本 → 行数组（timing.json 口径 {text,start,end} 秒；丢序号行/空文本块；
- *  end<=start 的无效块丢弃）。纯函数可单测。 */
-function parseSrtText(srt) {
-  const rows = []
-  for (const block of String(srt || '').replace(/\r/g, '').split(/\n{2,}/)) {
-    const lines = block.split('\n').filter((l) => l.trim())
-    const tLine = lines.find((l) => l.includes('-->'))
-    if (!tLine) continue
-    const m = /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/.exec(tLine)
-    if (!m) continue
-    const sec = (h, mi, se, ms) => Number(h) * 3600 + Number(mi) * 60 + Number(se) + Number(String(ms).padEnd(3, '0')) / 1000
-    const text = lines.filter((l) => l !== tLine && !/^\d+$/.test(l.trim())).join(' ').trim()
-    if (!text) continue
-    const start = sec(m[1], m[2], m[3], m[4])
-    const end = sec(m[5], m[6], m[7], m[8])
-    if (!(end > start)) continue
-    rows.push({ text, start: Math.round(start * 1000) / 1000, end: Math.round(end * 1000) / 1000 })
+/** 文案 → 字级对齐（2026-09-19 用户方案·纯函数可单测）：首字锚定 + 前瞻窗口的
+ *  模糊对齐——每个文案可见字符在词流前方 LOOKAHEAD 内找首字符匹配的 word，
+ *  命中则取该 word 的 [start,end] 为字符 span 并消耗词游标；未命中（ASR 漏/错字、
+ *  拉丁 token 被合并）→ span=null 且不消耗词游标（对 ASR 错字免疫，不错位扩散）。
+ *  标点/空白无时长（span=null）。返回与文案逐字对应的 chars 数组。 */
+function alignCopyToWords(copy, words) {
+  const r3 = (x) => Math.round(x * 1000) / 1000
+  const isSep = (ch) => /\s/.test(ch) || /[\p{P}\p{S}]/u.test(ch)
+  const ws = (Array.isArray(words) ? words : [])
+    .map((w) => ({ w: String((w && w.word) || ''), start: Number(w && w.start) || 0, end: Number(w && w.end) || 0 }))
+    .filter((x) => x.w)
+  const src = Array.from(String(copy || ''))
+  const chars = src.map((c) => ({ c, start: null, end: null }))
+  const LOOKAHEAD = 8
+  let j = 0 // word 游标（命中才前进）
+  for (let ci = 0; ci < src.length; ci++) {
+    const c = src[ci]
+    if (isSep(c)) continue
+    let found = -1
+    for (let d = 0; d < LOOKAHEAD && j + d < ws.length; d++) {
+      if (ws[j + d].w[0].toLowerCase() === c.toLowerCase()) { found = d; break }
+    }
+    if (found >= 0) {
+      const t = ws[j + found]
+      chars[ci].start = r3(t.start)
+      chars[ci].end = r3(t.end)
+      j += found + 1
+    }
   }
-  return rows
+  return chars
 }
-module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar, parseSrtText }
+
+/** 字级 chars 流 → timing 行（纯函数可单测）：按句读分行——。！？；后必断，
+ *  ，、：后累计 ≥8 字符才断（弱标点不产生碎行）；行 text 与 chars 逐字对应。
+ *  行 start/end=行内首末有限 span；无任何命中字符的行按前后行线性内插
+ *  （保证每行 end>start，writeTimingSidecar 合法性门禁可整体通过）。 */
+function charsToTimingRows(copy, chars) {
+  const r3 = (x) => Math.round(x * 1000) / 1000
+  const src = Array.from(String(copy || ''))
+  let cur = []
+  const raw = []
+  const flush = () => {
+    if (!cur.length) return
+    const text = cur.map((x) => x.c).join('')
+    const fin = cur.filter((x) => Number.isFinite(Number(x.start)) && Number.isFinite(Number(x.end)) && Number(x.end) > Number(x.start))
+    raw.push({ text, chars: cur, start: fin.length ? Number(fin[0].start) : null, end: fin.length ? Number(fin[fin.length - 1].end) : null })
+    cur = []
+  }
+  for (let i = 0; i < src.length; i++) {
+    cur.push(chars[i] || { c: src[i], start: null, end: null })
+    const ch = src[i]
+    if (/[。！？；]/.test(ch)) flush()
+    else if (/[，、：]/.test(ch) && cur.length >= 8) flush()
+  }
+  flush()
+  // 无命中字符的行：前后行内插补窗（头=0/下行起点，尾=上行终点/+0.5s）
+  let prevEnd = null
+  for (let i = 0; i < raw.length; i++) {
+    const r = raw[i]
+    if (r.start !== null) { prevEnd = r.end; continue }
+    let next = null
+    for (let k = i + 1; k < raw.length; k++) { if (raw[k].start !== null) { next = raw[k].start; break } }
+    r.start = prevEnd !== null ? prevEnd : 0
+    r.end = next !== null ? Math.max(next, r.start + 0.2) : r.start + 0.5
+    r.start = r3(r.start); r.end = r3(r.end)
+    prevEnd = r.end
+  }
+  return raw.map(({ text, start, end, chars }) => ({ text, start, end, chars }))
+}
+module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar, alignCopyToWords, charsToTimingRows }

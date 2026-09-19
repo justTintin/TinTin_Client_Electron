@@ -91,19 +91,42 @@ test('scaleTimingSidecar：null/零值行不被 Number(null)=0 清零放大（�
   }
 })
 
-// ── 2026-09-19 用户方案：whisperx 字级对齐 SRT → timing.json 行（真值替换估算）──
+// ── 2026-09-19 用户方案：whisperx 字级流 → 文案对齐 → timing 行（真值替换估算）──
 
-test('parseSrtText：subtitle=true 返回的 SRT → 行数组（秒、去序号行、丢无效块）', () => {
-  const srt = [
-    '1', '00:00:00,060 --> 00:00:02,282', '粉色控的终极梦想来了，', '',
-    '2', '00:00:02,402 --> 00:00:03,143', '罗技PRO X 2 LIGHTSPEED', '',
-    '3', '00:00:03,500 --> 00:00:03,000', '无效窗口块应丢弃', '',
-  ].join('\n')
-  const rows = M.parseSrtText(srt)
+test('alignCopyToWords：单字中文 1:1 锚定；ASR 合并/错字 → 无 span 降级（回退整段窗口），不错位', () => {
+  const copy = '罗技PRO X 2耳机，记忆泡沫。'
+  const words = [
+    { word: '罗', start: 0, end: 0.2 },
+    { word: '技', start: 0.2, end: 0.4 },
+    { word: 'Lightspeed', start: 0.4, end: 1.4 },   // ASR 合并了 PRO X 2 LIGHTSPEED
+    { word: '耳机', start: 1.4, end: 1.8 },
+    { word: '技以', start: 2.0, end: 2.4 },   // ASR 错字（应=记忆）
+    { word: '泡沫', start: 2.4, end: 2.8 },
+  ]
+  const chars = M.alignCopyToWords(copy, words)
+  const byC = (c) => chars.filter((x) => x.c === c)
+  assert.equal(byC('罗')[0].start, 0)
+  assert.equal(byC('技')[0].end, 0.4)
+  // ASR 把 PRO X 2 LIGHTSPEED 合并成 Lightspeed：P/R/O/X/2 首字不匹配 → null（降级）
+  byC('P').forEach((x) => assert.equal(x.start, null))
+  // 耳机 首字匹配 → 整 token span
+  assert.deepEqual([byC('耳')[0].start, byC('耳')[0].end], [1.4, 1.8])
+  // ASR 错字（技以≠记忆）：记 无 span；泡沫 首字匹配
+  byC('记').forEach((x) => assert.equal(x.start, null))
+  assert.ok(byC('泡').some((x) => x.start !== null), '泡沫 应锚定')
+})
+
+test('charsToTimingRows：句读分行、行带 chars、无命中行内插补窗保证 end>start', () => {
+  const copy = 'abcdef。ghijkl。'
+  const chars = [
+    ...M.alignCopyToWords('abcdef', [{ word: 'abcdef', start: 0, end: 3 }]),
+    { c: '。', start: null, end: null },
+    ...M.alignCopyToWords('ghijkl', [{ word: 'ghijkl', start: 4, end: 7 }]),
+    { c: '。', start: null, end: null },
+  ]
+  const rows = M.charsToTimingRows(copy, chars)
   assert.equal(rows.length, 2)
-  assert.equal(rows[0].text, '粉色控的终极梦想来了，')
-  assert.equal(rows[0].start, 0.06)
-  assert.equal(rows[0].end, 2.282)
-  assert.equal(rows[1].text, '罗技PRO X 2 LIGHTSPEED')
-  assert.deepEqual(rows.map((r) => r.end > r.start), [true, true])
+  assert.deepEqual([rows[0].start, rows[0].end], [0, 3])
+  assert.deepEqual([rows[1].start, rows[1].end], [4, 7])
+  rows.forEach((r) => assert.equal(r.chars.length, r.text.length))
 })

@@ -96,7 +96,7 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates, extractTextFxWords,
-    textFxHitsForExport, fetchTextFxHits, currentMatchTemplateIds, refreshTextFxTracks,
+    fetchTextFxHits, currentMatchTemplateIds, refreshTextFxTracks,
   } = tfx
 
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
@@ -879,7 +879,7 @@ function clearVoiceProgressListener(): void {
     textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
-    loadLuts, loadCatalogLanes, extractTextFxWords, fetchTextFxHits, textFxHitsForExport,
+    loadLuts, loadCatalogLanes, extractTextFxWords, fetchTextFxHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,
     loadRefSamples, selectRefAudio, pickNewSampleFile, transcribeNewSample,

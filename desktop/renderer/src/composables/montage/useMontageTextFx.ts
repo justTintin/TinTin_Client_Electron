@@ -150,34 +150,10 @@ export function useMontageTextFx(ctx: MontageTextFxContext) {
    *  不再二次随机、不再二次请求，与预览/合成所见一致。 */
   const textFxHitsByVideo = new Map<string, Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>>()
   let lastMatchTemplateIds: string[] = []
-  /** 导出取命中（2026-09-17 用户裁决「一个按钮一条路」：导出不再依赖服务端 match）：
-   *  ① 逐视频缓存命中（预览/合成已预取的 textFxHitsByVideo）→ 直接用——预览所在位置
-   *     就是命中位置；② 未命中（跨会话）→ 纯本地现算：关键词（extractTextFxWords 密度
-   *     口径）× 字幕行窗口（命中位置=关键词所在行），phrase=命中关键词，
-   *     templateId=匹配池轮转。rows 由调用方传入（与字幕/花字同一份行数据）。 */
-  function textFxHitsForExport(
-    videoPath: string,
-    rows: Array<{ text: string; start: number; end: number }>,
-  ): Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> {
-    const cachedByVideo = textFxHitsByVideo.get(videoPath)
-    if (cachedByVideo) return cachedByVideo
-    const words = extractTextFxWords()
-    const pool = lastMatchTemplateIds.length ? lastMatchTemplateIds : currentMatchTemplateIds()
-    const out: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
-    for (const r of rows) {
-      for (const w of words) {
-        if (!w || !r.text.toLowerCase().includes(w.toLowerCase())) continue
-        const templateId = pool.length ? String(pool[out.length % pool.length]) : ''
-        out.push({ text: w, start: r.start, end: r.end, keywords: [w], templateId })
-      }
-    }
-    // 2026-09-19 修复（用户报障「关键词不显示」根因③）：空结果不入缓存——此前一次
-    // 空算（如行数据未就绪时先跑过一次导出）会把该视频整会话钉死为空命中，后续
-    // 数据已正确也永远返回 []。非空才缓存；服务端权威零命中（fetchTextFxHits 成功
-    // 回空）仍照常入缓存，属合法判定不受此限
-    if (out.length) textFxHitsByVideo.set(videoPath, out)
-    return out
-  }
+  // 2026-09-19 用户裁决：textFxHitsForExport（缓存未命中→本地词典现算）整函数删除——
+  // 词源统一=服务端 match（LLM 兜底在服务端），本地词典兜底停用（实测服务端接口效果）。
+  // 2026-09-17「一个按钮一条路」裁决随之废止：导出现调 fetchTextFxHits（两级缓存+
+  // 重试），服务端失败/无命中即无关键词轨。恢复本地兜底：回退本提交（git 历史）。
   async function fetchTextFxHits(
     videoPath: string,
     text: string,
@@ -431,6 +407,6 @@ export function useMontageTextFx(ctx: MontageTextFxContext) {
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates, extractTextFxWords,
-    textFxHitsForExport, fetchTextFxHits, currentMatchTemplateIds, refreshTextFxTracks,
+    fetchTextFxHits, currentMatchTemplateIds, refreshTextFxTracks,
   }
 }

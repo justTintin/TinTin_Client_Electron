@@ -15,7 +15,7 @@ import { readCacheDir } from '../useSettingsConfig'
 import {
   buildBgmGenPayload, parseBgmGenResponse, resolveOutFinalDir, collectMixCandidates,
   srcDirName,
-  buildFinalTasks, fmtBgmTime, inputNameFromFinalPath, buildSubtitleRows,
+  buildFinalTasks, fmtBgmTime, inputNameFromFinalPath,
   planSubtitleLines, mapLinesToTiming, serializeSrtRows, pathBasename,
   resolveOutMontageDir, textFxStyleOf,
   type BgmGenPayload, type PrecomposePlan, type VoiceRow,
@@ -42,8 +42,6 @@ export interface MontageStep4Context {
   nextVoiceChannel: Step3Api["nextVoiceChannel"]
   loadTextTemplates: Step3Api["loadTextTemplates"]
   refreshTextFxTracks: Step3Api["refreshTextFxTracks"]
-  extractTextFxWords: Step3Api["extractTextFxWords"]
-  textFxHitsForExport: Step3Api["textFxHitsForExport"]
   currentMatchTemplateIds: Step3Api["currentMatchTemplateIds"]
   fetchTextFxHits: Step3Api["fetchTextFxHits"]
   scanVoiceDir: Step3Api["scanVoiceDir"]
@@ -79,7 +77,7 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
     sharedProductInfo, splitResolution, voiceRows, voiceDirInput,
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
-    extractTextFxWords, textFxHitsForExport, currentMatchTemplateIds, fetchTextFxHits,
+    currentMatchTemplateIds, fetchTextFxHits,
     scanVoiceDir, activeTextPool,
     activeTextCount, selectedFancyTemplate, selectedSubtitlePreset, selectedFontFamily,
     addSubtitles, subtitleStyleKey, subtitleBgOpacity, subtitleAnimKey, fancyEnabled,
@@ -498,8 +496,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     tplEffectId?: string
     /** 2026-09-15：逐视频原生文字模板命中（match textfx_clips 权威指派）→ 导出器三件套轨 */
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
-    /** 2026-09-19 用户裁决「统一」：花字轨词源=服务端命中（与文字模板同源
-     *  textFxHitsForExport；离线兜底=本地提取器）——逐视频事件（词+时间点）原样落段 */
+    /** 2026-09-19 用户裁决「统一」：花字轨词源=服务端 match（与文字模板同源
+     *  fetchTextFxHits；LLM 兜底在服务端）——逐视频事件（词+时间点）原样落段 */
     fancyEvents?: Array<Array<{ word: string; startUs: number; durUs: number }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
@@ -576,7 +574,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
   }
 
   function jianyingFxParams(): {
-    fxWords?: string[]
     fxKinds?: Array<'fancy' | 'tpl'>
     textAnim?: string
     fancyEffectId?: string
@@ -591,10 +588,11 @@ async function exportAllToJianyingDraft(): Promise<void> {
       const subAnim = subtitleAnimKey.value && subtitleAnimKey.value !== 'fade' ? subtitleAnimKey.value : ''
       return addSubtitles.value && subAnim ? { subAnim } : {}
     }
-    const words = extractTextFxWords()
+    // 2026-09-19 用户裁决：fxWords（本地词典提取）停发——词源统一=服务端 match
+    // （LLM 兜底在服务端），导出链不再携带本地词表
     const subAnim = subtitleAnimKey.value && subtitleAnimKey.value !== 'fade' ? subtitleAnimKey.value : ''
-    const out: { fxWords?: string[]; fxKinds?: Array<'fancy' | 'tpl'>; textAnim?: string; fancyEffectId?: string; tplEffectId?: string; subAnim?: string } = { fxKinds: kinds }
-    if (words.length) out.fxWords = words
+    const out: { fxKinds?: Array<'fancy' | 'tpl'>; textAnim?: string; fancyEffectId?: string; tplEffectId?: string; subAnim?: string } = { fxKinds: kinds }
+    if (subAnim) out.subAnim = subAnim
     if (subAnim) out.subAnim = subAnim
     const ftpl = selectedFancyTemplate.value as Record<string, unknown> | null
     if (fancyEnabled.value && ftpl) {
@@ -774,12 +772,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
       }
       const text = String(row?.text || '').trim()
       const timingPath = row?.wavPath ? row.wavPath + '.timing.json' : ''
-      let timing: Array<{ text: string; start: number; end: number }> = []
-      if (timingPath) {
-        const r = await window.tintin?.server?.finalReadTiming?.({ timingPath })
-        timing = r && 'items' in r ? r.items : []
-      }
-      const rows2 = buildSubtitleRows(text, timing, 0)
       // 字幕 SRT：消费声音克隆完成后即生成的后处理资产（2026-09-18 用户裁决：
       //   后处理时点前移至克隆完成，导出与服务端合成均为纯消费者）。资产命中→
       //   直接用；缺失（旧会话/未跑克隆）→ 现场重切段回写；文案空/写失败 → 该段
@@ -793,13 +785,16 @@ async function exportAllToJianyingDraft(): Promise<void> {
           srtPaths.push(null)
         }
       }
-      // 文字模板命中（2026-09-17 用户裁决）：本地缓存优先（预览/合成已预取的命中，
-      // 预览位置=命中位置）；未命中本地现算（关键词×行窗口，phrase=命中关键词）。
-      // 不再调服务端 match——命中判定属客户端映射职责。
-      // 关键词命中一次取数（2026-09-19 用户裁决「统一」）：服务端 match 权威
-      // （textFxHitsByVideo 缓存；离线兜底=本地提取器现算）——文字模板与花字轨同源
-      // 分流，不再各自为政（花字此前只吃本地词典 fxWords，服务端命中从未参与）
-      const hits = textFxHitsForExport(c, rows2)
+      // 关键词命中取数（2026-09-19 用户裁决：词源统一=服务端 match，LLM 兜底在服务端；
+      // 本地词典兜底停用——服务端失败/无命中即无关键词轨，实测服务端接口效果）。
+      // fetchTextFxHits 内部：timing 读取+行组装+两级缓存（rows+ids 键，预览/合成所见
+      // 即导出所做）+3 次重试；串行取数（2026-09-12：并发连击曾致服务端 match 500）
+      const hits: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
+      if (textFxEnabled.value || fancyEnabled.value) {
+        exportStage.value = `关键词命中判定（服务端 match，${i + 1}/${cands.length}）...`
+        const fx = await fetchTextFxHits(c, text, timingPath, currentMatchTemplateIds())
+        if (fx.ok) hits.push(...fx.lines)
+      }
       if (textFxEnabled.value) {
         textTemplateClips.push(hits
           .filter((h) => h.templateId && h.end > h.start)
@@ -833,12 +828,12 @@ async function exportAllToJianyingDraft(): Promise<void> {
         fancyEvents.push([])
       }
     }
-    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：花字/关键词统一词源=
-    // 服务端命中（离线兜底=本地提取器）。花字全空=服务端无命中，或离线且本地兜底
-    // 词表也空 → 据实告知不再静默；文字模板命中全空 → 命中判定结果告知
+    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：花字/关键词词源统一=
+    // 服务端 match（LLM 兜底在服务端，本地词典兜底已停用）。全空=服务端无命中或
+    // match 不可达 → 据实告知不再静默；文字模板命中全空 → 命中判定结果告知
     if (fancyEnabled.value && cands.length && fancyEvents.every((t) => !t.length)) {
-      clientError('video-montage', '导出花字轨为空', `候选 ${cands.length} 段均无关键词命中（服务端 match 无命中，或离线且本地兜底词表为空）`)
-      notify('花字轨无命中', '本次导出花字轨为空：服务端关键词无命中；若服务端离线，本地兜底词表也未从文案提取到卖点词（识别范围：价格/数字参数/常见卖点词）。')
+      clientError('video-montage', '导出花字轨为空', `候选 ${cands.length} 段均无关键词命中（服务端 match 无命中或不可达）`)
+      notify('花字轨无命中', '本次导出花字轨为空：服务端关键词无命中或 match 接口不可达（LLM 兜底在服务端；本地词典兜底已停用）。')
     } else if (textFxEnabled.value && cands.length && textTemplateClips.every((t) => !t.length)) {
       const reason = activeTextPool.value.length
         ? '关键词与文案无命中（可调高「关键词密度」或更换模板池后重试）'

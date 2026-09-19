@@ -532,6 +532,9 @@ export function extractFancyWordsFromText(text: string, maxWords = FANCY_MAX_PER
 /** 产品关键词 × 字幕行命中（原 textFxHitsForExport 内核复活为纯函数）：
  *  逐行扫描，词在行文本中出现即命中（窗口=该行时间区间）；
  *  templateId=候选池轮转（渲染样式层，与命中判定解耦）。 */
+/** 产品关键词 × 字幕行命中（2026-09-19 用户裁决：**一个字幕段只出一条文字模板**——
+ *  同段命中多个词时取词表序最靠前的一个，避免同段多词条同时叠加渲染；
+ *  templateId=候选池轮转（渲染样式层，与命中判定解耦））。 */
 export function matchKeywordHits(
   words: string[],
   rows: Array<{ text: string; start: number; end: number }>,
@@ -544,31 +547,10 @@ export function matchKeywordHits(
       if (!w || !String(r.text || '').toLowerCase().includes(w.toLowerCase())) continue
       const templateId = templatePool.length ? String(templatePool[out.length % templatePool.length]) : ''
       out.push({ text: w, start: r.start, end: r.end, keywords: [w], templateId })
+      break // 一个字幕段只取一个命中词（词表序优先）
     }
   }
   return out
-}
-
-/** 关键词事件防重叠（2026-09-19 用户报障：同句命中多个词 → 同一窗口内词条叠在
- *  同一时间点；截图：听声辨位+另一词条完全重叠）。按 start 排序后游标扫描，
- *  强制相邻词条 start 间隔 ≥minGapSec（默认 1s），时长保持不变整体右移；
- *  预览轨/剪映草稿文字模板轨/服务端事件直传三个消费端同源生效。 */
-export function enforceKeywordSpacing(
-  hits: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>,
-  minGapSec = 1,
-): Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> {
-  const sorted = (Array.isArray(hits) ? hits : [])
-    .map((h) => ({ ...h, start: Number(h.start) || 0, end: Number(h.end) || 0 }))
-    .sort((a, b) => a.start - b.start)
-  let cursor = -Infinity
-  for (const h of sorted) {
-    const dur = Math.max(0, h.end - h.start)
-    if (h.start < cursor + minGapSec) h.start = Math.round((cursor + minGapSec) * 1000) / 1000
-    h.end = Math.round((h.start + dur) * 1000) / 1000
-    h.start = Math.round(h.start * 1000) / 1000
-    cursor = h.start
-  }
-  return sorted
 }
 
 /** LLM 关键词提取系统提示词（只要求 JSON 数组输出，防御解析见 parseLlmKeywords） */

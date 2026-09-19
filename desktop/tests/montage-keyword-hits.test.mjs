@@ -50,32 +50,20 @@ test('parseProductKeywords：严格读取 keywords 字段（2026-09-19 服务端
   assert.deepEqual(P.parseProductKeywords(null), [])
 })
 
-// ── 2026-09-19 用户报障：同句命中多词 → 词条同一时间点重叠；强制相邻 start ≥1s ──
+// ── 2026-09-19 用户裁决：一个字幕段只出一条文字模板（同段多命中取词表序最前）──
 
-test('enforceKeywordSpacing：同窗词条错开 ≥1s，时长保持；已间隔的词条原样', () => {
-  const M2 = M;
-  const hits = [
-    { text: '低延迟', start: 5, end: 8, keywords: ['低延迟'], templateId: 'a' },
-    { text: '大容量', start: 5, end: 8, keywords: ['大容量'], templateId: 'b' }, // 同窗 → 重叠
-    { text: '防水', start: 12, end: 15, keywords: ['防水'] },
+test('matchKeywordHits：一字幕段只出一条文字模板（词表序优先），不同段各自出条', () => {
+  const rows = [
+    { text: '低延迟稳定传输，大容量长续航', start: 0, end: 4 },
+    { text: '防水轻便', start: 4, end: 7 },
   ]
-  const out = M2.enforceKeywordSpacing(hits, 1)
-  // 排序后：低延迟(5) → 大容量错开到 6（时长 3s 保持 → 6-9）→ 防水不受影响
-  assert.deepEqual(out.map((h) => [h.text, h.start, h.end]), [
-    ['低延迟', 5, 8],
-    ['大容量', 6, 9],
-    ['防水', 12, 15],
-  ])
-  // 不改入参
-  assert.equal(hits[1].start, 5)
-})
-
-test('enforceKeywordSpacing：乱序输入先排序再游标扫描；零时长词条也错开', () => {
-  const out = M.enforceKeywordSpacing([
-    { text: 'c', start: 3.2, end: 3.2, keywords: ['c'] },
-    { text: 'a', start: 3.5, end: 6, keywords: ['a'] },
-    { text: 'b', start: 3.5, end: 6, keywords: ['b'] },
-  ], 1)
-  // 排序：c(3.2,0s) → a(3.5) 与上一 start 差 0.3<1 → 推到 4.2 → b 推到 5.2
-  assert.deepEqual(out.map((h) => [h.text, h.start]), [['c', 3.2], ['a', 4.2], ['b', 5.2]])
+  const out = M.matchKeywordHits(['大容量', '低延迟', '防水'], rows, ['t1', 't2'])
+  // 第一段同时命中『大容量/低延迟』→ 只取词表序最前的『大容量』一条，不叠第二条
+  assert.equal(out.length, 2)
+  assert.equal(out[0].text, '大容量')
+  assert.deepEqual([out[0].start, out[0].end], [0, 4])
+  assert.equal(out[0].templateId, 't1')
+  // 第二段独立命中 → 照常出条
+  assert.equal(out[1].text, '防水')
+  assert.equal(out[1].templateId, 't2')
 })

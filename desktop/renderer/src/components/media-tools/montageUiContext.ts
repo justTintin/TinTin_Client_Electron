@@ -10,6 +10,10 @@ export interface MontageShellContext {
   s: MontageUi
   step: Ref<number>
   go: (i: number) => void
+  vdLeftStyle: import('vue').ComputedRef<{ flex: string }>
+  onSplitDown: (e: MouseEvent) => void
+  /** 右栏预览画幅（Shell computed，Step2/3/4 共用） */
+  previewAspect: import('vue').ComputedRef<string>
 }
 
 export const montageShellKey: InjectionKey<MontageShellContext> = Symbol('montageShell')

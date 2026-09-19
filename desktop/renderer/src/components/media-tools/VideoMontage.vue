@@ -116,7 +116,7 @@ const {
   SHOT_TYPE_LABELS, SHOT_TYPE_COLORS,
 } = s
 
-provide(montageShellKey, { s, step, go })
+
 
 // ── 界面统一+联动预览（2026-09-10 用户需求）：Step2/3/4 右栏统一多块视频预览 ──
 /** 本地路径 → file URL（previewFinalVideo 同口径） */
@@ -291,6 +291,9 @@ function onSplitDown(e: MouseEvent): void {
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
 }
+
+// ── 面板注入（须晚于 vdLeftStyle/previewAspect 声明；setup 期一次性绑定）──
+provide(montageShellKey, { s, step, go, vdLeftStyle, onSplitDown, previewAspect })
 
 /** TTS 引擎下拉选项（2026-09-09 用户裁决：默认 idexttts，对齐声音克隆页裁决；
  *  QwenTTS 待服务端实现，禁用占位） */
@@ -553,180 +556,7 @@ function scoreClass(score: number | undefined): string {
 
     <!-- Step 1: 镜头智能分割（布局对照原版 gui/montage/step1_split_view.py L27-181） -->
     <MontageStep1Panel v-if="step === 0" />
-    <template v-else-if="step === 1">
-      <section class="card">
-        <div class="vd-unified">
-        <div class="vd-unified-left" :style="vdLeftStyle">
-        <VdStepBar :step="step" @go="go" />
-        <!-- 参数设置组（原版 params_group：统一边框背景内两行参数） -->
-        <div class="params-group">
-          <!-- Parameters row 1（原版 L45-106：排列逻辑|输出画幅+原片画幅|时长限制|生成视频数量+推荐；混编随机度隐藏） -->
-          <div class="param-row">
-            <span class="param-label">排列逻辑:</span>
-            <select v-model="assembleLogic" class="input w120" title="智能重排：镜头智能排列组合。">
-              <option v-for="o in logicOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <span class="param-label">输出画幅:</span>
-            <select v-model="concatLayout" class="input w180">
-              <option v-for="o in LAYOUTS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <span v-if="concatLayout === 'source'" class="src-res"
-              title="分割片段画幅（2026-09-15 裁决：画幅基准=分割片段而非原素材），选择'与分割视频一致'时将使用此分辨率">
-              分割画幅: {{ splitResolution || '未知' }}</span>
-            <span class="param-label">时长限制:</span>
-            <select v-model.number="durationLimit" class="input w80" title="每个预合成视频的总时长上限（实际不超此值的 1.1 倍）">
-              <option v-for="s in DURATION_LIMITS" :key="s" :value="s">{{ s }} 秒</option>
-            </select>
-            <span class="param-label">生成视频数量 (1-20):</span>
-            <input v-model.number="batchCount" type="number" min="1" max="20" class="input w60" />
-            <span class="hint">推荐: {{ recBatchCount }}</span>
-          </div>
-          <!-- Parameters row 2（原版 L109-140：转场动画 | 出入场加速；输出帧率是本端新增控件——
-               原版无帧率入口、写死 30fps，2026-09-11 用户裁决加下拉且默认「跟随原片」） -->
-          <div class="param-row">
-            <span class="param-label">转场动画:</span>
-            <select v-model="concatTransition" class="input w120" title="镜头之间的转场动画效果（剪映常用转场）">
-              <option v-for="o in TRANSITIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <span class="param-label">出入场加速:</span>
-            <select v-model.number="edgeSpeedup" class="input w90"
-              title="识别为「入场/出场」（位置，非景别）的镜头按此倍速加速播放，其它位置不受影响。&#10;位置来源：服务端 enter/exit 标注优先，否则按素材文件夹/文件名命名（入场、出场等）推断（见分割表「位置」列）。&#10;走服务端合成时生效；本地回退合成不支持加速；无位置标注的素材无效果。">
-              <option v-for="o in EDGE_SPEEDUP_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <span class="param-label">输出帧率:</span>
-            <select v-model="concatFps" class="input w140"
-              title="成片帧率，随服务端合成提交 fps 字段（契约 integer，默认 30）。&#10;跟随原片：用服务端 split 响应的 source_resolution.fps（2026-09-11 实测有此字段），&#10;服务端未给时本地探测兑底；都不行则回退 30。&#10;29.97/23.976 等小数帧率服务端不收，一律取整。">
-              <option v-for="o in FPS_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-            </select>
-            <span v-if="concatFps === 'source'" class="src-res"
-              title="服务端 source_resolution.fps 优先，本地探测兑底；都拿不到时按 30 fps 提交">
-              原片: {{ splitFps > 0 ? splitFps + ' fps' : '未知（回退 30）' }}</span>
-          </div>
-        </div>
-
-        <!-- 脚本工具栏（原版 L155-174：待排列镜头个数黄色粗体 + stretch + 镜头重组；
-             原版「AI 生成文案」按钮 setVisible(False) 隐藏，不渲染） -->
-        <div class="param-row">
-          <span class="clip-count">待排列镜头个数: {{ filteredScenes.length }}  (已勾选: {{ checkedCount }})</span>
-          <span class="spacer"></span>
-          <TButton label="镜头重组" icon="video" :loading="concatBusy" @click="runConcat" />
-        </div>
-        <div v-if="concatError" class="error-msg">⚠ {{ concatError }}（修正后重按「镜头重组」重试）</div>
-
-        <!-- 中间结果区（原版 result_box） -->
-        <div class="result-box">
-          <!-- 预合成视频列表（2026-09-09 用户裁决：改表格列显示，不再单行挤在一起；
-               列：序号|视频|时长|状态|口播文案；时长列为同日追加裁决：已合成=成片探测
-               实际时长，待确认=未删除镜头之和估计；交互不变：单击选中/双击查看文案/右键菜单） -->
-          <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
-          <!-- 滚动容器（2026-09-11 用户裁决）：最大 10 行高度（表头 + 10 行，与下方详情表
-               380px 同口径），超出滚动；少于 10 行随真实行数收缩，不再用占位行撑高。
-               注：旧值 332px 行高实测约 33px 只能完整显示 9 行 → 调至 380px（表头约
-               30px + 10 行 × 35px），2026-09-11 用户裁决「至少显示 10 个」 -->
-          <div class="plan-tbl-wrap">
-            <table class="tbl plan-tbl">
-              <thead><tr>
-                <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">时长</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
-              </tr></thead>
-              <tbody>
-                <tr v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
-                  :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
-                  @contextmenu.prevent="openPlanMenu($event, i)">
-                  <td class="ta-c">{{ i + 1 }}</td>
-                  <td class="plan-file" :title="p.outputName">{{ p.outputName || `${p.clips.length} 个镜头` }}</td>
-                  <td class="ta-c">{{ planDurText(p) }}</td>
-                  <td class="ta-c">{{ p.confirmed && p.outputName ? '已合成' : '待确认' }}</td>
-                  <td class="plan-copy" :title="p.copy || ''">{{ p.copy ? copyPreviewText(p.copy) : '未生成口播文案' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
-
-          <!-- 下半区：分割镜头详情表（表头 + 10 行高，见 .detail-scroll-wrap 380px；
-               2026-09-11 用户裁决至少显示 10 个；连播预览已迁右侧统一预览栏，
-               2026-09-10 用户需求：单击预览块联动选中方案） -->
-          <div class="result-bottom">
-            <div class="detail-col">
-              <span class="sec-label">视频组成镜头详情 (拖动把手调序，右键删除/恢复镜头):</span>
-              <div class="detail-scroll-wrap">
-                <table class="tbl detail-tbl">
-                  <thead><tr>
-                    <th class="w48">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
-                    <th>时长</th><th>景别</th><th>位置</th><th style="min-width:180px">描述文案</th><th>评分</th>
-                  </tr></thead>
-                  <tbody v-if="currentPlan">
-                    <tr v-for="(c, ri) in currentPlan.clips" :key="ri"
-                      :class="{ 'row-deleted': currentPlan.deletedFlags[ri] }"
-                      draggable="true"
-                      @dragstart="onDetailDragStart(ri)" @dragend="onDetailDragEnd"
-                      @drop.prevent="onDetailDrop(ri)" @dragover.prevent
-                      @contextmenu.prevent="openDetailMenu($event, ri)">
-                      <td class="ta-c">{{ ri + 1 }}</td>
-                      <td class="ta-c grip-cell" title="拖动调序">⠿</td>
-                      <td class="clip-name" :title="c.clipUrl || c.name">{{ c.name }}</td>
-                      <td class="ta-c">{{ c.duration > 0 ? c.duration.toFixed(1) + 's' : '—' }}</td>
-                      <td class="ta-c">
-                        <span v-if="c.shotType" class="shot-type-badge"
-                          :style="{ color: SHOT_TYPE_COLORS[c.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[c.shotType] || '#888' }">
-                          {{ SHOT_TYPE_LABELS[c.shotType] || c.shotType }}
-                        </span>
-                        <span v-else class="muted">—</span>
-                      </td>
-                      <!-- 位置：入场/出场（同 Step1 口径：服务端 enter/exit 优先，路径命名兑底；tooltip 标来源）。
-                           重组排序即按此列：入场头/出场尾/其余居中（applyShotLayoutOrder） -->
-                      <td class="ta-c shot-source-cell" :title="c.positionSource || ''">
-                        <span v-if="c.position" class="shot-type-badge"
-                          :style="{ color: SHOT_TYPE_COLORS[c.position] || '#888', borderColor: SHOT_TYPE_COLORS[c.position] || '#888' }">
-                          {{ SHOT_TYPE_LABELS[c.position] || c.position }}
-                        </span>
-                        <span v-else class="muted">—</span>
-                      </td>
-                      <td class="clip-desc" :title="c.description">{{ c.description || '—' }}</td>
-                      <td class="ta-c" :class="scoreClass(c.score)">{{ c.score ? c.score.toFixed(1) : '—' }}</td>
-                    </tr>
-                    <!-- 不足 10 行时占位 -->
-                    <tr v-for="n in Math.max(0, 10 - (currentPlan?.clips.length || 0))" :key="'dph'+n" class="detail-placeholder-row"><td colspan="8"></td></tr>
-                  </tbody>
-                  <tbody v-else>
-                    <tr><td colspan="7" class="muted">单击右侧预览块或上方预合成项查看镜头详情</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 确认行（原版 confirm_row L268-286：确认合成视频 + 生成口播文案，初始禁用；
-             2026-09-10 界面统一：属执行步骤，归左栏底部） -->
-        <div class="row confirm-row">
-          <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!hasUnconfirmed" @click="confirmAllPrecompose" />
-          <!-- 2026-09-09 用户裁决：合成完成后生成口播文案要标明可点击状态（可用时切 primary 高亮） -->
-          <TButton label="生成口播文案" :variant="confirmedPaths.length ? 'primary' : 'secondary'" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
-        </div>
-        <template v-if="confirmBusy">
-          <div class="concat-status-line">{{ statusText }}</div>
-          <progress class="vd-progress split-progress" :value="concatProgress" max="100" />
-        </template>
-
-        <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区，归左栏底部；原版 nav_row L288-301） -->
-        <div class="row between">
-          <TButton label="上一步：镜头分割" plain @click="go(0)" />
-          <TButton label="下一步：口播配音" icon="right" :disabled="!confirmedPaths.length" @click="go(2)" />
-        </div>
-        </div><!-- /vd-unified-left -->
-
-<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
-
-        <!-- 右栏：每条方案一块预览（确认成片直播；未确认单击块连播镜头序列，并联动左栏镜头表） -->
-        <div class="vd-unified-right">
-          <StepPreviewPane title="画面预览" :items="step2PreviewItems" :active-index="currentPlanIdx"
-            :aspect="previewAspect"
-            empty-text="尚无预合成方案，勾选镜头后点击「镜头重组」" @select="selectPlan" />
-        </div>
-        </div><!-- /vd-unified -->
-      </section>
-    </template>
+    <MontageStep2Panel v-else-if="step === 1" />
 
     <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一）；
          2026-09-10 用户需求「界面统一+联动预览」：左操作区 + 右逐条点亮预览 -->

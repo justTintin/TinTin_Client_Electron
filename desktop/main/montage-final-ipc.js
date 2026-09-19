@@ -416,10 +416,12 @@ function buildServerFxFields(fx, srt, matchId) {
     if (fx.textTemplateId && fx.textTemplateId !== 'random') {
       fields.text_template_id = String(fx.textTemplateId)
     } else {
-      // 随机样式 → 关键词命中模式。最小接入=①match_enabled（总开关）+②match_ids
-      // （勾选池，JSON 数组）+字幕；2026-09-13 接口对齐：预取回执 match_id 一并传
-      // （推荐，服务端直接用保存的 events 烧制不重算 → 预览=成片一致；保留 7 天，
-      // 过期 400 客户端重新 match）。文档口径：传 match_id 时勾选 id 仍以 match_ids 为准。
+      // 随机样式 → 关键词命中模式：match_enabled（总开关）+ match_ids（客户端模板
+      // 池，命中行从池中随机选一）+字幕。2026-09-19 架构：/text_templates/match 下线
+      // → match_id 不再下发（2026-09-13 的「预取回执复用」机制作废），服务端 concat
+      // 无 match_id 时按其旧口径自行命中（常用词∪内置卖点词 + LLM 从字幕补足）。
+      // ⚠️ 已登记待对齐：该自行命中与客户端产品关联词命中是两套判定 → 预览≠成片，
+      //    且产品关联词未参与服务端链路（见 docs/客户端服务端接口对齐_2026-09-19.md Q1）。
       fields.text_template_match_enabled = 'true'
       if (Array.isArray(fx.textTemplateMatchIds) && fx.textTemplateMatchIds.length) {
         fields.text_template_match_ids = JSON.stringify(fx.textTemplateMatchIds.map((x) => String(x)))

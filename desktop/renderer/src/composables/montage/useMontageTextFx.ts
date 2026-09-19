@@ -171,7 +171,11 @@ export function useMontageTextFx(ctx: MontageTextFxContext) {
         out.push({ text: w, start: r.start, end: r.end, keywords: [w], templateId })
       }
     }
-    textFxHitsByVideo.set(videoPath, out)
+    // 2026-09-19 修复（用户报障「关键词不显示」根因③）：空结果不入缓存——此前一次
+    // 空算（如行数据未就绪时先跑过一次导出）会把该视频整会话钉死为空命中，后续
+    // 数据已正确也永远返回 []。非空才缓存；服务端权威零命中（fetchTextFxHits 成功
+    // 回空）仍照常入缓存，属合法判定不受此限
+    if (out.length) textFxHitsByVideo.set(videoPath, out)
     return out
   }
   async function fetchTextFxHits(
@@ -232,13 +236,18 @@ export function useMontageTextFx(ctx: MontageTextFxContext) {
               templateId: String(c.template_id || ''),
             }))
         } else {
+          // 2026-09-19 修复（用户报障「关键词不显示」根因②）：回退 lines（服务端未回
+          // textfx_clips）时此前 templateId=undefined → 导出侧 filter(h => h.templateId)
+          // 把服务端已判 selected 的命中全部丢弃。按契约同口径「按序轮换标注
+          // template_id」：候选池轮转补标注，命中不再白拿
           lines = (res.lines as Array<Record<string, unknown>>)
             .filter((l) => l.selected)
-            .map((l) => ({
+            .map((l, li) => ({
               text: String(l.text || ''),
               start: Number(l.start) || 0,
               end: Number(l.end) || 0,
               keywords: Array.isArray(l.matched_keywords) ? l.matched_keywords.map((k) => String(k)) : [],
+              templateId: templateIds.length ? String(templateIds[li % templateIds.length]) : '',
             }))
         }
       } else if (attempt < 3) {

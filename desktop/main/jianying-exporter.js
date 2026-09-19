@@ -602,6 +602,9 @@ function draft_content_tracks_render_index(tracks) {
 /** 模板实例段追加到文字模板轨（时间窗裁剪同 appendSubtitleTrack 口径；
  *  preset 解析经 cache 复用；模板缺失静默跳过——不造假）。 */
 function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs, limitEndUs, tplCache, canvasW = 0, canvasH = 0) {
+  // 2026-09-19 修复（用户报障「关键词不显示」）：返回实际追加段数——此前预设查不到
+  // （Text_V2 目录缺失 / resource_id 不匹配）逐命中静默 continue，模板轨零产出无任何信号
+  let appended = 0
   for (const c of clips) {
     const startUs = offsetUs + c.startUs
     let durUs = c.durUs
@@ -636,7 +639,9 @@ function appendTextTemplateSegments(track, materials, clips, presetDir, offsetUs
     // 2026-09-18 用户裁决：文字模板默认位置=居中上（见 TEXT_TEMPLATE_TRANSFORM_Y 注释）
     if (tplSeg.clip && tplSeg.clip.transform) tplSeg.clip.transform = { x: 0, y: TEXT_TEMPLATE_TRANSFORM_Y }
     track.segments.push(tplSeg)
+    appended++
   }
+  return appended
 }
 
 /** 贴纸素材（materials.stickers 成员；pyJianYingDraft StickerSegment.export_material） */
@@ -1097,6 +1102,11 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
       sfxEventCursor += evs.length
     }
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
+    // 模板轨诊断（2026-09-19）：expected=输入命中非空；appended=预设实际成段数；
+    // kwFallback=模板零产出时 'tpl' 蓝字轨兜底段数。随导出结果回传渲染层据实提示
+    const textTplExpected = !!tplClips && tplClips.some((l) => l.length)
+    let textTplAppended = 0
+    let textTplKwFallbackSegs = 0
     if (srtPaths) {
       // flag=1：剪映「字幕轨」属性（11.x 实测，标准 §2.4 Track[1]）；花字/模板轨仍 0
       const subtitleTrack = newTrack('text', 1)
@@ -1104,8 +1114,12 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
       const fxTrackCache = {}
       const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []
       const kwKinds = Array.isArray(fxKinds) ? fxKinds.filter((k) => k === 'fancy' || k === 'tpl') : []
-      const hasTplClips = !!tplClips && tplClips.some((l) => l.length)
+      const hasTplClips = textTplExpected
       const effKinds = hasTplClips ? kwKinds.filter((k) => k !== 'tpl') : kwKinds
+      // 2026-09-19 修复（用户报障「关键词不显示」根因④）：'tpl' 蓝字轨为原生模板让位
+      // （effKinds 过滤）后，若 Text_V2 预设查不到 → 模板段零产出且兜底已让位 =
+      // 关键词全灭且无任何提示。逐视频登记让位窗口，模板零产出时按词表兜底补建。
+      const tplDeferredKw = []
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
@@ -1116,10 +1130,11 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
               effectId: kind === 'fancy' ? fancyEffectId : tplEffectId,
             })
           }
+          if (hasTplClips && kwKinds.includes('tpl')) tplDeferredKw.push({ srt: srtPaths[i], from: cursorUs, to: cursorUs + clip.durationUs })
         }
         if (tplClips && tplClips[i] && tplClips[i].length) {
           try {
-            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
+            textTplAppended += appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
           } catch (_) { /* 模板轨失败不阻断导出（字幕轨仍在） */ }
           // 音效轨（2026-09-17 用户裁决·定义修正）：跟随文字模板命中位置落段
           // （位置=关键词命中位置；与花字轨无关）。2026-09-18：音效池来自服务端
@@ -1130,6 +1145,13 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
         // 2026-09-16 用户裁决：视频片段之间添加半秒间隔，所有轨道同步
         if (i < clips.length - 1) cursorUs += VIDEO_GAP_US
       })
+      // 模板三件套零产出 → 让位的 'tpl' 关键词轨兜底补建（词表非空且 SRT 有命中才成段）
+      if (tplDeferredKw.length && !textTplAppended) {
+        for (const d of tplDeferredKw) {
+          appendKeywordTrack(tracks, materials, d.srt, kwWords, 'tpl', d.from, d.to, fxTrackCache, { anim: textAnim, effectId: tplEffectId })
+        }
+        textTplKwFallbackSegs = fxTrackCache.tpl ? fxTrackCache.tpl.segments.length : 0
+      }
       if (!subtitleTrack.segments.length) tracks.splice(tracks.indexOf(subtitleTrack), 1)
       if (tplTrack && tplTrack.segments.length) tracks.push(tplTrack)
     } else if (tplClips && tplClips.some((l) => l.length)) {
@@ -1138,7 +1160,7 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
       clips.forEach((clip, i) => {
         if (tplClips[i] && tplClips[i].length) {
           try {
-            appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
+            textTplAppended += appendTextTemplateSegments(tplTrack, materials, tplClips[i], presetDir, cursorUs, cursorUs + clip.durationUs, tplCache, canvasWidth, canvasHeight)
           } catch (_) {}
           appendSfxForVideo(i, cursorUs, cursorUs + clip.durationUs)
         }
@@ -1196,7 +1218,10 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
     // bgmIncluded：BGM 轨是否实际生成（未选/文件不存在时为 false，渲染层据实提示）
     // conformance：标准符合性自检（本路径全部走标准构造器，预期 0 警告；非 0 即构造器缺陷）
     const conformance = auditDraftStandardConformance(content)
-    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA, bgmIncluded, conformance }
+    // 2026-09-19 模板轨诊断回传（用户报障「关键词不显示」零信号根因④）：
+    // expected=输入命中非空；appended=预设实际成段数（预设缺失/不匹配=0）；
+    // kwFallbackSegs=模板零产出时 'tpl' 蓝字轨兜底段数。渲染层据实提示，不再静默
+    return { success: true, message: draftFolder, draftName, schemaVersion: DRAFT_SCHEMA, bgmIncluded, conformance, textTplExpected, textTplAppended, textTplKwFallbackSegs }
   } catch (e) {
     return { success: false, message: e && e.message ? e.message : String(e) }
   }

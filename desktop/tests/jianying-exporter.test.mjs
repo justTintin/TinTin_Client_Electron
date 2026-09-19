@@ -699,6 +699,34 @@ test('exportMultiToDraft：无命中（空 clips）→ 回退旧 tpl 蓝字轨 +
   assert.equal(content.materials.texts.filter(isBlueKeywordText).length, 1) // 旧蓝字轨回退
 })
 
+test('exportMultiToDraft：预设缺失（模板零成段）→ tpl 蓝字轨兜底 + textTpl* 诊断回传（2026-09-19 根因④）', () => {
+  // 不写 fixture preset → Text_V2 无任何 .textpreset → findTextPreset 全空、模板段零产出
+  const v = path.join(tmpRoot, 'dubbed_t4.mp4')
+  fs.writeFileSync(v, 'x')
+  const srt = path.join(tmpRoot, 't4.srt')
+  fs.writeFileSync(srt, '1\n00:00:00,000 --> 00:00:02,000\n限时上新199元\n', 'utf-8')
+  const r = exportMultiToDraft({
+    videoPaths: [v],
+    srtPaths: [srt],
+    fxWords: ['199元'],
+    fxKinds: ['tpl'],
+    tplEffectId: TPL_RID,
+    textTemplateClips: [
+      [{ phrase: '199元', startUs: 500000, durUs: 1500000, resourceId: 'jy_' + TPL_RID }],
+    ],
+    draftName: '预设缺失兜底测试',
+    deps: DEPS,
+  })
+  assert.equal(r.success, true)
+  // 诊断回传：输入命中非空（expected）、预设零成段（appended=0）、蓝字兜底 1 段
+  assert.equal(r.textTplExpected, true)
+  assert.equal(r.textTplAppended, 0)
+  assert.equal(r.textTplKwFallbackSegs, 1)
+  const content = JSON.parse(fs.readFileSync(path.join(r.message, 'draft_content.json'), 'utf-8'))
+  assert.equal(content.materials.text_templates.length, 0)
+  assert.equal(content.materials.texts.filter(isBlueKeywordText).length, 1, '预设缺失时蓝字轨应兜底补建，关键词不再全灭')
+})
+
 test('exportMultiToDraft：voiceClips → 口播独立音频轨 + 有口播的素材段静音（音频三轨体系）', () => {
   const v1 = path.join(tmpRoot, 'dubbed_v1.mp4')
   const v2 = path.join(tmpRoot, 'dubbed_v2.mp4')

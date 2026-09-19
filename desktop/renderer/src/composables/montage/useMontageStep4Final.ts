@@ -815,6 +815,15 @@ async function exportAllToJianyingDraft(): Promise<void> {
         fancyEvents.push([])
       }
     }
+    // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：文字模板开启但逐视频
+    // 命中全空 → 明确告知不再静默出片；命中条件=词表命中且模板池非空（jy_ 池）
+    if (textFxEnabled.value && cands.length && textTemplateClips.every((t) => !t.length)) {
+      const reason = activeTextPool.value.length
+        ? '关键词与文案无命中（可调高「关键词密度」或更换模板池后重试）'
+        : '文字模板库为空（进第四步时会自动拉取，若持续为空请检查服务端 /text_templates/templates）'
+      clientError('video-montage', '导出关键词轨为空', `候选 ${cands.length} 段均未命中文字模板`)
+      notify('无关键词特效', `本次导出未包含关键词/文字模板轨：\n${reason}`)
+    }
     const transition = concatTransition.value || 'fade'
     const finalName = timelineDraftName()
     exportStage.value = '组装剪映时间轴草稿（转场/口播/字幕/BGM 各轨）...'

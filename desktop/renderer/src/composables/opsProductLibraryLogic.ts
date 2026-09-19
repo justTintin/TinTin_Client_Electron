@@ -264,19 +264,26 @@ export function stripProductCodeFromModel(raw: unknown): string {
 }
 
 /** 产品资料关联关键词解析（2026-09-19 架构：服务端在产品资料中关联关键词，客户端
- *  据此命中；契约字段名未定，防御式读取 keywords / product_keywords / 关键词）。
+ *  据此命中；字段名与 API 契约对齐，仅读取 keywords 字段）。
  *  接受 string[] 或分隔字符串（顿号/逗号/分号/换行），去空去重 */
 export function parseProductKeywords(item: Record<string, unknown> | null | undefined): string[] {
-  const src = item ? (item.keywords ?? item.product_keywords ?? item['关键词']) : null
+  if (!item) return []
+  
+  // 严格对齐服务端接口，仅读取 keywords 字段（铁律 6：不猜测、不兜底；
+  // 2026-09-19 实测契约 ProductItemOut.keywords: string[]）
+  const src = item.keywords ?? null
+
   const list = Array.isArray(src)
     ? src
     : (src == null ? [] : String(src).split(/[,，、;；\n]/))
+    
   const out: string[] = []
   for (const it of list) {
     const w = String(it ?? '').trim()
     if (!w || out.includes(w)) continue
     out.push(w)
   }
+  
   return out
 }
 

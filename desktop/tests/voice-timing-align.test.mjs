@@ -90,3 +90,20 @@ test('scaleTimingSidecar：null/零值行不被 Number(null)=0 清零放大（�
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ── 2026-09-19 用户方案：whisperx 字级对齐 SRT → timing.json 行（真值替换估算）──
+
+test('parseSrtText：subtitle=true 返回的 SRT → 行数组（秒、去序号行、丢无效块）', () => {
+  const srt = [
+    '1', '00:00:00,060 --> 00:00:02,282', '粉色控的终极梦想来了，', '',
+    '2', '00:00:02,402 --> 00:00:03,143', '罗技PRO X 2 LIGHTSPEED', '',
+    '3', '00:00:03,500 --> 00:00:03,000', '无效窗口块应丢弃', '',
+  ].join('\n')
+  const rows = M.parseSrtText(srt)
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].text, '粉色控的终极梦想来了，')
+  assert.equal(rows[0].start, 0.06)
+  assert.equal(rows[0].end, 2.282)
+  assert.equal(rows[1].text, '罗技PRO X 2 LIGHTSPEED')
+  assert.deepEqual(rows.map((r) => r.end > r.start), [true, true])
+})

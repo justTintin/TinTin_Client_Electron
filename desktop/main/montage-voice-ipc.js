@@ -371,11 +371,49 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         if (measured) timing = alignTimingToSpeech(timing, measured, totalDur)
       } catch (_) { /* 实测失败回退估算 timing */ }
       writeTimingSidecar(outWavPath, timing)
+      // 2026-09-19（用户方案·whisperx 字级对齐）：POST /whisper/transcribe
+      //   （fmt=srt + subtitle=true + subtitle_text=文案原文）→ 服务端按原文做
+      //   字级强制对齐，返回 SRT（文本=文案原字零失真、时间=实测真值，粒度=文案
+      //   句读），解析后覆写上面的估算 timing。字幕/关键词命中/事件直传全链受益。
+      //   best-effort：离线/失败/超时保留估算 timing，不阻断克隆。
+      try {
+        const aligned = await transcribeAlignedRows(outWavPath, text)
+        if (aligned) writeTimingSidecar(outWavPath, aligned)
+      } catch (_) { /* 对齐失败保留估算 timing */ }
     } catch (_) { /* 写时间轴失败不阻断（原版 OSError 兜底） */ }
   }
 
-  // ── voice:cloneBatch — 批量克隆人声（VoiceCloneWorker.run L330-412 口径）──
+  /** whisperx 字级对齐（2026-09-19 用户方案）：上传合成 wav + 文案原文 →
+   *  POST /whisper/transcribe（fmt=srt + subtitle=true + subtitle_text）→
+   *  服务端按原文对齐返回 SRT（文案原字+实测时间）→ 解析为行数组；
+   *  失败/超时（5 分钟）/无有效行 → null（调用方保留估算 timing） */
+  async function transcribeAlignedRows(wavPath, text) {
+    const boundary = '----TintinAlign' + Math.random().toString(16).substring(2)
+    const parts = []
+    const putField = (k, v) => parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`))
+    putField('language', 'zh')
+    putField('fmt', 'srt')
+    putField('subtitle', 'true')
+    putField('subtitle_text', String(text || ''))
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path.basename(wavPath).replace(/"/g, '')}"\r\nContent-Type: audio/wav\r\n\r\n`))
+    parts.push(fs.readFileSync(wavPath))
+    parts.push(Buffer.from('\r\n'))
+    parts.push(Buffer.from(`--${boundary}--\r\n`))
+    const res = await httpRequest('POST', '/whisper/transcribe', {
+      body: Buffer.concat(parts),
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      timeout: 300000,
+    })
+    const raw = res && res.raw && res.raw.length
+      ? Buffer.from(res.raw).toString('utf-8')
+      : String((res && res.data) ?? '')
+    if (!raw.includes('-->')) return null
+    const rows = parseSrtText(raw)
+    return rows.length ? rows : null
+  }
+
   // 单条失败记录跳过不中断；任务间 sleep 0.3s；变速对齐视频时长（clamp+timing 缩放）。
+  // ── voice:cloneBatch — 批量克隆人声（VoiceCloneWorker.run L330-412 口径）──
   ipcMain.handle('voice:cloneBatch', async (event, payload) => {
     try {
       const p = payload || {}
@@ -785,4 +823,24 @@ function scaleTimingSidecar(wavPath, factor) {
   } catch (_) { /* 对照 _scale_timing_sidecar 兜底 */ }
 }
 
-module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar }
+/** SRT 文本 → 行数组（timing.json 口径 {text,start,end} 秒；丢序号行/空文本块；
+ *  end<=start 的无效块丢弃）。纯函数可单测。 */
+function parseSrtText(srt) {
+  const rows = []
+  for (const block of String(srt || '').replace(/\r/g, '').split(/\n{2,}/)) {
+    const lines = block.split('\n').filter((l) => l.trim())
+    const tLine = lines.find((l) => l.includes('-->'))
+    if (!tLine) continue
+    const m = /(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/.exec(tLine)
+    if (!m) continue
+    const sec = (h, mi, se, ms) => Number(h) * 3600 + Number(mi) * 60 + Number(se) + Number(String(ms).padEnd(3, '0')) / 1000
+    const text = lines.filter((l) => l !== tLine && !/^\d+$/.test(l.trim())).join(' ').trim()
+    if (!text) continue
+    const start = sec(m[1], m[2], m[3], m[4])
+    const end = sec(m[5], m[6], m[7], m[8])
+    if (!(end > start)) continue
+    rows.push({ text, start: Math.round(start * 1000) / 1000, end: Math.round(end * 1000) / 1000 })
+  }
+  return rows
+}
+module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar, parseSrtText }

@@ -80,6 +80,74 @@ function runFfmpeg(args) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// ── 2026-09-19 字幕对齐增强（用户报障：字幕落后声音约半秒）──
+// 背景：整句合成后 timing 按句字数比例估算，与真实语音节奏（起音延迟/标点停顿/
+//   语速起伏）存在 ±0.5s 漂移。此处用 ffmpeg silencedetect 实测 wav 的静音/语音
+//   边界：句窗口整体平移+缩放到实测语音跨度，实测内部停顿数=句数-1 时句界
+//   吸附到停顿中点；任何失败回退原估算 timing（既有行为不变）。
+
+/** 解析 silencedetect stderr → 静音区间；推导 leadIn/tailOut/句间停顿（单位秒）。无法判定返回 null */
+function parseSilencedetect(stderr, totalDur) {
+  const silences = []
+  for (const line of String(stderr).split(/\r?\n/)) {
+    let m = /silence_start:\s*(-?[\d.]+)/.exec(line)
+    if (m) { silences.push({ start: Math.max(0, Number(m[1])), end: totalDur }); continue }
+    m = /silence_end:\s*([\d.]+)/.exec(line)
+    if (m && silences.length) silences[silences.length - 1].end = Number(m[1])
+  }
+  const speech = []
+  let pos = 0
+  for (const s of silences) {
+    if (s.start - pos >= 0.06) speech.push({ start: pos, end: s.start })
+    pos = Math.max(pos, s.end)
+  }
+  if (totalDur - pos >= 0.06) speech.push({ start: pos, end: totalDur })
+  if (!speech.length || !silences.length) return null // 全静音/无静音：无可对齐边界
+  const leadIn = speech[0].start
+  const tailOut = Math.max(0, totalDur - speech[speech.length - 1].end)
+  const gaps = []
+  for (let i = 1; i < speech.length; i++) {
+    const g0 = speech[i - 1].end, g1 = speech[i].start
+    if (g1 - g0 >= 0.18) gaps.push({ mid: Math.round(((g0 + g1) / 2) * 1000) / 1000 })
+  }
+  return { leadIn, tailOut, gaps }
+}
+
+/** 实测对齐：句窗口平移 leadIn、按实测语音跨度缩放；实测内部停顿数=句数-1 时句界吸附停顿中点 */
+function alignTimingToSpeech(timing, m, totalDur) {
+  if (!Array.isArray(timing) || !timing.length || !m) return timing
+  const span = Math.max(0.2, totalDur - m.leadIn - m.tailOut)
+  const scale = span / Math.max(0.2, totalDur)
+  const r3 = (x) => Math.round(x * 1000) / 1000
+  const out = timing.map((t) => ({
+    text: t.text,
+    start: r3(m.leadIn + t.start * scale),
+    end: r3(m.leadIn + t.end * scale),
+  }))
+  const gaps = m.gaps || []
+  if (gaps.length === out.length - 1) {
+    for (let j = 0; j < gaps.length; j++) {
+      const mid = r3(gaps[j].mid)
+      out[j].end = mid
+      out[j + 1].start = mid
+    }
+    const last = out[out.length - 1]
+    last.end = Math.max(last.start + 0.2, r3(totalDur - m.tailOut))
+  }
+  return out
+}
+
+/** 实测 wav 语音边界（ffmpeg silencedetect；失败返回 null → 回退估算 timing） */
+async function detectSpeechBounds(wavPath, totalDur) {
+  const { code, stderr } = await runFfmpeg([
+    '-hide_banner', '-nostats', '-i', wavPath,
+    '-af', 'silencedetect=noise=-35dB:d=0.25',
+    '-f', 'null', '-',
+  ])
+  if (code !== 0 || !stderr) return null
+  return parseSilencedetect(String(stderr), totalDur)
+}
+
 // ── Windows 注册表字体族解析（对照 VideoDubbingWorker._lookup_windows_font_file L787-824）──
 // reg query 枚举 Fonts 键值；值名形如 "Microsoft YaHei (TrueType)" → 去 " (" 后缀，
 // 复合族名按 " & " 拆分逐段精确比较（防误选字重）。
@@ -285,9 +353,16 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const totalDur = L.wavBytesDuration(content)
       // 2026-09-18 用户裁决：停顿感知 timing——句界精确扣除/加回 pause 量，
       // 字幕句界不再因停顿均摊漂移（单句/无停顿等价旧口径）
-      const timing = segs.length <= 1
+      let timing = segs.length <= 1
         ? [{ text: mergedText, start: 0, end: Math.round(totalDur * 1000) / 1000 }]
         : L.buildPauseAwareTiming(segs, totalDur, pause)
+      // 2026-09-19 字幕对齐增强（用户报障：字幕落后声音约半秒）：silencedetect
+      //   实测语音起止与句间停顿，句窗口平移/缩放 + 句界吸附到实测停顿中点——
+      //   消除字数比例估算与真实语音节奏的 ±0.5s 漂移；任何失败回退估算 timing。
+      try {
+        const measured = detectSpeechBounds(outWavPath, totalDur)
+        if (measured) timing = alignTimingToSpeech(timing, measured, totalDur)
+      } catch (_) { /* 实测失败回退估算 timing */ }
       writeTimingSidecar(outWavPath, timing)
     } catch (_) { /* 写时间轴失败不阻断（原版 OSError 兜底） */ }
   }
@@ -716,4 +791,4 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   })
 }
 
-module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile }
+module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech }

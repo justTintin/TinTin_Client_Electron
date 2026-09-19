@@ -684,9 +684,13 @@ export function srtTimestamp(sec: number): string {
   return `${p(Math.floor(ms / 3600000), 2)}:${p(Math.floor((ms % 3600000) / 60000), 2)}:${p(Math.floor((ms % 60000) / 1000), 2)},${p(ms % 1000, 3)}`
 }
 
-/** 字幕行 → SRT 文本（cue 间空行分隔，与导出链路原内联拼接逐字同口径） */
+/** 字幕行 → SRT 文本（cue 间空行分隔，与导出链路原内联拼接逐字同口径）；
+ *  2026-09-19 用户报障（字幕行尾悬挂逗号观感差）：序列化时剥离行尾逗号/顿号
+ *  （句号/问号等句末标点保留），不影响重切校验（校验发生在序列化之前） */
+const stripTrailingComma = (t: unknown): string => String(t ?? '').replace(/\s*[，,、]\s*$/, '')
+
 export function serializeSrtRows(rows: SubtitleRow[]): string {
   return (rows || [])
-    .map((r, k) => `${k + 1}\n${srtTimestamp(r.start)} --> ${srtTimestamp(r.end)}\n${r.text}\n`)
+    .map((r, k) => `${k + 1}\n${srtTimestamp(r.start)} --> ${srtTimestamp(r.end)}\n${stripTrailingComma(r.text)}\n`)
     .join('\n')
 }

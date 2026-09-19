@@ -239,11 +239,17 @@ export interface TextFxTrack {
  */
 export function buildSubtitleRows(
   text: string,
-  timing: Array<{ text: string; start: number; end: number }> | undefined,
+  timing: Array<{ text: string; start: number; end: number; chars?: Array<{ c: string; start: number | null; end: number | null }> }> | undefined,
   durationSec: number,
-): Array<{ text: string; start: number; end: number }> {
+): Array<{ text: string; start: number; end: number; chars?: Array<{ c: string; start: number | null; end: number | null }> }> {
+  // 2026-09-19 字级对齐：timing 行可带 chars（whisperx 字级 spans）——透传给
+  // matchKeywordHits 做词级命中窗口，字幕 cue 消费不受影响（只用 text/start/end）
   const sents = (timing || [])
-    .map((t) => ({ text: String(t.text || '').trim(), start: Number(t.start) || 0, end: Number(t.end) || 0 }))
+    .map((t) => {
+      const base = { text: String(t.text || '').trim(), start: Number(t.start) || 0, end: Number(t.end) || 0 }
+      const chars = (t as { chars?: Array<{ c: string; start: number | null; end: number | null }> }).chars
+      return Array.isArray(chars) && chars.length ? { ...base, chars } : base
+    })
     .filter((s) => s.text)
   if (sents.length) return sents
   const lines = String(text || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
@@ -532,9 +538,17 @@ export function extractFancyWordsFromText(text: string, maxWords = FANCY_MAX_PER
 /** 产品关键词 × 字幕行命中（原 textFxHitsForExport 内核复活为纯函数）：
  *  逐行扫描，词在行文本中出现即命中（窗口=该行时间区间）；
  *  templateId=候选池轮转（渲染样式层，与命中判定解耦）。 */
+/** 产品关键词 × 字幕行命中（2026-09-19 用户裁决：**一个字幕段只出一条文字模板**——
+ *  同段命中多个词时取词表序最靠前的一个，避免同段多词条同时叠加渲染；
+ *  templateId=候选池轮转（渲染样式层，与命中判定解耦）。
+ *  2026-09-19 字级对齐：row.chars（whisperx 字级时间戳）存在时，命中窗口取
+ *  关键词首末字符的实测起止（词级精度），无 chars 回退整段窗口。 */
 export function matchKeywordHits(
   words: string[],
-  rows: Array<{ text: string; start: number; end: number }>,
+  rows: Array<{
+    text: string; start: number; end: number
+    chars?: Array<{ c: string; start: number | null; end: number | null }>
+  }>,
   templatePool: string[] = [],
 ): Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> {
   const clean = (Array.isArray(words) ? words : []).map((w) => String(w || '').trim()).filter(Boolean)
@@ -542,8 +556,22 @@ export function matchKeywordHits(
   for (const r of Array.isArray(rows) ? rows : []) {
     for (const w of clean) {
       if (!w || !String(r.text || '').toLowerCase().includes(w.toLowerCase())) continue
+      let start = Number(r.start) || 0
+      let end = Number(r.end) || 0
+      // 字级精化：命中词在行文本中的可见字符（chars 流与行文本逐字对应，标点为 null）
+      if (Array.isArray(r.chars) && r.chars.length === String(r.text || '').length) {
+        const ci = String(r.text).toLowerCase().indexOf(w.toLowerCase())
+        if (ci >= 0) {
+          const span = r.chars.slice(ci, ci + w.length).filter((c) => Number.isFinite(Number(c.start)) && Number.isFinite(Number(c.end)))
+          if (span.length) {
+            start = Number(span[0].start)
+            end = Number(span[span.length - 1].end)
+          }
+        }
+      }
       const templateId = templatePool.length ? String(templatePool[out.length % templatePool.length]) : ''
-      out.push({ text: w, start: r.start, end: r.end, keywords: [w], templateId })
+      out.push({ text: w, start, end, keywords: [w], templateId })
+      break // 一个字幕段只取一个命中词（词表序优先）
     }
   }
   return out
@@ -593,8 +621,10 @@ export function parseLlmKeywords(content: string, maxWords = 8): string[] {
 // timing 按字符位置分段线性映射。产物 SRT 资产供本地剪映导出与服务端合成
 // subtitle_srt 上传同消费（单一事实源）。
 
-/** 字幕行字数上限：超长按逗号停顿重切（屏读可读性，2026-09-18 裁决） */
-export const SUBTITLE_LINE_MAX_CHARS = 20
+/** 字幕行字数上限：超长按逗号停顿重切（屏读可读性，2026-09-18 裁决）。
+ *  2026-09-19 用户报障下调 20→14：「专业级无感延迟，竞技场上快人一步。」（18 字）
+ *  这类带逗号的长行必须切开分两个时间戳，20 字上限盖不住 */
+export const SUBTITLE_LINE_MAX_CHARS = 14
 /** 字幕行字数下限：短于此并入前行（防 1 秒闪现残片） */
 export const SUBTITLE_LINE_MIN_CHARS = 8
 

@@ -13,7 +13,7 @@ import {
   type TextFxTrack, type PrecomposePlan, type VoiceRow,
 } from '../videoMontageLogic'
 import {
-  LLM_KEYWORDS_SYSTEM_PROMPT, matchKeywordHits, parseLlmKeywords,
+  LLM_KEYWORDS_SYSTEM_PROMPT, matchKeywordHits, parseLlmKeywords, enforceKeywordSpacing,
 } from '../montageStep4FxBgmLogic'
 
 export interface MontageTextFxContext {
@@ -160,14 +160,14 @@ export function useMontageTextFx(ctx: MontageTextFxContext) {
     if (!rows.length) return []
     const pool = currentMatchTemplateIds()
     const owned = sharedProductInfo.value.keywords.map((w) => String(w || '').trim()).filter(Boolean)
-    if (owned.length) return matchKeywordHits(owned, rows, pool)
+    if (owned.length) return enforceKeywordSpacing(matchKeywordHits(owned, rows, pool))
     const key = String(text || '').trim()
     let words = llmKeywordsCache.get(key)
     if (!words) {
       words = await llmExtractKeywords(key)
       if (words.length) llmKeywordsCache.set(key, words)
     }
-    return words.length ? matchKeywordHits(words, rows, pool) : []
+    return words.length ? enforceKeywordSpacing(matchKeywordHits(words, rows, pool)) : []
   }
   /** LLM 兜底：从口播文案提取卖点关键词（数量随「关键词密度」档位；失败 → 空） */
   async function llmExtractKeywords(text: string): Promise<string[]> {

@@ -549,6 +549,28 @@ export function matchKeywordHits(
   return out
 }
 
+/** 关键词事件防重叠（2026-09-19 用户报障：同句命中多个词 → 同一窗口内词条叠在
+ *  同一时间点；截图：听声辨位+另一词条完全重叠）。按 start 排序后游标扫描，
+ *  强制相邻词条 start 间隔 ≥minGapSec（默认 1s），时长保持不变整体右移；
+ *  预览轨/剪映草稿文字模板轨/服务端事件直传三个消费端同源生效。 */
+export function enforceKeywordSpacing(
+  hits: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>,
+  minGapSec = 1,
+): Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> {
+  const sorted = (Array.isArray(hits) ? hits : [])
+    .map((h) => ({ ...h, start: Number(h.start) || 0, end: Number(h.end) || 0 }))
+    .sort((a, b) => a.start - b.start)
+  let cursor = -Infinity
+  for (const h of sorted) {
+    const dur = Math.max(0, h.end - h.start)
+    if (h.start < cursor + minGapSec) h.start = Math.round((cursor + minGapSec) * 1000) / 1000
+    h.end = Math.round((h.start + dur) * 1000) / 1000
+    h.start = Math.round(h.start * 1000) / 1000
+    cursor = h.start
+  }
+  return sorted
+}
+
 /** LLM 关键词提取系统提示词（只要求 JSON 数组输出，防御解析见 parseLlmKeywords） */
 export const LLM_KEYWORDS_SYSTEM_PROMPT
   = '你是电商短视频关键词提取器。从口播文案中提取至多 {max} 个卖点关键词（词或短语，每个不超过8个字，'
@@ -593,8 +615,10 @@ export function parseLlmKeywords(content: string, maxWords = 8): string[] {
 // timing 按字符位置分段线性映射。产物 SRT 资产供本地剪映导出与服务端合成
 // subtitle_srt 上传同消费（单一事实源）。
 
-/** 字幕行字数上限：超长按逗号停顿重切（屏读可读性，2026-09-18 裁决） */
-export const SUBTITLE_LINE_MAX_CHARS = 20
+/** 字幕行字数上限：超长按逗号停顿重切（屏读可读性，2026-09-18 裁决）。
+ *  2026-09-19 用户报障下调 20→14：「专业级无感延迟，竞技场上快人一步。」（18 字）
+ *  这类带逗号的长行必须切开分两个时间戳，20 字上限盖不住 */
+export const SUBTITLE_LINE_MAX_CHARS = 14
 /** 字幕行字数下限：短于此并入前行（防 1 秒闪现残片） */
 export const SUBTITLE_LINE_MIN_CHARS = 8
 

@@ -116,6 +116,9 @@ function parseSilencedetect(stderr, totalDur) {
 /** 实测对齐：句窗口平移 leadIn、按实测语音跨度缩放；实测内部停顿数=句数-1 时句界吸附停顿中点 */
 function alignTimingToSpeech(timing, m, totalDur) {
   if (!Array.isArray(timing) || !timing.length || !m) return timing
+  // 2026-09-19 防御（用户报障：timing 全零）：测量对象必须带有限数值边界——
+  // 非法（如误传 Promise/解析残缺）时原样返回估算 timing，不产出 NaN/null
+  if (!Number.isFinite(m.leadIn) || !Number.isFinite(m.tailOut) || !Number.isFinite(totalDur)) return timing
   const span = Math.max(0.2, totalDur - m.leadIn - m.tailOut)
   const scale = span / Math.max(0.2, totalDur)
   const r3 = (x) => Math.round(x * 1000) / 1000
@@ -360,30 +363,15 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       //   实测语音起止与句间停顿，句窗口平移/缩放 + 句界吸附到实测停顿中点——
       //   消除字数比例估算与真实语音节奏的 ±0.5s 漂移；任何失败回退估算 timing。
       try {
-        const measured = detectSpeechBounds(outWavPath, totalDur)
+        // 2026-09-19 修复（用户报障：预览词条/字幕全挤在 0 点）：此处必须 await——
+        // detectSpeechBounds 是 async，裸调用返回 Promise（真值）→ alignTimingToSpeech
+        // 拿到 Promise 当测量结果 → leadIn/tailOut=undefined → 全 NaN → JSON 序列化为
+        // null → 变速时 scaleTimingSidecar Number(null)=0 → timing 整条清零
+        const measured = await detectSpeechBounds(outWavPath, totalDur)
         if (measured) timing = alignTimingToSpeech(timing, measured, totalDur)
       } catch (_) { /* 实测失败回退估算 timing */ }
       writeTimingSidecar(outWavPath, timing)
     } catch (_) { /* 写时间轴失败不阻断（原版 OSError 兜底） */ }
-  }
-
-  function writeTimingSidecar(wavPath, timing) {
-    try {
-      fs.writeFileSync(wavPath + '.timing.json', JSON.stringify(timing, null, 1))
-    } catch (_) { /* 对照 _write_timing_sidecar OSError 兜底 */ }
-  }
-
-  function scaleTimingSidecar(wavPath, factor) {
-    const p = wavPath + '.timing.json'
-    try {
-      if (!fs.existsSync(p)) return
-      const timing = JSON.parse(fs.readFileSync(p, 'utf-8'))
-      for (const t of timing) {
-        t.start = Math.round(Number(t.start ?? 0) * factor * 1000) / 1000
-        t.end = Math.round(Number(t.end ?? 0) * factor * 1000) / 1000
-      }
-      fs.writeFileSync(p, JSON.stringify(timing, null, 1))
-    } catch (_) { /* 对照 _scale_timing_sidecar 兜底 */ }
   }
 
   // ── voice:cloneBatch — 批量克隆人声（VoiceCloneWorker.run L330-412 口径）──
@@ -760,4 +748,41 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   })
 }
 
-module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech }
+function writeTimingSidecar(wavPath, timing) {
+  try {
+    // 2026-09-19 防御：时间轴必须每行有限且 end>start（text 非空）才落盘——
+    // 全零/NaN/null 的 timing 一经写入会被下游（变速缩放/字幕/SRT 资产）放大成
+    // 整链污染；非法时跳过写入（下游无 timing 自动回退字数比例估算）
+    const rows = Array.isArray(timing) ? timing : []
+    const valid = rows.length > 0 && rows.every((x) => x && String(x.text || '').trim()
+      && Number.isFinite(Number(x.start)) && Number.isFinite(Number(x.end))
+      && Number(x.end) > Number(x.start))
+    if (!valid) {
+      console.warn('[voice] timing 非法（全零/NaN/空行），跳过写入 sidecar：', wavPath)
+      return
+    }
+    fs.writeFileSync(wavPath + '.timing.json', JSON.stringify(timing, null, 1))
+  } catch (_) { /* 对照 _write_timing_sidecar OSError 兜底 */ }
+}
+
+function scaleTimingSidecar(wavPath, factor) {
+  const p = wavPath + '.timing.json'
+  try {
+    if (!fs.existsSync(p)) return
+    const timing = JSON.parse(fs.readFileSync(p, 'utf-8'))
+    // 2026-09-19 防御：仅缩放有限数值行——Number(null)=0 曾把 NaN/null 行批量
+    // 清零成数值 0（timing 整链污染的放大器）；非法行原样保留
+    let touched = false
+    for (const t of timing) {
+      const s = Number(t.start), e = Number(t.end)
+      if (Number.isFinite(s) && Number.isFinite(e) && (s > 0 || e > 0)) {
+        t.start = Math.round(s * factor * 1000) / 1000
+        t.end = Math.round(e * factor * 1000) / 1000
+        touched = true
+      }
+    }
+    if (touched) fs.writeFileSync(p, JSON.stringify(timing, null, 1))
+  } catch (_) { /* 对照 _scale_timing_sidecar 兜底 */ }
+}
+
+module.exports = { createMontageVoiceIpc, getFfmpegPath, getFfprobePath, getMediaDuration, lookupWindowsFontFile, parseSilencedetect, alignTimingToSpeech, writeTimingSidecar, scaleTimingSidecar }

@@ -193,6 +193,8 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   // 字幕轨：整体偏移到第 0 段内
   const textTrack = content.tracks.find((t) => t.type === 'text')
   assert.equal(textTrack.segments[0].target_timerange.start, 0)
+  // 2026-09-19 改判 F3（用户报障：字幕轨与普通文本轨无区别）：flag=1=剪映「字幕轨」属性
+  assert.equal(textTrack.flag, 1)
   // 2026-09-16 修复（用户实测：字幕显示在画面中间）：字幕=屏幕下方 + 水平居中
   // （pyJianYingDraft ClipSettings(transform_y=-0.8) 口径，clip.transform 单位=半画布）
   assert.deepEqual(textTrack.segments[0].clip.transform, { x: 0, y: SUBTITLE_TRANSFORM_Y })

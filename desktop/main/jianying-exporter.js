@@ -148,9 +148,11 @@ function visualSegmentFields() {
   }
 }
 
-/** 轨道（track.py Track.export_json） */
-function newTrack(type) {
-  return { attribute: 0, flag: 0, id: hexId(), is_default_name: true, name: '', segments: [], type }
+/** 轨道（track.py Track.export_json）。flag：11.x 实测字幕轨=1（标准 §2.2/§2.4），
+ *  其余轨道 0。2026-09-19 用户报障改判 F3：flag=1 是剪映「字幕轨」属性标记，
+ *  缺省时字幕轨与普通文本轨无区别。 */
+function newTrack(type, flag = 0) {
+  return { attribute: 0, flag, id: hexId(), is_default_name: true, name: '', segments: [], type }
 }
 
 /** 文字入场动画素材（materials.material_animations 成员；animation.py SegmentAnimations/Text_animation）。
@@ -1096,7 +1098,8 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
     }
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     if (srtPaths) {
-      const subtitleTrack = newTrack('text')
+      // flag=1：剪映「字幕轨」属性（11.x 实测，标准 §2.4 Track[1]）；花字/模板轨仍 0
+      const subtitleTrack = newTrack('text', 1)
       tracks.push(subtitleTrack)
       const fxTrackCache = {}
       const kwWords = Array.isArray(fxWords) ? fxWords.filter(Boolean) : []

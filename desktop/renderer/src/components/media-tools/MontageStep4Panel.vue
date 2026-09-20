@@ -551,9 +551,12 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
                紧跟方案一按钮（不放到服务端合成下面） -->
           <div v-if="exportBusy" class="pbar"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
           <div v-if="exportBusy && exportStage" class="muted" style="margin-top:4px;font-size:12px">{{ exportStage }}</div>
-          <div v-if="exportDoneMsg" class="row left" style="gap: var(--space-2); margin-top: 4px">
-            <span class="concat-status-line">{{ exportDoneMsg }}</span>
-            <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" size="small" @click="openExportDraftDir" />
+          <div v-if="exportDoneMsg" class="export-done-bar">
+            <span class="export-done-icon">✓</span>
+            <span class="export-done-text">{{ exportDoneMsg }}</span>
+            <div class="export-done-actions">
+              <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" size="small" @click="openExportDraftDir" />
+            </div>
           </div>
           <div class="vd4-scheme-line">方案二，服务端合成视频，时间较长</div>
           <TButton label="服务端合成" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
@@ -935,4 +938,27 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
 .vd-split:hover { background: var(--primary); opacity: 0.35; }
 /* 还原 LUT：库内选择列表（2026-09-14） */
 .lut-list { display: flex; flex-direction: column; gap: 4px; max-height: 132px; overflow-y: auto; }
+
+/* 导出剪映时间轴·完成条（2026-09-19 用户裁决：对齐声音克隆完成条样式——
+   浅绿底 + 对号图标 + 左文字 + 按钮右对齐） */
+.export-done-bar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3); margin-top: var(--space-3);
+  background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius-md);
+}
+.export-done-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--success); color: white; font-size: 12px; font-weight: bold;
+}
+.export-done-text {
+  flex: 1 1 auto; min-width: 0;
+  font-size: var(--font-size-caption); color: var(--foreground);
+  white-space: pre-line;
+}
+.export-done-actions {
+  display: flex; align-items: center; gap: var(--space-1); margin-left: auto; flex-shrink: 0;
+}
 </style>

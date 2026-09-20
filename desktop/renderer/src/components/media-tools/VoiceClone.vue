@@ -160,21 +160,6 @@ async function transcribeForNewSample(): Promise<void> {
   }
 }
 
-/** 打开输出目录（使用保存后的本地文件路径） */
-function openOutputFolder(): void {
-  try {
-    const filePath = wholeResultPath.value
-    if (!filePath) {
-      notify('提示', '文件尚未保存到本地，请使用「下载」另存')
-      return
-    }
-    const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') > 0 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'))
-    window.tintin?.shell?.openItem?.(dirPath)
-  } catch (_) {
-    notify('提示', '无法打开目录')
-  }
-}
-
 const ROW_STATUS_TEXT: Record<RowStatus, string> = {
   idle: '待生成',
   running: '生成中',
@@ -352,10 +337,8 @@ onMounted(loadCatalog)
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
             下载
           </button>
-          <button class="action-btn" @click="openOutputFolder" title="打开文件所在目录">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            打开目录
-          </button>
+          <!-- 2026-09-19 用户裁决：打开目录按钮删除——克隆产物尚未下载落盘，
+               该按钮指向的是服务端固定输出目录，对用户无意义 -->
         </div>
       </div>
     </div>

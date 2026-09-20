@@ -621,11 +621,59 @@ test('buildTemplateClipTrio：传画布尺寸→模板 attach scale 按画布钳
   const trio = buildTemplateClipTrio(p, '199元', 500, 1200)
   const att = trio.templateMaterial.text_info_resources[0].attach_info
   assert.equal(att.original_size_width, 275, 'original_size 不随钳制改变')
-  // 钳制后实际像素宽 = 275 × scale.x ≈ 画布宽 500（不超）
-  assert.ok(Math.abs(275 * att.clip.scale.x - 500) < 1e-6, `钳制后 effW 应≈500，实际 ${275 * att.clip.scale.x}`)
+  // 逐元素钳制（effW 缩到 500）+ 整体包围盒 fit（transform_x=-3 偏移再缩到贴边）→ 不超画布宽
+  assert.ok(275 * att.clip.scale.x <= 500 + 1e-6, `钳制后 effW 应不超 500，实际 ${275 * att.clip.scale.x}`)
+  const reach = Math.abs(att.clip.transform.x) + (275 * att.clip.scale.x) / 2
+  assert.ok(Math.abs(reach - 250) < 1e-6, `整体 fit 后应贴画布半宽，reach=${reach}`)
   // 不传画布（默认 0）→ 保持预设原 scale（向后兼容）
   const trio0 = buildTemplateClipTrio(p, '199元')
   assert.ok(Math.abs(trio0.templateMaterial.text_info_resources[0].attach_info.clip.scale.x - 2.390739679336548) < 1e-9)
+})
+
+test('buildTemplateClipTrio：填充词长度膨胀比 + 实例整体包围盒 fit（2026-09-20「高保真音质」修复）', () => {
+  // 真实「没招了」模板同构：原文 3 字 212.5×87.5、scale≈2.7702、右贴纸 transform_x=246.648
+  // （实例右缘 246.648+280×2.77/2≈634px > 540 画布半宽，剪映预览按此溢出被裁）
+  const mkAttach = (w, h, sx, sy, tx, ty) => ({
+    clip: { scale_x: sx, scale_y: sy, rotation: 0, transform_x: tx, transform_y: ty },
+    duration: 566666, original_size_width: w, original_size_height: h,
+  })
+  const preset = {
+    effect: { resource_id: 'R', effect_id: 'R', effect_name: '没招了', effect_version: '1.0.0' },
+    resources: [],
+    paragraphs: [{
+      attach_info: mkAttach(212.5, 87.5, 2.7702457904815674, 2.7702455520629883, -22.873, -20.283),
+      text_name: 'N1',
+      content: JSON.stringify({ text: '没招了', styles: [{ size: 15, range: [0, 3] }] }),
+    }],
+    elements: [
+      { type: 'sticker', element_name: 'S1', attach_info: mkAttach(280, 280, 1, 1, -131.69, 82.4) },
+      { type: 'sticker', element_name: 'S2', attach_info: mkAttach(280, 280, 1, 1, 246.648, 1.4809) },
+    ],
+  }
+  // ① 画布 1080：文字估算宽 max(5×87.5×1.1, 212.5)×2.7702≈1333px > 1080 → 逐元素钳制；
+  //    整体 fit 后文字估算框贴画布右缘（reach=540），贴纸 scale/transform 与文字同乘 fit 因子
+  const trio = buildTemplateClipTrio(preset, '高保真音质', 1080, 1920)
+  const textAtt = trio.templateMaterial.text_info_resources[0].attach_info
+  const s2 = trio.templateMaterial.non_text_info_resources[1].attach_info
+  const estW = (5 * 87.5 * 1.1) * textAtt.clip.scale.x
+  const reachT = Math.abs(textAtt.clip.transform.x) + estW / 2
+  assert.ok(Math.abs(reachT - 540) < 1e-6, `文字估算框应贴画布右缘，reach=${reachT}`)
+  assert.ok(estW <= 1080 + 1e-6, `估算宽应不超画布，实际 ${estW}`)
+  assert.ok(textAtt.clip.scale.x < 2.7702457904815674, '长词应触发缩放')
+  const f2 = textAtt.clip.transform.x / -22.873
+  assert.ok(Math.abs(s2.clip.transform.x - 246.648 * f2) < 1e-6, 'fit 因子对全部元素一致（transform）')
+  assert.ok(Math.abs(s2.clip.scale.x - 1 * f2) < 1e-6, 'fit 因子对全部元素一致（scale）')
+  // ② 无贴纸 + 画布 900：长词估算宽 1333>900 触发钳制并贴边；原文（800<900）保持原 scale
+  const pNoSticker = { ...preset, elements: [] }
+  const t1 = buildTemplateClipTrio(pNoSticker, '高保真音质', 900, 1920)
+  const a1 = t1.templateMaterial.text_info_resources[0].attach_info
+  const w1 = (5 * 87.5 * 1.1) * a1.clip.scale.x
+  const reach1 = Math.abs(a1.clip.transform.x) + w1 / 2
+  assert.ok(Math.abs(reach1 - 450) < 1e-6, `长词应缩到贴画布半宽，reach=${reach1}`)
+  assert.ok(w1 <= 900 + 1e-6)
+  const t3 = buildTemplateClipTrio(pNoSticker, '没招了', 900, 1920)
+  const a3 = t3.templateMaterial.text_info_resources[0].attach_info
+  assert.ok(Math.abs(a3.clip.scale.x - 2.7702457904815674) < 1e-9, '原文替换（800<900）不应触发缩放')
 })
 
 test('exportMultiToDraft：textTemplateClips → 原生模板轨三件套 + tpl 蓝字轨/贴纸轨替代', () => {

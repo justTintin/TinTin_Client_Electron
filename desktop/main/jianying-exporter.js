@@ -252,13 +252,18 @@ function presetAttachClipToDraft(c) {
 
 /** .textpreset attach_info → 草稿 attach_info（duration/original_size/clip）。
  *  2026-09-18 用户裁决：canvasW/canvasH>0 时按当前视频画布等比钳制 clip.scale，
- *  避免预设（多为横屏设计）照搬到竖屏画布时模板实际像素宽超出视频宽度。 */
-function presetAttachToDraft(a, canvasW = 0, canvasH = 0) {
+ *  避免预设（多为横屏设计）照搬到竖屏画布时模板实际像素宽超出视频宽度。
+ *  2026-09-20 修复（用户报障「高保真音质」超宽未生效）：钳制尺寸须按填充词相对预设
+ *  原文的排版膨胀比放大（expandW/expandH）——剪映实际渲染=填充文字排版尺寸×scale，
+ *  预设 original_size 只是原文排版尺寸，长词替换时不放大有效尺寸会漏判超宽。 */
+function presetAttachToDraft(a, canvasW = 0, canvasH = 0, expandW = 1, expandH = 1) {
   const s = a || {}
   const origW = Number(s.original_size_width || 0)
   const origH = Number(s.original_size_height || 0)
   const clip = presetAttachClipToDraft(s.clip)
-  clampAttachClipToCanvas(clip, origW, origH, canvasW, canvasH)
+  const ew = Number(expandW) > 0 ? Number(expandW) : 1
+  const eh = Number(expandH) > 0 ? Number(expandH) : 1
+  clampAttachClipToCanvas(clip, origW * ew, origH * eh, canvasW, canvasH)
   return {
     duration: Number(s.duration || 0),
     original_size_width: origW,
@@ -284,6 +289,88 @@ function clampAttachClipToCanvas(clip, origW, origH, canvasW, canvasH) {
   if (factor < 1) {
     clip.scale.x = (Number(clip.scale.x) || 1) * factor
     clip.scale.y = (Number(clip.scale.y) || 1) * factor
+  }
+}
+
+/** 文字视觉宽度权重（2026-09-20）：CJK/全角≈1 字宽、拉丁/数字≈0.55、空白≈0.35 */
+function visualTextWidth(s) {
+  let w = 0
+  for (const c of String(s || '')) {
+    if (/[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(c)) w += 1
+    else if (/\s/.test(c)) w += 0.35
+    else w += 0.55
+  }
+  return w
+}
+
+/** 填充词相对预设原文的排版膨胀比（>=1，2026-09-20 真机截图标定）：剪映渲染模板文字
+ *  = 字形实际排版×attach.scale——「没招了」模板（size15、original_size 212.5×87.5）
+ *  替换「高保真音质」（5 字）后真机渲染 ≈1285px（每字无缩放字宽 ≈93px ≈ 行高×1.06；
+ *  original_size 的 70.8px/字只是预设排版度量，非剪映渲染口径）。此处按"每字符 ≈
+ *  行高×1.1（保守）+ CJK 1 字宽/拉丁 0.55"估无缩放排版宽，与原文排版宽取大者；
+ *  再经 clamp 钳制保证实例不超画布。w=宽膨胀比（乘回 original_size_width）、
+ *  h=行数比（多行短语按行数加高）；original_size/origH 缺失时退化为纯视觉宽比。 */
+function textSizeExpandRatio(presetText, phrase, origW = 0, origH = 0) {
+  const plines = String(presetText || '').split(/\r?\n/)
+  let pw = 0
+  for (const ln of plines) pw = Math.max(pw, visualTextWidth(ln))
+  const blines = String(phrase || '').split(/\r?\n/)
+  let bw = 0
+  for (const ln of blines) bw = Math.max(bw, visualTextWidth(ln))
+  const base = Number(origW) > 0 ? Number(origW) : 0
+  const perChar = Number(origH) > 0 ? Number(origH) * 1.1 : 0
+  let rw = 1
+  if (base > 0 && bw > 0) {
+    // 估算无缩放排版宽：每字符按行高×1.1（真机字宽口径）；与原文排版宽取大者兑底
+    const estW = Math.max(bw * perChar, base)
+    rw = estW / base
+  } else if (pw > 0 && bw > 0) {
+    rw = bw / pw
+  }
+  const rh = blines.length / Math.max(1, plines.length)
+  return { w: Math.max(1, rw), h: Math.max(1, rh) }
+}
+
+/** 模板实例整体包围盒 fit（2026-09-20）：逐元素钳制只保证"元素自身尺寸"不超画布，
+ *  但元素按 attach clip.transform（画布 px 口径、原点=画布中心）偏移后整体仍可能超出
+ *  画布（「高保真音质」实例=文字 981px + 右贴纸到 ~1175px > 1080，剪映预览被裁切）。
+ *  此处按各元素"中心±有效尺寸/2"距画布中心的极值算实例包围盒，超出画布时以画布中心
+ *  为原点整体等比缩放（scale/transform 同乘 factor），保证实例不超视频大小。
+ *  elements=[{attach_info, effective_width?, effective_height?}]（缺省内取 original_size）。
+ *  纯函数、原地改 attach_info.clip。 */
+function fitTemplateInstanceToCanvas(elements, canvasW, canvasH) {
+  if (!(canvasW > 0) || !(canvasH > 0) || !Array.isArray(elements)) return
+  const halfW = canvasW / 2
+  const halfH = canvasH / 2
+  let reachX = 0
+  let reachY = 0
+  for (const e of elements) {
+    const ai = e && e.attach_info
+    if (!ai || !ai.clip || !ai.clip.scale) continue
+    const ew = Number(e.effective_width) > 0 ? Number(e.effective_width) : Math.abs(Number(ai.original_size_width) || 0)
+    const eh = Number(e.effective_height) > 0 ? Number(e.effective_height) : Math.abs(Number(ai.original_size_height) || 0)
+    const hw = (ew * Math.abs(Number(ai.clip.scale.x) || 1)) / 2
+    const hh = (eh * Math.abs(Number(ai.clip.scale.y) || 1)) / 2
+    const tx = Number(ai.clip.transform && ai.clip.transform.x) || 0
+    const ty = Number(ai.clip.transform && ai.clip.transform.y) || 0
+    reachX = Math.max(reachX, Math.abs(tx) + hw)
+    reachY = Math.max(reachY, Math.abs(ty) + hh)
+  }
+  let factor = 1
+  if (reachX > halfW) factor = Math.min(factor, halfW / reachX)
+  if (reachY > halfH) factor = Math.min(factor, halfH / reachY)
+  if (factor >= 1) return
+  for (const e of elements) {
+    const ai = e && e.attach_info
+    if (!ai || !ai.clip) continue
+    if (ai.clip.scale) {
+      ai.clip.scale.x = (Number(ai.clip.scale.x) || 1) * factor
+      ai.clip.scale.y = (Number(ai.clip.scale.y) || 1) * factor
+    }
+    if (ai.clip.transform) {
+      ai.clip.transform.x = (Number(ai.clip.transform.x) || 0) * factor
+      ai.clip.transform.y = (Number(ai.clip.transform.y) || 0) * factor
+    }
   }
 }
 
@@ -451,6 +538,26 @@ function buildTemplateClipTrio(p, phrase, canvasW = 0, canvasH = 0) {
   }
   extraRefs.push(...flowerEffects.map((m) => m.id), ...animMaterials.map((m) => m.id))
 
+  // 2026-09-20 修复（用户报障「高保真音质」模板实例超宽未生效）：预设 original_size
+  // 是预设原文的排版尺寸，剪映实际渲染=填充文字排版尺寸×scale——填充词更长时须把
+  // 长度膨胀比计入钳制；并按"文字+贴纸"整体包围盒 fit 画布，防贴纸位置偏移出画布。
+  const presetText = (() => { try { return String(JSON.parse(para.content || '{}').text || '') } catch (_) { return '' } })()
+  const presetAttach = para.attach_info || {}
+  const expand = textSizeExpandRatio(presetText, text, Number(presetAttach.original_size_width || 0), Number(presetAttach.original_size_height || 0))
+  const textAttachInfo = presetAttachToDraft(para.attach_info, canvasW, canvasH, expand.w, expand.h)
+  const nonTextInfos = (p.elements || [])
+    .filter((e) => e && e.type === 'sticker')
+    .map((e) => ({
+      name: String(e.element_name || hexId()),
+      type: 'sticker',
+      attach_info: presetAttachToDraft(e.attach_info, canvasW, canvasH),
+      shape_param: {},
+    }))
+  fitTemplateInstanceToCanvas([
+    { attach_info: textAttachInfo, effective_width: textAttachInfo.original_size_width * expand.w, effective_height: textAttachInfo.original_size_height * expand.h },
+    ...nonTextInfos.map((n) => ({ attach_info: n.attach_info })),
+  ], canvasW, canvasH)
+
   const templateMaterial = {
     id: hexId(),
     version: String(eff.effect_version || '1.0.0'),
@@ -470,19 +577,12 @@ function buildTemplateClipTrio(p, phrase, canvasW = 0, canvasH = 0) {
     })),
     text_info_resources: [{
       id: hexId(),
-      attach_info: presetAttachToDraft(para.attach_info, canvasW, canvasH),
+      attach_info: textAttachInfo,
       text_material_id: textEntry.id,
       // 范本顺序：[花字效果, 文字动画]
       extra_material_refs: [...flowerEffects.map((m) => m.id), ...animMaterials.slice(0, 1).map((m) => m.id)],
     }],
-    non_text_info_resources: (p.elements || [])
-      .filter((e) => e && e.type === 'sticker')
-      .map((e) => ({
-        name: String(e.element_name || hexId()),
-        type: 'sticker',
-        attach_info: presetAttachToDraft(e.attach_info, canvasW, canvasH),
-        shape_param: {},
-      })),
+    non_text_info_resources: nonTextInfos,
     aigc_config: { font_item: { id: hexId(), resource_id: '', path: '' } },
     request_id: '',
     origin_word_info: {},

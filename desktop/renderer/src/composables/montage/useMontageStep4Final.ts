@@ -724,6 +724,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
     const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     const fancyEvents: Array<Array<{ word: string; startUs: number; durUs: number }>> = []
     let noSubClips = 0
+    // 2026-09-19（用户要求）：未取到服务端字级对齐 SRT 的候选（whisperx 对齐
+    // 失败/未运行 → 字幕时间为客户端估算，可能有误差），导出完成条据实提示
+    const noAligned: string[] = []
     for (let i = 0; i < cands.length; i++) {
       const c = cands[i]
       // 2026-09-18 用户裁决：导出进度条分段驱动（独立于服务端合成进度条）
@@ -767,6 +770,16 @@ async function exportAllToJianyingDraft(): Promise<void> {
       if (textFxEnabled.value || fancyEnabled.value) {
         exportStage.value = `关键词命中判定（${i + 1}/${cands.length}）...`
         hits.push(...await resolveKeywordHits(text, timingPath))
+      }
+      // 服务端字级对齐 SRT 存在性检测（2026-09-19 用户要求：缺失=客户端兜底，
+      // 导出完成条据实提示「可能有误差」）
+      {
+        let hasAligned = false
+        if (row?.wavPath) {
+          const ex = await window.tintin?.liveclip?.fileExists?.({ path: row.wavPath + '.aligned.srt' })
+          hasAligned = !!ex?.exists
+        }
+        if (!hasAligned) noAligned.push(pathBasename(c))
       }
       if (textFxEnabled.value) {
         textTemplateClips.push(hits
@@ -853,6 +866,15 @@ async function exportAllToJianyingDraft(): Promise<void> {
       // 2026-09-18 用户裁决：完成提示仿声音克隆生成完成提示形态（状态行「完成：…」+ OS 弹窗）；
       // 「打开草稿目录」按钮内嵌该提示行（自底部结果区移入）
       exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！'
+      // 2026-09-19（用户要求）：客户端兜底情形据实提示（完成条多行展示）
+      const warnLines: string[] = []
+      if (noAligned.length) {
+        warnLines.push('⚠️ 以下视频未取到服务端字级对齐字幕，字幕时间为客户端兜底估算，可能有误差：' + noAligned.join('、'))
+      }
+      if (addSubtitles.value && !selectedSubtitlePreset.value?.serverStyle) {
+        warnLines.push('⚠️ 字幕样式为客户端兜底（未选用服务端字幕样式库），烧制效果可能与服务端不一致')
+      }
+      if (warnLines.length) exportDoneMsg.value += '\n' + warnLines.join('\n')
       statusText.value = exportDoneMsg.value
     } else {
       statusText.value = '注意： 剪映时间轴导出失败（详见弹窗通知）'

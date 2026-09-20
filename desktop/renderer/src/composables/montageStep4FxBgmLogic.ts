@@ -558,11 +558,17 @@ export function matchKeywordHits(
       if (!w || !String(r.text || '').toLowerCase().includes(w.toLowerCase())) continue
       let start = Number(r.start) || 0
       let end = Number(r.end) || 0
-      // 字级精化：命中词在行文本中的可见字符（chars 流与行文本逐字对应，标点为 null）
+      // 字级精化：命中词在行文本中的可见字符（chars 流与行文本逐字对应）。仅认
+      // 有效 span（start/end 均为数值且 end>start）——null 与 0/0 是「未识别」哨兵，
+      // 2026-09-20 修复：Number(null)=0 且 0 有限，曾把无效字符当词级真值（命中窗口
+      // 塌到 0）；无任何有效字符 → 回退行窗口（保持原语义）。
       if (Array.isArray(r.chars) && r.chars.length === String(r.text || '').length) {
         const ci = String(r.text).toLowerCase().indexOf(w.toLowerCase())
         if (ci >= 0) {
-          const span = r.chars.slice(ci, ci + w.length).filter((c) => Number.isFinite(Number(c.start)) && Number.isFinite(Number(c.end)))
+          const span = r.chars.slice(ci, ci + w.length)
+            .filter((c) => c && c.start != null && c.end != null
+              && Number.isFinite(Number(c.start)) && Number.isFinite(Number(c.end))
+              && Number(c.end) > Number(c.start))
           if (span.length) {
             start = Number(span[0].start)
             end = Number(span[span.length - 1].end)

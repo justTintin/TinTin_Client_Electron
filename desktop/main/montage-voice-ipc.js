@@ -392,7 +392,28 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
    *  行=buildRowsFromCues(cues, words)：cues 原样为行，行内可见字符与行时间窗词流
    *  按首字锚定 1:1 挂 chars（文字模板命中窗口=词首末字符实测起止）；
    *  无 cues/无有效行 → null（调用方保留估算 timing） */
+  /** 对齐调用（带重试）：2026-09-20 实机日志——whisper 工作进程 CUDA 崩溃 rc=-6
+   *  返回 500，服务端提示「请重试（将自动重新加载模型）」；此前一次失败即静默回退
+   *  估算 timing，该条字级/ALIGNED.SRT 永远缺失。现 HTTP 失败按 10s/30s 间隔重试
+   *  （共 3 次尝试）；200 但无有效行（服务端产物为空）不重试直接回退。 */
   async function transcribeAlignedRows(wavPath, text) {
+    const retryDelays = [10000, 30000]
+    let lastErr = null
+    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      if (attempt > 0) {
+        console.warn(`[voice] transcribe 对齐失败（第 ${attempt} 次重试，${retryDelays[attempt - 1]}ms 后）：`, String((lastErr && lastErr.message) || lastErr).slice(0, 160))
+        await new Promise((r) => setTimeout(r, retryDelays[attempt - 1]))
+      }
+      try {
+        return await transcribeAlignedOnce(wavPath, text)
+      } catch (err) { lastErr = err }
+    }
+    console.warn('[voice] transcribe 对齐重试耗尽，保留估算 timing：', String((lastErr && lastErr.message) || lastErr).slice(0, 160))
+    return null
+  }
+
+  /** 单次对齐请求（无重试；失败抛错交给上层重试包装） */
+  async function transcribeAlignedOnce(wavPath, text) {
     const boundary = '----TintinAlign' + Math.random().toString(16).substring(2)
     const parts = []
     const putField = (k, v) => parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`))

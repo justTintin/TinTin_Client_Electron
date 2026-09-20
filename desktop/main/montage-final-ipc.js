@@ -1029,9 +1029,25 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const timingPath = String((payload || {}).timingPath || '')
       if (!timingPath) return { items: [] }
       const raw = JSON.parse(fs.readFileSync(timingPath, 'utf-8'))
+      // 2026-09-20 修复（用户报障：关键词命中未与字级对齐时间线挂钩，「两个挤一起」）：
+      //   chars（whisperx 字级 spans）此前在此被丢弃 → 渲染层 matchKeywordHits 只能
+      //   用行窗口（粗）定位词条；现原样透传（start/end 数值或 null，0/0 与 null
+      //   均为「未识别」哨兵，有效性由消费端判定），非法项丢弃、不发明数据。
       const items = (Array.isArray(raw) ? raw : [])
         .filter((t) => t && t.text)
-        .map((t) => ({ text: String(t.text).trim(), start: Number(t.start ?? 0), end: Number(t.end ?? 0) }))
+        .map((t) => {
+          const base = { text: String(t.text).trim(), start: Number(t.start ?? 0), end: Number(t.end ?? 0) }
+          const chars = Array.isArray(t.chars)
+            ? t.chars
+              .filter((c) => c && typeof c.c === 'string' && c.c.length)
+              .map((c) => ({
+                c: c.c,
+                start: c.start == null ? null : Number(c.start),
+                end: c.end == null ? null : Number(c.end),
+              }))
+            : []
+          return chars.length ? { ...base, chars } : base
+        })
       return { items }
     } catch (err) {
       return { items: [], error: err.message }

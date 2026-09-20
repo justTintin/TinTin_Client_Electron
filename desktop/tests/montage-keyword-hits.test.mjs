@@ -88,3 +88,40 @@ test('matchKeywordHits：row.chars 存在时命中窗口=词首末字符实测�
   const out2 = M.matchKeywordHits(['无感延迟'], [{ text: '专业级无感延迟，', start: 7.646, end: 9.388 }], ['t1'])
   assert.deepEqual([out2[0].start, out2[0].end], [7.646, 9.388])
 })
+
+// ── 2026-09-20 用户报障：关键词未与字级对齐时间线挂钩、命中词条「两个挤一起」──
+// 实机产物（whisperx）：chars 里大量 0/0（词流未识别）与 null（标点）——两者都是
+// 「无效 span」哨兵；修复前 Number(null)=0 且 0 有限被当词级真值，命中窗口塌到 0。
+
+test('matchKeywordHits：chars 含 null/0、0 哨兵——只取有效字符窗口，全无效回退行窗口', () => {
+  // 部分有效：命中词内仅『配』有实测值 → 窗口=该字实测起止，不塌到 0
+  const rows = [{
+    text: '粉色限定配色，',
+    start: 28.002, end: 28.371,
+    chars: [
+      { c: '粉', start: 0, end: 0 },
+      { c: '色', start: 0, end: 0 },
+      { c: '限', start: 0, end: 0 },
+      { c: '定', start: 0, end: 0 },
+      { c: '配', start: 28.002, end: 28.166 },
+      { c: '色', start: 0, end: 0 },
+      { c: '，', start: null, end: null },
+    ],
+  }]
+  const out = M.matchKeywordHits(['限定配色'], rows, ['t1'])
+  assert.deepEqual([out[0].start, out[0].end], [28.002, 28.166])
+  // 全无效（0/0）→ 回退行窗口（不取 0）
+  const rows2 = [{
+    text: '超轻机身搭配记忆泡沫耳罩，',
+    start: 25.949, end: 28.166,
+    chars: [
+      { c: '超', start: 0, end: 0 }, { c: '轻', start: 0, end: 0 }, { c: '机', start: 0, end: 0 },
+      { c: '身', start: 0, end: 0 }, { c: '搭', start: 0, end: 0 }, { c: '配', start: 0, end: 0 },
+      { c: '记', start: 0, end: 0 }, { c: '忆', start: 0, end: 0 }, { c: '泡', start: 0, end: 0 },
+      { c: '沫', start: 0, end: 0 }, { c: '耳', start: 0, end: 0 }, { c: '罩', start: 0, end: 0 },
+      { c: '，', start: null, end: null },
+    ],
+  }]
+  const out2 = M.matchKeywordHits(['记忆泡沫'], rows2, ['t1'])
+  assert.deepEqual([out2[0].start, out2[0].end], [25.949, 28.166])
+})

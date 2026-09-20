@@ -90,7 +90,10 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
   const bgmPath = ref(localStorage.getItem('montage.bgmPath') || '')
   const bgmName = ref('')
   // BGM 增益默认 35%（2026-09-15 用户裁决，原 100；localStorage 记忆用户调整，0=静音为合法值不回退）
-  const storedBgmVolume = Number(localStorage.getItem('montage.bgmVolume'))
+  // 2026-09-20 修复（用户报障：全新安装增益为 0）——Number(null)=0 且 isFinite(0)=true，
+  // 未存过键时被当成「用户设置过 0%」；改显式判 null/空串为未设置 → 回退默认 35
+  const storedBgmVolumeRaw = localStorage.getItem('montage.bgmVolume')
+  const storedBgmVolume = storedBgmVolumeRaw === null || storedBgmVolumeRaw === '' ? NaN : Number(storedBgmVolumeRaw)
   const bgmVolume = ref(Number.isFinite(storedBgmVolume) ? storedBgmVolume : 35)
   watch([bgmPath, bgmVolume], () => {
     try {

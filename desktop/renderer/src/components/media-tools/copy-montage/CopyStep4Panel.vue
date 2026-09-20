@@ -548,8 +548,8 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
               @click="exportJianyingPackageDraft" />
           </div>
           <!-- 2026-09-18 用户裁决：导出剪映时间轴进度条+完成提示独立于服务端合成，
-               紧跟方案一按钮（不放到服务端合成下面） -->
-          <div v-if="exportBusy" class="pbar"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
+               紧跟方案一按钮（不放到服务端合成下面）；2026-09-20 用户反馈：进度条与按钮拉开间距 -->
+          <div v-if="exportBusy" class="pbar" style="margin-top:8px"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
           <div v-if="exportBusy && exportStage" class="muted" style="margin-top:4px;font-size:12px">{{ exportStage }}</div>
           <div v-if="exportDoneMsg" class="row left" style="gap: var(--space-2); margin-top: 4px">
             <span class="concat-status-line">{{ exportDoneMsg }}</span>

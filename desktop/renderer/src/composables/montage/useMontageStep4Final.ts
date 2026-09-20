@@ -865,7 +865,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
       exportStage.value = '导出完成'
       // 2026-09-18 用户裁决：完成提示仿声音克隆生成完成提示形态（状态行「完成：…」+ OS 弹窗）；
       // 「打开草稿目录」按钮内嵌该提示行（自底部结果区移入）
-      exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！'
+      // 2026-09-20（用户反馈）：完成信息带草稿名
+      exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！项目名称：' + finalName
       // 2026-09-19（用户要求）：客户端兜底情形据实提示（完成条多行展示）
       const warnLines: string[] = []
       if (noAligned.length) {

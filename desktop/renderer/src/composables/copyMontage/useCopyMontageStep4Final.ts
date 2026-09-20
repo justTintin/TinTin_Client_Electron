@@ -853,8 +853,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
       exportProgress.value = 100
       exportStage.value = '导出完成'
       // 2026-09-18 用户裁决：完成提示仿声音克隆生成完成提示形态（状态行「完成：…」+ OS 弹窗）；
-      // 「打开草稿目录」按钮内嵌该提示行（自底部结果区移入）
-      exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！'
+      // 「打开草稿目录」按钮内嵌该提示行（自底部结果区移入）；2026-09-20（用户反馈）：带草稿名
+      exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！项目名称：' + finalName
       statusText.value = exportDoneMsg.value
     } else {
       statusText.value = '注意： 剪映时间轴导出失败（详见弹窗通知）'

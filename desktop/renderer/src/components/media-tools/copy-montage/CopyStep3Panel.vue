@@ -82,11 +82,11 @@ const step3PreviewItems = computed<StepPreviewItem[]>(() => voiceRows.value.map(
   }
 }))
 
-/** TTS 引擎下拉选项（2026-09-09 用户裁决：默认 idexttts，对齐声音克隆页裁决；
- *  QwenTTS 待服务端实现，禁用占位） */
+/** TTS 引擎下拉选项（2026-09-20 服务端 TTS 统一入口上线：QwenTTS 启用，
+ *  value 对齐契约 engine=qwen3；修正历史拼写 idexttts→indextts） */
 const TTS_ENGINE_OPTIONS = [
-  { label: 'IndexTTS（快速/情感）', value: 'idexttts' },
-  { label: 'QwenTTS（待服务端实现）', value: 'qwentts', disabled: true },
+  { label: 'IndexTTS（快速/情感）', value: 'indextts' },
+  { label: 'QwenTTS（Qwen3-TTS）', value: 'qwen3' },
 ]
 /** 情感预设选项（IndexTTS emo_text 常用值，同声音克隆页） */
 const TTS_EMO_OPTIONS = [

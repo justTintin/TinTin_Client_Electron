@@ -106,7 +106,7 @@ export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
   const aiRewriteDlg = ref({ show: false, pct: 50 })
     // TTS 引擎选择与克隆参数（2026-09-09 用户裁决：文案生成设置左边加 TTS 下拉，默认 idexttts，
     //  对齐声音克隆页裁决；duration_factor/emo_text/emo_alpha 契约同 /indextts/tts，克隆时逐条随请求发送）
-    const ttsEngine = ref('idexttts')
+    const ttsEngine = ref<'indextts' | 'qwen3'>('indextts')
     const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0（对齐 VoiceClone 页）
     const ttsEmoText = ref('')           // 情感文字（空=用样本默认情感）
     const ttsEmoAlpha = ref(0.5)         // 情感强度 0~1，默认 0.5
@@ -515,6 +515,10 @@ function clearVoiceProgressListener(): void {
           emoAlpha: ttsEmoAlpha.value,
           pauseMs: ttsPauseMs.value,
         },
+        // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；
+        // refText=参考音频文稿（qwen3 克隆必填 ref_text 的文稿源）
+        engine: ttsEngine.value,
+        refText: refText.value,
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')

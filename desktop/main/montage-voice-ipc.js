@@ -424,6 +424,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     putField('mode', 'raw,subtitle')
     putField('subtitle', 'true')
     putField('subtitle_text', String(text || ''))
+    // 2026-09-20 契约更新：tempo 为 multipart number 字段（实测必带，1.0=音频原速对齐；
+    //   缺失 → 422 Field required query/body）。此前旧格式未带 → 422 → aligned.srt 缺失
+    putField('tempo', '1.0')
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path.basename(wavPath).replace(/"/g, '')}"\r\nContent-Type: audio/wav\r\n\r\n`))
     parts.push(fs.readFileSync(wavPath))
     parts.push(Buffer.from('\r\n'))

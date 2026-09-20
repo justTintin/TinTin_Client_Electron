@@ -74,6 +74,7 @@ import { joinDefaultPath } from './settingsIntegrationLogic'
 // 模块级工具/轮询常量与 Step1/Step2 编排已迁 montage/（铁律 10 拆分，纯搬迁，
 // 蓝图见 docs/智能混剪拆分迁移映射_2026-09-18.md）
 import { notify, unwrapIpc, errText, joinPath, createMontageSharedRuntime } from './copyMontage/context'
+import { buildVoiceoverPayload, parseVoiceoverResponse } from './copyMontageStep2ConcatLogic'
 import { useCopyMontageStep1Split } from './copyMontage/useCopyMontageStep1Split'
 import { useCopyMontageStep2Concat } from './copyMontage/useCopyMontageStep2Concat'
 import { useCopyMontageStep3Voice } from './copyMontage/useCopyMontageStep3Voice'
@@ -145,6 +146,32 @@ export function useCopyMontage() {
     planMenu, openPlanMenu, closePlanMenu,
     onDetailDragStart, onDetailDragEnd, onDetailDrop, toggleClipDeleted,
   } = step2
+
+  // ══ 文案编写页（2026-09-20 用户裁决：生成口播默认可用——不依赖预合成确认；
+  //    完成后出现文案写作输入框，可编辑。按产品信息 + 30s 缺省时长口径生成）══
+  const manualCopy = ref<string | null>(null)
+  const manualCopyBusy = ref(false)
+  async function genManualVoiceover(): Promise<void> {
+    if (manualCopyBusy.value) return
+    manualCopyBusy.value = true
+    try {
+      statusText.value = '正在生成口播文案...'
+      const info = sharedProductInfo.value || { brand: '', product: '', model: '', extra: '' }
+      const payload = buildVoiceoverPayload({
+        brand: info.brand, product: info.product, modelName: info.model, extra: info.extra,
+        totalDuration: 30,
+      })
+      const res = unwrapIpc(await window.tintin.server.copywritingVoiceover(payload), '生成口播文案')
+      manualCopy.value = parseVoiceoverResponse(res)
+      statusText.value = '完成： 口播文案已生成，可在下方文案写作框编辑'
+      notify('生成完成', '口播文案已生成，可在下方「文案写作」输入框中编辑。')
+    } catch (e) {
+      clientError('copy-montage', '生成口播文案失败', errText(e))
+      notify('生成失败', errText(e))
+    } finally {
+      manualCopyBusy.value = false
+    }
+  }
 
 
   // ══ Step3 口播配音（已迁 montage/useCopyMontageStep3Voice.ts，铁律 10 纯搬迁；
@@ -224,6 +251,8 @@ export function useCopyMontage() {
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
     addVideos, selectFolder, onDrop, removeVideo, runSplit,
+    // 文案编写（2026-09-20 用户裁决）
+    manualCopy, manualCopyBusy, genManualVoiceover,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
     previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
     // Step2 镜头重组

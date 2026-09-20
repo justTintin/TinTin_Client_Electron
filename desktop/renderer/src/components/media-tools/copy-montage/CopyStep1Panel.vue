@@ -17,6 +17,8 @@ const {
   splitBusy, splitError, splitMsg, splitProgress, splitResolution,
   selectFolder, onDrop, removeVideo, runSplit, updateSceneDesc,
   previewSourceVideo, previewScene, clearSplitCache, openSplitsDir, splitsDownloading,
+  // 文案编写（2026-09-20 用户裁决）
+  manualCopy, manualCopyBusy, genManualVoiceover,
   SHOT_TYPE_COLORS, SHOT_TYPE_LABELS,
 } = shell.s
 
@@ -166,6 +168,27 @@ function scoreClass(score: number | undefined): string {
             <tr v-if="!filteredScenes.length"><td colspan="10" class="muted">暂无已分割镜头，请先开始智能镜头分割</td></tr>
           </tbody>
         </table>
+        </div>
+      </section>
+
+      <!-- 文案编写（2026-09-20 用户裁决：生成口播默认可用——不依赖分割/重组；
+           完成后下方出现「文案写作」可编辑输入框） -->
+      <section>
+        <div class="row" style="margin-top: var(--space-2)">
+          <TButton label="生成口播文案" :loading="manualCopyBusy" @click="genManualVoiceover" />
+          <span class="muted" style="font-size: 12px; align-self: center">
+            按产品信息 + 30 秒口径生成口播文案（产品信息在「镜头重组」页弹窗中填写），生成后可在下方编辑
+          </span>
+        </div>
+        <div v-if="manualCopy !== null" style="margin-top: var(--space-2)">
+          <div class="sec-label" style="margin-bottom: 4px">文案写作</div>
+          <textarea
+            v-model="manualCopy"
+            class="input"
+            rows="6"
+            style="width: 100%; resize: vertical; line-height: 1.6"
+            placeholder="在此编写或编辑口播文案"
+          />
         </div>
       </section>
 

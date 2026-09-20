@@ -62,9 +62,6 @@ import {
   pathBasename,
   inputNameFromFinalPath,
   // 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）
-  planSubtitleLines,
-  mapLinesToTiming,
-  serializeSrtRows,
 } from './copyMontageLogic'
 // 原客户端 SentenceSplitterLLMWorker 机器（LLM 拆句 + 漏字校验回退本地）
 import {

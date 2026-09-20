@@ -25,17 +25,23 @@ const props = defineProps<{
   previewable?: boolean
   /** 预览模式下点行即选（预览+选中同步；点行触发 pick，无确认按钮） */
   clickToPick?: boolean
+  /** 激活时恢复上次搜索关键字（2026-09-19 用户裁决：口播弹窗记住上次输入） */
+  initialKw?: string
+  /** 激活时恢复上次选中/预览的条目（预览区与选中态同步恢复） */
+  initialItem?: PickerItem | null
 }>()
 
 const emit = defineEmits<{
   (e: 'pick', item: PickerItem): void
   (e: 'preview', item: PickerItem): void
+  (e: 'kw', kw: string): void
 }>()
 
 const { kw, items, loading, error, searched, run, reset } = usePickerSearch(props.fetcher)
 
 /** 预览模式当前选中条目（点行切换；搜索/重开后失效清空） */
 const sel = ref<PickerItem | null>(null)
+const restoredSel = ref<PickerItem | null>(null)
 
 // 激活即预载（immediate 兼容父层 v-if 挂载即 active=true 的用法）
 watch(
@@ -43,7 +49,9 @@ watch(
   (v) => {
     if (v) {
       reset()
-      sel.value = null
+      if (props.initialKw) kw.value = props.initialKw
+      restoredSel.value = props.initialItem ?? null
+      sel.value = restoredSel.value
       void run()
     }
   },
@@ -51,7 +59,9 @@ watch(
 )
 
 // 搜索后列表变化，预览条目可能已不在结果内（避免预览残留）
-watch(items, () => { sel.value = null })
+watch(items, () => { if (sel.value && sel.value !== restoredSel.value) sel.value = null })
+// 关键字变化上报（父层持久化，重开弹窗恢复）
+watch(kw, (v) => { emit('kw', v) })
 
 /** 选中条目：上报（弹窗壳在 pick 后自行关闭；内嵌容器由父层决定行为） */
 function onPick(item: PickerItem) {

@@ -232,7 +232,66 @@ function onPickProduct(it: PickerItem): void {
   productDlg.value.keywords = parseProductKeywords(it)
   // 核心卖点逐条拼入补充卖点（多行，可继续手改/留空）
   productDlg.value.extra = markdownListLines(it.selling_points).join('\n')
+  // 选中产品持久化（重开弹窗恢复预览区与选中态）
+  pickerInitItem.value = it
+  saveVoicePickerDlg()
 }
+
+// ── 口播弹窗状态持久化（2026-09-19 用户裁决：上次搜索关键字/选中产品/表单要保存，
+//    不再一关弹窗就清空）──
+const LS_VOICE_PICKER = 'montage.voiceProductDlg.v1'
+const pickerInitKw = ref('')
+const pickerInitItem = ref<PickerItem | null>(null)
+function loadVoicePickerSaved(): {
+  kw: string
+  item: PickerItem | null
+  form: { brand: string; product: string; model: string; extra: string; keywords: string[] } | null
+} {
+  try {
+    const j = JSON.parse(localStorage.getItem(LS_VOICE_PICKER) || 'null')
+    return {
+      kw: String(j?.kw || ''),
+      item: (j?.item ?? null) as PickerItem | null,
+      form: j?.form || null,
+    }
+  } catch (_) {
+    return { kw: '', item: null, form: null }
+  }
+}
+function saveVoicePickerDlg(): void {
+  const d = productDlg.value
+  try {
+    localStorage.setItem(LS_VOICE_PICKER, JSON.stringify({
+      kw: pickerInitKw.value,
+      item: pickerInitItem.value,
+      form: { brand: d.brand, product: d.product, model: d.model, extra: d.extra, keywords: d.keywords },
+    }))
+  } catch (_) { /* 持久化失败不阻塞 */ }
+}
+function saveProductSearchKw(v: string): void {
+  pickerInitKw.value = v
+  saveVoicePickerDlg()
+}
+// 弹窗打开：恢复关键字/选中条目/表单（表单仅当全空时回填，不覆盖本次会话已编辑内容）
+watch(() => productDlg.value.show, (show) => {
+  if (show) {
+    const saved = loadVoicePickerSaved()
+    pickerInitKw.value = saved.kw
+    pickerInitItem.value = saved.item
+    const d = productDlg.value
+    if (!d.brand && !d.product && !d.model && !d.extra && !d.keywords.length && saved.form) {
+      d.brand = saved.form.brand || ''
+      d.product = saved.form.product || ''
+      d.model = saved.form.model || ''
+      d.extra = saved.form.extra || ''
+      d.keywords = saved.form.keywords || []
+    }
+  } else {
+    saveVoicePickerDlg() // 关弹窗时持久化当前表单
+  }
+})
+// 表单任何编辑实时持久化（深 watch；show 切换由上方分支处理）
+watch(productDlg, () => { if (productDlg.value.show) saveVoicePickerDlg() }, { deep: true })
 
 function urlTail(u: string) { return String(u || '').split('/').pop() || u }
 
@@ -301,7 +360,9 @@ function scoreClass(score: number | undefined): string {
           <span class="hint">输入产品信息，由大模型生成该组合视频的口播文案；可从产品库选择自动填充，也可直接手动填写：</span>
           <div class="pick-layout">
             <div class="pick-left">
-              <WbPickProductPanel :active="productDlg.show" click-to-pick @pick="onPickProduct" />
+              <WbPickProductPanel :active="productDlg.show" click-to-pick
+                :initial-kw="pickerInitKw" :initial-item="pickerInitItem"
+                @kw="saveProductSearchKw" @pick="onPickProduct" />
             </div>
             <div class="pick-right">
               <!-- 2026-09-09 用户裁决：label 与输入框换行（label 上、输入框下占满），

@@ -13,9 +13,17 @@ import WbPickerPanel from './WbPickerPanel.vue'
 import { fetchProducts, type PickerItem } from '@/composables/useWorkbenchPickers'
 import { markdownListLines, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
 
-defineProps<{ active: boolean; clickToPick?: boolean }>()
+defineProps<{
+  active: boolean
+  clickToPick?: boolean
+  /** 激活时恢复上次搜索关键字（透传 WbPickerPanel） */
+  initialKw?: string
+  /** 激活时恢复上次选中条目（透传 WbPickerPanel 预览区） */
+  initialItem?: PickerItem | null
+}>()
 const emit = defineEmits<{
   (e: 'pick', item: PickerItem): void
+  (e: 'kw', kw: string): void
 }>()
 
 /** 行主文案：[品类] 品牌 / 型号（原版 L865-866，型号缺省回退货号） */
@@ -59,6 +67,9 @@ function keywordList(it: PickerItem): string[] {
     :fetcher="fetchProducts"
     previewable
     :click-to-pick="clickToPick"
+    :initial-kw="initialKw"
+    :initial-item="initialItem"
+    @kw="(v: string) => emit('kw', v)"
     @pick="(it) => emit('pick', it)"
   >
     <template #item="{ item }">

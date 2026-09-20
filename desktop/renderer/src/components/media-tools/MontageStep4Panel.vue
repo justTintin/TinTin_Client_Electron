@@ -535,7 +535,8 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
           <div class="row" style="gap: var(--space-2)">
             <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
                  导出到剪映时间轴紧随服务端合成之后 -->
-            <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
+            <!-- 2026-09-20 用户裁决：改主按钮色（与服务端合成同色）、去「(带转场)」后缀 -->
+            <TButton label="导出到剪映时间轴" class="vd4-run vd4-grow"
               :disabled="finalBusy || exportBusy"
               :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
               @click="exportAllToJianyingDraft" />
@@ -559,8 +560,10 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
             </div>
           </div>
           <div class="vd4-scheme-line">方案二，服务端合成视频，时间较长</div>
+          <!-- 2026-09-20 用户裁决：服务端合成暂时禁止点击（恒禁用）；恢复时把
+               :disabled="true" 改回 "finalBusy"、title 改回原文案即可 -->
           <TButton label="服务端合成" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
-            :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
+            :disabled="true" title="该功能暂时停用" @click="startFinalMix()" />
         </div>
         <!-- 服务端合成进度条（独立于导出进度；导出进度/完成提示已移至方案一按钮下方） -->
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>

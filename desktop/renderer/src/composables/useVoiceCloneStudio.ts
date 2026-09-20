@@ -94,7 +94,7 @@ export interface VoiceRow {
   audioUrl: string
   audioPath?: string  // 本地文件路径（命名规范落盘后）
   error: string
-  engine?: 'voxcpm2' | 'indextts'  // 生成所用模型（切换引擎时用于清理旧结果/展示标注）
+  engine?: 'voxcpm2' | 'indextts' | 'qwen3'  // 生成所用模型（切换引擎时用于清理旧结果/展示标注）
 }
 
 /** 音色/样本目录项（来自 /voices/list、/voices/samples） */
@@ -123,8 +123,9 @@ export function useVoiceCloneStudio() {
   const voice = ref('')
   const uploadingSample = ref(false)
   // 2026-09-05 用户裁决：声音克隆固定使用 IndexTTS，不再使用 voxcpm（无引擎选择器）
-  const ttsEngine = 'indextts' as const
-  const wholeEngine = 'indextts' as const
+  // 2026-09-20（服务端 TTS 统一入口）：引擎可选——qwen3=Qwen3-TTS（克隆必填 ref_text）
+  const ttsEngine = ref<'indextts' | 'qwen3'>('indextts')
+  const wholeEngine = ref<'indextts' | 'qwen3'>(ttsEngine.value)
   // IndexTTS 专属参数（API-GUIDE：/indextts/tts）
   const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0
   const ttsEmoText = ref('')           // 情感文字（如：开心、悲伤、激动）
@@ -514,14 +515,18 @@ export function useVoiceCloneStudio() {
     }
     row.status = 'running'
     row.error = ''
-    row.engine = ttsEngine
-    stageText.value = `正在生成第 ${i + 1} 行的克隆声音（${ttsEngine}）...`
+    row.engine = ttsEngine.value
+    stageText.value = `正在生成第 ${i + 1} 行的克隆声音（${ttsEngine.value}）...`
     try {
       const payload: Record<string, unknown> = {
         text: row.text.trim(),
         // API-GUIDE 推荐：sample_id 引用 /voice/samples 样本库
         ...(selectedSampleId.value ? { sample_id: Number(selectedSampleId.value) } : {}),
-        // IndexTTSRequest 专属参数（引擎已固定 IndexTTS，voxcpm 分支已删；契约无 engine 字段不发）
+        // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；
+        // ref_text=参考音频文稿（Qwen3 克隆必填，缺失服务端 400）
+        ...(ttsEngine.value !== 'indextts' ? { engine: ttsEngine.value } : {}),
+        ...(ttsEngine.value === 'qwen3' && refText.value.trim() ? { ref_text: refText.value.trim() } : {}),
+        // IndexTTS 专属参数（qwen3 忽略）
         duration_factor: ttsDurationFactor.value,
         ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
         emo_alpha: ttsEmoAlpha.value,
@@ -537,7 +542,7 @@ export function useVoiceCloneStudio() {
       try {
         const saveDir = await getVoiceCloneSaveDir()
         const sampleName = samples.value.find((s) => s.id === selectedSampleId.value)?.name || ''
-        const fileName = buildVoiceCloneFileName(row.text.trim(), sampleName, 'row', i + 1, ttsEngine)
+        const fileName = buildVoiceCloneFileName(row.text.trim(), sampleName, 'row', i + 1, ttsEngine.value)
         const savePath = `${saveDir}/${fileName}`
         let localPath = ''
         if ((res as any).audio_base64) {
@@ -601,7 +606,11 @@ export function useVoiceCloneStudio() {
       const payload: Record<string, unknown> = {
         text,
         ...(selectedSampleId.value ? { sample_id: Number(selectedSampleId.value) } : {}),
-        // IndexTTSRequest 专属参数（引擎已固定，契约无 engine 字段不发）
+        // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；
+        // ref_text=参考音频文稿（Qwen3 克隆必填，缺失服务端 400）
+        ...(wholeEngine.value !== 'indextts' ? { engine: wholeEngine.value } : {}),
+        ...(wholeEngine.value === 'qwen3' && refText.value.trim() ? { ref_text: refText.value.trim() } : {}),
+        // IndexTTS 专属参数（qwen3 忽略）
         duration_factor: ttsDurationFactor.value,
         ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
         emo_alpha: ttsEmoAlpha.value,
@@ -615,7 +624,7 @@ export function useVoiceCloneStudio() {
         // 按命名规范生成文件名（含引擎段）+ 保存到 voice_clone 子目录
         const saveDir = await getVoiceCloneSaveDir()
         const sampleName = samples.value.find((s) => s.id === selectedSampleId.value)?.name || ''
-        const fileName = buildVoiceCloneFileName(text, sampleName, 'whole', undefined, wholeEngine)
+        const fileName = buildVoiceCloneFileName(text, sampleName, 'whole', undefined, wholeEngine.value)
         const savePath = `${saveDir}/${fileName}`
         let localPath = ''
         try {
@@ -664,7 +673,7 @@ export function useVoiceCloneStudio() {
       return
     }
     const sampleName = samples.value.find((s) => s.id === selectedSampleId.value)?.name || ''
-    const defaultName = buildVoiceCloneFileName(wholeText.value.trim(), sampleName, 'whole', undefined, wholeEngine)
+    const defaultName = buildVoiceCloneFileName(wholeText.value.trim(), sampleName, 'whole', undefined, wholeEngine.value)
     let target = ''
     try {
       target = (await window.tintin.dialog.saveFile({
@@ -725,7 +734,7 @@ export function useVoiceCloneStudio() {
       try {
         const saveDir = await getVoiceCloneSaveDir()
         const sampleName = samples.value.find((s) => s.id === selectedSampleId.value)?.name || ''
-        const fileName = buildVoiceCloneFileName(wholeText.value.trim(), sampleName, 'whole', undefined, wholeEngine)
+        const fileName = buildVoiceCloneFileName(wholeText.value.trim(), sampleName, 'whole', undefined, wholeEngine.value)
         const blob = await fetch(url).then((r) => r.blob())
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const fr = new FileReader()
@@ -778,7 +787,7 @@ export function useVoiceCloneStudio() {
   return {
     // state
     refAudioPath, selectedSampleId, refText, transcribing,
-    voiceOptions, samples, voice, ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
+    voiceOptions, samples, voice, ttsEngine, wholeEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
     wholeText, rows, splitting, generating, stageText, maxChars,
     wholeTask, wholeProgress,
     // 整体克隆：解包视图 + 合成进度 + 另存为（模板直接用，禁 wholeTask.xxx 裸访问）

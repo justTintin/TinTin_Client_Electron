@@ -341,7 +341,8 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   async function synthesizeItem(text, refAudioB64, outWavPath, apiUrl, emit, extra, pauseMs) {
     const segs = L.splitSentences(text)
     let mergedText = text.trim()
-    const pause = Math.max(0, Math.round(Number(pauseMs ?? 0) || 0))
+    // 2026-09-20：qwen3 引擎不插 ((pause=ms)) 标记（IndexTTS 专属约定，qwen3 会照读）
+    const pause = (extra && extra.engine === 'qwen3') ? 0 : Math.max(0, Math.round(Number(pauseMs ?? 0) || 0))
     if (pause > 0 && segs.length > 1) {
       // 句界插显式停顿标记（splitSentences 保留句尾标点，直接 join）
       mergedText = segs.join(`((pause=${pause}))`)
@@ -371,11 +372,12 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         if (measured) timing = alignTimingToSpeech(timing, measured, totalDur)
       } catch (_) { /* 实测失败回退估算 timing */ }
       writeTimingSidecar(outWavPath, timing)
-      // 2026-09-19（用户方案·whisperx 字级对齐）：POST /whisper/transcribe（fmt=json，
-      //   单次调用）→ 返回 segments[].words[] 字级时间戳流；客户端把文案可见字符与
-      //   词流按序对齐（alignCopyToWords），按句读分行（charsToTimingRows）后覆写
-      //   上面的估算 timing——行带 chars 字级 spans，文字模板命中窗口=词首末字符真值。
-      //   best-effort：离线/失败/超时保留估算 timing，不阻断克隆。
+      // 2026-09-19（用户方案·whisperx 字级对齐；2026-09-20 用户裁决：调用点=克隆
+      //   完成后统一一次，导出/服务端合成不重复调用）：POST /whisper/transcribe →
+      //   返回 segments[].words[] 字级流与 cues[]（文案原文+实测真值）；行由
+      //   buildRowsFromCues(cues, words) 生成后覆写上面的估算 timing——行带 chars
+      //   字级 spans，文字模板命中窗口=词首末字符真值。
+      //   best-effort：网络失败/超时保留估算 timing，不阻断克隆。
       try {
         const aligned = await transcribeAlignedRows(outWavPath, text)
         if (aligned) writeTimingSidecar(outWavPath, aligned)
@@ -383,13 +385,13 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     } catch (_) { /* 写时间轴失败不阻断（原版 OSError 兜底） */ }
   }
 
-  /** whisperx 字级对齐（2026-09-19 用户方案）：上传合成 wav + 文案原文 →
-   *  POST /whisper/transcribe（mode=raw,subtitle 单次调用）→ 一次返回双份：
-   *  raw=segments[].words[] 字级流；subtitle=cues[]（文案原文+实测真值，
-   *  {text,start,end} 即 timing 行形状）。行直接取 cues；chars 字级 spans 由
-   *  alignCopyToWords(文案, words) 生成后按 cue 顺序切片挂行（文字模板命中
-   *  窗口=词首末字符真值）。无 cues 回退本地句读分行；失败/超时（5 分钟）/
-   *  无有效行 → null（调用方保留估算 timing） */
+  /** whisperx 字级对齐（2026-09-19 用户方案；2026-09-20 用户裁决：调用点=克隆完成
+   *  后统一一次，导出/服务端合成不重复调用）：上传 wav + 文案原文 → POST /whisper/transcribe
+   *  （mode=raw,subtitle 单次调用）→ 一次返回双份：raw=segments[].words[] 字级流；
+   *  subtitle=cues[]（文案原文+实测真值，{text,start,end} 即 timing 行形状）。
+   *  行=buildRowsFromCues(cues, words)：cues 原样为行，行内可见字符与行时间窗词流
+   *  按首字锚定 1:1 挂 chars（文字模板命中窗口=词首末字符实测起止）；
+   *  无 cues/无有效行 → null（调用方保留估算 timing） */
   async function transcribeAlignedRows(wavPath, text) {
     const boundary = '----TintinAlign' + Math.random().toString(16).substring(2)
     const parts = []
@@ -418,11 +420,11 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       if (Array.isArray(seg.words)) words.push(...seg.words)
     }
     if (j && j.error) console.warn('[voice] transcribe 服务端错误：', String(j.error).slice(0,200))
-    const allChars = alignCopyToWords(String(text || ''), words)
-    // 2026-09-19 修正（实机报障：关键词命中断裂）：行覆盖**整个文案**——不再按
-    // 服务端 cues 顺序切片（切片与文案错位时 continue 丢行，行没了词就没处命中；
-    // 实测一个会话 10+ 条 cue 只剩 5 行）。字级锚不上的行由前后行内插补窗。
-    const rows = charsToTimingRows(String(text || ''), allChars)
+    // 2026-09-20 修正（实机报障：对齐结果永远拿不到）：7248348 换实现（cues 直接为
+    //   行）时调用点漏改，此处曾引用已删除的 alignCopyToWords/charsToTimingRows →
+    //   每次对齐都 ReferenceError 被上层静默吞掉：日志只见请求、字级行与
+    //   .aligned.srt 从未落盘。现改为 cues 原样为行 + 行内字级锚（buildRowsFromCues）。
+    const rows = buildRowsFromCues(Array.isArray(j && j.cues) ? j.cues : [], words)
     // 服务端对齐 SRT（字幕单一来源=服务端）：落为 <wav>.aligned.srt，合成上传/
     // 资产归位直取；客户端不再自行切段生成字幕
     if (typeof j.srt === 'string' && j.srt.includes('-->')) {
@@ -448,6 +450,10 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         duration_factor: Number(tp.durationFactor ?? 1.0),
         ...(String(tp.emoText || '').trim() ? { emo_text: String(tp.emoText).trim() } : {}),
         emo_alpha: Number(tp.emoAlpha ?? 0.5),
+        // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；克隆必填
+        // ref_text=参考音频文稿（缺失服务端 400），渲染层随批次下发
+        ...(String(p.engine || '').trim() ? { engine: String(p.engine).trim() } : {}),
+        ...(String(p.refText || '').trim() ? { ref_text: String(p.refText).trim() } : {}),
       }
       // 句间停顿（2026-09-08 服务端停顿标记）：毫秒值写在 text 里，不进请求载荷
       const pauseMs = Math.max(0, Math.round(Number(tp.pauseMs ?? 0) || 0))

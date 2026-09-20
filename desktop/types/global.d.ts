@@ -273,6 +273,10 @@ declare interface TintinBridgeServer {
     /** 克隆参数（「设置声音克隆」弹窗配置；durationFactor/emoText/emoAlpha 主进程展开进 /indextts/tts 载荷，
      *  pauseMs 为 2026-09-08 服务端句间停顿标记，写在 text 里不进载荷） */
     ttsParams?: { durationFactor: number; emoText: string; emoAlpha: number; pauseMs?: number }
+    /** 2026-09-20（服务端 TTS 统一入口）：引擎=qwen3 → Qwen3-TTS（缺省 indextts） */
+    engine?: 'indextts' | 'qwen3'
+    /** 参考音频文稿（Qwen3 克隆必填 ref_text 的文稿源；渲染层参考样本转写/手输） */
+    refText?: string
     progressChannel?: string
   }): Promise<{ results: Record<string, string>; durations: Record<string, number>; failures: Array<{ rowIdx: number; msg: string }> } | { error: string }>
   /** 批量替换原声（ffmpeg 字幕/花字/atempo；对照 VideoDubbingWorker；2026-09-07 PR#4 新口径） */

@@ -162,6 +162,9 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
         text: p.text,
         ...(p.sample_id ? { sample_id: p.sample_id } : {}),
         ...(p.prompt_audio ? { prompt_audio: p.prompt_audio } : {}),
+        // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；ref_text=克隆参考文稿
+        ...(p.engine ? { engine: String(p.engine) } : {}),
+        ...(p.ref_text ? { ref_text: String(p.ref_text) } : {}),
         ...(p.lang ? { lang: p.lang } : {}),
         ...(p.duration_factor !== undefined ? { duration_factor: p.duration_factor } : {}),
         ...(p.emo_text ? { emo_text: p.emo_text } : {}),

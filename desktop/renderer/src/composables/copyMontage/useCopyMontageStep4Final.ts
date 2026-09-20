@@ -671,11 +671,6 @@ async function exportAllToJianyingDraft(): Promise<void> {
       : joinPath(await readCacheDir(), 'montage_cache', 'srt')
   }
 
-  /** 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）：
-   *  LLM 重切文案为字幕行（漏字/拼接一致性校验不过回退本地规则拆句）+ TTS 句级
-   *  timing 字符位置映射 → SRT 资产落 srt/<候选 basename>.srt。资产已存在直接复用
-   *  （不重复调 LLM；dubbed_ 前缀产物回退剥前缀同名资产）；best-effort：离线/LLM
-   *  失败回落本地切段，写失败/无行返回空串由调用方回退旧口径。 */
   /** 字幕资产（2026-09-19 用户裁决：**字幕单一来源=服务端**）——
    *  声音克隆时主进程已把服务端 whisperx 按文案强制对齐的 SRT 落为
    *  <wav>.aligned.srt；本函数只做资产定位：①服务端对齐 SRT 优先；

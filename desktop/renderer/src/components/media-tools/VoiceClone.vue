@@ -19,7 +19,7 @@ function notify(title: string, body: string): void {
   try { window.tintin?.shell?.showNotification?.(title, body) } catch (_) {}
 }
 const {
-  refText, transcribing, voiceOptions, samples, voice, selectedSampleId,
+  refText, transcribing, voiceOptions, samples, voice, selectedSampleId, ttsEngine, wholeEngine,
   ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
   wholeText, rows, splitting, generating, stageText, maxChars,
   wholeTask, wholeProgress, uploadingSample,
@@ -289,6 +289,22 @@ onMounted(loadCatalog)
         rows="5"
         placeholder="输入要合成语音的文本；每段文本合成时长不超过 20 秒"
       />
+      <!-- 克隆引擎（2026-09-20：服务端 TTS 统一入口 engine=qwen3 → Qwen3-TTS；
+           qwen3 克隆必填参考音频文稿 ref_text，缺失服务端 400） -->
+      <div class="action-row" style="align-items: center">
+        <span class="form-label" style="margin: 0">克隆引擎</span>
+        <TSelect
+          :model-value="ttsEngine"
+          :options="[
+            { label: 'IndexTTS 2.5', value: 'indextts' },
+            { label: 'Qwen3-TTS', value: 'qwen3' },
+          ]"
+          @update:model-value="(v: string | number) => (ttsEngine = v as 'indextts' | 'qwen3')"
+        />
+        <span v-if="ttsEngine === 'qwen3'" class="hint-link" title="Qwen3 克隆必须提供参考音频文稿">
+          需参考音频文稿（下方参考文本）
+        </span>
+      </div>
       <div class="action-row">
         <TButton
           label="整体克隆人声"

@@ -106,13 +106,13 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
   const aiRewriteDlg = ref({ show: false, pct: 50 })
     // TTS 引擎选择与克隆参数（2026-09-09 用户裁决：文案生成设置左边加 TTS 下拉，默认 idexttts，
     //  对齐声音克隆页裁决；duration_factor/emo_text/emo_alpha 契约同 /indextts/tts，克隆时逐条随请求发送）
-    const ttsEngine = ref('idexttts')
+    const ttsEngine = ref<'indextts' | 'qwen3'>('indextts')
     const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0（对齐 VoiceClone 页）
     const ttsEmoText = ref('')           // 情感文字（空=用样本默认情感）
     const ttsEmoAlpha = ref(0.5)         // 情感强度 0~1，默认 0.5
     // 句间停顿（2026-09-08 服务端新增，毫秒；0=不插标记，句间停顿由模型按标点自然处理）
     const ttsPauseMs = ref(0)
-    const cloneParamsDlg = ref({ show: false, factor: 1.0, emo: '', alpha: 0.5, pause: 0 })
+    const cloneParamsDlg = ref({ show: false, factor: 1.0, emo: '', alpha: 0.5, pause: 0, engine: 'indextts' })
   const editDlg = ref({ show: false, index: -1, title: '', content: '', original: '' })
   const voiceBusy = ref(false)
   const rewriteBusy = ref(false)
@@ -440,7 +440,7 @@ function clearVoiceProgressListener(): void {
   /** 设置声音克隆弹窗（对齐声音克隆页 IndexTTS 参数：语速/情感/情感强度；保存后克隆时生效。
    *  句间停顿：2026-09-08 服务端新增 ((pause=毫秒)) 标记口径） */
   function openCloneParams(): void {
-    cloneParamsDlg.value = { show: true, factor: ttsDurationFactor.value, emo: ttsEmoText.value, alpha: ttsEmoAlpha.value, pause: ttsPauseMs.value }
+    cloneParamsDlg.value = { show: true, factor: ttsDurationFactor.value, emo: ttsEmoText.value, alpha: ttsEmoAlpha.value, pause: ttsPauseMs.value, engine: ttsEngine.value }
   }
   function closeCloneParams(): void { cloneParamsDlg.value.show = false }
   function saveCloneParams(): void {
@@ -448,6 +448,7 @@ function clearVoiceProgressListener(): void {
     ttsEmoText.value = cloneParamsDlg.value.emo
     ttsEmoAlpha.value = cloneParamsDlg.value.alpha
     ttsPauseMs.value = cloneParamsDlg.value.pause
+    ttsEngine.value = cloneParamsDlg.value.engine as 'indextts' | 'qwen3'
     cloneParamsDlg.value.show = false
   }
 
@@ -515,6 +516,8 @@ function clearVoiceProgressListener(): void {
           emoAlpha: ttsEmoAlpha.value,
           pauseMs: ttsPauseMs.value,
         },
+        engine: ttsEngine.value,
+        refText: refText.value,
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')

@@ -124,7 +124,8 @@ export function useVoiceCloneStudio() {
   const uploadingSample = ref(false)
   // 2026-09-05 用户裁决：声音克隆固定使用 IndexTTS，不再使用 voxcpm（无引擎选择器）
   // 2026-09-20（服务端 TTS 统一入口）：引擎可选——qwen3=Qwen3-TTS（克隆必填 ref_text）
-  const ttsEngine = ref<'indextts' | 'qwen3'>('indextts')
+  // 2026-09-20 用户裁决：所有声音克隆默认 QwenTTS（engine=qwen3，tab 选择默认高亮 QwenTTS）
+  const ttsEngine = ref<'indextts' | 'qwen3'>('qwen3')
   const wholeEngine = ref<'indextts' | 'qwen3'>(ttsEngine.value)
   // IndexTTS 专属参数（API-GUIDE：/indextts/tts）
   const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0

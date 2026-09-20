@@ -106,7 +106,8 @@ export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
   const aiRewriteDlg = ref({ show: false, pct: 50 })
     // TTS 引擎选择与克隆参数（2026-09-09 用户裁决：文案生成设置左边加 TTS 下拉，默认 idexttts，
     //  对齐声音克隆页裁决；duration_factor/emo_text/emo_alpha 契约同 /indextts/tts，克隆时逐条随请求发送）
-    const ttsEngine = ref<'indextts' | 'qwen3'>('indextts')
+    // 2026-09-20 用户裁决：默认 QwenTTS（engine=qwen3）
+    const ttsEngine = ref<'indextts' | 'qwen3'>('qwen3')
     const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0（对齐 VoiceClone 页）
     const ttsEmoText = ref('')           // 情感文字（空=用样本默认情感）
     const ttsEmoAlpha = ref(0.5)         // 情感强度 0~1，默认 0.5

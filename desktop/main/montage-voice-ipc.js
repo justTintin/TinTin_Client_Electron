@@ -353,7 +353,7 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       mergedText = mergedText.split('\n').map((l) => l.trim()).filter(Boolean).join('。') + '。'
     }
     emit?.({ stage: '正在合成语音...' })
-    const content = L.repairWavBytes(await postTts(apiUrl, mergedText, refAudioB64, extra))
+    const content = L.repairWavBytes(await postTts(apiUrl, mergedText, refAudioB64, extra, targetDuration))
     fs.writeFileSync(outWavPath, content)
     try {
       const totalDur = L.wavBytesDuration(content)

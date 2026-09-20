@@ -251,7 +251,8 @@ function clearVoiceProgressListener(): void {
         wavPath: f.wavPath || '',
         // 配音产物重关联（2026-09-15 报障：重启后 dubbedPath 丢失 → 导出时间轴静默丢口播）
         dubbedPath: f.dubbedPath || '',
-        lengthMode: 'video' as const,
+        // 2026-09-20 用户裁决：默认以声音对齐（配音为时间轴权威；行内可切回视频）
+        lengthMode: 'audio' as const,
         durationSec: f.durationSec || 0,
         // 克隆音频时长（2026-09-10 报障修复：重建行时从扫描结果恢复，不再恒 0 → --:--）
         voiceDurSec: f.voiceDurSec || 0,

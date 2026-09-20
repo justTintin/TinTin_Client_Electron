@@ -522,33 +522,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           await synthesizeItem(text, refAudioB64, t.outWavPath, apiUrl, (msg) => emitRow(t.rowIdx, 50, msg.stage), ttsExtra, pauseMs)
           emitRow(t.rowIdx, 90)
 
-          // 变速对齐视频时长（L364-380 口径；clamp [speedMin, speedMax]）
-          if (t.videoPath && fs.existsSync(t.videoPath) && ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v'].includes(path.extname(t.videoPath).toLowerCase())) {
-            const vidDur = getMediaDuration(t.videoPath)
-            const audDur = getMediaDuration(t.outWavPath)
-            const adj = L.computeSpeedAdjust(vidDur, audDur, speedMin, speedMax)
-            if (adj.should) {
-              const tmpWav = t.outWavPath + '.tmp.wav'
-              const r = await runFfmpeg(['-y', '-i', t.outWavPath, '-filter:a', `atempo=${adj.ratio}`, tmpWav])
-              if (r.code === 0 && fs.existsSync(tmpWav) && fs.statSync(tmpWav).size > 0) {
-                fs.renameSync(tmpWav, t.outWavPath)
-                // 音频变速后句级时间轴同步缩放（atempo=X → 时长×1/X，L379-380）
-                scaleTimingSidecar(t.outWavPath, 1.0 / adj.ratio)
-              }
-            }
-            // 2026-09-18 用户裁决：凑长度手段替代句间停顿——变速 clamp 拉满仍短于
-            //   视频时 apad 尾部补静音至视频时长（内部语句节奏零改动，timing/字幕
-            //   不受影响；尾部静音本无字幕，口播轨时长覆盖整段视频）
-            const audDur2 = getMediaDuration(t.outWavPath)
-            if (vidDur > 0 && audDur2 > 0 && vidDur - audDur2 > 0.05) {
-              const tmpPad = t.outWavPath + '.pad.wav'
-              const rp = await runFfmpeg(['-y', '-i', t.outWavPath, '-af', 'apad', '-t', String(vidDur), tmpPad])
-              if (rp.code === 0 && fs.existsSync(tmpPad) && fs.statSync(tmpPad).size > 0) {
-                fs.renameSync(tmpPad, t.outWavPath)
-              }
-            }
-          }
-
+          // 2026-09-20 用户裁决：取得声音后不做变速/补静音——配音原样落盘，
+          //   时间轴以声音为准（行 lengthMode 默认 'audio'：视频末帧定格延长至
+          //   配音长度；speedMin/speedMax 载荷字段保留但不消费）
           results[t.videoPath] = t.outWavPath
           durations[t.videoPath] = getMediaDuration(t.outWavPath)
           // 2026-09-11 用户裁决「状态要实时」：完成事件随带 wavPath/时长，渲染层即时

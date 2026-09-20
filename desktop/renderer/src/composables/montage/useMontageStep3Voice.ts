@@ -14,7 +14,7 @@ import { clientError } from '../../utils/clientLog'
 import {
   serverStylesToPresets, SUBTITLE_STYLE_PRESETS_FALLBACK, subtitlePresetTileStyle,
   TEXT_KEYWORD_DENSITY_MAX, pickRandomItems, extractFancyWordsFromText,
-  buildSubtitleRows, buildTextFxTracks, textFxStyleOf, rewriteTemperature,
+  buildSubtitleRows, buildTextFxTracks, textFxStyleOf,
   resolveOutMontageDir, pathBasename,
   type TextFxTrack, type SubtitleStylePreset, type PrecomposePlan, type VoiceRow,
 } from '../videoMontageLogic'
@@ -102,8 +102,6 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
   } = tfx
 
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
-  const rewriteTemp = ref(0.5)
-  const aiRewriteDlg = ref({ show: false, pct: 50 })
     // TTS 引擎选择与克隆参数（2026-09-09 用户裁决：文案生成设置左边加 TTS 下拉，默认 idexttts，
     //  对齐声音克隆页裁决；duration_factor/emo_text/emo_alpha 契约同 /indextts/tts，克隆时逐条随请求发送）
     // 2026-09-20 用户裁决：默认 QwenTTS（engine=qwen3）
@@ -439,16 +437,6 @@ function clearVoiceProgressListener(): void {
         nsBusy.value = false
       }
     })()
-  }
-
-  /** 文案生成设置弹窗（对照 _show_ai_rewrite_settings：slider 初值 = 当前温度换算） */
-  function openRewriteSettings(): void {
-    aiRewriteDlg.value = { show: true, pct: Math.round((1.0 - rewriteTemp.value) * 100) }
-  }
-  function closeRewriteSettings(): void { aiRewriteDlg.value.show = false }
-  function saveRewriteSettings(): void {
-    rewriteTemp.value = rewriteTemperature(aiRewriteDlg.value.pct)
-    aiRewriteDlg.value.show = false
   }
 
   /** 设置声音克隆弹窗（对齐声音克隆页 IndexTTS 参数：语速/情感/情感强度；保存后克隆时生效。
@@ -867,7 +855,7 @@ function clearVoiceProgressListener(): void {
     fancyPreviews, fancyTemplatesLoading, textFxEnabled, lutRestore, lutId, lutList,
     lutListLoading, textTemplateId, textRandomCount, textKeywordDensity, textTemplates,
     textTemplatesLoading, activeTextPool, activeTextCount, textTemplateOptions,
-    textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
+    textFxPreviewTracks, textFxStyleSamples, srvBase,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, voiceProgress,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
@@ -880,7 +868,6 @@ function clearVoiceProgressListener(): void {
     subtitlePreviewStyle, refreshFonts, refreshSubtitleStyles, loadFancyTemplates,
     selectedFancyTemplate, openEditDlg, saveEditDlg, exportVoice, playRowVideo,
     playDubbedVideo, toggleLengthMode, lengthModeTip, regenVoice,
-    openRewriteSettings, closeRewriteSettings, saveRewriteSettings,
     openCloneParams, closeCloneParams, saveCloneParams,
   }
 }

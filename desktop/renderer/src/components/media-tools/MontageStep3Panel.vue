@@ -27,11 +27,6 @@ const {
   ttsCfg,
   ttsSpeedMin,
   voiceProgress,
-  AI_REWRITE_DESC,
-  aiRewriteDlg,
-  openRewriteSettings,
-  closeRewriteSettings,
-  saveRewriteSettings,
   ttsEngine, qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading,
   cloneParamsDlg,
   openCloneParams,
@@ -243,7 +238,6 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
           <div class="row">
             <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
             <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
-            <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
           </div>
           <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
         </div>
@@ -318,24 +312,8 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
         <div v-if="nsSuccess" class="ns-msg ns-ok">{{ nsSuccess }}</div>
       </div>
     </div>
-      <div v-if="aiRewriteDlg.show" class="modal-mask" @click.self="closeRewriteSettings">
-        <div class="modal">
-          <span class="modal-title">文案生成设置</span>
-          <span class="rw-title">文案生成自由度设置</span>
-          <span class="rw-desc">{{ AI_REWRITE_DESC }}</span>
-          <div class="row">
-            <span class="muted">0%</span>
-            <input v-model.number="aiRewriteDlg.pct" type="range" min="0" max="100" step="1" class="grow" />
-            <span class="muted">100%</span>
-          </div>
-          <span class="rw-value">当前: {{ aiRewriteDlg.pct }}%</span>
-          <div class="modal-actions">
-            <TButton label="取消" plain @click="closeRewriteSettings" />
-            <TButton label="保存" @click="saveRewriteSettings" />
-          </div>
-        </div>
-      </div>
-      <div v-if="cloneParamsDlg.show" class="modal-mask" @click.self="closeCloneParams">
+
+    <div v-if="cloneParamsDlg.show" class="modal-mask" @click.self="closeCloneParams">
         <div class="modal">
           <span class="modal-title">设置声音克隆</span>
           <!-- 2026-09-20 用户裁决：按引擎显示各自设置——语速/情感为 IndexTTS 专属（QwenTTS 忽略，曾致「变速不起作用」） -->
@@ -583,10 +561,6 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
    混排 → 统一为输入高度 34px（与下拉及页面表单控件同口径，含四颗按钮） */
 .clone-row { align-items: center; }
 .clone-row :deep(.t-button) { height: var(--size-input-height); }
-/* 文案生成设置弹窗 */
-.rw-title { font-size: 13px; color: var(--foreground); }
-.rw-desc { font-size: 12px; color: var(--muted-foreground); white-space: pre-line; }
-.rw-value { font-size: 14px; font-weight: 700; color: var(--primary); text-align: center; }
 /* TTS 引擎下拉（表格标题行内，不占满） */
 .tts-engine-select { width: 220px; flex: none; }
 /* 设置声音克隆弹窗 */

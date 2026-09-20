@@ -277,6 +277,8 @@ declare interface TintinBridgeServer {
     ttsParams?: { durationFactor: number; emoText: string; emoAlpha: number; pauseMs?: number; speaker?: string; instruct?: string }
     /** 2026-09-20（服务端 TTS 统一入口）：引擎=qwen3 → Qwen3-TTS（缺省 indextts） */
     engine?: 'indextts' | 'qwen3'
+    /** 2026-09-20 用户裁决：样本库样本 id（>0 走样本库渠道自动补 ref_text；0=Base 音色） */
+    sampleId?: number
     /** 参考音频文稿（Qwen3 克隆必填 ref_text 的文稿源；渲染层参考样本转写/手输） */
     refText?: string
     progressChannel?: string

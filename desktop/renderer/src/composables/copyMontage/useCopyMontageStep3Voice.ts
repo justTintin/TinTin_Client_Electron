@@ -521,7 +521,9 @@ function clearVoiceProgressListener(): void {
       const res = await window.tintin?.server?.voiceCloneBatch?.({
         tasks,
         refAudioPath: refAudioPath.value,
-        // 服务端样本库声音（sample:{id} 选中时）：主进程经 audio_url 下载后转 b64 prompt_audio
+        // 2026-09-20 用户裁决：传 sample_id 走样本库渠道——服务端用库内样本并自动补
+        // ref_text，主进程不再重复下载样本音频转 b64（省带宽；0=未选样本 → Base 音色）
+        sampleId: Number(selectedRefSample.value?.id || 0),
         refAudioUrl: selectedRefSample.value?.url || '',
         apiUrl: ttsApiUrl.value,
         speedMin: ttsSpeedMin.value,

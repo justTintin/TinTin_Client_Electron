@@ -478,12 +478,16 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         // Qwen3-TTS 专属（2026-09-20 用户裁决）：预置音色/指令文本
         ...(String(p.speaker || '').trim() ? { speaker: String(p.speaker).trim() } : {}),
         ...(String(p.instruct || '').trim() ? { instruct: String(p.instruct).trim() } : {}),
+        ...(sampleId > 0 ? { sample_id: sampleId } : {}),
       }
       // 句间停顿（2026-09-08 服务端停顿标记）：毫秒值写在 text 里，不进请求载荷
       const pauseMs = Math.max(0, Math.round(Number(tp.pauseMs ?? 0) || 0))
       const channel = p.progressChannel || ''
 
       let refAudioB64 = null
+      // 2026-09-20 用户裁决：传了 sample_id 走样本库渠道（服务端用库内样本+自动补
+      // ref_text），无需下载样本音频；未传时维持 prompt_audio 下载转 b64 兜底
+      const sampleId = Math.max(0, Number(p.sampleId || 0))
       const refAudioPath = String(p.refAudioPath || '')
       if (refAudioPath && fs.existsSync(refAudioPath)) {
         refAudioB64 = fs.readFileSync(refAudioPath).toString('base64')

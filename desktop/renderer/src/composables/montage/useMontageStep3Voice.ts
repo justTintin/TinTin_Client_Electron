@@ -473,7 +473,9 @@ function clearVoiceProgressListener(): void {
       const res = await window.tintin?.server?.voiceCloneBatch?.({
         tasks,
         refAudioPath: refAudioPath.value,
-        // 服务端样本库声音（sample:{id} 选中时）：主进程经 audio_url 下载后转 b64 prompt_audio
+        // 2026-09-20 用户裁决：传 sample_id 走样本库渠道——服务端用库内样本并自动补
+        // ref_text，主进程不再重复下载样本音频转 b64（省带宽；0=未选样本 → Base 音色）
+        sampleId: Number(selectedRefSample.value?.id || 0),
         refAudioUrl: selectedRefSample.value?.url || '',
         apiUrl: ttsApiUrl.value,
         speedMin: ttsSpeedMin.value,
@@ -561,11 +563,9 @@ function clearVoiceProgressListener(): void {
    *  完成回写 dubbedPath，不再弹配音完成弹窗；失败抛错由 startFinalMix 统一上报） */
   async function runDubBatch(): Promise<void> {
     if (!voiceDirInput.value) throw new Error('视频输入目录无效，请先回到第②步确认合成产物')
-    // Qwen3 克隆必填参考音频文稿（ref_text）——缺失服务端 400；前置校验给出明确指引
-    // （2026-09-20：老样本可能没存文字，选中时 refText 不会自动填充）
-    if (ttsEngine.value === 'qwen3' && !refText.value.trim()) {
-      throw new Error('QwenTTS 需要参考文字：请在上方「参考文案」框填写与参考音频一致的文字后重试（或换选带文稿的参考声音）')
-    }
+    // 2026-09-20 撤销此前「qwen3 缺 ref_text 前置拦截」：Base/CustomVoice 模式本就不需要
+    // ref_text；克隆模式走 sample_id 渠道时服务端从样本库自动补参照文字，缺口由服务端
+    // 显式 400（报错含双渠道指引）。客户端不做冗余硬拦。
     const dubbedDir = joinPath(resolveOutMontageDir(voiceDirInput.value), 'dubbed')
     const tasks = voiceRows.value
       .filter((r) => r.wavPath && r.path)

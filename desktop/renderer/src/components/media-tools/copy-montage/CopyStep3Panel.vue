@@ -84,9 +84,10 @@ const step3PreviewItems = computed<StepPreviewItem[]>(() => voiceRows.value.map(
 
 /** TTS 引擎下拉选项（2026-09-20 服务端 TTS 统一入口上线：QwenTTS 启用，
  *  value 对齐契约 engine=qwen3；修正历史拼写 idexttts→indextts） */
+// 2026-09-20 用户裁决：QwenTTS 为默认引擎，选项置顶
 const TTS_ENGINE_OPTIONS = [
-  { label: 'IndexTTS（快速/情感）', value: 'indextts' },
   { label: 'QwenTTS（Qwen3-TTS）', value: 'qwen3' },
+  { label: 'IndexTTS（快速/情感）', value: 'indextts' },
 ]
 /** 情感预设选项（IndexTTS emo_text 常用值，同声音克隆页） */
 const TTS_EMO_OPTIONS = [

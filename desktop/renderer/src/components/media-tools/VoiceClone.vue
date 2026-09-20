@@ -232,12 +232,7 @@ onMounted(loadCatalog)
     <div class="form-field">
       <label class="form-label">克隆模型</label>
       <div class="segmented">
-        <button
-          class="segmented__btn"
-          :class="{ 'is-active': ttsEngine === 'indextts' }"
-          type="button"
-          @click="ttsEngine = 'indextts'"
-        >IndexTTS（快速/情感）</button>
+        <!-- 2026-09-20 用户裁决：QwenTTS 为默认引擎，tab 置顶 -->
         <button
           class="segmented__btn"
           :class="{ 'is-active': ttsEngine === 'qwen3' }"
@@ -245,6 +240,12 @@ onMounted(loadCatalog)
           title="Qwen3-TTS：克隆需在下方填写参考音频文稿"
           @click="ttsEngine = 'qwen3'"
         >QwenTTS（Qwen3-TTS）</button>
+        <button
+          class="segmented__btn"
+          :class="{ 'is-active': ttsEngine === 'indextts' }"
+          type="button"
+          @click="ttsEngine = 'indextts'"
+        >IndexTTS（快速/情感）</button>
       </div>
       <span class="form-hint">{{ ttsEngine === 'qwen3'
         ? '当前 Qwen3-TTS：克隆必须填写参考音频文稿（参考文本），缺失服务端 400'

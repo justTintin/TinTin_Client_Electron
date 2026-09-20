@@ -15,12 +15,10 @@ import { readCacheDir } from '../useSettingsConfig'
 import {
   buildBgmGenPayload, parseBgmGenResponse, resolveOutFinalDir, collectMixCandidates,
   srcDirName,
-  buildFinalTasks, fmtBgmTime, inputNameFromFinalPath,
-  planSubtitleLines, mapLinesToTiming, serializeSrtRows, pathBasename,
+  buildFinalTasks, fmtBgmTime, inputNameFromFinalPath, pathBasename,
   resolveOutMontageDir, textFxStyleOf,
   type BgmGenPayload, type PrecomposePlan, type VoiceRow,
 } from '../videoMontageLogic'
-import { SENTENCE_SPLIT_SYSTEM_PROMPT, extractLlmLines, extractLlmContent } from '../voiceCloneLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
 import { useMontageStep3Voice } from './useMontageStep3Voice'
 import { useMontageBgmGen } from './useMontageBgmGen'
@@ -672,15 +670,19 @@ async function exportAllToJianyingDraft(): Promise<void> {
       : joinPath(await readCacheDir(), 'montage_cache', 'srt')
   }
 
-  /** 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）：
-   *  LLM 重切文案为字幕行（漏字/拼接一致性校验不过回退本地规则拆句）+ TTS 句级
-   *  timing 字符位置映射 → SRT 资产落 srt/<候选 basename>.srt。资产已存在直接复用
-   *  （不重复调 LLM；dubbed_ 前缀产物回退剥前缀同名资产）；best-effort：离线/LLM
-   *  失败回落本地切段，写失败/无行返回空串由调用方回退旧口径。 */
+  /** 字幕资产（2026-09-19 用户裁决：**字幕单一来源=服务端**）——
+   *  声音克隆时主进程已把服务端 whisperx 按文案强制对齐的 SRT 落为
+   *  <wav>.aligned.srt；本函数只做资产定位：①服务端对齐 SRT 优先；
+   *  ②旧重切段资产缓存；③都没有返回空串（下游回退 buildSrtFromTiming 旧口径）。
+   *  客户端不再 LLM 切段/映射/切行（责任界限：字幕由服务端提供）。 */
   async function ensureProcessedSrt(text: string, wavPath: string, candidate: string): Promise<string> {
     try {
-      const src = String(text || '').trim()
-      if (!src || !candidate) return ''
+      if (!text || !candidate) return ''
+      const aligned = wavPath ? wavPath + '.aligned.srt' : ''
+      if (aligned) {
+        const ex = await window.tintin?.liveclip?.fileExists?.({ path: aligned })
+        if (ex?.exists) return aligned
+      }
       const dir = await subtitleAssetDir()
       const stem = pathBasename(candidate).replace(/\.[^.]+$/, '')
       const nmIn = inputNameFromFinalPath(candidate)
@@ -690,30 +692,11 @@ async function exportAllToJianyingDraft(): Promise<void> {
         const ex = await window.tintin?.liveclip?.fileExists?.({ path: hit })
         if (ex?.exists) return hit
       }
-      const tr = await window.tintin?.server?.finalReadTiming?.({ timingPath: String(wavPath || '') + '.timing.json' })
-      const timing = tr && 'items' in tr ? tr.items : []
-      let llmLines: string[] | null = null
-      try {
-        const resp = await window.tintin?.server?.llmChat?.({
-          messages: [
-            { role: 'system', content: SENTENCE_SPLIT_SYSTEM_PROMPT },
-            { role: 'user', content: src },
-          ],
-          temperature: 0.2,
-        })
-        const lines = extractLlmLines(extractLlmContent(resp))
-        if (lines.length) llmLines = lines
-      } catch (_) { llmLines = null }
-      const rows = mapLinesToTiming(planSubtitleLines(src, llmLines), timing)
-      if (!rows.length) return ''
-      const file = joinPath(dir, stem + '.srt')
-      const w = await window.tintin?.liveclip?.writeTextFile?.({ path: file, content: serializeSrtRows(rows) })
-      return w?.ok ? file : ''
+      return ''
     } catch (_) {
       return ''
     }
   }
-
   /** 导出到剪映时间轴（2026-09-15 用户裁决双路径）：
    *  A) 有服务端合成任务 → from-task 合并流：素材/字幕/口播/BGM 由服务端清单出
    *     （assets 逐个下载落草稿目录），客户端对齐追加文字模板三件套/花字/音效轨；

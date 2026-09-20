@@ -614,109 +614,11 @@ export function parseLlmKeywords(content: string, maxWords = 8): string[] {
   return out
 }
 
-// ── 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）──────────
-// 服务端无字幕重切段端点（live /openapi.json 仅 whisper ASR，识别文本不可作
-// 字幕文本）→ 走「本地 + LLM」：复用原客户端 SentenceSplitterLLMWorker 机器
-// （voiceCloneLogic：LLM 拆句 + 漏字校验回退本地），行级时间轴由 TTS 句级
-// timing 按字符位置分段线性映射。产物 SRT 资产供本地剪映导出与服务端合成
-// subtitle_srt 上传同消费（单一事实源）。
-
-/** 字幕行字数上限：超长按逗号停顿重切（屏读可读性，2026-09-18 裁决）。
- *  2026-09-19 用户报障下调 20→14：「专业级无感延迟，竞技场上快人一步。」（18 字）
- *  这类带逗号的长行必须切开分两个时间戳，20 字上限盖不住 */
-export const SUBTITLE_LINE_MAX_CHARS = 14
-/** 字幕行字数下限：短于此并入前行（防 1 秒闪现残片） */
-export const SUBTITLE_LINE_MIN_CHARS = 8
-
-const stripWs = (s: string): string => String(s || '').replace(/\s+/g, '')
-/** 字幕行显示长度：去空白后码点数。不能用 countChars（\p{L}\p{N} 不计中文标点，
- *  会把「低延迟稳定传输。」算 7 字误判短残片并行使屏读断句失真） */
-const displayLen = (s: string): number => Array.from(stripWs(s)).length
-
-/** 超长行重切：按中文逗号/分号/顿号停顿贪心累加 ≤maxChars；单停顿仍超 → 按字数硬切。
- *  停顿符归前段（先构造「文本+尾随停顿符」单元再贪心，硬切不拆散单元 →
- *  行首不会悬挂孤立逗号） */
-export function splitLongSubtitleLines(lines: string[], maxChars: number): string[] {
-  const out: string[] = []
-  for (const raw of lines || []) {
-    const s = String(raw || '').trim()
-    if (!s) continue
-    if (displayLen(s) <= maxChars) { out.push(s); continue }
-    // 停顿单元：非停顿符正文 + 尾随停顿符（2026-09-19 扩：。！？!？:：也作停顿——
-    // 硬切只切正文，标点跟随前文）
-    const units: string[] = []
-    for (const m of s.match(/[^，,；;、。！？!?：:]+[，,；;、。！？!?：:]*/g) || [s]) {
-      const t = m.replace(/[，,；;、。！？!?：:]+$/, '')
-      const p = m.slice(t.length)
-      if (t) units.push(t, p)
-      else if (units.length) units[units.length - 1] += p
-      else units.push(p)
-    }
-    let cur = ''
-    for (let i = 0; i < units.length; i++) {
-      const u = units[i]
-      const isPunct = i % 2 === 1
-      if (isPunct) { cur += u; continue }
-      if (displayLen(cur + u) <= maxChars) { cur += u; continue }
-      // 正文单段仍超长 → 先 flush 再按字数硬切，余尾留 cur 继续贪心
-      if (displayLen(u) > maxChars) {
-        if (cur) { out.push(cur); cur = '' }
-        let rest = u
-        while (displayLen(rest) > maxChars) {
-          const cs = Array.from(rest)
-          let k = 0
-          let acc = 0
-          while (k < cs.length && acc < maxChars) { acc += 1; k++ }
-          // 词边界守卫（2026-09-19 用户报障 LIGHTSP|EED）：切点落在拉丁/数字词内部
-          // → 回退到词首；词首已到行首仍切词内 → 前进越过整词
-          const isW = (c: string) => /[A-Za-z0-9]/.test(c)
-          while (k > 1 && isW(cs[k - 1]) && k < cs.length && isW(cs[k])) k--
-          if (k > 1 && isW(cs[k - 1]) && k < cs.length && isW(cs[k])) {
-            while (k < cs.length && isW(cs[k])) k++
-          }
-          out.push(cs.slice(0, k).join(''))
-          rest = cs.slice(k).join('')
-        }
-        cur = rest
-        continue
-      }
-      if (cur) { out.push(cur); cur = '' }
-      cur = u
-    }
-    if (cur) out.push(cur)
-  }
-  return out
-}
-
-/** 过短残片合并：显示长度 <minChars 的行直接并入前行（首行过短保留，不丢字） */
-export function mergeTinySubtitleLines(lines: string[], minChars: number): string[] {
-  const out: string[] = []
-  for (const raw of lines || []) {
-    const s = String(raw || '').trim()
-    if (!s) continue
-    const prev = out.length ? out[out.length - 1] : ''
-    if (prev && displayLen(s) < minChars) out[out.length - 1] = prev + s
-    else out.push(s)
-  }
-  return out
-}
 
 /**
  * 字幕行规划：LLM 重切段优先（漏字校验 + 去空白拼接一致性双校验，任一不过 →
  * 本地规则拆句兜底）→ 超长重切 → 残片合并。纯函数可单测。
  */
-export function planSubtitleLines(text: string, llmLines: string[] | null): string[] {
-  const src = String(text || '').trim()
-  if (!src) return []
-  const fallback = splitTextIntoSentences(src)
-  let lines = fallback
-  const cand = (llmLines || []).map((l) => String(l || '').trim()).filter(Boolean)
-  if (cand.length) {
-    const invalid = validateLlmSplit(src, cand)
-    if (!invalid && stripWs(cand.join('')) === stripWs(src)) lines = cand
-  }
-  return mergeTinySubtitleLines(splitLongSubtitleLines(lines, SUBTITLE_LINE_MAX_CHARS), SUBTITLE_LINE_MIN_CHARS)
-}
 
 export interface SubtitleRow { text: string; start: number; end: number }
 
@@ -724,55 +626,6 @@ export interface SubtitleRow { text: string; start: number; end: number }
  * 行文本 → 句级 timing 映射：字符游标分段线性（句内按字数比例插值，句界精确）；
  * 去空白拼接不一致 / 无 timing / 总时长≤0 → 按有效字数在 [0, totalEnd] 均分兜底。
  */
-export function mapLinesToTiming(
-  lines: string[],
-  timing: Array<{ text: string; start: number; end: number }>,
-): SubtitleRow[] {
-  const list = (lines || []).map((l) => String(l || '').trim()).filter(Boolean)
-  if (!list.length) return []
-  const r3 = (n: number): number => Math.round(n * 1000) / 1000
-  const segs = (timing || []).filter((t) => t && String(t.text || '').trim())
-  const totalEnd = segs.length ? Math.max(0, Number(segs[segs.length - 1].end) || 0) : 0
-  const tConcat = segs.map((t) => stripWs(t.text)).join('')
-  const lConcat = list.map(stripWs).join('')
-  if (!segs.length || !totalEnd || tConcat !== lConcat) {
-    const weights = list.map((l) => Math.max(1, countChars(l)))
-    const sum = weights.reduce((a, b) => a + b, 0)
-    let cur = 0
-    return list.map((l, i) => {
-      const start = (cur / sum) * totalEnd
-      cur += weights[i]
-      const end = (cur / sum) * totalEnd
-      return { text: l, start: r3(start), end: r3(Math.max(end, start + 0.2)) }
-    })
-  }
-  const bounds: Array<{ cs: number; ce: number; start: number; end: number }> = []
-  let pos = 0
-  for (const t of segs) {
-    const len = stripWs(t.text).length
-    bounds.push({ cs: pos, ce: pos + len, start: Number(t.start) || 0, end: Number(t.end) || 0 })
-    pos += len
-  }
-  const at = (p: number): number => {
-    for (let i = 0; i < bounds.length; i++) {
-      const b = bounds[i]
-      if (p <= b.ce || i === bounds.length - 1) {
-        const span = Math.max(1, b.ce - b.cs)
-        const f = Math.min(1, Math.max(0, (p - b.cs) / span))
-        return b.start + f * (b.end - b.start)
-      }
-    }
-    return totalEnd
-  }
-  let cp = 0
-  return list.map((l) => {
-    const len = stripWs(l).length
-    const start = at(cp)
-    const end = at(cp + len)
-    cp += len
-    return { text: l, start: r3(start), end: r3(Math.max(end, start + 0.2)) }
-  })
-}
 
 /** SRT 时间戳（HH:MM:SS,mmm，与导出链路原内联格式化同口径） */
 export function srtTimestamp(sec: number): string {
@@ -786,8 +639,3 @@ export function srtTimestamp(sec: number): string {
  *  （句号/问号等句末标点保留），不影响重切校验（校验发生在序列化之前） */
 const stripTrailingComma = (t: unknown): string => String(t ?? '').replace(/\s*[，,、]\s*$/, '')
 
-export function serializeSrtRows(rows: SubtitleRow[]): string {
-  return (rows || [])
-    .map((r, k) => `${k + 1}\n${srtTimestamp(r.start)} --> ${srtTimestamp(r.end)}\n${stripTrailingComma(r.text)}\n`)
-    .join('\n')
-}

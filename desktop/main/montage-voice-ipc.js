@@ -397,6 +397,8 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
     putField('language', 'zh')
     putField('fmt', 'json')
     putField('mode', 'raw,subtitle')
+    putField('subtitle', 'true')
+    putField('subtitle_text', String(text || ''))
     parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path.basename(wavPath).replace(/"/g, '')}"\r\nContent-Type: audio/wav\r\n\r\n`))
     parts.push(fs.readFileSync(wavPath))
     parts.push(Buffer.from('\r\n'))
@@ -416,34 +418,15 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       if (Array.isArray(seg.words)) words.push(...seg.words)
     }
     const allChars = alignCopyToWords(String(text || ''), words)
-    // subtitle cues 优先：文案原文+真值窗口；chars=按 cue 顺序切片的全局字级 spans
-    if (j && Array.isArray(j.cues) && j.cues.length) {
-      const src = Array.from(String(text || ''))
-      const rows = []
-      let p = 0
-      for (const cue of j.cues) {
-        const L = Array.from(String(cue.text || '')).length
-        if (!L) continue
-        let segText = src.slice(p, p + L).join('')
-        if (segText !== String(cue.text)) {
-          // 服务端规整导致切片不一致 → 从 p 起顺序搜索 cue 文本真实起点
-          const found = src.slice(p).join('').indexOf(String(cue.text))
-          if (found >= 0) p += found
-          else continue // 找不到归属的 cue 丢弃（不造数）
-          segText = src.slice(p, p + L).join('')
-        }
-        rows.push({
-          text: segText,
-          start: Number(cue.start) || 0,
-          end: Number(cue.end) || 0,
-          chars: allChars.slice(p, p + L),
-        })
-        p += L
-      }
-      if (rows.length) return rows
-    }
-    // 无 cues（旧服务端）→ 本地句读分行兜底
+    // 2026-09-19 修正（实机报障：关键词命中断裂）：行覆盖**整个文案**——不再按
+    // 服务端 cues 顺序切片（切片与文案错位时 continue 丢行，行没了词就没处命中；
+    // 实测一个会话 10+ 条 cue 只剩 5 行）。字级锚不上的行由前后行内插补窗。
     const rows = charsToTimingRows(String(text || ''), allChars)
+    // 服务端对齐 SRT（字幕单一来源=服务端）：落为 <wav>.aligned.srt，合成上传/
+    // 资产归位直取；客户端不再自行切段生成字幕
+    if (typeof j.srt === 'string' && j.srt.includes('-->')) {
+      try { fs.writeFileSync(wavPath + '.aligned.srt', j.srt, 'utf-8') } catch (_) {}
+    }
     return rows.length ? rows : null
   }
 

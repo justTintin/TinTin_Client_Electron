@@ -509,6 +509,8 @@ function readProcessedSrtAsset(sub) {
 }
 
 async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, videoDur, spec, bgmPath, bgmVol }) {
+  // 服务端对齐 SRT（2026-09-19 用户方案：字幕单一来源=服务端 whisperx 强制对齐产物）
+  const alignedSrt = String((sub && sub.timingPath) || '').replace(/\.timing\.json$/, '.aligned.srt')
   let fields = {}
   if (fx && sub) {
     let timing = null
@@ -519,9 +521,12 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
         if (Array.isArray(arr) && arr.length && arr.every((x) => x && x.text)) timing = arr
       }
     } catch (_) { timing = null }
-    // 2026-09-18 用户裁决：字幕重切段后处理在克隆完成即执行 → 合成上传优先消费
-    //   该 SRT 资产（LLM 重切段 + timing 映射的单一事实源）；缺失回退旧口径现建
-    const srtText = readProcessedSrtAsset(sub) || buildSrtFromTiming(sub.text, timing, videoDur)
+    // 2026-09-19（用户裁决·字幕单一来源=服务端）：优先取 whisperx 对齐 SRT
+    //   （<wav>.aligned.srt，克隆时服务端强制对齐产物）；缺失回退重切段资产/
+    //   buildSrtFromTiming 旧口径
+    let srtText = ''
+    if (alignedSrt && fs.existsSync(alignedSrt)) srtText = fs.readFileSync(alignedSrt, "utf-8")
+    if (!srtText) srtText = readProcessedSrtAsset(sub) || buildSrtFromTiming(sub.text, timing, videoDur)
     fields = buildServerFxFields(fx, srtText, Array.isArray(sub.fxLines) ? sub.fxLines : [])
     // 2026-09-19（用户方案）：字级 timing 随 concat 上传——subtitle_rows=timing.json
     //   全量行 JSON（whisperx 字级对齐后每行带 chars 字级 spans），服务端可按字级
@@ -554,11 +559,12 @@ async function serverComposeOne({ httpRequest, videoPath, outPath, fx, sub, vide
     fields.voice_mode = 'replace'
     extraFiles.push({ name: 'voice', path: voicePath, ctype: audioCtype(voicePath) })
   }
-  // 字幕文件上传（2026-09-19 用户方案）：重切段 SRT 资产以文件形式随 concat 上传
+  // 字幕文件上传（2026-09-19 用户方案）：优先服务端对齐 SRT；回退重切段资产。
   // （契约字段 subtitle_srt_file；与 subtitle_srt 文本字段双保险，服务端按需取用）
-  const srtAsset = String((sub && sub.srtPath) || '')
-  if (srtAsset && fs.existsSync(srtAsset) && fs.statSync(srtAsset).size > 0) {
-    extraFiles.push({ name: 'subtitle_srt_file', path: srtAsset, ctype: 'application/x-subrip' })
+  const srtUploadSrc = (alignedSrt && fs.existsSync(alignedSrt)) ? alignedSrt
+    : ((sub && sub.srtPath && fs.existsSync(String(sub.srtPath))) ? String(sub.srtPath) : '')
+  if (srtUploadSrc) {
+    extraFiles.push({ name: 'subtitle_srt_file', path: srtUploadSrc, ctype: 'application/x-subrip' })
   }
   const { body, contentType } = buildFxMultipart(fields, videoPath, extraFiles)
   const res = await httpRequest('POST', '/montage/concat', {

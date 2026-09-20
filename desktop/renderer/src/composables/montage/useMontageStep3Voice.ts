@@ -561,6 +561,11 @@ function clearVoiceProgressListener(): void {
    *  完成回写 dubbedPath，不再弹配音完成弹窗；失败抛错由 startFinalMix 统一上报） */
   async function runDubBatch(): Promise<void> {
     if (!voiceDirInput.value) throw new Error('视频输入目录无效，请先回到第②步确认合成产物')
+    // Qwen3 克隆必填参考音频文稿（ref_text）——缺失服务端 400；前置校验给出明确指引
+    // （2026-09-20：老样本可能没存文字，选中时 refText 不会自动填充）
+    if (ttsEngine.value === 'qwen3' && !refText.value.trim()) {
+      throw new Error('QwenTTS 需要参考文字：请在上方「参考文案」框填写与参考音频一致的文字后重试（或换选带文稿的参考声音）')
+    }
     const dubbedDir = joinPath(resolveOutMontageDir(voiceDirInput.value), 'dubbed')
     const tasks = voiceRows.value
       .filter((r) => r.wavPath && r.path)

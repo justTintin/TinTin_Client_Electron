@@ -159,7 +159,8 @@ export function useCopyMontage() {
       const info = sharedProductInfo.value || { brand: '', product: '', model: '', extra: '' }
       const payload = buildVoiceoverPayload({
         brand: info.brand, product: info.product, modelName: info.model, extra: info.extra,
-        totalDuration: 30,
+        // 2026-09-20 用户裁决：跟随「时长限制」设置（默认 30s）
+        totalDuration: durationLimit.value,
       })
       const res = unwrapIpc(await window.tintin.server.copywritingVoiceover(payload), '生成口播文案')
       manualCopy.value = parseVoiceoverResponse(res)

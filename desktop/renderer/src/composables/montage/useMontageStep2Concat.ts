@@ -601,14 +601,14 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
 
   /** 为单条方案生成口播文案（POST /copywriting/voiceover：product_desc + duration_s） */
   async function genCopyForPlan(p: PrecomposePlan): Promise<void> {
-    const clips = p.clips.filter((_, i) => !p.deletedFlags[i])
-    const totalDur = clips.reduce((a, c) => a + (Number(c.duration) || 0), 0)
+    // 2026-09-20 用户裁决：duration_s 上传「设置的时长」（时长限制，默认 30s），
+    // 不再按预合成实际时长（每条方案目标一致；服务端 VoiceoverIn.duration_s=目标时长秒）
     const payload = buildVoiceoverPayload({
       brand: sharedProductInfo.value.brand,
       product: sharedProductInfo.value.product,
       modelName: sharedProductInfo.value.model,
       extra: sharedProductInfo.value.extra,
-      totalDuration: totalDur,
+      totalDuration: durationLimit.value,
     })
     const res = unwrapIpc(await window.tintin.server.copywritingVoiceover(payload), '生成口播文案')
     p.copy = parseVoiceoverResponse(res)

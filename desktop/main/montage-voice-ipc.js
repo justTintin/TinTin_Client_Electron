@@ -465,6 +465,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const apiUrl = String(p.apiUrl || '').trim() || (getServerUrl().replace(/\/$/, '') + '/indextts/tts')
       const speedMin = Number(p.speedMin ?? 0.9)
       const speedMax = Number(p.speedMax ?? 1.2)
+      // 2026-09-20 用户裁决：传了 sample_id 走样本库渠道（服务端用库内样本+自动补
+      // ref_text），无需下载样本音频；未传时维持 prompt_audio 下载转 b64 兜底
+      const sampleId = Math.max(0, Number(p.sampleId || 0))
       // 克隆参数（渲染层「设置声音克隆」弹窗配置；契约同声音克隆页 /indextts/tts）
       const tp = p.ttsParams || {}
       const ttsExtra = {
@@ -485,9 +488,6 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const channel = p.progressChannel || ''
 
       let refAudioB64 = null
-      // 2026-09-20 用户裁决：传了 sample_id 走样本库渠道（服务端用库内样本+自动补
-      // ref_text），无需下载样本音频；未传时维持 prompt_audio 下载转 b64 兜底
-      const sampleId = Math.max(0, Number(p.sampleId || 0))
       const refAudioPath = String(p.refAudioPath || '')
       if (refAudioPath && fs.existsSync(refAudioPath)) {
         refAudioB64 = fs.readFileSync(refAudioPath).toString('base64')

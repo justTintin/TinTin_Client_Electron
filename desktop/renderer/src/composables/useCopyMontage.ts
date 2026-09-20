@@ -189,6 +189,8 @@ export function useCopyMontage() {
     voiceDirInput, selectedVoiceFiles, voicesDir, voiceRows,
     refSamples, selectedRefSample, refAudioPath, refAudioLabel, refPreviewUrl, refText,
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
+    // Qwen3-TTS 专属（2026-09-20 用户裁决）
+    qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading, loadQwen3Voices,
     addSubtitles, subtitleFont, fontOptions, fontsLoading,
     fancyEnabled, fancyStyle, subtitleStyleKey, subtitleStylePresets, subtitleAnimKey,
     subtitleFontSize, fancyPosition, subtitleBgOpacity, fancyTemplateId, fancyTemplates,
@@ -274,6 +276,7 @@ export function useCopyMontage() {
     voiceDirInput, voicesDir, voiceRows,
     refSamples, selectedRefSample, refAudioPath, refText, selectRefAudio,
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
+    qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading, loadQwen3Voices,
     addSubtitles, subtitleFont, fontOptions, fontsLoading, refreshFonts,
     subtitleStyleKey, subtitleStylePresets, selectedSubtitlePreset, subtitlePreviewStyle,
     subtitleAnimKey,

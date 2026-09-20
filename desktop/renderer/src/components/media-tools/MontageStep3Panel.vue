@@ -32,7 +32,7 @@ const {
   openRewriteSettings,
   closeRewriteSettings,
   saveRewriteSettings,
-  ttsEngine,
+  ttsEngine, qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading,
   cloneParamsDlg,
   openCloneParams,
   closeCloneParams,
@@ -364,9 +364,17 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
             <input v-model.number="cloneParamsDlg.alpha" type="range" min="0" max="1" step="0.1" class="grow" />
           </div>
           </template>
-          <div v-else class="cp-field">
-            <span class="hint">QwenTTS 不支持语速/情感数值参数；语气与语速请用自然语言在文案中描述（如「用轻快的语速说」）</span>
+          <template v-else>
+          <div class="cp-field">
+            <span class="label">预置音色（speaker，可选）</span>
+            <TSelect :model-value="qwen3Speaker" :options="qwen3Voices" :loading="qwen3VoicesLoading" placeholder="不选择则按参考样本克隆音色" @update:model-value="(v: string | number) => (qwen3Speaker = String(v))" />
           </div>
+          <div class="cp-field">
+            <span class="label">指令文本（instruct，可选）</span>
+            <input v-model="qwen3Instruct" type="text" placeholder="用自然语言描述语气/语速，如：用轻快的语速说" />
+            <span class="hint">QwenTTS 不支持语速/情感数值参数；语气与语速请用指令文本描述</span>
+          </div>
+          </template>
           <div class="cp-field">
             <div class="row between">
               <span class="label">句间停顿（毫秒）</span>

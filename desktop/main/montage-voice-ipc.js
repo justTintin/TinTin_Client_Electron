@@ -475,6 +475,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         // ref_text=参考音频文稿（缺失服务端 400），渲染层随批次下发
         ...(String(p.engine || '').trim() ? { engine: String(p.engine).trim() } : {}),
         ...(String(p.refText || '').trim() ? { ref_text: String(p.refText).trim() } : {}),
+        // Qwen3-TTS 专属（2026-09-20 用户裁决）：预置音色/指令文本
+        ...(String(p.speaker || '').trim() ? { speaker: String(p.speaker).trim() } : {}),
+        ...(String(p.instruct || '').trim() ? { instruct: String(p.instruct).trim() } : {}),
       }
       // 句间停顿（2026-09-08 服务端停顿标记）：毫秒值写在 text 里，不进请求载荷
       const pauseMs = Math.max(0, Math.round(Number(tp.pauseMs ?? 0) || 0))

@@ -114,6 +114,20 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
     // 句间停顿（2026-09-08 服务端新增，毫秒；0=不插标记，句间停顿由模型按标点自然处理）
     const ttsPauseMs = ref(0)
     const cloneParamsDlg = ref({ show: false, factor: 1.0, emo: '', alpha: 0.5, pause: 0, engine: 'qwen3' })
+    // Qwen3-TTS 专属设置（2026-09-20 用户裁决：设置声音克隆对话框按引擎提供各自参数）
+    const qwen3Speaker = ref('')
+    const qwen3Instruct = ref('')
+    const qwen3Voices = ref<Array<{ value: string; label: string }>>([])
+    const qwen3VoicesLoading = ref(false)
+    async function loadQwen3Voices(): Promise<void> {
+      if (qwen3VoicesLoading.value) return
+      qwen3VoicesLoading.value = true
+      try {
+        const res = await window.tintin.server.ttsQwen3Voices()
+        const speakers = res && 'speakers' in res && Array.isArray(res.speakers) ? res.speakers : []
+        qwen3Voices.value = speakers.map((v) => ({ value: String(v), label: String(v) }))
+      } finally { qwen3VoicesLoading.value = false }
+    }
   const editDlg = ref({ show: false, index: -1, title: '', content: '', original: '' })
   const voiceBusy = ref(false)
   const rewriteBusy = ref(false)
@@ -442,6 +456,8 @@ function clearVoiceProgressListener(): void {
    *  句间停顿：2026-09-08 服务端新增 ((pause=毫秒)) 标记口径） */
   function openCloneParams(): void {
     cloneParamsDlg.value = { show: true, factor: ttsDurationFactor.value, emo: ttsEmoText.value, alpha: ttsEmoAlpha.value, pause: ttsPauseMs.value, engine: ttsEngine.value }
+    // QwenTTS 时预载预置音色列表（2026-09-20 用户裁决）
+    if (ttsEngine.value === 'qwen3' && !qwen3Voices.value.length) void loadQwen3Voices()
   }
   function closeCloneParams(): void { cloneParamsDlg.value.show = false }
   function saveCloneParams(): void {
@@ -516,6 +532,9 @@ function clearVoiceProgressListener(): void {
           emoText: ttsEmoText.value,
           emoAlpha: ttsEmoAlpha.value,
           pauseMs: ttsPauseMs.value,
+          // Qwen3-TTS 专属（2026-09-20 用户裁决）：预置音色/指令文本随批次下发
+          speaker: qwen3Speaker.value,
+          instruct: qwen3Instruct.value,
         },
         engine: ttsEngine.value,
         refText: refText.value,
@@ -874,6 +893,8 @@ function clearVoiceProgressListener(): void {
 
   return {
     voiceDirInput, selectedVoiceFiles, voicesDir, voiceRows,
+    // Qwen3-TTS 专属（2026-09-20 用户裁决）
+    qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading, loadQwen3Voices,
     refSamples, selectedRefSample, refAudioPath, refAudioLabel, refPreviewUrl, refText,
     ttsApiUrl, ttsSteps, ttsCfg, ttsSpeedMin, ttsSpeedMax,
     addSubtitles, subtitleFont, fontOptions, fontsLoading,

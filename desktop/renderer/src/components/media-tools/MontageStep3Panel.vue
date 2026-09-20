@@ -41,7 +41,6 @@ const {
   openEditDlg,
   saveEditDlg,
   voiceBusy,
-  rewriteBusy,
   refPreviewUrl,
   nsFilePath,
   nsName,
@@ -52,7 +51,6 @@ const {
   nsTranscribing,
   transcribeNewSample,
   uploadNewSampleRef,
-  batchAiRewrite,
   startSynthesizeVoice,
   regenVoice,
   toggleLengthMode,
@@ -246,7 +244,6 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
             <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
             <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
             <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
-            <TButton label="一键AI修改全部文案" size="small" :loading="rewriteBusy" @click="batchAiRewrite" />
           </div>
           <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
         </div>

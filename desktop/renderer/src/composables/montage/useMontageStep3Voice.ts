@@ -15,7 +15,7 @@ import {
   serverStylesToPresets, SUBTITLE_STYLE_PRESETS_FALLBACK, subtitlePresetTileStyle,
   TEXT_KEYWORD_DENSITY_MAX, pickRandomItems, extractFancyWordsFromText,
   buildSubtitleRows, buildTextFxTracks, textFxStyleOf, rewriteTemperature,
-  buildRewriteSystemPrompt, cleanRewriteContent, resolveOutMontageDir, pathBasename,
+  resolveOutMontageDir, pathBasename,
   type TextFxTrack, type SubtitleStylePreset, type PrecomposePlan, type VoiceRow,
 } from '../videoMontageLogic'
 import { notify, errText, joinPath } from './context'
@@ -130,7 +130,6 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
     }
   const editDlg = ref({ show: false, index: -1, title: '', content: '', original: '' })
   const voiceBusy = ref(false)
-  const rewriteBusy = ref(false)
   // 2026-09-09 用户裁决：配音动作迁 Step4 统一合成（dubBusy/dubbingEnabled/配音弹窗随之移除）
 
   let offVoiceProgress: (() => void) | null = null
@@ -467,41 +466,6 @@ function clearVoiceProgressListener(): void {
     ttsPauseMs.value = cloneParamsDlg.value.pause
     ttsEngine.value = cloneParamsDlg.value.engine as 'indextts' | 'qwen3'
     cloneParamsDlg.value.show = false
-  }
-
-  /** 一键AI修改全部文案（对照 _batch_ai_rewrite_scripts + BatchAITextRewriteWorker；
-   *  V3 LLM 凭证由服务端持有（用户裁决 2026-08-28）→ 不再检查本地 llm_model 配置） */
-  async function batchAiRewrite(): Promise<void> {
-    if (rewriteBusy.value) return
-    const tasks = voiceRows.value
-      .map((r, i) => ({ i, text: r.originalText || r.text.trim() }))
-      .filter((t) => t.text)
-    if (!tasks.length) { notify('无可改写内容', '当前列表中没有可改写的视频或文案。'); return }
-    rewriteBusy.value = true
-    statusText.value = '正在调用AI批量修改文案...'
-    let failed = 0
-    try {
-      const system = buildRewriteSystemPrompt(rewriteTemp.value)
-      for (let k = 0; k < tasks.length; k++) {
-        const t = tasks[k]
-        statusText.value = `正在调用AI批量修改文案... (${k + 1}/${tasks.length})`
-        try {
-          const res = await window.tintin?.server?.llmChat?.({
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: t.text },
-            ],
-            temperature: rewriteTemp.value,
-          })
-          const content = String((res as { choices?: Array<{ message?: { content?: string } }> })?.choices?.[0]?.message?.content ?? '')
-          if (content) voiceRows.value[t.i].text = cleanRewriteContent(content)
-        } catch (_) { failed++ }
-      }
-      statusText.value = '完成： 一键AI修改全部文案完成！'
-      notify('成功', '批量AI文案修改润色完成！')
-    } finally {
-      rewriteBusy.value = false
-    }
   }
 
   /** 单条/批量克隆人声（对照 _start_synthesize_voice + VoiceCloneWorker.run） */
@@ -905,13 +869,13 @@ function clearVoiceProgressListener(): void {
     textTemplatesLoading, activeTextPool, activeTextCount, textTemplateOptions,
     textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
-    editDlg, voiceBusy, rewriteBusy, voiceProgress,
+    editDlg, voiceBusy, voiceProgress,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,
     loadRefSamples, selectRefAudio, pickNewSampleFile, transcribeNewSample,
     nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
-    uploadNewSampleRef, batchAiRewrite, startSynthesizeVoice, runDubBatch, runCloneBatch,
+    uploadNewSampleRef, startSynthesizeVoice, runDubBatch, runCloneBatch,
     selectedFontFamily, ensureServerFontFace, fontOptionStyle, selectedSubtitlePreset,
     subtitlePreviewStyle, refreshFonts, refreshSubtitleStyles, loadFancyTemplates,
     selectedFancyTemplate, openEditDlg, saveEditDlg, exportVoice, playRowVideo,

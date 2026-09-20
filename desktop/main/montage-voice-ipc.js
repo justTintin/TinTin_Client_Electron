@@ -412,11 +412,12 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       ? Buffer.from(res.raw).toString('utf-8')
       : String((res && res.data) ?? '')
     let j = null
-    try { j = JSON.parse(raw) } catch (_) { return null }
+    try { j = JSON.parse(raw) } catch (_) { console.warn('[voice] transcribe 响应非 JSON：', String(raw).slice(0,200)); return null }
     const words = []
     for (const seg of (j && Array.isArray(j.segments)) ? j.segments : []) {
       if (Array.isArray(seg.words)) words.push(...seg.words)
     }
+    if (j && j.error) console.warn('[voice] transcribe 服务端错误：', String(j.error).slice(0,200))
     const allChars = alignCopyToWords(String(text || ''), words)
     // 2026-09-19 修正（实机报障：关键词命中断裂）：行覆盖**整个文案**——不再按
     // 服务端 cues 顺序切片（切片与文案错位时 continue 丢行，行没了词就没处命中；

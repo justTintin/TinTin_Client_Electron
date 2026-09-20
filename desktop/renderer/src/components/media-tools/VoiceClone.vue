@@ -224,14 +224,29 @@ onMounted(loadCatalog)
       </span>
     </div>
 
-    <!-- ③ 克隆模型：当前固定 IndexTTS；QwenTTS 入口占位，等服务端实现后启用（voxcpm 已删除不恢复） -->
+    <!-- ③ 克隆模型（2026-09-20 用户裁决：QwenTTS 启用——服务端 TTS 统一入口
+         engine=qwen3 已上线；克隆必填参考音频文稿 ref_text，缺失服务端 400；
+         voxcpm 已删除不恢复） -->
     <div class="form-field">
       <label class="form-label">克隆模型</label>
       <div class="segmented">
-        <button class="segmented__btn is-active" type="button">IndexTTS（快速/情感）</button>
-        <button class="segmented__btn" type="button" disabled title="QwenTTS 等待服务端实现，启用后开放">QwenTTS（待服务端实现）</button>
+        <button
+          class="segmented__btn"
+          :class="{ 'is-active': ttsEngine === 'indextts' }"
+          type="button"
+          @click="ttsEngine = 'indextts'"
+        >IndexTTS（快速/情感）</button>
+        <button
+          class="segmented__btn"
+          :class="{ 'is-active': ttsEngine === 'qwen3' }"
+          type="button"
+          title="Qwen3-TTS：克隆需在下方填写参考音频文稿"
+          @click="ttsEngine = 'qwen3'"
+        >QwenTTS（Qwen3-TTS）</button>
       </div>
-      <span class="form-hint">当前使用 IndexTTS；整体克隆与逐行生成都用此模型与下方参数</span>
+      <span class="form-hint">{{ ttsEngine === 'qwen3'
+        ? '当前 Qwen3-TTS：克隆必须填写参考音频文稿（参考文本），缺失服务端 400'
+        : '当前使用 IndexTTS；整体克隆与逐行生成都用此模型与下方参数' }}</span>
     </div>
 
     <!-- ③+ IndexTTS 参数 -->
@@ -289,22 +304,6 @@ onMounted(loadCatalog)
         rows="5"
         placeholder="输入要合成语音的文本；每段文本合成时长不超过 20 秒"
       />
-      <!-- 克隆引擎（2026-09-20：服务端 TTS 统一入口 engine=qwen3 → Qwen3-TTS；
-           qwen3 克隆必填参考音频文稿 ref_text，缺失服务端 400） -->
-      <div class="action-row" style="align-items: center">
-        <span class="form-label" style="margin: 0">克隆引擎</span>
-        <TSelect
-          :model-value="ttsEngine"
-          :options="[
-            { label: 'IndexTTS 2.5', value: 'indextts' },
-            { label: 'Qwen3-TTS', value: 'qwen3' },
-          ]"
-          @update:model-value="(v: string | number) => (ttsEngine = v as 'indextts' | 'qwen3')"
-        />
-        <span v-if="ttsEngine === 'qwen3'" class="hint-link" title="Qwen3 克隆必须提供参考音频文稿">
-          需参考音频文稿（下方参考文本）
-        </span>
-      </div>
       <div class="action-row">
         <TButton
           label="整体克隆人声"

@@ -141,7 +141,8 @@ function probe(ffprobePath, file) {
     let stderr = ''
     proc.stdout.on('data', (d) => stdout += d)
     proc.stderr.on('data', (d) => stderr += d)
-    proc.on('close', (code) => {
+        proc.on('error', (err) => reject(new Error(`ffprobe spawn failed: ${err.message}`)))
+proc.on('close', (code) => {
       if (code !== 0) {
         reject(new Error(`ffprobe failed: ${stderr}`))
         return
@@ -279,7 +280,8 @@ async function embedCover(ffmpegPath, ffprobePath, video, cover, outPath, durati
     const proc = spawn(ffmpegPath, args, { windowsHide: true })
     let stderr = ''
     proc.stderr.on('data', (d) => stderr += d)
-    proc.on('close', (code) => {
+        proc.on('error', (err) => reject(new Error(`ffmpeg embedCover spawn failed: ${err.message}`)))
+proc.on('close', (code) => {
       if (code !== 0) {
         reject(new Error(`ffmpeg embedCover failed: ${stderr.slice(-500)}`))
         return
@@ -326,7 +328,8 @@ function extractAudioCached(ffmpegPath, video, forceReextract) {
       const proc = spawn(ffmpegPath, args, { windowsHide: true })
       let stderr = ''
       proc.stderr.on('data', (d) => stderr += d)
-      proc.on('close', (code) => {
+          proc.on('error', (err) => reject(new Error(`ffmpeg extractAudioCached spawn failed: ${err.message}`)))
+proc.on('close', (code) => {
         if (code !== 0) {
           reject(new Error(`ffmpeg extractAudioCached failed: ${stderr.slice(-500)}`))
           return
@@ -360,7 +363,8 @@ function concatSegments(ffmpegPath, paths, outPath) {
     const proc = spawn(ffmpegPath, args, { windowsHide: true })
     let stderr = ''
     proc.stderr.on('data', (d) => stderr += d)
-    proc.on('close', (code) => {
+        proc.on('error', (err) => { try { fs.unlinkSync(listFile) } catch (e) {} reject(new Error(`ffmpeg concat spawn failed: ${err.message}`)) })
+proc.on('close', (code) => {
       try { fs.unlinkSync(listFile) } catch (e) {}
       if (code !== 0) {
         reject(new Error(`ffmpeg concatSegments failed: ${stderr}`))
@@ -387,7 +391,8 @@ function extractAudio(ffmpegPath, video, outPath, format = 'aac') {
     const proc = spawn(ffmpegPath, args, { windowsHide: true })
     let stderr = ''
     proc.stderr.on('data', (d) => stderr += d)
-    proc.on('close', (code) => {
+        proc.on('error', (err) => reject(new Error(`ffmpeg extractAudio spawn failed: ${err.message}`)))
+proc.on('close', (code) => {
       if (code !== 0) {
         reject(new Error(`ffmpeg extractAudio failed: ${stderr}`))
         return
@@ -470,7 +475,8 @@ function parseCodecsViaFfmpeg(ffmpegPath, file) {
     let stderr = ''
     proc.stderr.on('data', (d) => { stderr += d })
     proc.on('error', () => resolve(null))
-    proc.on('close', () => {
+        proc.on('error', () => resolve(null))
+proc.on('close', () => {
       const out = { video: '', pixFmt: '', audio: '' }
       for (const line of stderr.split(/\r?\n/)) {
         let m = /Stream #\d+:\d+.*?:\s*Video:\s*([A-Za-z0-9_]+)/.exec(line)

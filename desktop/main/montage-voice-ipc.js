@@ -273,11 +273,13 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       .map((p) => (/^\(\(pause=\d+\)\)$/.test(p) ? p : L.preprocessTtsText(p)))
       .join('')
   }
-  async function postTts(apiUrl, text, refAudioB64, extra) {
+  async function postTts(apiUrl, text, refAudioB64, extra, targetDuration = 0) {
     const payload = {
       text: preprocessTtsKeepingPause(text),
       prompt_audio: refAudioB64 || null,
       ...(extra || {}),
+      // 2026-09-20 用户裁决：目标时长（秒）——服务端按其控制生成时长（0/缺省=自然时长）
+      ...(targetDuration > 0 ? { target_duration: targetDuration } : {}),
     }
     const maxAttempts = 3
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -338,7 +340,7 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
    *   pauseMs>0 时在句界插入显式标记（用户可调，替代原版固定 0.15s），>0 会多段推理、
    *   长文案耗时线性增加（文档明示）。
    */
-  async function synthesizeItem(text, refAudioB64, outWavPath, apiUrl, emit, extra, pauseMs) {
+  async function synthesizeItem(text, refAudioB64, outWavPath, apiUrl, emit, extra, pauseMs, targetDuration = 0) {
     const segs = L.splitSentences(text)
     let mergedText = text.trim()
     // 2026-09-20：qwen3 引擎不插 ((pause=ms)) 标记（IndexTTS 专属约定，qwen3 会照读）
@@ -519,7 +521,9 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         try {
           fs.mkdirSync(path.dirname(t.outWavPath), { recursive: true })
           emitRow(t.rowIdx, 50)
-          await synthesizeItem(text, refAudioB64, t.outWavPath, apiUrl, (msg) => emitRow(t.rowIdx, 50, msg.stage), ttsExtra, pauseMs)
+          // 2026-09-20 用户裁决：目标时长=各行视频时长（以声音对齐），随 TTS 请求下发
+          const rowVideoDur = t.videoPath && fs.existsSync(t.videoPath) ? getMediaDuration(t.videoPath) : 0
+          await synthesizeItem(text, refAudioB64, t.outWavPath, apiUrl, (msg) => emitRow(t.rowIdx, 50, msg.stage), ttsExtra, pauseMs, rowVideoDur > 0 ? rowVideoDur : 0)
           emitRow(t.rowIdx, 90)
 
           // 2026-09-20 用户裁决：取得声音后不做变速/补静音——配音原样落盘，

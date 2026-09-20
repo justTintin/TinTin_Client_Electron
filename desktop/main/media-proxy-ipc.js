@@ -201,6 +201,14 @@ function createMediaProxyIpc(ipcMain, { httpRequest, multipartUpload, API_ENDPOI
     } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
   })
 
+  // Qwen3-TTS 预置音色列表（2026-09-20：GET /indextts/qwen3/voices → {speakers:[…]}）
+  ipcMain.handle('tts:qwen3Voices', async () => {
+    try {
+      const res = await httpRequest('GET', API_ENDPOINTS.tts.qwen3Voices)
+      return res.data || { speakers: [] }
+    } catch (err) { return isExpectedOfflineError(err) ? null : { error: err.message } }
+  })
+
   // （样本试听 tts:fetchSampleAudio 已废弃删除：样本试听改渲染层直连服务端音频 URL，
   //   主进程取回+base64+blob 的中间链路整体下线，2026-09-07）
 

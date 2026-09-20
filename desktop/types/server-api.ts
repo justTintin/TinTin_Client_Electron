@@ -164,6 +164,8 @@ export const API_PATHS = {
     // 2026-09-05 服务端将删 /voxcpm/*：原 generate:'/voxcpm/tts' 已移除，TTS 恒走 /indextts/tts
     generate: '/indextts/tts',
     voicesSamples: '/voice/samples',
+    // 2026-09-20：Qwen3-TTS 预置音色列表（GET → {speakers:[…]}}）
+    qwen3Voices: '/indextts/qwen3/voices',
   },
   workflow: {
     run: '/workflow/run',

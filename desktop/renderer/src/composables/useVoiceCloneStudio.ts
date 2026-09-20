@@ -12,7 +12,7 @@
 // 纯逻辑在 voiceCloneLogic.ts（parser/builder 层），本文件仅编排（runner 层）
 // ═══════════════════════════════════════════════════════════════
 
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import {
   PUNCTUATION_SYSTEM_PROMPT,
   SENTENCE_SPLIT_SYSTEM_PROMPT,
@@ -27,6 +27,7 @@ import { parseTranscriptionResponse, segmentsToPlainText } from './srtUtils'
 import { useServerTask } from './useServerTask'
 import { readCacheDir } from './useSettingsConfig'
 import { clientError, clientInfo } from '../utils/clientLog'
+import { errText } from './montage/context'
 
 /**
  * 声音克隆文件命名规范（对齐原客户端 voice_clone_page.py _get_named_filename）
@@ -127,6 +128,29 @@ export function useVoiceCloneStudio() {
   // 2026-09-20 用户裁决：所有声音克隆默认 QwenTTS（engine=qwen3，tab 选择默认高亮 QwenTTS）
   const ttsEngine = ref<'indextts' | 'qwen3'>('qwen3')
   const wholeEngine = ref<'indextts' | 'qwen3'>(ttsEngine.value)
+  // ── Qwen3-TTS 专属设置（契约 IndexTTSRequest：speaker 预置音色 / instruct 指令文本；
+  //    duration_factor/emo_text/emo_alpha 为 IndexTTS 专属，qwen3 不支持）──
+  const qwen3Speaker = ref('')
+  const qwen3Instruct = ref('')
+  const qwen3Voices = ref<Array<{ value: string; label: string }>>([])
+  const qwen3VoicesLoading = ref(false)
+  async function loadQwen3Voices(): Promise<void> {
+    if (qwen3VoicesLoading.value) return
+    qwen3VoicesLoading.value = true
+    try {
+      const res = await window.tintin.server.ttsQwen3Voices()
+      const speakers = res && 'speakers' in res && Array.isArray(res.speakers) ? res.speakers : []
+      qwen3Voices.value = speakers.map((v) => ({ value: String(v), label: String(v) }))
+    } catch (e) {
+      clientError('voice-clone', '加载 QwenTTS 音色列表失败', errText(e))
+    } finally {
+      qwen3VoicesLoading.value = false
+    }
+  }
+  watch(ttsEngine, (v) => {
+    if (v === 'qwen3' && !qwen3Voices.value.length) void loadQwen3Voices()
+  })
+  if (ttsEngine.value === 'qwen3') void loadQwen3Voices()
   // IndexTTS 专属参数（API-GUIDE：/indextts/tts）
   const ttsDurationFactor = ref(1.0)   // 语速 0.5~2.0，默认 1.0
   const ttsEmoText = ref('')           // 情感文字（如：开心、悲伤、激动）
@@ -527,10 +551,18 @@ export function useVoiceCloneStudio() {
         // ref_text=参考音频文稿（Qwen3 克隆必填，缺失服务端 400）
         ...(ttsEngine.value !== 'indextts' ? { engine: ttsEngine.value } : {}),
         ...(ttsEngine.value === 'qwen3' && refText.value.trim() ? { ref_text: refText.value.trim() } : {}),
-        // IndexTTS 专属参数（qwen3 忽略）
-        duration_factor: ttsDurationFactor.value,
-        ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
-        emo_alpha: ttsEmoAlpha.value,
+        // 2026-09-20 用户裁决：Qwen3 专属设置（预置音色/指令文本）——qwen3 不支持
+        // IndexTTS 的 duration_factor/emo_text/emo_alpha（此前误发致「变速不起作用」）
+        ...(ttsEngine.value === 'qwen3'
+          ? {
+              ...(qwen3Speaker.value ? { speaker: qwen3Speaker.value } : {}),
+              ...(qwen3Instruct.value.trim() ? { instruct: qwen3Instruct.value.trim() } : {}),
+            }
+          : {
+              duration_factor: ttsDurationFactor.value,
+              ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
+              emo_alpha: ttsEmoAlpha.value,
+            }),
         resp: 'json',
       }
       const res = await window.tintin.server.ttsGenerate(payload as any)
@@ -611,10 +643,18 @@ export function useVoiceCloneStudio() {
         // ref_text=参考音频文稿（Qwen3 克隆必填，缺失服务端 400）
         ...(wholeEngine.value !== 'indextts' ? { engine: wholeEngine.value } : {}),
         ...(wholeEngine.value === 'qwen3' && refText.value.trim() ? { ref_text: refText.value.trim() } : {}),
-        // IndexTTS 专属参数（qwen3 忽略）
-        duration_factor: ttsDurationFactor.value,
-        ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
-        emo_alpha: ttsEmoAlpha.value,
+        // 2026-09-20 用户裁决：Qwen3 专属设置（预置音色/指令文本）——qwen3 不支持
+        // IndexTTS 的 duration_factor/emo_text/emo_alpha（此前误发致「变速不起作用」）
+        ...(wholeEngine.value === 'qwen3'
+          ? {
+              ...(qwen3Speaker.value ? { speaker: qwen3Speaker.value } : {}),
+              ...(qwen3Instruct.value.trim() ? { instruct: qwen3Instruct.value.trim() } : {}),
+            }
+          : {
+              duration_factor: ttsDurationFactor.value,
+              ...(ttsEmoText.value.trim() ? { emo_text: ttsEmoText.value.trim() } : {}),
+              emo_alpha: ttsEmoAlpha.value,
+            }),
         resp: 'json',
       }
       const res = await window.tintin.server.ttsGenerate(payload as any)
@@ -789,6 +829,8 @@ export function useVoiceCloneStudio() {
     // state
     refAudioPath, selectedSampleId, refText, transcribing,
     voiceOptions, samples, voice, ttsEngine, wholeEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
+    // Qwen3-TTS 专属（2026-09-20 用户裁决）
+    qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading, loadQwen3Voices,
     wholeText, rows, splitting, generating, stageText, maxChars,
     wholeTask, wholeProgress,
     // 整体克隆：解包视图 + 合成进度 + 另存为（模板直接用，禁 wholeTask.xxx 裸访问）

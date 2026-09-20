@@ -340,7 +340,9 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
       <div v-if="cloneParamsDlg.show" class="modal-mask" @click.self="closeCloneParams">
         <div class="modal">
           <span class="modal-title">设置声音克隆</span>
-          <span class="hint">以下参数在克隆声音时随每次 TTS 请求发送（当前引擎：IndexTTS）</span>
+          <!-- 2026-09-20 用户裁决：按引擎显示各自设置——语速/情感为 IndexTTS 专属（QwenTTS 忽略，曾致「变速不起作用」） -->
+          <span class="hint">以下参数在克隆声音时随每次 TTS 请求发送（当前引擎：{{ cloneParamsDlg.engine === 'qwen3' ? 'QwenTTS' : 'IndexTTS' }}）</span>
+          <template v-if="cloneParamsDlg.engine === 'indextts'">
           <div class="cp-field">
             <div class="row between">
               <span class="label">语速（duration_factor）</span>
@@ -359,6 +361,10 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
               <span class="cp-value">{{ cloneParamsDlg.alpha.toFixed(1) }}</span>
             </div>
             <input v-model.number="cloneParamsDlg.alpha" type="range" min="0" max="1" step="0.1" class="grow" />
+          </div>
+          </template>
+          <div v-else class="cp-field">
+            <span class="hint">QwenTTS 不支持语速/情感数值参数；语气与语速请用自然语言在文案中描述（如「用轻快的语速说」）</span>
           </div>
           <div class="cp-field">
             <div class="row between">

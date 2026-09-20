@@ -249,6 +249,8 @@ declare interface TintinBridgeServer {
     page?: number
     page_size?: number
   }): Promise<IpcError<TTSAPI.VoicesSamplesResponse>>
+  /** Qwen3-TTS 预置音色列表（GET /indextts/qwen3/voices → {speakers:string[]}） */
+  ttsQwen3Voices(): Promise<{ speakers: string[] } | null | { error: string }>
   ttsUploadSample(
     payload: TTSAPI.UploadSampleRequest,
     onProgress?: (percent: number) => void

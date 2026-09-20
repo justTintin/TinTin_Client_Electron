@@ -21,6 +21,8 @@ function notify(title: string, body: string): void {
 const {
   refText, transcribing, voiceOptions, samples, voice, selectedSampleId, ttsEngine, wholeEngine,
   ttsDurationFactor, ttsEmoText, ttsEmoAlpha,
+  // Qwen3-TTS 专属（2026-09-20 用户裁决）
+  qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading,
   wholeText, rows, splitting, generating, stageText, maxChars,
   wholeTask, wholeProgress, uploadingSample,
   // 整体克隆：解包视图 + 合成进度 + 另存为（wholeTask 内嵌 ref 模板不解包，禁直接 wholeTask.xxx 判断）
@@ -249,8 +251,10 @@ onMounted(loadCatalog)
         : '当前使用 IndexTTS；整体克隆与逐行生成都用此模型与下方参数' }}</span>
     </div>
 
-    <!-- ③+ IndexTTS 参数 -->
-    <div class="engine-params">
+    <!-- ③+ 引擎参数（2026-09-20 用户裁决：按引擎显示各自设置——
+         IndexTTS=语速/情感/强度；QwenTTS=预置音色/指令文本。
+         此前 qwen3 下仍显示 IndexTTS 滑杆且参数被服务端忽略，致「变速不起作用」） -->
+    <div class="engine-params" v-if="ttsEngine === 'indextts'">
       <div class="form-field">
         <div class="field-head">
           <label class="form-label">语速（duration_factor）</label>
@@ -292,6 +296,32 @@ onMounted(loadCatalog)
           step="0.1"
           v-model.number="ttsEmoAlpha"
         />
+      </div>
+    </div>
+
+    <!-- ③+ QwenTTS（Qwen3-TTS）专属参数（2026-09-20 用户裁决）：
+         预置音色（speaker，与参考样本克隆二选一）+ 指令文本（instruct，可用自然语言描述语气/语速） -->
+    <div class="engine-params" v-else>
+      <div class="form-field">
+        <label class="form-label">预置音色（speaker，可选）</label>
+        <TSelect
+          :model-value="qwen3Speaker"
+          :options="qwen3Voices"
+          :loading="qwen3VoicesLoading"
+          placeholder="不选择则按参考样本克隆音色"
+          @update:model-value="(v: string | number) => (qwen3Speaker = String(v))"
+        />
+        <span class="form-hint">选择预置音色后由 QwenTTS 直出；留空则按参考样本克隆（需参考音频文稿）</span>
+      </div>
+      <div class="form-field">
+        <label class="form-label">指令文本（instruct，可选）</label>
+        <input
+          v-model="qwen3Instruct"
+          class="text-input"
+          type="text"
+          placeholder="用自然语言描述语气/语速，如：用轻快的语速说"
+        />
+        <span class="form-hint">QwenTTS 不支持 IndexTTS 的语速/情感数值参数，语气与语速请用指令文本描述</span>
       </div>
     </div>
 

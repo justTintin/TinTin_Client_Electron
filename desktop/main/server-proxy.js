@@ -126,7 +126,8 @@ const API_ENDPOINTS = {
   copywriting: { voiceover: '/copywriting/voiceover' },
   asr:    { transcribe: '/whisper/transcribe' },
   // 2026-09-05：声音克隆与智能混剪口播配音均恒走 /indextts/tts（服务端将删全部 /voxcpm/*）
-  tts:    { indextts: '/indextts/tts', voicesList: '/voice/samples', voicesSamples: '/voice/samples' },
+  // 2026-09-20：qwen3Voices=Qwen3-TTS 预置音色列表（GET /indextts/qwen3/voices → {speakers:[…]})）
+  tts:    { indextts: '/indextts/tts', voicesList: '/voice/samples', voicesSamples: '/voice/samples', qwen3Voices: '/indextts/qwen3/voices' },
   workflow:{ run: '/workflow/run' },
   material: {
     list: '/material/list', search: '/material/search', serve: '/material/serve',

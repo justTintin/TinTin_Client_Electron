@@ -174,6 +174,8 @@ const server = {
   ttsGenerate:   (p) => ipcRenderer.invoke('tts:generate', p),
   ttsSaveAudio:  (p) => ipcRenderer.invoke('tts:saveAudio', p),
   ttsVoicesSamples: (params)       => ipcRenderer.invoke('tts:voicesSamples', params),
+  // Qwen3-TTS 预置音色列表（2026-09-20）
+  ttsQwen3Voices:  ()              => ipcRenderer.invoke('tts:qwen3Voices'),
   ttsUploadSample:  (p, onProgress) => _withUploadProgress(onProgress, 'tts:uploadSample', p),
   // （ttsFetchSampleAudio 已废弃删除：样本试听改渲染层直连服务端音频 URL，2026-09-07）
 

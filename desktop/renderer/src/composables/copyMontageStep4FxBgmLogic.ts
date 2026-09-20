@@ -642,10 +642,11 @@ export function splitLongSubtitleLines(lines: string[], maxChars: number): strin
     const s = String(raw || '').trim()
     if (!s) continue
     if (displayLen(s) <= maxChars) { out.push(s); continue }
-    // 停顿单元：非停顿符正文 + 尾随停顿符（硬切只切正文，标点跟随前文）
+    // 停顿单元：非停顿符正文 + 尾随停顿符（2026-09-19 扩：。！？!？:：也作停顿——
+    // 硬切只切正文，标点跟随前文）
     const units: string[] = []
-    for (const m of s.match(/[^，,；;、]+[，,；;、]*/g) || [s]) {
-      const t = m.replace(/[，,；;、]+$/, '')
+    for (const m of s.match(/[^，,；;、。！？!?：:]+[，,；;、。！？!?：:]*/g) || [s]) {
+      const t = m.replace(/[，,；;、。！？!?：:]+$/, '')
       const p = m.slice(t.length)
       if (t) units.push(t, p)
       else if (units.length) units[units.length - 1] += p
@@ -662,13 +663,19 @@ export function splitLongSubtitleLines(lines: string[], maxChars: number): strin
         if (cur) { out.push(cur); cur = '' }
         let rest = u
         while (displayLen(rest) > maxChars) {
-          let take = ''
-          for (const ch of rest) {
-            take += ch
-            if (displayLen(take) >= maxChars) break
+          const cs = Array.from(rest)
+          let k = 0
+          let acc = 0
+          while (k < cs.length && acc < maxChars) { acc += 1; k++ }
+          // 词边界守卫（2026-09-19 用户报障 LIGHTSP|EED）：切点落在拉丁/数字词内部
+          // → 回退到词首；词首已到行首仍切词内 → 前进越过整词
+          const isW = (c: string) => /[A-Za-z0-9]/.test(c)
+          while (k > 1 && isW(cs[k - 1]) && k < cs.length && isW(cs[k])) k--
+          if (k > 1 && isW(cs[k - 1]) && k < cs.length && isW(cs[k])) {
+            while (k < cs.length && isW(cs[k])) k++
           }
-          out.push(take)
-          rest = rest.slice(take.length)
+          out.push(cs.slice(0, k).join(''))
+          rest = cs.slice(k).join('')
         }
         cur = rest
         continue

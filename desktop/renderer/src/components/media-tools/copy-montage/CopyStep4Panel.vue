@@ -582,7 +582,8 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
 
         <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；原版 Step4 仅上一步，文案逐字 L190） -->
         <div class="row left">
-          <TButton label="上一步：口播配音" plain @click="go(2)" />
+          <!-- 2026-09-17 用户裁决换序：第③步=镜头重组 -->
+          <TButton label="上一步：镜头重组" plain @click="go(2)" />
         </div>
         </div><!-- /vd-unified-left -->
 

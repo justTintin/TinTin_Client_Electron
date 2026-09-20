@@ -14,7 +14,7 @@ import { useFilePicker } from '@/composables/useFilePicker'
 import { copyMontageShellKey } from './copyMontageUiContext'
 
 const shell = inject(copyMontageShellKey)!
-const { step, go, vdLeftStyle, onSplitDown, previewAspect } = shell
+const { step, go, steps, vdLeftStyle, onSplitDown, previewAspect } = shell
 const {
   statusText,
   onDrop,
@@ -139,7 +139,7 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
       <section class="card">
         <div class="vd-unified">
         <div class="vd-unified-left" :style="vdLeftStyle">
-        <VdStepBar :step="step" @go="go" />
+        <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 1. 视频输入目录行：2026-09-08 用户裁决删除——口播配音无视频输入功能，
              配音对象自动取 Step2 已确认合成产物所在目录 -->
 
@@ -260,9 +260,10 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
 
         <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；2026-09-09 裁决：合成声音即可跳第四步） -->
         <div class="row between">
-          <TButton label="上一步：镜头重组" plain @click="go(1)" />
-          <TButton label="下一步：特效包装" icon="right" title="生成口播声音后即可进入；配音/特效/混音在第四步统一合成"
-            :disabled="!voiceRows.some(r => r.wavPath)" @click="go(3)" />
+          <!-- 2026-09-17 用户裁决换序：上一步=文案编写(0) -->
+          <TButton label="上一步：文案编写" plain @click="go(0)" />
+          <!-- 2026-09-17 用户裁决换序：下一步=镜头重组(2) -->
+          <TButton label="下一步：镜头重组" icon="right" @click="go(2)" />
         </div>
         </div><!-- /vd-unified-left -->
 

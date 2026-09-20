@@ -10,7 +10,7 @@ import VdStepBar from '../VdStepBar.vue'
 import { copyMontageShellKey } from './copyMontageUiContext'
 
 const shell = inject(copyMontageShellKey)!
-const { step, go } = shell
+const { step, go, steps } = shell
 const {
   srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
   scenes, scoreFilter, filteredScenes,
@@ -70,7 +70,7 @@ function scoreClass(score: number | undefined): string {
 
 <template>
       <section class="card">
-        <VdStepBar :step="step" @go="go" />
+        <VdStepBar :step="step" :steps="steps" @go="go" />
         <div class="dropzone" @click="selectFolder" @drop.prevent="onDrop" @dragover.prevent>
           <span class="dz-main">拖入素材文件夹（自动遍历子文件夹内全部视频） 或 点击选择文件夹</span>
           <span class="dz-hint">支持 mp4 / mov / avi / mkv / flv / webm / m4v，服务端完成分割与逐镜分析</span>
@@ -174,7 +174,8 @@ function scoreClass(score: number | undefined): string {
         <TButton label="打开已分割镜头目录" plain :loading="splitsDownloading" @click="openSplitsDir" />
         <TButton label="清空混剪缓存" plain title="清除本地混剪任务缓存（分割片段/成片输出目录），不会删除原始素材。" @click="clearSplitCache" />
         <span class="spacer"></span>
-        <TButton label="下一步：镜头重组" icon="right" :disabled="!scenes.length" @click="go(1)" />
+        <!-- 2026-09-17 用户裁决换序：go(1)=口播配音 -->
+        <TButton label="下一步：口播配音" icon="right" :disabled="!scenes.length" @click="go(1)" />
       </div>
 </template>
 

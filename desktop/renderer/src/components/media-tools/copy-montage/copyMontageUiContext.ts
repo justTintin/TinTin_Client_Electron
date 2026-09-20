@@ -9,6 +9,8 @@ export type CopyMontageUi = ReturnType<typeof useCopyMontage>
 export interface CopyMontageShellContext {
   s: CopyMontageUi
   step: Ref<number>
+  /** 步骤条标签（2026-09-17 用户裁决：文案混剪自有标签，经 VdStepBar steps 属性下发） */
+  steps: string[]
   go: (i: number) => void
   vdLeftStyle: import('vue').ComputedRef<{ flex: string }>
   onSplitDown: (e: MouseEvent) => void

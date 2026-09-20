@@ -27,14 +27,15 @@ import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } fr
 import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/copyMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
-// 步骤条文案对照原客户端 gui/video_montage_page.py steps_text L257，严格一致
-// 2026-09-19 用户裁决：文案混剪一/二步对调（重组在前、分割在后），后续自行调整
-const STEPS = ['1. 镜头重组', '2. 镜头智能分割', '3. 口播配音', '4. 特效包装']
+// 2026-09-17 用户裁决：步骤序定案 1.文案编写 → 2.口播配音 → 3.镜头重组 → 4.特效包装
+//（文案编写页内容暂为原镜头智能分割，仅改名；重组界面归镜头重组页）
+const STEPS = ['1. 文案编写', '2. 口播配音', '3. 镜头重组', '4. 特效包装']
 const step = ref(0)
 function go(i: number) {
   step.value = Math.max(0, Math.min(STEPS.length - 1, i))
-  // 第③步：自动带视频（_on_enter_step_3 L636-656 口径：取确认产物目录→清理旧产物→扫描）
-  if (i === 2) void enterStepVoice()
+  // 第②步（口播配音，2026-09-17 换序）：自动带视频
+  // （_on_enter_step_3 L636-656 口径：取确认产物目录→清理旧产物→扫描）
+  if (i === 1) void enterStepVoice()
   // 第④步：待混音数量 stage 提示（_go_to_step index==3 L388-395 同口径）
   if (i === 3) void enterStep4()
 }
@@ -117,7 +118,7 @@ function onSplitDown(e: MouseEvent): void {
 }
 
 // ── 面板注入（须晚于 vdLeftStyle/previewAspect 声明；setup 期一次性绑定）──
-provide(copyMontageShellKey, { s, step, go, vdLeftStyle, onSplitDown, previewAspect })
+provide(copyMontageShellKey, { s, step, go, steps: STEPS, vdLeftStyle, onSplitDown, previewAspect })
 
 /** 花字样式下拉（原版 fancy_style_combo 7 项） */
 const fancyStyleOptions = FANCY_STYLE_OPTIONS
@@ -257,12 +258,14 @@ function scoreClass(score: number | undefined): string {
     <!-- 共享任务状态条移至页尾（原版底部 stage_label + progress_bar 同位置） -->
 
     <!-- Step 1: 镜头智能分割（布局对照原版 gui/montage/step1_split_view.py L27-181） -->
-    <CopyStep2Panel v-if="step === 0" />
-    <CopyStep1Panel v-else-if="step === 1" />
+    <!-- 2026-09-17 用户裁决换序：1.文案编写(CopyStep1Panel 历史名=分割页) →
+         2.口播配音(CopyStep3Panel 历史名) → 3.镜头重组(CopyStep2Panel 历史名) -->
+    <CopyStep1Panel v-if="step === 0" />
+    <CopyStep3Panel v-else-if="step === 1" />
+    <CopyStep2Panel v-else-if="step === 2" />
 
     <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一）；
          2026-09-10 用户需求「界面统一+联动预览」：左操作区 + 右逐条点亮预览 -->
-    <CopyStep3Panel v-else-if="step === 2" />
 
     <!-- Step 4: 特效包装（step4_final_view.py L14-196 逐控件；另保留本端 AI 生成 BGM）；
          2026-09-09 用户裁决：烧制字幕/花字/文字模板特效配置自 Step3 迁入此处，随混音统一烧制，

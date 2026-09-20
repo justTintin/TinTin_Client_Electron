@@ -18,7 +18,7 @@ import type { PickerItem } from '@/composables/useWorkbenchPickers'
 import { copyMontageShellKey } from './copyMontageUiContext'
 
 const shell = inject(copyMontageShellKey)!
-const { step, go, vdLeftStyle, onSplitDown, previewAspect } = shell
+const { step, go, steps, vdLeftStyle, onSplitDown, previewAspect } = shell
 const {
   // 参数与方案
   assembleLogic, concatLayout, concatFps, durationLimit, DURATION_LIMITS,
@@ -121,7 +121,7 @@ function scoreClass(score: number | undefined): string {
       <section class="card">
         <div class="vd-unified">
         <div class="vd-unified-left" :style="vdLeftStyle">
-        <VdStepBar :step="step" @go="go" />
+        <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 参数设置组（原版 params_group：统一边框背景内两行参数） -->
         <div class="params-group">
           <!-- Parameters row 1（原版 L45-106：排列逻辑|输出画幅+原片画幅|时长限制|生成视频数量+推荐；混编随机度隐藏） -->
@@ -275,8 +275,8 @@ function scoreClass(score: number | undefined): string {
 
         <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区，归左栏底部；原版 nav_row L288-301） -->
         <div class="row between">
-          <TButton label="上一步：镜头分割" plain @click="go(0)" />
-          <TButton label="下一步：口播配音" icon="right" :disabled="!confirmedPaths.length" @click="go(2)" />
+          <!-- 2026-09-17 用户裁决：上一步删除；下一步=跳转口播配音界面（换序后 go(1)） -->
+          <TButton label="下一步：口播配音" icon="right" @click="go(1)" />
         </div>
         </div><!-- /vd-unified-left -->
 

@@ -16,9 +16,23 @@ import {
   TEXT_KEYWORD_DENSITY_MAX, pickRandomItems, extractFancyWordsFromText,
   buildSubtitleRows, buildTextFxTracks, textFxStyleOf, rewriteTemperature,
   buildRewriteSystemPrompt, cleanRewriteContent, resolveOutMontageDir, pathBasename,
+  shotsNarrationText, buildCopyStoryboardPrompt,
   type TextFxTrack, type SubtitleStylePreset, type PrecomposePlan, type VoiceRow,
 } from '../copyMontageLogic'
 import { notify, errText, joinPath } from './context'
+import { readCacheDir } from '../useSettingsConfig'
+import {
+  parseStoryboardShots,
+  buildScriptPayload,
+  defaultStoryboardTopic,
+  normalizeShot,
+  extractScriptItems,
+  toScriptOption,
+  parseScriptDetail,
+  copyFromShots,
+  type ScriptSummary,
+  type StoryboardShot,
+} from '../opsStoryboardLogic'
 import { useCopyMontageTextFx } from './useCopyMontageTextFx'
 
 export interface CopyMontageStep3Context {
@@ -37,12 +51,16 @@ export interface CopyMontageStep3Context {
   ensureProcessedSrt: (text: string, wavPath: string, candidate: string) => Promise<string>
   /** 产品信息（2026-09-19 架构：关键词命中词源=产品资料关联关键词，透传 textfx 子编排） */
   sharedProductInfo: Ref<{ brand: string; product: string; model: string; extra: string; keywords: string[] }>
+  /** 文案编写页文案（2026-09-21 用户裁决：扫描建行时无旁车 .txt → 配音文案回退第一步文案） */
+  getScriptCopy: () => string
+  /** 选择脚本应用时回填旁白（与 getScriptCopy 同一数据源） */
+  setScriptCopy: (text: string) => void
 }
 
 export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
   const { statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
-    step4Candidates, collectCandidates, ensureProcessedSrt, sharedProductInfo } = ctx
+    step4Candidates, collectCandidates, ensureProcessedSrt, sharedProductInfo, getScriptCopy, setScriptCopy } = ctx
 
   // ── Step3 口播配音（对照 step3_voice_view.py 逐控件 + VoiceCloneWorker api 模式 +
   // VideoDubbingWorker；TTS 直连用户可改 apiUrl，初值跟随 server_url + /indextts/tts；
@@ -245,11 +263,13 @@ function clearVoiceProgressListener(): void {
       const seen = new Set<string>()
       const files = allFiles.filter((f) => (seen.has(f.path) ? false : (seen.add(f.path), true)))
       voicesDir.value = voicesDirFirst
-      voiceRows.value = files.map((f) => ({
+      // 2026-09-21 用户裁决：第一步文案带入——行无旁车 .txt（原文空）时，配音文案回退第一步文案
+      const tabNarrs = storyboards.value.map((s) => s.narrative.trim())
+      voiceRows.value = files.map((f, fi) => ({
         path: f.path,
         name: f.name,
-        text: prevTexts.get(f.path) || f.originalText || '',
-        originalText: f.originalText,
+        text: prevTexts.get(f.path) || f.originalText || tabNarrs[fi] || '',
+        originalText: f.originalText || tabNarrs[fi] || '',
         status: f.wavPath ? 'done' : 'pending',
         progress: f.wavPath ? 100 : 0,
         wavPath: f.wavPath || '',
@@ -270,7 +290,7 @@ function clearVoiceProgressListener(): void {
    *  保留已编辑文案（existing_texts 口径）；文案行数随确认产物变化重建 */
   watch(
     () => assemblePlans.value.map((p) => (p.confirmed ? p.outputPath || '' : '')).join('|'),
-    (sig) => {
+    async (sig) => {
       const paths = sig.split('|').filter(Boolean)
       if (!paths.length) return
       const first = paths[0]
@@ -281,7 +301,20 @@ function clearVoiceProgressListener(): void {
       // 已编辑文案由 scanVoiceDir 的 prevTexts 按路径保留。
       // 2026-09-09：产物可能分散多目录（jobId 重置后落 session），聚合扫描全部目录
       voiceDirInput.value = dir
-      void scanVoiceDir({ dirs: confirmedVoiceDirs(paths) })
+      // 分镜驱动批量（2026-09-21 用户裁决）：确认产物落旁白 sidecar（plan.copy=分镜脚本旁白），
+      // 确保扫描行文案按分镜对应；写完再扫描
+      const plans = assemblePlans.value
+      for (const p of plans) {
+        if (p.confirmed && p.outputPath && p.copy) {
+          try {
+            await window.tintin?.liveclip?.writeTextFile?.({
+              path: p.outputPath.replace(/.[^.]+$/, '') + '.txt',
+              content: p.copy,
+            })
+          } catch (_) { /* sidecar 失败不阻断，行文案回退激活旁白 */ }
+        }
+      }
+      await scanVoiceDir({ dirs: confirmedVoiceDirs(paths) })
     },
   )
 
@@ -504,6 +537,34 @@ function clearVoiceProgressListener(): void {
     }
   }
 
+  /** voice:cloneBatch 公共载荷（runCloneBatch / cloneScriptCopy 共用） */
+  function clonePayload() {
+    return {
+      refAudioPath: refAudioPath.value,
+      // 2026-09-20 用户裁决：传 sample_id 走样本库渠道——服务端用库内样本并自动补
+      // ref_text，主进程不再重复下载样本音频转 b64（省带宽；0=未选样本 → Base 音色）
+      sampleId: Number(selectedRefSample.value?.id || 0),
+      refAudioUrl: selectedRefSample.value?.url || '',
+      apiUrl: ttsApiUrl.value,
+      speedMin: ttsSpeedMin.value,
+      speedMax: ttsSpeedMax.value,
+      // 克隆参数（「设置声音克隆」弹窗配置；主进程展开进 /indextts/tts 载荷）
+      ttsParams: {
+        durationFactor: ttsDurationFactor.value,
+        emoText: ttsEmoText.value,
+        emoAlpha: ttsEmoAlpha.value,
+        pauseMs: ttsPauseMs.value,
+        // Qwen3-TTS 专属（2026-09-20 用户裁决）：预置音色/指令文本随批次下发
+        speaker: qwen3Speaker.value,
+        instruct: qwen3Instruct.value,
+      },
+      // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；
+      // refText=参考音频文稿（qwen3 克隆必填 ref_text 的文稿源）
+      engine: ttsEngine.value,
+      refText: refText.value,
+    }
+  }
+
   /** 单条/批量克隆人声（对照 _start_synthesize_voice + VoiceCloneWorker.run） */
   async function runCloneBatch(rowIdxs: number[]): Promise<{ ok: number; failures: Array<{ rowIdx: number; msg: string }> }> {
     const tasks = rowIdxs
@@ -520,28 +581,7 @@ function clearVoiceProgressListener(): void {
     try {
       const res = await window.tintin?.server?.voiceCloneBatch?.({
         tasks,
-        refAudioPath: refAudioPath.value,
-        // 2026-09-20 用户裁决：传 sample_id 走样本库渠道——服务端用库内样本并自动补
-        // ref_text，主进程不再重复下载样本音频转 b64（省带宽；0=未选样本 → Base 音色）
-        sampleId: Number(selectedRefSample.value?.id || 0),
-        refAudioUrl: selectedRefSample.value?.url || '',
-        apiUrl: ttsApiUrl.value,
-        speedMin: ttsSpeedMin.value,
-        speedMax: ttsSpeedMax.value,
-        // 克隆参数（「设置声音克隆」弹窗配置；主进程展开进 /indextts/tts 载荷）
-        ttsParams: {
-          durationFactor: ttsDurationFactor.value,
-          emoText: ttsEmoText.value,
-          emoAlpha: ttsEmoAlpha.value,
-          pauseMs: ttsPauseMs.value,
-          // Qwen3-TTS 专属（2026-09-20 用户裁决）：预置音色/指令文本随批次下发
-          speaker: qwen3Speaker.value,
-          instruct: qwen3Instruct.value,
-        },
-        // 2026-09-20（服务端 TTS 统一入口）：engine=qwen3 → Qwen3-TTS；
-        // refText=参考音频文稿（qwen3 克隆必填 ref_text 的文稿源）
-        engine: ttsEngine.value,
-        refText: refText.value,
+        ...clonePayload(),
         progressChannel: channel,
       })
       if (!res) throw new Error('主进程不可达')
@@ -576,6 +616,366 @@ function clearVoiceProgressListener(): void {
     }
   }
 
+  // ── 多分镜脚本（2026-09-21 用户裁决：分镜脚本支持多个，tab 切换，每个分镜脚本对应
+  //  一个视频；二/三步对全部分镜批量处理；分镜数据内存化不持久化；tab 上限 10）──
+  interface StoryboardTab {
+    id: string
+    name: string
+    /** 来源脚本库 id（''=AI 生成/手动；选择脚本时同 id 的 tab 已存在则直接切换） */
+    scriptId: string
+    /** 服务端脚本库选题（首次同步/保存时生成；同 topic 覆盖更新） */
+    topic: string
+    /** 该脚本的旁白（第一步文案框绑定激活 tab 的旁白） */
+    narrative: string
+    shots: StoryboardShot[]
+    /** 每镜绑定的分割素材 idx（-1=未绑定） */
+    clipIdxs: number[]
+    /** 分镜生成/应用时的旁白快照（过期判定：narrative 改过即过期） */
+    sourceNarrative: string
+    /** 整体克隆产物（2026-09-21 用户裁决：每分镜脚本一条整段声音；二/三步批量处理） */
+    voiceWav: string
+    voiceDurSec: number
+  }
+  const COPY_STORYBOARD_MAX = 10
+  const storyboards = ref<StoryboardTab[]>([])
+  const activeStoryboardId = ref('')
+  const activeStoryboard = computed(() =>
+    storyboards.value.find((s) => s.id === activeStoryboardId.value) || null)
+  function nextStoryboardName(): string {
+    let max = 0
+    for (const s of storyboards.value) {
+      const m = /^脚本(\d+)$/.exec(s.name)
+      if (m) max = Math.max(max, Number(m[1]))
+    }
+    return `脚本${max + 1}`
+  }
+  /** 新增分镜 tab（AI 生成分镜/选择脚本/手动新建都走这里）；超上限返回 null */
+  function addStoryboardTab(init: { name?: string; scriptId?: string; topic?: string; narrative: string; shots: StoryboardShot[] }): StoryboardTab | null {
+    if (storyboards.value.length >= COPY_STORYBOARD_MAX) return null
+    const tab: StoryboardTab = {
+      id: `sb_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      name: (init.name || '').trim() || nextStoryboardName(),
+      scriptId: init.scriptId || '',
+      topic: init.topic || '',
+      narrative: init.narrative,
+      shots: init.shots,
+      clipIdxs: init.shots.map(() => -1),
+      sourceNarrative: init.narrative,
+      voiceWav: '',
+      voiceDurSec: 0,
+    }
+    storyboards.value.push(tab)
+    activeStoryboardId.value = tab.id
+    return tab
+  }
+  function removeStoryboardTab(id: string): void {
+    const i = storyboards.value.findIndex((s) => s.id === id)
+    if (i < 0) return
+    storyboards.value.splice(i, 1)
+    if (activeStoryboardId.value === id) {
+      activeStoryboardId.value = storyboards.value[Math.min(i, storyboards.value.length - 1)]?.id || ''
+    }
+  }
+  function renameStoryboardTab(id: string, name: string): void {
+    const tab = storyboards.value.find((s) => s.id === id)
+    if (tab && name.trim()) tab.name = name.trim().slice(0, 20)
+  }
+  function setActiveStoryboard(id: string): void {
+    if (storyboards.value.some((s) => s.id === id)) activeStoryboardId.value = id
+  }
+  /** 当前激活分镜的旁白（第一步文案框绑定此处；无分镜 tab → 全局草稿 manualCopy） */
+  const activeNarrative = computed<string>({
+    get: () => {
+      const tab = activeStoryboard.value
+      return tab ? tab.narrative : getScriptCopy()
+    },
+    set: (v) => {
+      const tab = activeStoryboard.value
+      if (tab) tab.narrative = v
+      else setScriptCopy(v)
+    },
+  })
+  /** 当前激活分镜的镜头（兼容口径：读写都落在激活 tab 上；无 tab → 空） */
+  const copyShots = computed<StoryboardShot[]>({
+    get: () => activeStoryboard.value?.shots || [],
+    set: (v) => { const tab = activeStoryboard.value; if (tab) tab.shots = v },
+  })
+  const copyShotsStale = computed(() => {
+    const tab = activeStoryboard.value
+    return !!tab && tab.sourceNarrative.trim() !== tab.narrative.trim()
+  })
+  /** 每镜绑定的分割素材 idx（-1=未绑定）。第三步「自动分配/选择素材/解绑」写这里，
+   *  确认合成按它从分割镜头表解析素材来源 */
+  const shotClipIdx = computed<number[]>({
+    get: () => activeStoryboard.value?.clipIdxs || [],
+    set: (v) => { const tab = activeStoryboard.value; if (tab) tab.clipIdxs = v },
+  })
+  function bindShotMaterial(shotIdx: number, sceneIdx: number): void {
+    if (shotIdx < 0 || shotIdx >= copyShots.value.length) return
+    const arr = shotClipIdx.value.slice()
+    while (arr.length < copyShots.value.length) arr.push(-1)
+    arr[shotIdx] = sceneIdx
+    shotClipIdx.value = arr
+  }
+  function unbindShotMaterial(shotIdx: number): void {
+    if (shotIdx < 0 || shotIdx >= copyShots.value.length) return
+    const arr = shotClipIdx.value.slice()
+    while (arr.length < copyShots.value.length) arr.push(-1)
+    arr[shotIdx] = -1
+    shotClipIdx.value = arr
+  }
+  /** 克隆合成全文 = 当前激活分镜的旁白（无分镜 tab → 全局草稿） */
+  function copyShotsText(): string {
+    return activeNarrative.value.trim()
+  }
+
+  /** 每步完成后同步分镜到服务端脚本库（2026-09-21 用户裁决：分镜数据以服务端为持久化层，
+   *  每步完成即同步；同 topic 覆盖更新，best-effort——失败仅提示不阻断流程） */
+  const scriptSyncing = ref(false)
+  async function syncStoryboardsToServer(): Promise<void> {
+    if (scriptSyncing.value || !storyboards.value.length) return
+    scriptSyncing.value = true
+    try {
+      const info = sharedProductInfo.value
+      for (const tab of storyboards.value) {
+        if (!tab.shots.length) continue
+        if (!tab.topic) tab.topic = defaultStoryboardTopic()
+        const payload = buildScriptPayload({
+          topic: tab.topic,
+          ratio: 'vertical',
+          shots: tab.shots,
+          product: { brand: info.brand || '', model: info.model || '', category: info.product || '', name: '' },
+        })
+        // 与 saveStoryboard 同接口同忙场景（分割/合成排队时实测 68s 才返回）：2026-09-21
+        // 用户裁决同步一并放宽 120s（30s 默认超时被掐即弹「分镜同步失败」）
+        const res = await window.tintin.server.post('/api/storyboard/scripts', payload, undefined, 120000)
+        if (res && typeof res === 'object' && 'error' in res) throw new Error(String(res.error || '同步失败'))
+      }
+    } catch (e) {
+      clientError('copy-montage', '分镜同步失败', errText(e))
+      notify('分镜同步失败', errText(e))
+    } finally {
+      scriptSyncing.value = false
+    }
+  }
+  /** ✨ AI 生成分镜：llm:chat → 现有分镜解析器（剥```/JSON/normalize）→ 整组替换镜头卡。
+   *  解析失败（fallback 单镜回退标记）保留现有卡并报错，不吞用户已编辑内容 */
+  const storyboardBusy = ref(false)
+  async function genStoryboard(): Promise<void> {
+    const copy = getScriptCopy().trim()
+    if (!copy) { notify('文案为空', '请先在「文案编写」页生成或填写视频文案。'); return }
+    if (storyboardBusy.value) return
+    storyboardBusy.value = true
+    try {
+      statusText.value = '正在根据旁白生成分镜脚本...'
+      const { systemPrompt, userPrompt } = buildCopyStoryboardPrompt(copy)
+      const res = await window.tintin.server.llmChat({
+        model: '',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      })
+      if (res && 'error' in res) throw new Error(String(res.error) || '服务端返回空错误')
+      const content = String(res?.choices?.[0]?.message?.content ?? '')
+      const parsed = parseStoryboardShots(content)
+      if (parsed.fallback || !parsed.shots.length) throw new Error('分镜解析失败（模型未返回 JSON 数组），请重试')
+      const tab = addStoryboardTab({ narrative: copy, shots: parsed.shots })
+      if (!tab) {
+        notify('分镜数量已达上限', `最多支持 ${COPY_STORYBOARD_MAX} 个分镜脚本，请先删除部分分镜。`)
+        return
+      }
+      const total = parsed.shots.reduce((s, x) => s + (Number(x.duration) || 0), 0)
+      statusText.value = `完成： 分镜「${tab.name}」已生成（${parsed.shots.length} 镜 / 约 ${Math.round(total)} 秒）`
+      void syncStoryboardsToServer()
+    } catch (e) {
+      statusText.value = `失败： ${errText(e)}`
+      notify('生成分镜失败', errText(e))
+    } finally {
+      storyboardBusy.value = false
+    }
+  }
+  /** 保存分镜脚本（2026-09-21 用户裁决：与分镜脚本页一致——POST /api/storyboard/scripts
+   *  入同一脚本库，工作台「选择脚本」刷新后可选；同 topic 覆盖更新。
+   *  topic=分镜脚本_YYYYMMDD_HHMM 同款默认命名；ratio 固定竖屏（文案混剪输出口径）；
+   *  product 随 sharedProductInfo（品牌/型号/品类）带回） */
+  const scriptSaving = ref(false)
+  async function saveStoryboard(): Promise<void> {
+    if (scriptSaving.value) return
+    if (!copyShots.value.length) {
+      notify('当前没有分镜内容', '请先生成分镜脚本。')
+      return
+    }
+    const tab = activeStoryboard.value
+    if (!tab) {
+      notify('当前没有分镜内容', '请先生成分镜脚本。')
+      return
+    }
+    scriptSaving.value = true
+    try {
+      if (!tab.topic) tab.topic = defaultStoryboardTopic()
+      const info = sharedProductInfo.value
+      const payload = buildScriptPayload({
+        topic: tab.topic,
+        ratio: 'vertical',
+        shots: copyShots.value,
+        product: { brand: info.brand || '', model: info.model || '', category: info.product || '', name: '' },
+      })
+      // 2026-09-21 用户报障「保存失败 Request timeout」：保存 POST 走通用通道默认 30s 超时，
+      //   服务端正忙（如跑语音合成排队）时会被掐——保存放宽到 120s（仅本调用，通道向后兼容）
+      const res = await window.tintin.server.post('/api/storyboard/scripts', payload, undefined, 120000)
+      if (res === null || res === undefined) throw new Error('无法连接服务端。')
+      if (typeof res === 'object' && 'error' in res) throw new Error(String(res.error || '保存失败'))
+      const total = Math.round(Number(payload.total_duration) || 0)
+      statusText.value = `完成： 分镜脚本已保存（${payload.shot_count} 镜 · ${total}s · 选题：${payload.topic}）`
+      notify('保存成功', `分镜脚本已保存到脚本库（${payload.shot_count} 镜 · ${total}s · 选题：${payload.topic}），工作台「选择脚本」刷新后可选。`)
+    } catch (e) {
+      const msg = errText(e)
+      statusText.value = `失败： ${msg}`
+      if (/Request timeout/i.test(msg)) {
+        notify('保存超时', '服务端 120 秒未响应，可能正忙（如正在合成语音等长任务），请稍后重试。')
+      } else {
+        notify('保存失败', msg)
+      }
+    } finally {
+      scriptSaving.value = false
+    }
+  }
+  /** 选择脚本（2026-09-21 用户裁决：与分镜脚本页一致——脚本库选脚本，分镜与旁白整组回填。
+   *  详情口径同「继续创作」：文案=镜头旁白拼接） */
+  const scriptPickDlg = ref({ show: false, loading: false, error: '', options: [] as ScriptSummary[], selectedId: '' })
+  function openScriptPick(): void {
+    scriptPickDlg.value = { show: true, loading: scriptPickDlg.value.loading, error: '', options: scriptPickDlg.value.options, selectedId: '' }
+    void refreshScriptOptions()
+  }
+  async function refreshScriptOptions(): Promise<void> {
+    scriptPickDlg.value.loading = true
+    scriptPickDlg.value.error = ''
+    try {
+      const data = (await window.tintin.server.get('/api/storyboard/scripts', { page: 1, page_size: 100 })) as unknown
+      if (data === null || data === undefined) throw new Error('无法连接服务端。')
+      if (typeof data === 'object' && 'error' in data) throw new Error(String((data as { error: unknown }).error || '加载失败'))
+      scriptPickDlg.value.options = extractScriptItems(data)
+        .map(toScriptOption)
+        .filter((s): s is ScriptSummary => s !== null)
+    } catch (e) {
+      scriptPickDlg.value.options = []
+      scriptPickDlg.value.error = errText(e)
+    } finally {
+      scriptPickDlg.value.loading = false
+    }
+  }
+  /** 弹窗内点选脚本：拉取详情供右侧基本信息展示（选题/镜数/总时长/逐镜列表） */
+  const pickDetail = ref<{
+    loading: boolean
+    error: string
+    detail: { topic: string; ratio: string; shots: StoryboardShot[] } | null
+  }>({ loading: false, detail: null, error: '' })
+  async function selectScriptOption(id: string): Promise<void> {
+    if (!id) return
+    scriptPickDlg.value.selectedId = id
+    pickDetail.value = { loading: true, detail: null, error: '' }
+    try {
+      const data = (await window.tintin.server.get(`/api/storyboard/scripts/${encodeURIComponent(id)}`, {})) as unknown
+      if (data === null || data === undefined) throw new Error('无法连接服务端。')
+      if (typeof data === 'object' && 'error' in data) throw new Error(String((data as { error: unknown }).error || '加载失败'))
+      const script = parseScriptDetail(data)
+      if (!script) throw new Error('脚本响应为空或格式不符。')
+      pickDetail.value = {
+        loading: false,
+        detail: { topic: script.topic, ratio: script.ratio, shots: script.shots.map((s, i) => normalizeShot(s, i + 1)) },
+        error: '',
+      }
+    } catch (e) {
+      pickDetail.value = { loading: false, detail: null, error: errText(e) }
+    }
+  }
+  /** 应用选中的脚本：分镜与旁白整组回填为新分镜 tab（同脚本已开 → 直接切换） */
+  function applySelectedScript(): void {
+    const id = scriptPickDlg.value.selectedId
+    const detail = pickDetail.value.detail
+    if (!id || !detail || !detail.shots.length) {
+      notify('未选择脚本', '请先在左侧列表选择一个脚本。')
+      return
+    }
+    const existing = storyboards.value.find((s) => s.scriptId === id)
+    if (existing) {
+      activeStoryboardId.value = existing.id
+      scriptPickDlg.value.show = false
+      notify('已切换分镜', `脚本已在分镜列表中，已切换到「${existing.name}」。`)
+      return
+    }
+    const tab = addStoryboardTab({ name: detail.topic || '', scriptId: id, narrative: shotsNarrationText(detail.shots), shots: detail.shots })
+    if (!tab) {
+      notify('分镜数量已达上限', `最多支持 ${COPY_STORYBOARD_MAX} 个分镜脚本，请先删除部分分镜。`)
+      return
+    }
+    scriptPickDlg.value.show = false
+    statusText.value = `完成： 已应用脚本「${detail.topic || id}」（${detail.shots.length} 镜）`
+    notify('已应用脚本', `分镜与旁白已回填（${detail.shots.length} 镜），可在分镜卡上继续调整。`)
+  }
+  /** 批量克隆全部分镜的旁白（2026-09-21 用户裁决：二/三步批量处理——每个分镜脚本
+   *  一条整段声音；进度按 tab 聚合；单 tab 失败不阻断其余。产物落在各 tab.voiceWav） */
+  async function cloneAllTabVoices(): Promise<void> {
+    const tabs = storyboards.value.filter((s) => s.narrative.trim())
+    if (!tabs.length) {
+      notify('没有可克隆的旁白', '请先在分镜脚本中生成或填写旁白。')
+      return
+    }
+    if (!refAudioPath.value && !selectedRefSample.value?.url) {
+      notify('未选择声音样本', '请先选择或上传声音样本 (wav/mp3/m4a)！')
+      return
+    }
+    await ensureTtsApiUrl()
+    // 落盘：本地缓存 copy-montage/voice/（无视频目录可用；主进程 mkdirSync recursive 建目录）
+    const cacheDir = await readCacheDir()
+    if (!cacheDir) {
+      notify('路径无效', '本地缓存目录未配置，请先到「设置」页配置缓存目录。')
+      return
+    }
+    const now = new Date()
+    const p2 = (n: number) => String(n).padStart(2, '0')
+    const stamp = `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`
+    const tasks = tabs.map((tab, i) => {
+      const outWavPath = joinPath(cacheDir, 'copy-montage', 'voice', `${tab.name}_voice_${stamp}_${i + 1}.wav`)
+      return { rowIdx: i, text: tab.narrative.trim(), videoPath: outWavPath, outWavPath, tabId: tab.id }
+    })
+    voiceBusy.value = true
+    voiceTotal = tasks.length; voiceDone = 0; voiceProgress.value = 0
+    const channel = nextVoiceChannel()
+    try {
+      const res = await window.tintin?.server?.voiceCloneBatch?.({ tasks, ...clonePayload(), progressChannel: channel })
+      if (!res) throw new Error('主进程不可达')
+      if ('error' in res) throw new Error(res.error)
+      let ok = 0
+      const fails: string[] = []
+      for (const tk of tasks) {
+        const wav = res.results[tk.videoPath]
+        const tab = storyboards.value.find((s) => s.id === tk.tabId)
+        if (wav && tab) {
+          tab.voiceWav = wav
+          tab.voiceDurSec = Number(res.durations[tk.videoPath] || 0)
+          ok++
+        } else {
+          const f = res.failures.find((x) => x.rowIdx === tk.rowIdx)
+          fails.push(`${tab ? tab.name : tk.outWavPath}：${f ? f.msg : '克隆失败'}`)
+        }
+      }
+      if (ok) {
+        statusText.value = `完成： ${ok}/${tabs.length} 个分镜声音已生成`
+        notify('批量克隆完成', ok === tabs.length ? `${ok} 个分镜声音全部生成。` : `${ok}/${tabs.length} 个成功：${fails.join('；')}`)
+      } else {
+        notify('批量克隆失败', fails.join('\n') || '未知原因')
+      }
+    } catch (e) {
+      clientError('copy-montage', '批量克隆分镜声音失败', errText(e))
+      notify('批量克隆失败', errText(e))
+    } finally {
+      voiceBusy.value = false
+      offVoiceProgress?.(); offVoiceProgress = null
+    }
+  }
+
   /** 开始批量克隆人声合成（对照 _start_synthesize_voice 弹窗逐字） */
   async function startSynthesizeVoice(): Promise<void> {
     if (voiceBusy.value) return
@@ -585,7 +985,9 @@ function clearVoiceProgressListener(): void {
       return
     }
     if (!voiceDirInput.value) {
-      notify('路径无效', '请选择有效的视频输入目录。')
+      // 2026-09-21 用户裁决：文案混剪=先文案→再声音→再按文案剪辑——无视频时对
+      // 第一步文案做纯声音克隆（自由时长），不再以「路径无效」阻断
+      await cloneAllTabVoices()
       return
     }
     const idxs = voiceRows.value.map((_, i) => i).filter((i) => voiceRows.value[i].text.trim())
@@ -912,6 +1314,11 @@ function clearVoiceProgressListener(): void {
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
+    copyShots, copyShotsStale, shotClipIdx, bindShotMaterial, unbindShotMaterial,
+    storyboards, activeStoryboardId, activeStoryboard, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, activeNarrative, COPY_STORYBOARD_MAX,
+    scriptSyncing, syncStoryboardsToServer,
+    genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
+    scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,
     loadRefSamples, selectRefAudio, pickNewSampleFile, transcribeNewSample,
     nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,

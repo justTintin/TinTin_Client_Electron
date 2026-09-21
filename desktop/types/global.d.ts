@@ -102,7 +102,7 @@ type IpcError<T> = T | null | { error: string }
 declare interface TintinBridgeServer {
   // 通用兜底：保持与旧版本兼容，允许业务层直接按路径调用
   get<T = any>(path: string, params?: Record<string, any>): Promise<T | null>
-  post<T = any>(path: string, body?: any, headers?: Record<string, string>): Promise<T | null>
+  post<T = any>(path: string, body?: any, headers?: Record<string, string>, timeout?: number): Promise<T | null>
   put<T = any>(path: string, body?: any, headers?: Record<string, string>): Promise<T | null>
   delete<T = any>(path: string, params?: Record<string, any>): Promise<T | null>
   upload<T = any>(

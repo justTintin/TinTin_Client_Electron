@@ -9,14 +9,17 @@ import { ref, computed, inject } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
-import StepPreviewPane, { type StepPreviewItem } from '../StepPreviewPane.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
 import { copyMontageShellKey } from './copyMontageUiContext'
+import CopyStoryboard from './CopyStoryboard.vue'
 
 const shell = inject(copyMontageShellKey)!
-const { step, go, steps, vdLeftStyle, onSplitDown, previewAspect } = shell
+// 2026-09-21 用户裁决：本步只有声音 → 右侧配音预览栏删除（vd-unified 两栏壳一并拆除）
+const { step, go, steps } = shell
 const {
   statusText,
+  manualCopy,
+  storyboards,
   onDrop,
   voiceRows,
   refSamples,
@@ -27,11 +30,6 @@ const {
   ttsCfg,
   ttsSpeedMin,
   voiceProgress,
-  AI_REWRITE_DESC,
-  aiRewriteDlg,
-  openRewriteSettings,
-  closeRewriteSettings,
-  saveRewriteSettings,
   ttsEngine, qwen3Speaker, qwen3Instruct, qwen3Voices, qwen3VoicesLoading,
   cloneParamsDlg,
   openCloneParams,
@@ -41,7 +39,6 @@ const {
   openEditDlg,
   saveEditDlg,
   voiceBusy,
-  rewriteBusy,
   refPreviewUrl,
   nsFilePath,
   nsName,
@@ -52,7 +49,6 @@ const {
   nsTranscribing,
   transcribeNewSample,
   uploadNewSampleRef,
-  batchAiRewrite,
   startSynthesizeVoice,
   regenVoice,
   toggleLengthMode,
@@ -67,20 +63,6 @@ const {
 function toFileUrl(p: string): string {
   return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23')
 }
-
-/** Step3 右栏：每条待配音视频一块——配音完成切换配音后视频并点亮，进行中显进度 */
-const step3PreviewItems = computed<StepPreviewItem[]>(() => voiceRows.value.map((r, i) => {
-  const target = (r.dubbedPath && r.dubbedPath.endsWith('.mp4')) ? r.dubbedPath : r.path
-  const generating = r.status === 'generating'
-  return {
-    badge: `第 ${i + 1} 条`,
-    src: target ? toFileUrl(target) : '',
-    placeholder: '待确认合成产物',
-    tag: generating ? `配音中 ${r.progress}%` : (r.dubbedPath ? '已配音' : (r.wavPath ? '声音已克隆' : '待配音')),
-    tagClass: r.dubbedPath ? 'ok' : (generating ? 'busy' : ''),
-    tip: r.name,
-  }
-}))
 
 /** TTS 引擎下拉选项（2026-09-20 服务端 TTS 统一入口上线：QwenTTS 启用，
  *  value 对齐契约 engine=qwen3；修正历史拼写 idexttts→indextts） */
@@ -134,35 +116,22 @@ const refAudioOptions = computed(() => [
   ...(refSamples.value.length ? [] : [{ label: '未找到预设声音样本', value: '' }]),
 ])
 function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) }
+
+/** 批量克隆产物（2026-09-21 用户裁决：每分镜脚本一条整段声音） */
+const tabVoices = computed(() =>
+  storyboards.value
+    .filter((s) => s.voiceWav)
+    .map((s) => ({ tabId: s.id, name: s.name, wav: s.voiceWav, dur: s.voiceDurSec })))
 </script>
 
 <template>
       <section class="card">
-        <div class="vd-unified">
-        <div class="vd-unified-left" :style="vdLeftStyle">
         <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 1. 视频输入目录行：2026-09-08 用户裁决删除——口播配音无视频输入功能，
              配音对象自动取 Step2 已确认合成产物所在目录 -->
 
-        <!-- 2. 参考声音（对齐 VoiceClone 页形态：样本下拉 + 常驻播放条换 src；
-             声音样本数据源 = 服务端 GET /voice/samples；选中样本自动带出参考文案） -->
-        <div class="row ref-row">
-          <label class="label">参考声音:</label>
-          <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : ''" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
-          <!-- 2026-09-09 用户裁决：播放条放到样本下拉框后面（同行右侧）。2026-09-11
-               实测修复：TSelect 根默认 width:100% 会独占整行把播放条挤到下一行 →
-               行内归位为弹性填充（.ref-row 规则） -->
-          <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
-        </div>
-
-        <!-- 3. 参考文案行（2026-09-11 用户裁决：单行显示不全 → 两行 textarea） -->
-        <div class="row">
-          <label class="label">参考文案:</label>
-          <textarea v-model="refText" rows="2" class="input grow ref-text" placeholder="可选，填入样本台词..."></textarea>
-        </div>
-
-        <!-- TTS API 与推理参数行：2026-09-08 用户裁决删除（TTS 地址自动跟随系统设置，
-             ttsSteps/ttsCfg 存而不用；ttsSpeedMin/Max 保留默认值 0.9~1.2 随克隆请求发送） -->
+        <!-- 分镜脚本（公共组件 voice 态，始终显示；2026-09-21 用户报障：从视频素材返回本步时分镜消失） -->
+        <CopyStoryboard mode="voice" />
 
         <!-- 4. 表格标题行（L177-196；2026-09-10 用户裁决：TTS 引擎/克隆/文案设置组移到「开始批量克隆」前面） -->
         <div class="row">
@@ -235,17 +204,68 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
             </tr>
           </tbody>
         </table>
-        <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
+        <template v-else>
+          <!-- 2026-09-21 用户裁决：口播文案=旁白（作为口播连续存在，本身不是分镜）；
+               分镜脚本由 AI 根据旁白单独生成梳理（text-storyboard skill 画面规则 +
+               Viral_Writer 口播节奏），镜头卡字段对齐现有分镜脚本规范：
+               镜别/时长/画面/旁白/音效。确认合成产物出现后旁白自动填入每行配音文案 -->
+          <div v-if="manualCopy.trim()" class="carry-copy">
+            <span class="sb-info">口播文案（旁白，来自「文案编写」，共 {{ manualCopy.length }} 字；在「文案编写」页编辑）：</span>
+            <textarea readonly rows="3" class="input carry-textarea">{{ manualCopy }}</textarea>
 
-        <!-- 2026-09-10 用户裁决：克隆按钮变短，与设置组（TTS 引擎/声音克隆/文案生成/AI 改文案）同行、
-             整行靠右（克隆=主操作居最右）；原独立 voice-clone-box 全宽框取消 -->
-        <!-- 2026-09-10 用户裁决：声音设置组靠左、克隆主操作靠右（两端对齐） -->
+            <!-- 2026-09-21 用户裁决（再次下达，补漏实现）：批量克隆完成后在本框就地显示
+                 完成的播放条——tabVoices=每分镜脚本一条整段声音（cloneAllTabVoices 产物
+                 tab.voiceWav）；此前播放条只备了 tabVoices 计算属性未渲染 -->
+            <template v-if="tabVoices.length">
+              <div class="carry-voice-list">
+                <div v-for="v in tabVoices" :key="v.tabId" class="carry-voice-row">
+                  <span class="carry-voice-name" :title="v.name">{{ v.name }}</span>
+                  <audio
+                    :key="v.wav + '|' + (v.dur || 0)"
+                    class="vd-voice-audio"
+                    controls
+                    preload="auto"
+                    :src="toFileUrl(v.wav)"
+                    :title="`分镜「${v.name}」克隆声音（${v.dur > 0 ? fmtDur(v.dur) : '时长未知'}）`"
+                  />
+                  <span class="vd-dur-voice" :class="{ none: !v.dur }">{{ v.dur > 0 ? fmtDur(v.dur) : '--:--' }}</span>
+                </div>
+              </div>
+              <span class="muted">分镜声音已生成（{{ tabVoices.length }} 条），可就地试听；确认合成完成后，旁白会自动填入每条视频的配音文案栏</span>
+            </template>
+            <span v-else class="muted">当前还没有视频：点击「开始批量克隆人声合成」即为口播旁白生成声音；确认合成完成后，旁白也会自动填入每条视频的配音文案栏</span>
+          </div>
+          <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
+        </template>
+
+      </section>
+
+    <!-- 批量声音克隆（2026-09-21 用户裁决：批量生成的所有脚本的声音克隆，独立分组） -->
+    <section class="card">
+      <div class="fx-pack-title">批量声音克隆（全部分镜脚本）</div>
+
+        <!-- 2. 参考声音（2026-09-21 用户裁决：移到克隆操作行上方，选定声音即开始克隆；
+             对齐 VoiceClone 页形态：样本下拉 + 常驻播放条换 src；数据源 = GET /voice/samples；
+             选中样本自动带出参考文案） -->
+        <div class="row ref-row">
+          <label class="label">参考声音:</label>
+          <TSelect :model-value="selectedRefSample ? `sample:${selectedRefSample.id}` : ''" :options="refAudioOptions" class="grow" @update:model-value="onRefAudioChange" />
+          <!-- 2026-09-09 用户裁决：播放条放到样本下拉框后面（同行右侧）。2026-09-11
+               实测修复：TSelect 根默认 width:100% 会独占整行把播放条挤到下一行 →
+               行内归位为弹性填充（.ref-row 规则） -->
+          <audio v-if="refPreviewUrl" :src="refPreviewUrl" controls preload="auto" class="ref-audio" />
+        </div>
+
+        <!-- 3. 参考文案行（2026-09-11 用户裁决：单行显示不全 → 两行 textarea） -->
+        <div class="row">
+          <label class="label">参考文案:</label>
+          <textarea v-model="refText" rows="2" class="input grow ref-text" placeholder="可选，填入样本台词..."></textarea>
+        </div>
+
         <div class="row between clone-row">
           <div class="row">
             <TSelect v-model="ttsEngine" :options="TTS_ENGINE_OPTIONS" class="tts-engine-select" />
             <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
-            <TButton label="文案生成设置" variant="secondary" size="small" @click="openRewriteSettings" />
-            <TButton label="一键AI修改全部文案" size="small" :loading="rewriteBusy" @click="batchAiRewrite" />
           </div>
           <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
         </div>
@@ -253,32 +273,22 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
         <!-- 7. 配音动作已迁 Step4 统一合成（2026-09-09 用户裁决：Step3 只合成口播声音，
              配音+特效烧制+BGM 混音在第四步点「开始混音合成」一键完成） -->
 
+
         <!-- 克隆批量进度（主进程逐条 emitRow 聚合为整体百分比；文案+进度条对照确认合成形态） -->
         <template v-if="voiceBusy">
           <div class="concat-status-line">{{ statusText }}</div>
           <progress class="vd-progress split-progress" :value="voiceProgress" max="100" />
         </template>
+      </section>
 
         <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；2026-09-09 裁决：合成声音即可跳第四步） -->
         <div class="row between">
           <!-- 2026-09-17 用户裁决换序：上一步=文案编写(0) -->
           <TButton label="上一步：文案编写" plain @click="go(0)" />
-          <!-- 2026-09-17 用户裁决换序：下一步=镜头重组(2) -->
-          <TButton label="下一步：镜头重组" icon="right" @click="go(2)" />
+          <!-- 2026-09-17 用户裁决换序：下一步=镜头重组(2)；2026-09-21 展示名改「视频素材」 -->
+          <TButton label="下一步：视频素材" icon="right" @click="go(2)" />
         </div>
-        </div><!-- /vd-unified-left -->
-
-<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
-
-        <!-- 右栏：每条待配音视频一块（配音完成切换配音后视频并点亮；进行中显进度，实时联动） -->
-        <div class="vd-unified-right">
-          <StepPreviewPane title="配音预览" :items="step3PreviewItems"
-            :aspect="previewAspect"
-            empty-text="确认合成完成后，Step2 的成片视频会出现在这里逐条预览配音效果" />
-        </div>
-        </div><!-- /vd-unified -->
-      </section>
-    <div v-if="step === 2" class="ns-section">
+    <div v-if="step === 1" class="ns-section">
       <div class="ns-title">没有想要的样本？上传音频创建新样本</div>
       <div
         class="dropzone"
@@ -321,23 +331,6 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
         <div v-if="nsSuccess" class="ns-msg ns-ok">{{ nsSuccess }}</div>
       </div>
     </div>
-      <div v-if="aiRewriteDlg.show" class="modal-mask" @click.self="closeRewriteSettings">
-        <div class="modal">
-          <span class="modal-title">文案生成设置</span>
-          <span class="rw-title">文案生成自由度设置</span>
-          <span class="rw-desc">{{ AI_REWRITE_DESC }}</span>
-          <div class="row">
-            <span class="muted">0%</span>
-            <input v-model.number="aiRewriteDlg.pct" type="range" min="0" max="100" step="1" class="grow" />
-            <span class="muted">100%</span>
-          </div>
-          <span class="rw-value">当前: {{ aiRewriteDlg.pct }}%</span>
-          <div class="modal-actions">
-            <TButton label="取消" plain @click="closeRewriteSettings" />
-            <TButton label="保存" @click="saveRewriteSettings" />
-          </div>
-        </div>
-      </div>
       <div v-if="cloneParamsDlg.show" class="modal-mask" @click.self="closeCloneParams">
         <div class="modal">
           <span class="modal-title">设置声音克隆</span>
@@ -586,10 +579,6 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
    混排 → 统一为输入高度 34px（与下拉及页面表单控件同口径，含四颗按钮） */
 .clone-row { align-items: center; }
 .clone-row :deep(.t-button) { height: var(--size-input-height); }
-/* 文案生成设置弹窗 */
-.rw-title { font-size: 13px; color: var(--foreground); }
-.rw-desc { font-size: 12px; color: var(--muted-foreground); white-space: pre-line; }
-.rw-value { font-size: 14px; font-weight: 700; color: var(--primary); text-align: center; }
 /* TTS 引擎下拉（表格标题行内，不占满） */
 .tts-engine-select { width: 220px; flex: none; }
 /* 设置声音克隆弹窗 */
@@ -608,17 +597,22 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
   white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto;
 }
 .bgm-pick-right .row { gap: 6px; }
-/* 界面统一两栏（2026-09-10 用户需求「二三四步界面统一+联动预览」）：
-   左=操作区（自适应），右=统一预览栏（拖拽调比例）；
-   2026-09-10 用户报障「口播配音界面重叠」：左栏表格 min-content 撑破盒子溢出绘制
-   进右栏区 → 左栏 overflow:hidden 截断 + 右栏 border-left 明确分界 */
-.vd-unified { display: flex; gap: 0; align-items: stretch; min-height: 0; }
-.vd-unified-left { min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); padding-right: 12px; overflow: hidden; }
-.vd-unified-right { flex: 1 1 0; min-width: 260px; display: flex; flex-direction: column; min-height: 0; padding-left: 12px; border-left: 1px solid var(--border); }
-/* 可拖拽分隔条：左右比例手动调整（默认 6:4，拖后 localStorage 记忆） */
-.vd-split {
-  flex: 0 0 6px; cursor: col-resize; border-radius: 3px;
-  background: transparent; transition: background 0.15s;
+/* 2026-09-21 用户裁决：本步只有声音 → 右侧配音预览栏删除，
+   vd-unified 两栏壳/vd-split 分隔条样式一并移除（全宽单栏） */
+/* 第一步文案带过来（无视频行时展示；确认合成后自动填入各行配音文案） */
+.carry-copy { display: flex; flex-direction: column; gap: 6px; }
+/* 分镜卡/旁白小框样式已随分镜界面迁至公共组件 CopyStoryboard.vue */
+
+/* 左上角框内的分镜声音播放条列表（2026-09-21 用户裁决：克隆完成后就地试听） */
+.carry-voice-list { display: flex; flex-direction: column; gap: 6px; }
+.carry-voice-row { display: flex; align-items: center; gap: 8px; }
+.carry-voice-name {
+  flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; font-weight: 600; color: var(--foreground);
 }
-.vd-split:hover { background: var(--primary); opacity: 0.35; }
+/* 源序在 .input 之后（覆盖其 height:32px / padding:0 10px） */
+.carry-textarea {
+  height: auto; min-height: 96px; padding: 8px 10px;
+  line-height: 1.6; font-family: inherit; resize: vertical;
+}
 </style>

@@ -9,14 +9,14 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
-import StepPreviewPane, { type StepPreviewItem, type StepPreviewKeyword } from '../StepPreviewPane.vue'
 import VdStepBar from '../VdStepBar.vue'
 import CopyBgmPickDialog from './CopyBgmPickDialog.vue'
+import CopyStoryboard from './CopyStoryboard.vue'
 import { copyMontageShellKey } from './copyMontageUiContext'
 import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/copyMontageLogic'
 
 const shell = inject(copyMontageShellKey)!
-const { step, go, vdLeftStyle, onSplitDown } = shell
+const { step, go, steps } = shell
 const {
   splitResolution,
   previewUrl,
@@ -114,70 +114,6 @@ function rowBgmAudioSrc(videoPath: string): string {
   const p = rowBgmForCandidate(videoPath)
   return p ? toFileUrl(p) : ''
 }
-
-/** 预览块画幅（2026-09-11 用户裁决）：竖屏模式下预览块也竖起来，不再是横向块里
- *  嵌竖条（两侧大片黑边）。口径与 Step2「输出画幅」+ layoutSize 兜底完全同步：
- *  vertical → 9/16；horizontal → 16/9；source → 分割片段分辨率（splitResolution，
- *  2026-09-15 用户裁决：基准=分割片段而非原素材）；
- *  source 拿不到 → 9/16（layoutSize 对 source 无效探测的兜底即 1080x1920）。
- *  三步右栏共用同一比例（Step3/4 预览的都是本链路成片，画幅同源） */
-const previewAspect = computed(() => {
-  const layout = concatLayout.value
-  if (layout === 'vertical') return '9 / 16'
-  if (layout === 'horizontal') return '16 / 9'
-  const m = /^(\d+)x(\d+)$/.exec(splitResolution.value || '')
-  if (m) {
-    const w = Number(m[1])
-    const h = Number(m[2])
-    if (w > 0 && h > 0) return `${w} / ${h}`
-  }
-  return '9 / 16'
-})
-
-/** Step2 右栏：每条方案一块——确认成片直播；未确认给镜头连播序列（激活块内连播） */
-const step2PreviewItems = computed<StepPreviewItem[]>(() => assemblePlans.value.map((p, i) => {
-  if (p.confirmed && p.outputPath) {
-    return { badge: `第 ${i + 1} 条`, src: toFileUrl(p.outputPath), tip: p.outputName || '' }
-  }
-  const seq = p.clips.filter((_, ci) => !p.deletedFlags[ci]).map((c) => vdToAbsolute(c.clipUrl))
-  return {
-    badge: `第 ${i + 1} 条`,
-    seqList: seq,
-    placeholder: seq.length ? `${seq.length} 个镜头 · 待确认合成` : '待确认合成',
-    tip: planRowText(i),
-  }
-}))
-
-/** Step4 右栏：合成完成→成片直播；否则候选视频 + 特效叠加预览（样式随左侧配置实时联动） */
-const step4PreviewItems = computed<StepPreviewItem[]>(() => {
-  if (finalDone.value && finalVideoList.value.length) {
-    return finalVideoList.value.map((it, i) => ({
-      badge: `第 ${i + 1} 条`, src: toFileUrl(it.path), tag: '成片', tagClass: 'ok', tip: it.name,
-    }))
-  }
-  const kwStyle = textFxStyleSamples.value[0]?.style as Record<string, string | number> | undefined
-  return step4Candidates.value.map((c, i) => {
-    const row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c)
-    const sub = addSubtitles.value ? String(row?.text || '').split(/\r?\n/)[0]?.trim().slice(0, 20) : ''
-    const track = textFxPreviewTracks.value[i]
-    let keywords: StepPreviewKeyword[] = []
-    if (textFxEnabled.value && track?.items?.length) {
-      keywords = track.items.slice(0, 2).map((t) => ({ text: t.word, style: kwStyle }))
-    } else if (fancyEnabled.value) {
-      keywords = [{ text: FANCY_PREVIEW_TEXT, style: fancyCustomPreviewStyle.value }]
-    }
-    return {
-      badge: `第 ${i + 1} 条`,
-      src: toFileUrl(c),
-      subtitle: sub || undefined,
-      subtitleStyle: subtitlePreviewStyle.value,
-      keywords: keywords.length ? keywords : undefined,
-      tag: row?.dubbedPath ? '已配音' : '待配音',
-      tagClass: row?.dubbedPath ? 'ok' : '',
-      tip: pathBasename(c),
-    }
-  })
-})
 
 /** Step4 选中联动：右栏点块 = 左列表选中（成片预览由块内 video 直播） */
 function onStep4Select(i: number): void {
@@ -306,10 +242,9 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
 
 <template>
       <section class="card">
-        <!-- 2026-09-10 界面统一：左操作区 + 右统一预览两栏（右栏与 Step2/3 同位置同宽） -->
-        <div class="vd-unified">
-        <div class="vd-unified-left" :style="vdLeftStyle">
-        <VdStepBar :step="step" @go="go" />
+        <VdStepBar :step="step" :steps="steps" @go="go" />
+        <!-- 分镜脚本（2026-09-21 用户裁决：四步公共显示组件，本步 fx 态只读） -->
+        <CopyStoryboard mode="fx" />
         <!-- 特效包装分组（2026-09-13 用户裁决：字幕拆出单独成组、置于背景音乐上方）：花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
           <div class="fx-pack-title">花字</div>
@@ -527,6 +462,11 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
             <span v-if="!lutList.length" class="muted">{{ lutListLoading ? '加载中…' : '服务端 LUT 库为空（可用 /config/luts 上传 .cube）' }}</span>
           </div>
         </div>
+      </section>
+
+    <!-- 导出/合成卡片（2026-09-21 用户裁决：导出处理功能单独成框，与特效包装分离） -->
+    <section class="card">
+      <div class="fx-pack-title" style="margin-bottom: var(--space-2)">导出与合成</div>
         <!-- 2026-09-18 用户裁决：动作区加导出方案引导文案，竖排：
              标题「请选择导出方案」→ 方案一文案 → 其两按钮 → 方案二文案 → 服务端合成按钮 -->
         <div class="vd4-schemes">
@@ -579,24 +519,14 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
             </div>
           </div>
         </div><!-- /vd4-result -->
-
-        <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区；原版 Step4 仅上一步，文案逐字 L190） -->
-        <div class="row left">
-          <!-- 2026-09-17 用户裁决换序：第③步=镜头重组 -->
-          <TButton label="上一步：镜头重组" plain @click="go(2)" />
-        </div>
-        </div><!-- /vd-unified-left -->
-
-<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
-
-        <!-- 右栏：统一预览（成片直播/候选+特效叠加层，点击块切列表选中） -->
-        <div class="vd-unified-right">
-          <StepPreviewPane title="成片预览" :items="step4PreviewItems" :active-index="finalSelIdx"
-            :aspect="previewAspect"
-            empty-text="完成配音后进入本步，点击「服务端合成」或「本地合成」生成成片" @select="onStep4Select" />
-        </div>
-        </div><!-- /vd-unified -->
       </section>
+
+        <!-- 导航行（2026-09-21 用户裁决：上一步=视频素材） -->
+        <div class="row left">
+          <TButton label="上一步：视频素材" plain @click="go(2)" />
+        </div>
+
+    <!-- 分镜声音批量克隆选择弹窗（BGM 选择组件复用为音频选择） -->
     <CopyBgmPickDialog ref="bgmDlgRef" />
 </template>
 
@@ -937,3 +867,4 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
 /* 还原 LUT：库内选择列表（2026-09-14） */
 .lut-list { display: flex; flex-direction: column; gap: 4px; max-height: 132px; overflow-y: auto; }
 </style>
+

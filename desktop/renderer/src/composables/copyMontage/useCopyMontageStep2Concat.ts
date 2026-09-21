@@ -59,12 +59,14 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
   // ══ Step2 镜头重组（预合成方案 → 确认合成 → 口播文案；对照 _start_assemble_video/
   //    _confirm_all_precompose/_batch_gen_copy_by_scene 三段行为链）═══
   const assembleLogic = ref('random')      // 排列逻辑（原版 logic_combo 唯一可见项「智能重排」）
-  const concatLayout = ref('source')       // 输出画幅（原版 setCurrentIndex(0)=与原视频一致）
+  // 输出画幅（2026-09-21 用户裁决：默认竖屏——文案混剪产出口播带货竖版流；原默认 source）
+  const concatLayout = ref('vertical')
   // 输出帧率（2026-09-11 用户裁决：加下拉且默认「跟随原片」；旧实现写死 30）
   const concatFps = ref<number | 'source'>('source')
-  const durationLimit = ref(30)            // 时长限制（原版 10/20/30/40/50 秒，默认 30）
+  const durationLimit = ref(30)            // 时长限制（2026-09-21 用户裁决：跟随第二步口播声音实际时长，由根编排回写；30=未生成声音时的缺省）
   const DURATION_LIMITS = [10, 20, 30, 40, 50]
-  const batchCount = ref(3)                // 生成视频数量（原版 spin 默认 3，随推荐值回写）
+  // 生成视频数量（2026-09-21 用户裁决：默认 1；推荐值回写 watch 同步移除——用户设定不被勾选变化覆盖）
+  const batchCount = ref(1)
   const randomness = ref('medium')         // 混编随机度（原版默认「中 (保留同场景)」，控件隐藏）
   const concatTransition = ref('fade')     // 转场动画（原版默认「模糊」）
   const concatBusy = ref(false)            // 预合成方案生成中
@@ -93,11 +95,11 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
 
   const checkedCount = computed(() => scenes.value.filter((s) => s.checked).length)
 
-  // 推荐数量 = max(1, 勾选数)//2 夹 1-20，勾选变化时回写 spin（原版 _update_batch_count_recommendation
-  //  夹 1-10；2026-09-09 用户裁决：生成视频数量上限扩至 1-20，推荐值同步放宽）
+  // 推荐数量 = max(1, 勾选数)//2 夹 1-20（原版 _update_batch_count_recommendation 夹 1-10；
+  //  2026-09-09 用户裁决：生成视频数量上限扩至 1-20，推荐值同步放宽。
+  //  2026-09-21 用户裁决：生成视频数量默认 1 且不再随勾选自动回写推荐值——仅作提示展示）
   const recBatchCount = computed(() =>
     Math.max(1, Math.min(20, Math.floor(Math.max(1, checkedCount.value) / 2))))
-  watch(checkedCount, () => { batchCount.value = recBatchCount.value })
 
   const assemblePlans = ref<PrecomposePlan[]>([])
   // 预合成时长列（2026-09-09 用户裁决新增）：已合成行探测成片实际时长（ffmpeg:probeDuration，
@@ -169,6 +171,67 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
         setClearBusy(null)
       }
     })
+  }
+
+  /** 批量按分镜出预合成方案（2026-09-21 用户裁决：二/三步批量处理——每个分镜脚本
+   *  一条方案=一个视频，按分镜顺序拼接其绑定素材；素材跨脚本复用（分配在面板完成，
+   *  此处按绑定顺序拼接）；任一分镜绑定不完整则整体拦截并点名）。
+   *  返回是否成功出方案（供确认合成串联） */
+  async function runConcatFromAllStoryboards(
+    tabs: Array<{ id: string; name: string; narrative: string; shots: { length: number }; clipIdxs: number[] }>,
+  ): Promise<boolean> {
+    if (concatBusy.value) return false
+    if (!tabs.length) { concatError.value = '尚未生成分镜脚本，无法合成。请回第一步「AI 生成分镜」。'; return false }
+    // 全部 tab 绑定齐全才允许合成（用户裁决 4：必须全部 tab 绑定全）
+    const incomplete = tabs
+      .map((tab, i) => ({ tab, i }))
+      .filter(({ tab }) => tab.clipIdxs.length !== tab.shots.length || tab.clipIdxs.some((v) => Number(v) < 0))
+      .map(({ tab, i }) => `第${i + 1} 个分镜「${tab.name}」`)
+    if (incomplete.length) {
+      concatError.value = `以下分镜未绑定完整素材，不能合成：${incomplete.join('、')}。请在分镜卡上为每个镜头选择素材。`
+      notify('有分镜未绑定素材', concatError.value)
+      return false
+    }
+    concatBusy.value = true
+    setClearBusy(clearAllBusy)
+    statusText.value = `正在按分镜生成预合成方案（${tabs.length} 个分镜脚本）…`
+    const plans: PrecomposePlan[] = []
+    let failed = ''
+    await Promise.resolve().then(() => {
+      for (const tab of tabs) {
+        const clips = tab.clipIdxs
+          .map((idx) => scenes.value.find((s) => s.idx === idx))
+          .filter((s): s is SplitSceneRow => !!s)
+        if (clips.length !== tab.clipIdxs.length) {
+          failed += `「${tab.name}」绑定的素材已失效；`
+          continue
+        }
+        // 每个分镜脚本一条方案：分镜顺序即成片顺序，不洗牌、不裁时长、不做位置重排
+        const one = buildPrecomposePlans({
+          clips,
+          batchCount: 1,
+          durationLimitSec: 0,
+          randomness: 'low',
+          positionOf: () => '',
+        })
+        const plan = one[0]
+        if (plan) {
+          plan.copy = tab.narrative
+          plans.push(plan)
+        }
+      }
+    })
+    if (failed || !plans.length) {
+      concatError.value = failed || '未能生成预合成方案（绑定的素材缺失或已变化）。'
+      notify('不能合成', concatError.value)
+      concatBusy.value = false
+      return false
+    }
+    assemblePlans.value = plans
+    currentPlanIdx.value = 0
+    statusText.value = `完成： 预合成方案已生成：${plans.length} 条（每个分镜脚本一条），请确认合成`
+    concatBusy.value = false
+    return true
   }
 
   /** 预合成列表行文案（对照 _add_assembled_row L5383-5410：[n] 文件名/镜头数  状态  文案预览） */
@@ -702,7 +765,7 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
     confirmedPaths, concatResults, seqClips, seqIdx, seqSrc, detailDragFrom,
     planConfirmQueue, sharedProductInfo, productDlg, copyViewDlg, planMenu,
     // fns
-    planDurText, runConcat, planRowText, selectPlan, startSeqPreview, onSeqEnded,
+    planDurText, runConcat, runConcatFromAllStoryboards, planRowText, selectPlan, startSeqPreview, onSeqEnded,
     markPlanDirty, onDetailDragStart, onDetailDragEnd, onDetailDrop, toggleClipDeleted,
     planClipUrls, ensureSourceFps, submitConcatTask, downloadFinalChecked,
     pollResultEndpoint, confirmPlanOne, confirmAllPrecompose, confirmPlanSingle,

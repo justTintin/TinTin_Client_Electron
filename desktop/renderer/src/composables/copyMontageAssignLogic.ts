@@ -1,0 +1,189 @@
+// ═══════════════════════════════════════════════════════════════
+// copyMontageAssignLogic.ts — 分镜×素材智能匹配纯逻辑（2026-09-21 用户裁决方案 C：
+// 「自动分配到分镜脚本」直接升级为智能匹配——本地硬约束预筛 + LLM 候选内语义精选 +
+// 循环轮转兜底；原 assignClipsCyclically 全量轮转降级为兜底算法）
+// 分层：本文件纯函数零 IPC/DOM（IRON-06/07）；LLM 调用编排在 CopyStep2Panel。
+// 数据流：buildAssignPool 去重池 → buildAssignCandidateSet 逐镜预筛并集（景别桶+
+// 时长窗+评分序）→ buildAssignMatchPrompt 单脚本一次 llm:chat → parseAssignMatchResponse
+// 校验解析 → mergeTabAssignment 命中写回+缺口循环兜底 → 写 tab.clipIdxs。
+// ═══════════════════════════════════════════════════════════════
+import { SHOT_TYPE_LABELS } from './copyMontageStep1SplitLogic.ts'
+import type { StoryboardShot } from './opsStoryboardLogic.ts'
+import type { AssignPoolItem } from './copyMontageStep2ConcatLogic.ts'
+
+/** 单脚本进 prompt 的候选素材总量帽（控制 token；超出按逐镜轮转保序截断） */
+export const ASSIGN_MATCH_CANDIDATE_CAP = 40
+/** 逐镜预筛每镜候选上限（轮转并集前各镜独立排名截断） */
+export const ASSIGN_MATCH_PER_SHOT_TOPK = 8
+/** 时长窗（相对镜标注时长）：素材时长落在 [0.4×, 2.5×] 内视为接近；
+ *  镜时长未知（0）视为全通过 */
+export const ASSIGN_DUR_WIN_MIN = 0.4
+export const ASSIGN_DUR_WIN_MAX = 2.5
+
+/** 景别是否同桶：素材侧存服务端键（closeup/medium/…），分镜侧多为中文
+ *  （特写/中景/…）——键相等或键的中文名相等均算命中；任一方空=不命中
+ *  （未标注镜头不设景别偏好，走时长/评分排序） */
+export function shotTypeMatches(sceneType: string | undefined, shotType: string | undefined): boolean {
+  const s = String(sceneType || '').trim()
+  const t = String(shotType || '').trim()
+  if (!s || !t) return false
+  if (s === t) return true
+  return (SHOT_TYPE_LABELS[s] || '') === t
+}
+
+/** 逐镜预筛排名：景别同桶 > 时长窗内 > |Δ时长| > 评分降序 > idx 升序（稳定可测）。
+ *  截前 topK；池空返回空 */
+export function prefilterShotCandidates(
+  shot: StoryboardShot,
+  pool: AssignPoolItem[],
+  topK = ASSIGN_MATCH_PER_SHOT_TOPK,
+): AssignPoolItem[] {
+  if (!pool.length) return []
+  const dur = Number(shot.duration) || 0
+  const inWin = (d: number) => (dur > 0 ? d >= dur * ASSIGN_DUR_WIN_MIN && d <= dur * ASSIGN_DUR_WIN_MAX : true)
+  const ranked = [...pool].sort((a, b) => {
+    const ta = shotTypeMatches(a.scene.shotType, shot.shot_type) ? 0 : 1
+    const tb = shotTypeMatches(b.scene.shotType, shot.shot_type) ? 0 : 1
+    if (ta !== tb) return ta - tb
+    const da = Number(a.scene.duration) || 0
+    const db = Number(b.scene.duration) || 0
+    const wa = inWin(da) ? 0 : 1
+    const wb = inWin(db) ? 0 : 1
+    if (wa !== wb) return wa - wb
+    if (Math.abs(da - dur) !== Math.abs(db - dur)) return Math.abs(da - dur) - Math.abs(db - dur)
+    const sa = Number(a.scene.score) || 0
+    const sb = Number(b.scene.score) || 0
+    if (sa !== sb) return sb - sa
+    return a.scene.idx - b.scene.idx
+  })
+  return ranked.slice(0, Math.max(1, topK))
+}
+
+/** 单脚本候选集：逐镜预筛结果按名次轮转并集去重（保证每镜的前几名都进候选），
+ *  超 cap 截断。返回保持轮转插入序（prompt 内按此序编 C 号） */
+export function buildAssignCandidateSet(
+  shots: StoryboardShot[],
+  pool: AssignPoolItem[],
+  cap = ASSIGN_MATCH_CANDIDATE_CAP,
+): AssignPoolItem[] {
+  const lists = (shots || []).map((sh) => prefilterShotCandidates(sh, pool))
+  const maxLen = lists.reduce((m, l) => Math.max(m, l.length), 0)
+  const seen = new Set<string>()
+  const out: AssignPoolItem[] = []
+  for (let rank = 0; rank < maxLen && out.length < cap; rank++) {
+    for (const l of lists) {
+      if (out.length >= cap) break
+      const item = l[rank]
+      if (item && !seen.has(item.key)) {
+        seen.add(item.key)
+        out.push(item)
+      }
+    }
+  }
+  return out
+}
+
+/** 组智能匹配 prompt（单脚本一次 llm:chat）：候选按本地序编 C 号（LLM 只见 C 号，
+ *  客户端本地映射回 scene.idx，防模型编造越界 idx） */
+export function buildAssignMatchPrompt(
+  shots: StoryboardShot[],
+  candidates: AssignPoolItem[],
+): { systemPrompt: string; userPrompt: string } {
+  const clean = (s: unknown) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 60) || '无描述'
+  const shotLines = (shots || []).map((s, i) => {
+    const t = String(s.shot_type || '').trim() || '未标注'
+    return `${i + 1}|${t}|${(Number(s.duration) || 0).toFixed(1)}s|${clean(s.visual)}`
+  })
+  const candLines = (candidates || []).map((c, i) => {
+    const st = c.scene.shotType ? (SHOT_TYPE_LABELS[c.scene.shotType] || c.scene.shotType) : '未标注'
+    return `C${i + 1}|${st}|${(Number(c.scene.duration) || 0).toFixed(1)}s|${Number(c.scene.score) || 0}分|${clean(c.scene.description || c.scene.analysis)}`
+  })
+  const systemPrompt = [
+    '你是短视频分镜配材助手：为分镜脚本的每个镜头，从候选素材中选出画面内容最合适的一段。',
+    '规则：',
+    '1. 只能使用候选表中出现的素材号（C1、C2…）；',
+    '2. 每个镜号恰好输出一个素材号；素材数少于镜头数时允许复用，但尽量分散、避免相邻镜头重复；',
+    '3. 匹配依据优先级：画面内容语义一致 > 景别一致 > 时长接近；',
+    '4. 只输出 JSON 对象（格式 {"matches":{"1":"C1","2":"C3"}}），不要解释、不要代码块标记。',
+  ].join('\n')
+  const userPrompt = [
+    '## 分镜镜头（镜号|景别|时长秒|画面描述）',
+    ...shotLines,
+    '',
+    '## 候选素材（素材号|景别|时长秒|评分|画面描述）',
+    ...candLines,
+    '',
+    '## 输出格式',
+    '{"matches":{"1":"C1","2":"C3"}}',
+  ].join('\n')
+  return { systemPrompt, userPrompt }
+}
+
+/** 解析 LLM 匹配响应：剥代码围栏 → 截取最外层 JSON → 读 matches →
+ *  镜号/候选号（"C12"/12/"12" 均收）范围校验。不可解析/全非法返回 null；
+ *  局部非法条目丢弃（对应镜走循环兜底） */
+export function parseAssignMatchResponse(
+  content: string,
+  shotCount: number,
+  candidateCount: number,
+): Map<number, number> | null {
+  if (shotCount <= 0 || candidateCount <= 0) return null
+  const text = String(content || '').replace(/```[a-zA-Z]*\s*/g, '').replace(/```/g, '')
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  let obj: unknown
+  try {
+    obj = JSON.parse(text.slice(start, end + 1))
+  } catch {
+    return null
+  }
+  const m = (obj as Record<string, unknown> | null)?.matches
+  if (!m || typeof m !== 'object') return null
+  const out = new Map<number, number>()
+  for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
+    const shotNo = Number(k)
+    const candNo = Number(String(v ?? '').trim().replace(/^[Cc]/, ''))
+    if (!Number.isInteger(shotNo) || shotNo < 1 || shotNo > shotCount) continue
+    if (!Number.isInteger(candNo) || candNo < 1 || candNo > candidateCount) continue
+    out.set(shotNo, candNo)
+  }
+  return out.size ? out : null
+}
+
+/** 单脚本结果：idxs=每镜绑定的 scene.idx（-1=无池可分）；matched=LLM 命中数；
+ *  nextK=循环兜底游标（与原 assignClipsCyclically 同口径：全局镜头序跨脚本连续，
+ *  各素材使用次数均衡） */
+export interface TabAssignmentResult {
+  idxs: number[]
+  matched: number
+  nextK: number
+}
+
+/** LLM 命中写回 + 缺口循环兜底：parsed 命中的镜取候选 scene.idx；未命中/解析失败
+ *  的镜按 pool[cyclicK % pool.length] 轮转补齐并推进游标 */
+export function mergeTabAssignment(
+  shotCount: number,
+  parsed: Map<number, number> | null,
+  candidates: AssignPoolItem[],
+  pool: AssignPoolItem[],
+  cyclicK: number,
+): TabAssignmentResult {
+  const idxs: number[] = []
+  let k = cyclicK
+  let matched = 0
+  for (let s = 1; s <= shotCount; s++) {
+    const candNo = parsed?.get(s)
+    const cand = candNo != null && candNo >= 1 && candNo <= candidates.length ? candidates[candNo - 1] : undefined
+    if (cand) {
+      idxs.push(cand.scene.idx)
+      matched++
+    } else if (pool.length) {
+      idxs.push(pool[k % pool.length].scene.idx)
+      k++
+    } else {
+      idxs.push(-1)
+    }
+  }
+  return { idxs, matched, nextK: k }
+}

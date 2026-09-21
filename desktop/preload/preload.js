@@ -81,7 +81,7 @@ function _withUploadProgress(onProgress, handlerName, payload) {
 const server = {
   // ---------- 通用兜底 ----------
   get:            (path, params)  => ipcRenderer.invoke('server:get', path, params),
-  post:           (path, body, headers) => ipcRenderer.invoke('server:post', path, body, headers),
+  post:           (path, body, headers, timeout) => ipcRenderer.invoke('server:post', path, body, headers, timeout),
   put:            (path, body, headers) => ipcRenderer.invoke('server:put', path, body, headers),
   delete:         (path, params)  => ipcRenderer.invoke('server:delete', path, params),
   upload:         (path, fields, onProgress) => {

@@ -353,15 +353,39 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       mergedText = mergedText.split('\n').map((l) => l.trim()).filter(Boolean).join('。') + '。'
     }
     emit?.({ stage: '正在合成语音...' })
-    const content = L.repairWavBytes(await postTts(apiUrl, mergedText, refAudioB64, extra, targetDuration))
+    let content
+    let segTiming = null
+    if ((extra && extra.engine === 'qwen3') && segs.length > 1 && mergedText.length > 120) {
+      // 2026-09-21 文案混剪长文案（用户裁决「先文案→再声音→再按文案剪辑」）：qwen3 整段
+      //   单次请求有输入长度上限 → 按句拆成多次请求、帧级拼接（句间静音=「句间停顿」设置；
+      //   分段实测时长攒 timing）。target_duration 不随分句下发（长文案以声音自然时长为准，
+      //   下游本就「取得声音后不做变速、时间轴以声音为准」）；silencedetect/whisperx 照常精化。
+      const gapSec = Math.max(0, Number(pauseMs ?? 0) || 0) / 1000
+      const bufs = []
+      segTiming = []
+      let cursor = 0
+      for (let i = 0; i < segs.length; i++) {
+        emit?.({ stage: `正在合成语音（第 ${i + 1}/${segs.length} 句）...` })
+        const buf = L.repairWavBytes(await postTts(apiUrl, segs[i], refAudioB64, extra, 0))
+        const d = L.wavBytesDuration(buf)
+        segTiming.push({ text: segs[i], start: Math.round(cursor * 1000) / 1000, end: Math.round((cursor + d) * 1000) / 1000 })
+        cursor += d + gapSec
+        bufs.push(buf)
+      }
+      content = L.concatWavBuffers(bufs, gapSec)
+    } else {
+      content = L.repairWavBytes(await postTts(apiUrl, mergedText, refAudioB64, extra, targetDuration))
+    }
     fs.writeFileSync(outWavPath, content)
     try {
       const totalDur = L.wavBytesDuration(content)
       // 2026-09-18 用户裁决：停顿感知 timing——句界精确扣除/加回 pause 量，
       // 字幕句界不再因停顿均摊漂移（单句/无停顿等价旧口径）
-      let timing = segs.length <= 1
-        ? [{ text: mergedText, start: 0, end: Math.round(totalDur * 1000) / 1000 }]
-        : L.buildPauseAwareTiming(segs, totalDur, pause)
+      let timing = segTiming
+        ? segTiming
+        : segs.length <= 1
+          ? [{ text: mergedText, start: 0, end: Math.round(totalDur * 1000) / 1000 }]
+          : L.buildPauseAwareTiming(segs, totalDur, pause)
       // 2026-09-19 字幕对齐增强（用户报障：字幕落后声音约半秒）：silencedetect
       //   实测语音起止与句间停顿，句窗口平移/缩放 + 句界吸附到实测停顿中点——
       //   消除字数比例估算与真实语音节奏的 ±0.5s 漂移；任何失败回退估算 timing。

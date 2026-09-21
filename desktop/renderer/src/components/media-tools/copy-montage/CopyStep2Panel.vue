@@ -6,29 +6,40 @@
 // 右键菜单、口播弹窗产品选择（WbPickProductPanel）、scoreClass（Step1/2 各持一份）。
 // 注：toAbsolute 在面板内以原名解构，模板沿用原别名 vdToAbsolute（与 Shell 等价）。
 // ═══════════════════════════════════════════════════════════════
-import { ref, computed, inject } from 'vue'
+import { ref, reactive, computed, watch, inject, onUnmounted } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
-import StepPreviewPane, { type StepPreviewItem } from '../StepPreviewPane.vue'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import VdStepBar from '../VdStepBar.vue'
 import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
-import { copyPreviewText, SHOT_TYPE_COLORS, SHOT_TYPE_LABELS } from '@/composables/copyMontageLogic'
+import { copyPreviewText, SHOT_TYPE_COLORS, SHOT_TYPE_LABELS, buildAssignPool } from '@/composables/copyMontageLogic'
+import { buildAssignCandidateSet, buildAssignMatchPrompt, parseAssignMatchResponse, mergeTabAssignment } from '@/composables/copyMontageAssignLogic'
+import { errText } from '@/composables/copyMontage/context'
+import { clientError } from '@/utils/clientLog'
+import CopyStoryboard from './CopyStoryboard.vue'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 import { copyMontageShellKey } from './copyMontageUiContext'
 
 const shell = inject(copyMontageShellKey)!
-const { step, go, steps, vdLeftStyle, onSplitDown, previewAspect } = shell
+const { step, go, steps } = shell
 const {
   // 参数与方案
-  assembleLogic, concatLayout, concatFps, durationLimit, DURATION_LIMITS,
-  batchCount, recBatchCount, concatTransition, concatBusy, confirmBusy, copyBusy,
-  concatError, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS, FPS_OPTIONS, splitFps,
-  statusText, concatProgress, splitResolution, filteredScenes, checkedCount,
+  assembleLogic, concatLayout, concatFps, durationLimit,
+  concatTransition, confirmBusy, copyBusy,
+  edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS, FPS_OPTIONS, splitFps,
+  statusText, concatProgress, splitResolution, filteredScenes,
   assemblePlans, currentPlanIdx, currentPlan,
   hasUnconfirmed, confirmedPaths, concatResults, planDurText,
+  // 上一步（口播配音）的分镜脚本 + 每镜绑定素材（2026-09-21 用户裁决：
+  // 确认合成的视频来源=分割镜头按分镜绑定；自动分配/单独选素材都写 shotClipIdx）
+  storyboards, shotClipIdx, runConcatFromAllStoryboards, syncStoryboardsToServer,
+  // 素材上传与镜头分割（2026-09-21 用户裁决：自智能混剪 Step1 移植到本页「本地上传」tab）
+  srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
+  scenes, scoreFilter, splitBusy, splitError, splitMsg, splitProgress,
+  selectFolder, onDrop, removeVideo, runSplit, updateSceneDesc,
+  previewSourceVideo, previewScene, clearSplitCache, openSplitsDir, splitsDownloading,
   // 动作
-  runConcat, planRowText, selectPlan, startSeqPreview, onSeqEnded,
+  planRowText, selectPlan, startSeqPreview, onSeqEnded,
   submitConcatTask, confirmAllPrecompose, confirmPlanSingle,
   openProductDlg, productDlg, closeProductDlg, productDlgGenerate,
   copyViewDlg, viewPlanCopy, closeCopyView, planMenu, openPlanMenu, closePlanMenu,
@@ -36,77 +47,143 @@ const {
   toAbsolute: vdToAbsolute,
 } = shell.s
 
-// ── 右栏预览（本面板切片；toFileUrl 为面板内私有拷贝，Shell 版供 Step3/4）──
-/** 本地路径 → file URL（previewFinalVideo 同口径） */
-function toFileUrl(p: string): string {
-  return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23')
+// ── 素材来源 tabs（2026-09-21 用户裁决：本地上传/素材库/在线库/AI生成/混合；
+//    当前仅本地上传实装，其余占位）──
+const SOURCE_TABS = ['本地上传', '素材库', '在线搜索', 'AI生成', '混合']
+const sourceTab = ref('本地上传')
+
+// 2026-09-07 缩略图改主进程 ffmpeg 抽帧（dataURL <img>）：根治多路 <video> 解码器
+// 并发初始化崩溃，且全部素材行均有缩略图，抽帧失败行回退占位图标（自智能混剪 Step1 移植）
+const thumbs = reactive(new Map<string, string>())
+let thumbSeq = 0
+let thumbToken = 0
+watch(() => [...srcVideos.value], (list) => {
+  const token = ++thumbToken
+  void (async () => {
+    // 3 路并发池：4K XAVC 单帧解码较慢，串行 50 行需数分钟
+    const pending = list.filter((v) => !thumbs.has(v))
+    let cursor = 0
+    const worker = async () => {
+      while (token === thumbToken && cursor < pending.length) {
+        const v = pending[cursor++]
+        // 每素材独立 tag（extractFrames 输出目录按 tag 清空重建，避免互踩）
+        try {
+          const r = await window.tintin.ffmpeg.extractFrames({
+            videoPath: v, times: [1.0], tag: `copysrcthumb${++thumbSeq}`, width: 160, quality: 3,
+          })
+          if (token !== thumbToken) return
+          const b64 = r?.frames?.[0]?.base64
+          if (b64) thumbs.set(v, `data:image/jpeg;base64,${b64}`)
+        } catch { /* 抽帧失败 → 该行显示占位图标 */ }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, pending.length) }, () => worker()))
+  })()
+}, { immediate: true })
+onUnmounted(() => { thumbToken++ })
+
+/** 素材行时长文案（ffprobe 探测结果；未就绪/失败显 —） */
+function fmtSrcDur(v: string): string {
+  const d = srcDurations.get(v)
+  return d && d > 0 ? d.toFixed(1) + 's' : '—'
 }
 
-/** Step2 右栏：每条方案一块——确认成片直播；未确认给镜头连播序列（激活块内连播） */
-const step2PreviewItems = computed<StepPreviewItem[]>(() => assemblePlans.value.map((p, i) => {
-  if (p.confirmed && p.outputPath) {
-    return { badge: `第 ${i + 1} 条`, src: toFileUrl(p.outputPath), tip: p.outputName || '' }
-  }
-  const seq = p.clips.filter((_, ci) => !p.deletedFlags[ci]).map((c) => vdToAbsolute(c.clipUrl))
-  return {
-    badge: `第 ${i + 1} 条`,
-    seqList: seq,
-    placeholder: seq.length ? `${seq.length} 个镜头 · 待确认合成` : '待确认合成',
-    tip: planRowText(i),
-  }
-}))
-
-
-/** 输出画幅下拉（原版 layout_combo 3 项；首项动态附分割片段画幅——
- *  2026-09-15 用户裁决：「与原视频一致」基准=分割片段，非原素材（4K 素材分割产物
- *  1080x1920，取原素材会把预合成撑成 4K/横屏），文案同步改「与分割视频一致」） */
+/** Step2 排列逻辑（原版 logic_combo 唯一可见项；「按文案智能匹配」原版已隐藏） */
+const logicOptions = [{ label: '智能重排', value: 'random' }]
+/** 输出画幅下拉（首项动态附分割片段画幅） */
 const LAYOUTS = computed(() => [
   { label: splitResolution.value ? `与分割视频一致 (${splitResolution.value})` : '与分割视频一致', value: 'source' },
   { label: '竖屏 (1080x1920 抖音流)', value: 'vertical' },
   { label: '横屏 (1920x1080 宽屏)', value: 'horizontal' },
 ])
 
+const assignMsg = ref('')
 
-/** Step2 排列逻辑（原版 logic_combo 唯一可见项；「按文案智能匹配」原版已隐藏） */
-const logicOptions = [{ label: '智能重排', value: 'random' }]
-/** 时长限制下拉（原版 duration_limit_combo：10/20/30/40/50 秒） */
-const durationOptions = DURATION_LIMITS.map((s) => ({ label: `${s} 秒`, value: s }))
-
-
-// ── Step2 镜头详情右键菜单（原版 _on_source_context_menu 同口径）──
-const detailMenu = ref({ show: false, x: 0, y: 0, row: -1, deleted: false })
-function openDetailMenu(e: MouseEvent, row: number): void {
-  const p = currentPlan.value
-  detailMenu.value = { show: true, x: e.clientX, y: e.clientY, row, deleted: !!p?.deletedFlags[row] }
+/** 智能匹配到分镜脚本（2026-09-21 用户裁决方案 C：「自动分配到分镜脚本」按钮直接升级——
+ *  逐脚本一次 llm:chat：本地硬约束预筛候选（景别桶>时长窗>评分，copyMontageAssignLogic）
+ *  → LLM 候选内语义精选 → 校验解析；失败/缺槽按原循环轮转兜底（全局镜头序跨脚本连续
+ *  取模，各素材使用次数均衡）。素材来源将来含在线/AI 生成时同样进 buildAssignPool 池 */
+const smartAssignBusy = ref(false)
+async function applyAssignment(): Promise<void> {
+  const pool = buildAssignPool(filteredScenes.value)
+  if (!pool.length) {
+    assignMsg.value = '没有可用素材：请先上传素材并完成镜头分割。'
+    return
+  }
+  const tabs = storyboards.value.slice()
+  if (!tabs.length) {
+    assignMsg.value = '还没有分镜脚本：请先在「文案编写」页生成。'
+    return
+  }
+  smartAssignBusy.value = true
+  const sceneByIdx = new Map(pool.map((p) => [p.scene.idx, p.scene]))
+  let cyclicK = 0
+  let total = 0
+  let aiHit = 0
+  const failedTabs: string[] = []
+  try {
+    for (let ti = 0; ti < tabs.length; ti++) {
+      const tab = tabs[ti]
+      if (!tab.shots.length) { tab.clipIdxs = []; continue }
+      statusText.value = `智能匹配中（第 ${ti + 1}/${tabs.length} 个分镜脚本）…`
+      const candidates = buildAssignCandidateSet(tab.shots, pool)
+      let parsed: Map<number, number> | null = null
+      try {
+        const { systemPrompt, userPrompt } = buildAssignMatchPrompt(tab.shots, candidates)
+        const res = await window.tintin.server.llmChat({
+          model: '',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        })
+        if (res && 'error' in res) throw new Error(String(res.error) || 'LLM 返回空错误')
+        const content = String(res?.choices?.[0]?.message?.content ?? '')
+        parsed = parseAssignMatchResponse(content, tab.shots.length, candidates.length)
+        if (!parsed) throw new Error('匹配结果解析失败（未返回合法 matches JSON）')
+      } catch (e) {
+        clientError('copy-montage', '智能匹配 LLM 失败（该脚本整组循环兜底）', errText(e))
+        failedTabs.push(tab.name)
+        parsed = null
+      }
+      const { idxs, matched, nextK } = mergeTabAssignment(tab.shots.length, parsed, candidates, pool, cyclicK)
+      cyclicK = nextK
+      tab.clipIdxs = idxs
+      tab.shots.forEach((shot, si) => {
+        const sc = sceneByIdx.get(idxs[si])
+        if (sc && shot) {
+          shot.material_path = sc.clipUrl || sc.name || ''
+          shot.material_type = 'video'
+        }
+      })
+      total += tab.shots.length
+      aiHit += matched
+    }
+    const fallback = total - aiHit
+    const failNote = failedTabs.length ? `；脚本「${failedTabs.join('」「')}」LLM 不可用已整组兜底` : ''
+    assignMsg.value = `智能匹配完成：${tabs.length} 个分镜脚本共 ${total} 镜，AI 命中 ${aiHit}、循环兜底 ${fallback}（素材池去重后 ${pool.length} 段）${failNote}`
+    void syncStoryboardsToServer()
+  } finally {
+    smartAssignBusy.value = false
+  }
 }
-function closeDetailMenu(): void { detailMenu.value.show = false }
-function menuToggleDeleted(): void {
-  if (detailMenu.value.row >= 0) toggleClipDeleted(detailMenu.value.row)
-  closeDetailMenu()
+
+/** 确认合成视频（2026-09-21 用户裁决：视频来源=分割镜头按分镜绑定；任一分镜未绑定
+ *  镜头则不能合成——runConcatFromShots 内校验并提示）：按分镜出方案 → 确认合成 */
+async function onConfirmCompose(): Promise<void> {
+  const tabs = storyboards.value.map((s) => ({ id: s.id, name: s.name, narrative: s.narrative, shots: s.shots, clipIdxs: s.clipIdxs.slice() }))
+  const ok = await runConcatFromAllStoryboards(tabs)
+  if (ok) {
+    await confirmAllPrecompose()
+    void syncStoryboardsToServer()
+  }
 }
 
-// ── 预合成列表右键菜单动作（原版 _show_assembled_context_menu 三项）──
-function planMenuConfirm(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) void confirmPlanSingle(i) }
-function planMenuGen(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) openProductDlg(i) }
-function planMenuView(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) viewPlanCopy(i) }
-
-
-// ── 口播弹窗左侧内嵌产品选择区（WbPickProductPanel：左列表右参数/卖点；
-//   2026-09-09 用户裁决：不需要「选择该产品」按钮，点左侧行即选中，
-//   中间预览与右侧四字段同步填充，仍可手改）──
-function onPickProduct(it: PickerItem): void {
-  productDlg.value.brand = String(it.brand || '')
-  productDlg.value.product = String(it.category || '')
-  // 2026-09-19 用户报障：型号不填商品编码（【981-001277】类尾部段剥离）；
-  // goods_no 本身是编码，不再作为型号兜底
-  productDlg.value.model = stripProductCodeFromModel(it.model)
-  // 2026-09-19 架构：产品资料关联关键词随选择带回（导出/合成时客户端据此命中；
-  // 手动填写的产品无关联词 → 导出时 LLM 兜底提词）
-  productDlg.value.keywords = parseProductKeywords(it)
-  // 核心卖点逐条拼入补充卖点（多行，可继续手改/留空）
-  productDlg.value.extra = markdownListLines(it.selling_points).join('\n')
-}
-
+/** 全部 tab 绑定齐全才允许合成（用户裁决 4：必须全部 tab 绑定全） */
+const tabsAllBound = computed(() =>
+  storyboards.value.length > 0 &&
+  storyboards.value.every((tab) =>
+    tab.shots.length > 0 && tab.clipIdxs.length === tab.shots.length && tab.clipIdxs.every((v) => Number(v) >= 0)))
 
 /** 评分着色（原版 L1443-1448：≥8 绿 / ≥6 黄 / ≥0 红）；Step1 用途已迁 Step1Panel，Step2 详情表仍消费 */
 function scoreClass(score: number | undefined): string {
@@ -119,10 +196,118 @@ function scoreClass(score: number | undefined): string {
 
 <template>
       <section class="card">
-        <div class="vd-unified">
-        <div class="vd-unified-left" :style="vdLeftStyle">
         <VdStepBar :step="step" :steps="steps" @go="go" />
-        <!-- 参数设置组（原版 params_group：统一边框背景内两行参数） -->
+        <!-- 分镜脚本（2026-09-21 用户裁决：上一步的分镜脚本在页面顶部显示（material 态，
+             只读 + 自动分配的素材镜头列表）；素材上传/分割区移到脚本下面） -->
+        <CopyStoryboard mode="material" />
+
+        <!-- 素材来源（2026-09-21 用户裁决：本地上传/素材库/在线库/AI生成/混合 五个 tab，
+             当前仅本地上传实装；上传素材+镜头分割自智能混剪 Step1 移植） -->
+        <div class="src-tabs">
+          <button v-for="t in SOURCE_TABS" :key="t" class="src-tab" :class="{ active: sourceTab === t }"
+            @click="sourceTab = t">{{ t }}</button>
+        </div>
+
+        <template v-if="sourceTab === '本地上传'">
+          <div class="dropzone" @click="selectFolder" @drop.prevent="onDrop" @dragover.prevent>
+            <span class="dz-main">拖入素材文件夹（自动遍历子文件夹内全部视频） 或 点击选择文件夹</span>
+            <span class="dz-hint">支持 mp4 / mov / avi / mkv / flv / webm / m4v，服务端完成分割与逐镜分析</span>
+          </div>
+
+          <span class="sec-label">已选择的原始视频素材 (双击可播放预览):</span>
+          <ul class="file-list src-video-list">
+            <li v-for="(v, i) in srcVideos" :key="v" :title="v">
+              <img v-if="thumbs.get(v)" class="video-thumb" :src="thumbs.get(v)" alt="" />
+              <span v-else class="video-thumb video-thumb--ph" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="15" height="14" rx="2" /><polygon points="10 8 16 11 10 14" fill="currentColor" stroke="none" /><path d="M19 8l3-2v12l-3-2" /></svg>
+              </span>
+              <span class="video-path" @dblclick="previewSourceVideo(v)">{{ v }}</span>
+              <span class="video-dur">{{ fmtSrcDur(v) }}</span>
+              <button class="video-play-btn" title="播放" @click="previewSourceVideo(v)">▶</button>
+              <button class="video-remove-btn" title="从素材列表移除" @click="removeVideo(i)">×</button>
+            </li>
+            <li v-if="!srcVideos.length" class="muted">暂无素材，拖入或点击上方区域选择</li>
+          </ul>
+          <div v-if="srcVideos.length" class="video-count-footer">选择视频共 {{ srcVideos.length }} 行</div>
+
+          <!-- 分割参数行 + 行内右对齐「开始智能镜头分割」 -->
+          <div class="row">
+            <label class="param-label">分割阈值 (10-100):</label>
+            <input v-model.number="threshold" type="number" min="10" max="100" class="input w80" />
+            <label class="param-label">最小镜头(秒):</label>
+            <input v-model.number="minSceneLen" type="number" step="0.1" min="0.1" max="60" class="input w80" />
+            <label class="param-label" title="无法分割的视频，自动挑出多长的片段">分镜头时长(秒):</label>
+            <input v-model.number="imageDuration" type="number" min="1" max="30"
+              title="无法分割的视频，自动挑出多长的片段" class="input w80" />
+            <span class="spacer"></span>
+            <TButton label="开始智能镜头分割" icon="cut" :loading="splitBusy" @click="runSplit" />
+          </div>
+          <progress v-if="splitBusy" class="vd-progress split-progress" :value="splitProgress" max="100" />
+          <div v-if="splitMsg" class="hint">{{ splitMsg }}</div>
+          <div v-if="splitError" class="error-msg">⚠ {{ splitError }}（修正后重按「开始智能镜头分割」重试）</div>
+
+          <!-- 已分割镜头表（评分过滤同智能混剪口径；勾选镜头经「自动分配到分镜脚本」落到各分镜） -->
+          <div class="row between">
+            <span class="sec-label">已分割出的最小单位镜头片段 (双击可播放预览，双击画面描述列可手动修改):</span>
+            <label class="muted">评分过滤:
+              <select v-model.number="scoreFilter" class="input" title="按评分筛选镜头：达到阈值的镜头才会进入镜头列表参与自动分配">
+                <option :value="0">不过滤</option>
+                <option v-for="s in [1,2,3,4,5,6,7,8,9]" :key="s" :value="s">≥ {{ s }} 分</option>
+              </select>
+            </label>
+          </div>
+          <div class="tbl-scroll-wrap">
+            <table class="tbl">
+              <thead><tr>
+                <th class="w32"></th><th>序号</th><th style="min-width:140px">视频片段</th><th>景别</th><th>位置</th><th>时长</th>
+                <th>画幅</th><th style="min-width:200px">主要画面</th><th>产品</th><th>型号</th><th>评分</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="r in filteredScenes" :key="r.idx" @dblclick="previewScene(r)">
+                  <td><input v-model="r.checked" type="checkbox" @dblclick.stop /></td>
+                  <td class="ta-c">{{ r.idx }}</td>
+                  <td :title="r.clipUrl || r.name">{{ r.name }}</td>
+                  <td class="ta-c">
+                    <span v-if="r.shotType" class="shot-type-badge"
+                      :style="{ color: SHOT_TYPE_COLORS[r.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[r.shotType] || '#888' }">
+                      {{ SHOT_TYPE_LABELS[r.shotType] || r.shotType }}
+                    </span>
+                    <span v-else class="muted">—</span>
+                  </td>
+                  <td class="ta-c shot-source-cell" :title="r.positionSource || ''">
+                    <span v-if="r.position" class="shot-type-badge"
+                      :style="{ color: SHOT_TYPE_COLORS[r.position] || '#888', borderColor: SHOT_TYPE_COLORS[r.position] || '#888' }">
+                      {{ SHOT_TYPE_LABELS[r.position] || r.position }}
+                    </span>
+                    <span v-else class="muted">—</span>
+                  </td>
+                  <td class="ta-c">{{ r.duration > 0 ? r.duration.toFixed(1) + 's' : '—' }}</td>
+                  <td class="ta-c">{{ r.resolution || splitResolution || '—' }}</td>
+                  <td>
+                    <input class="input desc-input" :value="r.description" placeholder="—"
+                      @dblclick.stop @change="updateSceneDesc(r.idx, ($event.target as HTMLInputElement).value)" />
+                  </td>
+                  <td>{{ r.product || '—' }}</td>
+                  <td>{{ r.model || '—' }}</td>
+                  <td class="ta-c" :class="scoreClass(r.score)">{{ r.score ? r.score.toFixed(1) : '—' }}</td>
+                </tr>
+                <tr v-if="!filteredScenes.length"><td colspan="11" class="muted">暂无已分割镜头，请先上传素材并开始智能镜头分割</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+        <div v-else class="src-placeholder muted">「{{ sourceTab }}」素材来源暂不支持，当前仅支持本地上传</div>
+
+        <!-- 智能匹配到分镜脚本（2026-09-21 用户裁决方案 C：原「自动分配到分镜脚本」
+             直接升级——本地预筛+LLM 精选+循环兜底；分配明细见顶部分镜脚本各镜） -->
+        <div class="param-row">
+          <span class="spacer"></span>
+          <span v-if="assignMsg" class="hint">{{ assignMsg }}</span>
+          <TButton label="智能匹配到分镜脚本" icon="check" :loading="smartAssignBusy" :disabled="!filteredScenes.length || !storyboards.length" @click="applyAssignment" />
+        </div>
+
+        <!-- 参数设置组（原版 params_group：统一边框背景内两行参数；2026-09-21 用户裁决（图2标注）：
+             自页顶移到「确认合成视频」上一行单独成块——合成前最后确认参数） -->
         <div class="params-group">
           <!-- Parameters row 1（原版 L45-106：排列逻辑|输出画幅+原片画幅|时长限制|生成视频数量+推荐；混编随机度隐藏） -->
           <div class="param-row">
@@ -138,12 +323,11 @@ function scoreClass(score: number | undefined): string {
               title="分割片段画幅（2026-09-15 裁决：画幅基准=分割片段而非原素材），选择'与分割视频一致'时将使用此分辨率">
               分割画幅: {{ splitResolution || '未知' }}</span>
             <span class="param-label">时长限制:</span>
-            <select v-model.number="durationLimit" class="input w80" title="每个预合成视频的总时长上限（实际不超此值的 1.1 倍）">
-              <option v-for="s in DURATION_LIMITS" :key="s" :value="s">{{ s }} 秒</option>
-            </select>
-            <span class="param-label">生成视频数量 (1-20):</span>
-            <input v-model.number="batchCount" type="number" min="1" max="20" class="input w60" />
-            <span class="hint">推荐: {{ recBatchCount }}</span>
+            <!-- 2026-09-21 用户裁决：时长跟随第二步口播声音的实际时长（只读，不再手选） -->
+            <input :value="durationLimit" readonly class="input w80"
+              title="跟随第二步口播声音的实际时长；未生成声音时为缺省 30 秒" />
+            <span class="hint">跟随声音</span>
+            <!-- 2026-09-21 用户裁决：成片数=分镜脚本数，生成视频数量输入删除 -->
           </div>
           <!-- Parameters row 2（原版 L109-140：转场动画 | 出入场加速；输出帧率是本端新增控件——
                原版无帧率入口、写死 30fps，2026-09-11 用户裁决加下拉且默认「跟随原片」） -->
@@ -168,105 +352,11 @@ function scoreClass(score: number | undefined): string {
           </div>
         </div>
 
-        <!-- 脚本工具栏（原版 L155-174：待排列镜头个数黄色粗体 + stretch + 镜头重组；
-             原版「AI 生成文案」按钮 setVisible(False) 隐藏，不渲染） -->
-        <div class="param-row">
-          <span class="clip-count">待排列镜头个数: {{ filteredScenes.length }}  (已勾选: {{ checkedCount }})</span>
-          <span class="spacer"></span>
-          <TButton label="镜头重组" icon="video" :loading="concatBusy" @click="runConcat" />
-        </div>
-        <div v-if="concatError" class="error-msg">⚠ {{ concatError }}（修正后重按「镜头重组」重试）</div>
-
-        <!-- 中间结果区（原版 result_box） -->
-        <div class="result-box">
-          <!-- 预合成视频列表（2026-09-09 用户裁决：改表格列显示，不再单行挤在一起；
-               列：序号|视频|时长|状态|口播文案；时长列为同日追加裁决：已合成=成片探测
-               实际时长，待确认=未删除镜头之和估计；交互不变：单击选中/双击查看文案/右键菜单） -->
-          <span class="sec-label">预合成视频列表 (双击播放预览，单击选中查看镜头):</span>
-          <!-- 滚动容器（2026-09-11 用户裁决）：最大 10 行高度（表头 + 10 行，与下方详情表
-               380px 同口径），超出滚动；少于 10 行随真实行数收缩，不再用占位行撑高。
-               注：旧值 332px 行高实测约 33px 只能完整显示 9 行 → 调至 380px（表头约
-               30px + 10 行 × 35px），2026-09-11 用户裁决「至少显示 10 个」 -->
-          <div class="plan-tbl-wrap">
-            <table class="tbl plan-tbl">
-              <thead><tr>
-                <th class="w48">序号</th><th style="min-width:140px">视频</th><th class="w64">时长</th><th class="w64">状态</th><th style="min-width:180px">口播文案</th>
-              </tr></thead>
-              <tbody>
-                <tr v-for="(p, i) in assemblePlans" :key="i" :class="{ picked: currentPlanIdx === i }"
-                  :title="planRowText(i)" @click="selectPlan(i)" @dblclick="viewPlanCopy(i)"
-                  @contextmenu.prevent="openPlanMenu($event, i)">
-                  <td class="ta-c">{{ i + 1 }}</td>
-                  <td class="plan-file" :title="p.outputName">{{ p.outputName || `${p.clips.length} 个镜头` }}</td>
-                  <td class="ta-c">{{ planDurText(p) }}</td>
-                  <td class="ta-c">{{ p.confirmed && p.outputName ? '已合成' : '待确认' }}</td>
-                  <td class="plan-copy" :title="p.copy || ''">{{ p.copy ? copyPreviewText(p.copy) : '未生成口播文案' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <div v-if="!assemblePlans.length" class="muted plan-empty">尚无预合成视频，勾选镜头后点击「镜头重组」</div>
-
-          <!-- 下半区：分割镜头详情表（表头 + 10 行高，见 .detail-scroll-wrap 380px；
-               2026-09-11 用户裁决至少显示 10 个；连播预览已迁右侧统一预览栏，
-               2026-09-10 用户需求：单击预览块联动选中方案） -->
-          <div class="result-bottom">
-            <div class="detail-col">
-              <span class="sec-label">视频组成镜头详情 (拖动把手调序，右键删除/恢复镜头):</span>
-              <div class="detail-scroll-wrap">
-                <table class="tbl detail-tbl">
-                  <thead><tr>
-                    <th class="w48">序号</th><th class="w32"></th><th style="min-width:120px">分割文件名</th>
-                    <th>时长</th><th>景别</th><th>位置</th><th style="min-width:180px">描述文案</th><th>评分</th>
-                  </tr></thead>
-                  <tbody v-if="currentPlan">
-                    <tr v-for="(c, ri) in currentPlan.clips" :key="ri"
-                      :class="{ 'row-deleted': currentPlan.deletedFlags[ri] }"
-                      draggable="true"
-                      @dragstart="onDetailDragStart(ri)" @dragend="onDetailDragEnd"
-                      @drop.prevent="onDetailDrop(ri)" @dragover.prevent
-                      @contextmenu.prevent="openDetailMenu($event, ri)">
-                      <td class="ta-c">{{ ri + 1 }}</td>
-                      <td class="ta-c grip-cell" title="拖动调序">⠿</td>
-                      <td class="clip-name" :title="c.clipUrl || c.name">{{ c.name }}</td>
-                      <td class="ta-c">{{ c.duration > 0 ? c.duration.toFixed(1) + 's' : '—' }}</td>
-                      <td class="ta-c">
-                        <span v-if="c.shotType" class="shot-type-badge"
-                          :style="{ color: SHOT_TYPE_COLORS[c.shotType] || '#888', borderColor: SHOT_TYPE_COLORS[c.shotType] || '#888' }">
-                          {{ SHOT_TYPE_LABELS[c.shotType] || c.shotType }}
-                        </span>
-                        <span v-else class="muted">—</span>
-                      </td>
-                      <!-- 位置：入场/出场（同 Step1 口径：服务端 enter/exit 优先，路径命名兑底；tooltip 标来源）。
-                           重组排序即按此列：入场头/出场尾/其余居中（applyShotLayoutOrder） -->
-                      <td class="ta-c shot-source-cell" :title="c.positionSource || ''">
-                        <span v-if="c.position" class="shot-type-badge"
-                          :style="{ color: SHOT_TYPE_COLORS[c.position] || '#888', borderColor: SHOT_TYPE_COLORS[c.position] || '#888' }">
-                          {{ SHOT_TYPE_LABELS[c.position] || c.position }}
-                        </span>
-                        <span v-else class="muted">—</span>
-                      </td>
-                      <td class="clip-desc" :title="c.description">{{ c.description || '—' }}</td>
-                      <td class="ta-c" :class="scoreClass(c.score)">{{ c.score ? c.score.toFixed(1) : '—' }}</td>
-                    </tr>
-                    <!-- 不足 10 行时占位 -->
-                    <tr v-for="n in Math.max(0, 10 - (currentPlan?.clips.length || 0))" :key="'dph'+n" class="detail-placeholder-row"><td colspan="8"></td></tr>
-                  </tbody>
-                  <tbody v-else>
-                    <tr><td colspan="7" class="muted">单击右侧预览块或上方预合成项查看镜头详情</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-
         <!-- 确认行（原版 confirm_row L268-286：确认合成视频 + 生成口播文案，初始禁用；
              2026-09-10 界面统一：属执行步骤，归左栏底部） -->
         <div class="row confirm-row">
-          <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!hasUnconfirmed" @click="confirmAllPrecompose" />
-          <!-- 2026-09-09 用户裁决：合成完成后生成口播文案要标明可点击状态（可用时切 primary 高亮） -->
-          <TButton label="生成口播文案" :variant="confirmedPaths.length ? 'primary' : 'secondary'" :loading="copyBusy" :disabled="!confirmedPaths.length" @click="openProductDlg('all')" />
+          <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!tabsAllBound" title="所有分镜脚本绑定完整素材后才能合成；有分镜缺素材时不能合成" @click="onConfirmCompose" />
+          <!-- 2026-09-21 用户裁决：「生成口播文案」删除——文案在第一步编写/生成，旁白已在第二步克隆 -->
         </div>
         <template v-if="confirmBusy">
           <div class="concat-status-line">{{ statusText }}</div>
@@ -276,41 +366,15 @@ function scoreClass(score: number | undefined): string {
         <!-- 导航行（2026-09-10 用户裁决：上/下步按钮属操作区，归左栏底部；原版 nav_row L288-301） -->
         <div class="row between">
           <!-- 2026-09-17 用户裁决：上一步删除；下一步=跳转口播配音界面（换序后 go(1)） -->
-          <TButton label="下一步：口播配音" icon="right" @click="go(1)" />
+          <TButton label="上一步：口播配音" icon="left" @click="go(1)" />
+          <!-- 2026-09-21 用户裁决：完成第三步可进入第四步特效包装 -->
+          <TButton label="下一步：特效包装" icon="right" @click="go(3)" />
         </div>
-        </div><!-- /vd-unified-left -->
-
-<div class="vd-split" title="拖动调整左右比例" @mousedown="onSplitDown"></div>
-
-        <!-- 右栏：每条方案一块预览（确认成片直播；未确认单击块连播镜头序列，并联动左栏镜头表） -->
-        <div class="vd-unified-right">
-          <StepPreviewPane title="画面预览" :items="step2PreviewItems" :active-index="currentPlanIdx"
-            :aspect="previewAspect"
-            empty-text="尚无预合成方案，勾选镜头后点击「镜头重组」" @select="selectPlan" />
-        </div>
-        </div><!-- /vd-unified -->
       </section>
-    <!-- 预合成列表右键菜单（原版 _show_assembled_context_menu L5412-5434 三项，查看文案仅已生成时显示） -->
-    <teleport to="body">
-      <div v-if="planMenu.show" class="ctx-mask" @click="closePlanMenu" @contextmenu.prevent="closePlanMenu">
-        <div class="ctx-menu" :style="{ left: planMenu.x + 'px', top: planMenu.y + 'px' }" @click.stop>
-          <button class="ctx-item" @click="planMenuConfirm">完成： 确认合成视频</button>
-          <button class="ctx-item" @click="planMenuGen"> 生成口播文案</button>
-          <button v-if="planMenu.hasCopy" class="ctx-item" @click="planMenuView"> 查看文案</button>
-        </div>
-      </div>
-    </teleport>
 
 
-    <!-- 镜头详情右键菜单（原版 _on_source_context_menu L5843-5851） -->
-    <teleport to="body">
-      <div v-if="detailMenu.show" class="ctx-mask" @click="closeDetailMenu" @contextmenu.prevent="closeDetailMenu">
-        <div class="ctx-menu" :style="{ left: detailMenu.x + 'px', top: detailMenu.y + 'px' }" @click.stop>
-          <button v-if="detailMenu.deleted" class="ctx-item" @click="menuToggleDeleted">↩ 恢复镜头</button>
-          <button v-else class="ctx-item" @click="menuToggleDeleted"> 标记删除（不参与合成和预览）</button>
-        </div>
-      </div>
-    </teleport>
+
+
 </template>
 
 <style scoped>
@@ -407,7 +471,10 @@ function scoreClass(score: number | undefined): string {
   height: auto; min-height: 52px; padding: 6px 10px;
   line-height: 1.5; font-family: inherit; resize: vertical;
 }
+.dropzone { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; min-height: 120px; padding: var(--space-5); background: color-mix(in srgb, var(--primary) 6%, var(--surface-container)); border: 1.5px dashed color-mix(in srgb, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); cursor: pointer; color: var(--foreground); transition: border-color var(--duration-fast), background var(--duration-fast); }
 .dropzone:hover, .dropzone.is-active { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, var(--surface-container)); }
+.dz-main { font-size: var(--font-size-body); font-weight: var(--font-weight-medium); }
+.dz-hint { font-size: var(--font-size-caption); color: var(--muted-foreground); }
 .icon-btn {
   width: 28px; height: 24px; padding: 0; font-size: 13px; line-height: 1; flex: none;
   background: var(--card); color: var(--foreground);
@@ -429,17 +496,36 @@ function scoreClass(score: number | undefined): string {
   border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer;
 }
 .w80 { width: 80px; flex: none; }
-/* 界面统一两栏（2026-09-10 用户需求「二三四步界面统一+联动预览」）：
-   左=操作区（自适应），右=统一预览栏（拖拽调比例）；
-   2026-09-10 用户报障「口播配音界面重叠」：左栏表格 min-content 撑破盒子溢出绘制
-   进右栏区 → 左栏 overflow:hidden 截断 + 右栏 border-left 明确分界 */
-.vd-unified { display: flex; gap: 0; align-items: stretch; min-height: 0; }
-.vd-unified-left { min-width: 0; display: flex; flex-direction: column; gap: var(--space-2); padding-right: 12px; overflow: hidden; }
-.vd-unified-right { flex: 1 1 0; min-width: 260px; display: flex; flex-direction: column; min-height: 0; padding-left: 12px; border-left: 1px solid var(--border); }
-/* 可拖拽分隔条：左右比例手动调整（默认 6:4，拖后 localStorage 记忆） */
-.vd-split {
-  flex: 0 0 6px; cursor: col-resize; border-radius: 3px;
-  background: transparent; transition: background 0.15s;
+/* ── 素材来源 tabs + 本地上传（自智能混剪 Step1 移植，2026-09-21 用户裁决）── */
+.src-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.src-tab {
+  height: 32px; padding: 0 16px; border: none; background: transparent;
+  color: var(--muted-foreground); font-size: 13px; cursor: pointer;
+  border-bottom: 2px solid transparent;
 }
-.vd-split:hover { background: var(--primary); opacity: 0.35; }
+.src-tab:hover { color: var(--foreground); }
+.src-tab.active { color: var(--primary); font-weight: 600; border-bottom-color: var(--primary); }
+.src-placeholder { padding: 24px; text-align: center; background: var(--surface-container); border-radius: var(--radius-md); }
+
+/* 素材列表（缩略图 + 路径 + 时长 + 播放/删除按钮） */
+.file-list { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.file-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 6px 10px; border-bottom: 1px solid var(--border); word-break: break-all; }
+.file-list li:last-child { border-bottom: none; }
+.src-video-list { max-height: 480px; overflow-y: auto; }
+.src-video-list li { padding: 4px 8px; }
+.video-thumb { width: 60px; height: 40px; object-fit: cover; border-radius: var(--radius-sm); background: #000; flex: none; }
+.video-thumb--ph { display: inline-flex; align-items: center; justify-content: center; color: var(--muted-foreground); background: var(--surface-container-high); }
+.video-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.video-dur { flex: none; width: 52px; text-align: right; font-size: 12px; color: var(--muted-foreground); margin-right: 8px; font-variant-numeric: tabular-nums; }
+.video-play-btn { width: 24px; height: 24px; padding: 0; font-size: 12px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; margin-right: 4px; }
+.video-play-btn:hover { color: var(--success); border-color: var(--success); }
+.video-remove-btn { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; flex: none; background: transparent; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+.video-remove-btn:hover { color: var(--danger); border-color: var(--danger); }
+.video-count-footer { text-align: center; color: var(--muted-foreground); font-size: 12px; padding: 4px 0; }
+.desc-input { height: 28px; width: 100%; padding: 0 8px; font-size: 12px; }
+/* 评分着色（分割镜头表；≥8 绿 / ≥6 黄 / 其余红，原版 L1443-1448 口径） */
+.score-high { color: #2ecc71; font-weight: 600; }
+.score-mid { color: #f1c40f; font-weight: 600; }
+.score-low { color: #e74c3c; font-weight: 600; }
+/* 分镜脚本卡样式在公共组件 CopyStoryboard.vue（material 态自注入） */
 </style>

@@ -28,8 +28,9 @@ import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDra
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
 // 2026-09-17 用户裁决：步骤序定案 1.文案编写 → 2.口播配音 → 3.镜头重组 → 4.特效包装
-//（文案编写页内容暂为原镜头智能分割，仅改名；重组界面归镜头重组页）
-const STEPS = ['1. 文案编写', '2. 口播配音', '3. 镜头重组', '4. 特效包装']
+// 2026-09-21 用户裁决：第③步展示名「镜头重组」→「视频素材」（仅步骤条展示名，
+// 页面内「镜头重组」执行按钮不动）
+const STEPS = ['1. 文案编写', '2. 口播配音', '3. 视频素材', '4. 特效包装']
 const step = ref(0)
 function go(i: number) {
   step.value = Math.max(0, Math.min(STEPS.length - 1, i))
@@ -188,7 +189,8 @@ onActivated(() => {
 // 声音样本与 VoiceClone 页同口径：每次进入 Step3（及挂载时）重新拉取（原实现仅在
 // composable 创建时拉一次，服务端新增样本/离线恢复后下拉一直为空）
 onMounted(() => { void loadRefSamples() })
-watch(step, (v) => { if (v === 2) void loadRefSamples() })
+// 2026-09-21 修复：换序后口播配音=index 1，进入时重新拉取声音样本（原条件 v===2 为旧序）
+watch(step, (v) => { if (v === 1) void loadRefSamples() })
 
 /** 输出画幅下拉（原版 layout_combo 3 项；首项动态附分割片段画幅——
  *  2026-09-15 用户裁决：「与原视频一致」基准=分割片段，非原素材（4K 素材分割产物

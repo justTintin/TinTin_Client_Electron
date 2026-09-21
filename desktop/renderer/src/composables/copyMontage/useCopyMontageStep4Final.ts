@@ -69,12 +69,15 @@ export interface MontageStep4Context {
   finalVideoList: Ref<Array<{ name: string; path: string }>>
   finalVideoPath: Ref<string>
   step4Candidates: Ref<string[]>
+  getTabVoiceWavs: () => string[]
+  /** 逐分镜脚本的旁白（与 getTabVoiceWavs 同序） */
+  getTabNarratives: () => string[]
 }
 
 export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
   const {
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
-    sharedProductInfo, splitResolution, voiceRows, voiceDirInput,
+    sharedProductInfo, splitResolution, voiceRows, voiceDirInput, getTabVoiceWavs, getTabNarratives,
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
     currentMatchTemplateIds, resolveKeywordHits,
     scanVoiceDir, activeTextPool,
@@ -197,6 +200,22 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
    *  2026-09-11 voice 接线（统一合成契约提案③）：useSource=true（服务端链路）取
    *  源视频路径（有配音 wav 的行）——配音随 concat voice 轨上传，不再本地替换
    *  原声（无「先声音合成」中间态）；本地链路维持 dubbed 产物口径。 */
+  /** 整体克隆旁白资产：第 i 个候选用第 i 个分镜脚本克隆的整段声音（wav + timing
+   *  时间轴 + 对齐字幕 SRT 三个旁车齐全）；该分镜未克隆 → null。
+   *  （2026-09-21 用户裁决：拔除旧「纯文案克隆」copyVoiceWav 回退层——该产物自
+   *  批量按分镜克隆上线后无写入点，回退恒空转） */
+  function scriptVoiceAsset(candidateIndex: number): { path: string; timingPath: string; srtPath: string; text: string } | null {
+    // 候选顺序=分镜顺序——第 i 个候选用第 i 个分镜的整体克隆声音
+    const tabWav = getTabVoiceWavs()[candidateIndex]
+    if (!tabWav) return null
+    return {
+      path: tabWav,
+      timingPath: tabWav + '.timing.json',
+      srtPath: tabWav + '.aligned.srt',
+      text: getTabNarratives()[candidateIndex] || '',
+    }
+  }
+
   async function collectCandidates(useSource = false): Promise<string[]> {
     const primary = useSource
       ? voiceRows.value.filter((r) => r.wavPath && r.path).map((r) => r.path)
@@ -305,19 +324,26 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
       // voicePath：配音 wav（2026-09-11 voice 接线：仅服务端链路消费，随 concat
       //   voice 轨上传；本地链路已由 dubVideos 替换进视频，不消费）
       const srtDirNow = await subtitleAssetDir()
+      // 2026-09-21 用户裁决（方案A）：行级口播缺失时回退第二步整体克隆旁白——
+      // 文案/口播轨/时间轴/对齐字幕全部来自纯文案克隆产物（scriptVoiceAsset）
       const subtitleTexts = candidates
-        .map((c) => {
+        .map((c, ci) => {
+          const sv = scriptVoiceAsset(ci)
           // 服务端链路候选=源视频（r.path）；本地链路=配音产物（r.dubbedPath）
           const row = voiceRows.value.find((r) => (mode === 'server' ? r.path : r.dubbedPath) === c)
-          if (!row || !row.text.trim()) return null
+          const rowText = row?.text.trim() || ''
+          const rowWav = row?.wavPath || ''
+          if (!rowText && !rowWav && !sv) return null
           return {
             videoPath: c,
-            text: row.text.trim(),
-            timingPath: row.wavPath ? `${row.wavPath}.timing.json` : '',
-            voicePath: row.wavPath || '',
+            text: rowText || (sv ? sv.text : ''),
+            timingPath: rowWav ? `${rowWav}.timing.json` : (sv ? sv.timingPath : ''),
+            voicePath: rowWav || (sv ? sv.path : ''),
             // 2026-09-18 用户裁决：字幕重切段后处理资产路径（克隆完成即生成）——
             // 主进程存在性校验命中则优先上传该 SRT，缺失回退 buildSrtFromTiming
-            srtPath: joinPath(srtDirNow, pathBasename(c).replace(/\.[^.]+$/, '') + '.srt'),
+            srtPath: rowWav
+              ? joinPath(srtDirNow, pathBasename(c).replace(/\.[^.]+$/, '') + '.srt')
+              : (sv ? sv.srtPath : joinPath(srtDirNow, pathBasename(c).replace(/\.[^.]+$/, '') + '.srt')),
             fxLines: [] as Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>,
           }
         })
@@ -748,14 +774,17 @@ async function exportAllToJianyingDraft(): Promise<void> {
             || (nmIn !== '' && (qb === nmIn || qb === 'dubbed_' + nmIn))
         }))
       }
-      const text = String(row?.text || '').trim()
-      const timingPath = row?.wavPath ? row.wavPath + '.timing.json' : ''
+      // 2026-09-21 用户裁决：行级口播缺失时回退该分镜的整体克隆声音
+      // （tab.voiceWav + timing + aligned.srt 三件套齐全）
+      const sv = scriptVoiceAsset(i)
+      const text = String(row?.text || '').trim() || (sv ? sv.text : '')
+      const timingPath = row?.wavPath ? row.wavPath + '.timing.json' : (sv ? sv.timingPath : '')
       // 字幕 SRT：消费声音克隆完成后即生成的后处理资产（2026-09-18 用户裁决：
       //   后处理时点前移至克隆完成，导出与服务端合成均为纯消费者）。资产命中→
       //   直接用；缺失（旧会话/未跑克隆）→ 现场重切段回写；文案空/写失败 → 该段
       //   不出字幕轨（导出器 srtPaths null 容忍，2026-09-17 修复：合成产物候选曾在此整单中断）
       {
-        const srtFile = text ? await ensureProcessedSrt(text, row?.wavPath || '', c) : ''
+        const srtFile = text ? await ensureProcessedSrt(text, row?.wavPath || (sv ? sv.path : ''), c) : ''
         if (srtFile) {
           srtPaths.push(srtFile)
         } else {
@@ -785,9 +814,13 @@ async function exportAllToJianyingDraft(): Promise<void> {
       } else {
         textTemplateClips.push([])
       }
-      // 口播 wav（独立口播轨；候选即配音产物时其声已内嵌，此轨仍保留便于独立调整）
+      // 口播 wav（独立口播轨；候选即配音产物时其声已内嵌，此轨仍保留便于独立调整）。
+      // 2026-09-21 用户裁决（方案A）：行级 wav 缺失 → 回退第二步整体克隆旁白
       if (row?.wavPath) {
         voiceClips.push([{ path: row.wavPath, startUs: 0, durUs: Math.max(1, Math.round((row.voiceDurSec || 0) * 1e6)) }])
+      } else if (sv) {
+        const svDur = Number(await window.tintin.ffmpeg.probeDuration(sv.path)) || 0
+        voiceClips.push([{ path: sv.path, startUs: 0, durUs: Math.max(1, Math.round(svDur * 1e6)) }])
       } else {
         voiceClips.push([])
       }

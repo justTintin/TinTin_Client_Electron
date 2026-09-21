@@ -486,10 +486,14 @@ function createServerProxy(ipcMain, ctx) {
     }
   })
 
-  // POST
-  ipcMain.handle('server:post', async (event, path, body, headers) => {
+  // POST（2026-09-21：可选第 4 参 timeout（毫秒）——慢端点（如脚本保存遇服务端忙）可放宽；
+  //  不传维持默认 30s，全部既有调用零影响）
+  ipcMain.handle('server:post', async (event, path, body, headers, timeout) => {
     try {
-      const res = await httpRequest('POST', path, { body, headers: headers || {} })
+      const res = await httpRequest('POST', path, {
+        body, headers: headers || {},
+        timeout: Number(timeout) > 0 ? Number(timeout) : undefined,
+      })
       return res.data
     } catch (err) {
       if (isExpectedOfflineError(err)) return null

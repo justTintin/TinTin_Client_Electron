@@ -73,8 +73,18 @@ import { readCacheDir } from './useSettingsConfig'
 import { joinDefaultPath } from './settingsIntegrationLogic'
 // 模块级工具/轮询常量与 Step1/Step2 编排已迁 montage/（铁律 10 拆分，纯搬迁，
 // 蓝图见 docs/智能混剪拆分迁移映射_2026-09-18.md）
-import { notify, unwrapIpc, errText, joinPath, createMontageSharedRuntime } from './copyMontage/context'
-import { buildVoiceoverPayload, parseVoiceoverResponse } from './copyMontageStep2ConcatLogic'
+import { notify, errText, createMontageSharedRuntime } from './copyMontage/context'
+import {
+  SCRIPT_SYSTEM_PROMPT_DEFAULT,
+  SCRIPT_SYSTEM_PROMPT_LEGACY_DEFAULT,
+  SCRIPT_SCENE_OPTIONS,
+  buildScriptSystemPrompt,
+  buildScriptUserPrompt,
+} from './copyMontageStep2ConcatLogic'
+// 文案编写页选择产品（公共弹窗 WbPickProductDialog）：PickerItem → sharedProductInfo 同
+// 镜头重组页弹窗 onPickProduct 口径（stripProductCodeFromModel 型号剥编码 / 关联关键词带回）
+import type { PickerItem } from './useWorkbenchPickers'
+import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from './opsProductLibraryLogic'
 import { useCopyMontageStep1Split } from './copyMontage/useCopyMontageStep1Split'
 import { useCopyMontageStep2Concat } from './copyMontage/useCopyMontageStep2Concat'
 import { useCopyMontageStep3Voice } from './copyMontage/useCopyMontageStep3Voice'
@@ -139,7 +149,7 @@ export function useCopyMontage() {
     checkedCount, assemblePlans, currentPlanIdx, currentPlan, hasUnconfirmed,
     confirmedPaths, concatResults, seqClips, seqIdx, seqSrc, detailDragFrom,
     planConfirmQueue, sharedProductInfo,
-    planDurText, runConcat, planRowText, selectPlan, startSeqPreview, onSeqEnded,
+    planDurText, runConcat, runConcatFromAllStoryboards, planRowText, selectPlan, startSeqPreview, onSeqEnded,
     submitConcatTask, confirmAllPrecompose, confirmPlanSingle,
     openProductDlg, productDlg, closeProductDlg, productDlgGenerate,
     copyViewDlg, viewPlanCopy, closeCopyView,
@@ -147,32 +157,174 @@ export function useCopyMontage() {
     onDetailDragStart, onDetailDragEnd, onDetailDrop, toggleClipDeleted,
   } = step2
 
-  // ══ 文案编写页（2026-09-20 用户裁决：生成口播默认可用——不依赖预合成确认；
-  //    完成后出现文案写作输入框，可编辑。按产品信息 + 30s 缺省时长口径生成）══
-  const manualCopy = ref<string | null>(null)
-  const manualCopyBusy = ref(false)
-  async function genManualVoiceover(): Promise<void> {
+  // ══ 文案编写页（2026-09-21 用户裁决：按参考界面重排——高级脚本设置（生成方式/段落数量/
+  //    自定义要求/系统提示）+ AI 生成视频文案与关键词；素材选择与镜头分割自本页删除，
+  //    分割编排原样保留供「镜头重组」页。生成走 llm:chat（区别于产品弹窗的
+  //    /copywriting/voiceover）：系统提示=页面可编辑系统提示（默认 Constraints 七条），
+  //    模型随「文案生成方式」（空=当前大模型 Provider，即服务端默认）。
+  //    文案/关键词仍为页面级草稿（localStorage copy-montage.script.* 持久化），
+  //    不回写预合成方案旁车 .txt——接管关系待裁决）══
+  const scriptLsKey = (k: string): string => `copy-montage.script.${k}`
+  const scriptProvider = ref('')        // ''=当前大模型 Provider（服务端默认模型）
+  const scriptModelOptions = ref<Array<{ label: string; value: string }>>([])
+  const paragraphCount = ref(3)
+  const customRequirement = ref('')
+  const scriptScene = ref('general')    // 场景（通用/口播带货/产品讲解/种草推荐）
+  const suggestDuration = ref(30)       // 建议时长（秒）：随场景取默认，可手动调整
+  const systemPrompt = ref(SCRIPT_SYSTEM_PROMPT_DEFAULT)
+  const manualCopy = ref('')            // 视频文案（可选，可编辑）
+  const manualCopyBusy = ref(false)     // 「生成文案和关键词」进行中（关键词为其串行第二步）
+  // localStorage 恢复：显式判 null 为未设置才回退默认（Number(null)=0 的坑见 679133e）；
+  // 段落数量另做整数域校验
+  const lsGet = (k: string): string | null => {
+    try { return localStorage.getItem(scriptLsKey(k)) } catch { return null }
+  }
+  const savedParas = lsGet('paragraphs')
+  if (savedParas !== null && savedParas !== '' && Number.isFinite(Number(savedParas)) && Number(savedParas) >= 1) {
+    paragraphCount.value = Math.floor(Number(savedParas))
+  }
+  const savedReq = lsGet('requirement')
+  if (savedReq !== null) customRequirement.value = savedReq
+  const savedSys = lsGet('systemPrompt')
+  if (savedSys !== null && savedSys.trim()) {
+    // 一次性迁移：存量值恰为旧版默认 → 升级新默认（用户自定义过的不动）
+    systemPrompt.value = savedSys === SCRIPT_SYSTEM_PROMPT_LEGACY_DEFAULT
+      ? SCRIPT_SYSTEM_PROMPT_DEFAULT
+      : savedSys
+  }
+  const savedProv = lsGet('provider')
+  if (savedProv !== null) scriptProvider.value = savedProv
+  const savedScene = lsGet('scene')
+  if (savedScene !== null && SCRIPT_SCENE_OPTIONS.some((o) => o.value === savedScene)) {
+    scriptScene.value = savedScene
+  }
+  const savedDur = lsGet('duration')
+  if (savedDur !== null && Number.isFinite(Number(savedDur)) && Number(savedDur) >= 5) {
+    suggestDuration.value = Math.round(Number(savedDur))
+  }
+  const savedCopy = lsGet('copy')
+  if (savedCopy !== null) manualCopy.value = savedCopy
+  function persistScript(): void {
+    try {
+      localStorage.setItem(scriptLsKey('provider'), scriptProvider.value)
+      localStorage.setItem(scriptLsKey('paragraphs'), String(paragraphCount.value))
+      localStorage.setItem(scriptLsKey('requirement'), customRequirement.value)
+      localStorage.setItem(scriptLsKey('scene'), scriptScene.value)
+      localStorage.setItem(scriptLsKey('duration'), String(suggestDuration.value))
+      localStorage.setItem(scriptLsKey('systemPrompt'), systemPrompt.value)
+      localStorage.setItem(scriptLsKey('copy'), manualCopy.value)
+    } catch { /* 隐私模式等写入失败静默 */ }
+  }
+  watch([scriptProvider, paragraphCount, customRequirement, scriptScene, suggestDuration, systemPrompt, manualCopy], persistScript)
+  // 场景切换 → 建议时长取该场景默认值（用户随后可手动调整）
+  watch(scriptScene, (v) => {
+    const def = SCRIPT_SCENE_OPTIONS.find((o) => o.value === v)?.defaultSec
+    if (def) suggestDuration.value = def
+  })
+
+  /** 「文案生成方式」下拉：默认项=当前大模型 Provider（''），其后为 GET /llm/models 模型清单 */
+  const scriptProviderOptions = computed(() => [
+    { label: '当前大模型 Provider', value: '' },
+    ...scriptModelOptions.value,
+  ])
+  /** 面板挂载时拉模型清单（离线/失败静默保留默认项） */
+  async function loadScriptProviders(): Promise<void> {
+    if (scriptModelOptions.value.length) return
+    try {
+      const res = await window.tintin.server.llmModels()
+      if (!res || (typeof res === 'object' && 'error' in res)) return
+      const models = Array.isArray(res.models) ? res.models : []
+      scriptModelOptions.value = models
+        .map((m) => String(m?.id || '')).filter(Boolean)
+        .map((id) => ({ label: id, value: id }))
+    } catch { /* 离线 */ }
+  }
+
+  /** llm:chat 单轮文本：{error} 抛错、空内容报错，正常返回 choices[0].message.content */
+  async function llmChatText(system: string, user: string, model: string): Promise<string> {
+    const res = await window.tintin.server.llmChat({
+      model: model || '',
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    })
+    if (res && 'error' in res) throw new Error(String(res.error) || '服务端返回空错误')
+    const text = String(res?.choices?.[0]?.message?.content ?? '').trim()
+    if (!text) throw new Error('模型未返回内容')
+    return text
+  }
+
+  /** 文案编写页「选择产品」（公共弹窗 WbPickProductDialog）：PickerItem → sharedProductInfo
+   *  （与镜头重组页弹窗 onPickProduct 同口径：型号剥商品编码、关联关键词随选带回、
+   *  核心卖点逐条拼入）。产品信息单一来源 → 本页生成提示词与后续命中管线共用，
+   *  镜头重组页弹窗打开时即预填本产品 */
+  function applyScriptProduct(it: PickerItem): void {
+    sharedProductInfo.value = {
+      brand: String(it.brand || ''),
+      product: String(it.category || ''),
+      model: stripProductCodeFromModel(it.model),
+      keywords: parseProductKeywords(it),
+      extra: markdownListLines(it.selling_points).join('\n'),
+    }
+  }
+
+  /** 清除已选产品（恢复空产品信息） */
+  function clearScriptProduct(): void {
+    sharedProductInfo.value = { brand: '', product: '', model: '', extra: '', keywords: [] }
+  }
+
+  /** 最终 system 提示词：页面可编辑系统提示为基底 + 场景指令 + 产品信息 + 自定义要求
+   *  （产品信息取 sharedProductInfo——本页「选择产品」与镜头重组页弹窗的单一来源） */
+  function scriptSystemPrompt(): string {
+    const info = sharedProductInfo.value || { brand: '', product: '', model: '', extra: '' }
+    return buildScriptSystemPrompt(systemPrompt.value, {
+      scene: scriptScene.value,
+      suggestSec: suggestDuration.value,
+      brand: info.brand, product: info.product, modelName: info.model, extra: info.extra,
+      customRequirement: customRequirement.value,
+    })
+  }
+
+  /** user 消息：脚本长度 + 产出指令（场景/产品/要求均已并入 system） */
+  function scriptUserPrompt(): string {
+    return buildScriptUserPrompt({ paragraphCount: paragraphCount.value })
+  }
+
+  /** 预览最终提示词（只读弹窗展示合并后的 system + user 两条消息） */
+  const promptPreviewDlg = ref({ show: false, system: '', user: '' })
+  function openPromptPreview(): void {
+    promptPreviewDlg.value = { show: true, system: scriptSystemPrompt(), user: scriptUserPrompt() }
+  }
+  function closePromptPreview(): void { promptPreviewDlg.value.show = false }
+
+  /** 恢复默认系统提示 */
+  function resetSystemPrompt(): void { systemPrompt.value = SCRIPT_SYSTEM_PROMPT_DEFAULT }
+
+  /** ✨ 生成视频文案（2026-09-21 用户裁决：省掉关键词请求，只生成文案） */
+  async function genScriptAndKeywords(): Promise<void> {
     if (manualCopyBusy.value) return
+    const info = sharedProductInfo.value || { brand: '', product: '', model: '', extra: '' }
+    if (!info.brand && !info.product && !info.model && !info.extra && !customRequirement.value.trim()) {
+      notify('无法生成', '请先点击「选择产品」选择产品，或在「自定义文案要求」中描述要写的文案。')
+      return
+    }
     manualCopyBusy.value = true
     try {
-      statusText.value = '正在生成口播文案...'
-      const info = sharedProductInfo.value || { brand: '', product: '', model: '', extra: '' }
-      const payload = buildVoiceoverPayload({
-        brand: info.brand, product: info.product, modelName: info.model, extra: info.extra,
-        // 2026-09-20 用户裁决：跟随「时长限制」设置（默认 30s）
-        totalDuration: durationLimit.value,
-      })
-      const res = unwrapIpc(await window.tintin.server.copywritingVoiceover(payload), '生成口播文案')
-      manualCopy.value = parseVoiceoverResponse(res)
-      statusText.value = '完成： 口播文案已生成，可在下方文案写作框编辑'
-      notify('生成完成', '口播文案已生成，可在下方「文案写作」输入框中编辑。')
+      // 2026-09-21 用户裁决：省掉关键词请求——只生成文案；写入激活分镜旁白
+      activeNarrative.value = await llmChatText(scriptSystemPrompt(), scriptUserPrompt(), scriptProvider.value)
+      // 分镜以服务端脚本库为持久化层：每步完成后同步
+      void syncStoryboardsToServer()
+      statusText.value = '完成： 视频文案已生成，可在下方编辑'
+      notify('生成完成', '视频文案已生成，可在下方编辑。')
     } catch (e) {
-      clientError('copy-montage', '生成口播文案失败', errText(e))
+      clientError('copy-montage', '生成视频文案失败', errText(e))
       notify('生成失败', errText(e))
     } finally {
       manualCopyBusy.value = false
     }
   }
+
 
 
   // ══ Step3 口播配音（已迁 montage/useCopyMontageStep3Voice.ts，铁律 10 纯搬迁；
@@ -182,6 +334,10 @@ export function useCopyMontage() {
     statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
     step4Candidates, sharedProductInfo,
+    // 2026-09-21 用户裁决：第一步文案带入口播配音页（扫描建行无 .txt 时回退）
+    getScriptCopy: () => manualCopy.value,
+    // 选择脚本应用时回填旁白（第一步文案 = 镜头旁白拼接，与分镜脚本页「继续创作」同口径）
+    setScriptCopy: (text: string) => { manualCopy.value = text },
     collectCandidates: (useSource?: boolean) => step4.collectCandidates(useSource),
     ensureProcessedSrt: (text: string, wavPath: string, candidate: string) =>
       step4.ensureProcessedSrt(text, wavPath, candidate),
@@ -201,6 +357,9 @@ export function useCopyMontage() {
     textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
+    copyShots, copyShotsStale, shotClipIdx, bindShotMaterial, unbindShotMaterial, genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
+    storyboards, activeStoryboardId, activeStoryboard, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, activeNarrative, COPY_STORYBOARD_MAX,
+    scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript, syncStoryboardsToServer,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,
@@ -220,6 +379,8 @@ export function useCopyMontage() {
   const step4 = useCopyMontageStep4Final({
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
     sharedProductInfo, splitResolution, voiceRows, voiceDirInput,
+    getTabVoiceWavs: () => storyboards.value.filter((s) => s.voiceWav).map((s) => s.voiceWav),
+    getTabNarratives: () => storyboards.value.map((s) => s.narrative.trim()),
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
     currentMatchTemplateIds, resolveKeywordHits,
     scanVoiceDir, activeTextPool,
@@ -254,8 +415,14 @@ export function useCopyMontage() {
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
     addVideos, selectFolder, onDrop, removeVideo, runSplit,
-    // 文案编写（2026-09-20 用户裁决）
-    manualCopy, manualCopyBusy, genManualVoiceover,
+    // 文案编写（2026-09-21 用户裁决：高级脚本设置 + AI 生成视频文案与关键词）
+    sharedProductInfo, applyScriptProduct, clearScriptProduct,
+    manualCopy, manualCopyBusy, activeNarrative, suggestDuration, syncStoryboardsToServer,
+    storyboards, activeStoryboardId, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, COPY_STORYBOARD_MAX,
+    scriptProvider, scriptProviderOptions, paragraphCount, customRequirement, systemPrompt,
+    scriptScene, SCRIPT_SCENE_OPTIONS,
+    resetSystemPrompt, promptPreviewDlg, openPromptPreview, closePromptPreview,
+    genScriptAndKeywords, loadScriptProviders,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
     previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
     // Step2 镜头重组
@@ -272,7 +439,7 @@ export function useCopyMontage() {
     planMenu, openPlanMenu, closePlanMenu,
     seqClips, seqIdx, seqSrc,
     onSeqEnded,
-    concatResults,
+    concatResults, runConcatFromAllStoryboards,
     // Step3 口播配音（对照 step3_voice_view.py 逐控件）
     voiceDirInput, voicesDir, voiceRows,
     refSamples, selectedRefSample, refAudioPath, refText, selectRefAudio,
@@ -298,6 +465,8 @@ export function useCopyMontage() {
     editDlg, openEditDlg, saveEditDlg,
     rewriteTemp,
     voiceBusy, rewriteBusy,
+    copyShots, copyShotsStale, shotClipIdx, bindShotMaterial, unbindShotMaterial, genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
+    scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript,
     scanVoiceDir, enterStepVoice, loadRefSamples, refPreviewUrl,
     nsFilePath, nsName, nsText, nsError, nsSuccess, nsBusy, nsTranscribing,
     pickNewSampleFile, transcribeNewSample, uploadNewSampleRef,

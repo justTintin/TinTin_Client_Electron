@@ -14,11 +14,14 @@ import CopyBgmPickDialog from './CopyBgmPickDialog.vue'
 import CopyStoryboard from './CopyStoryboard.vue'
 import { copyMontageShellKey } from './copyMontageUiContext'
 import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/copyMontageLogic'
+import { errText, notify } from '@/composables/copyMontage/context'
+import { clientError } from '@/utils/clientLog'
 
 const shell = inject(copyMontageShellKey)!
 const { step, go, steps } = shell
 const {
   splitResolution,
+  storyboards,
   previewUrl,
   concatLayout,
   assemblePlans,
@@ -106,6 +109,53 @@ const {
 /** 本地路径 → file URL（previewFinalVideo 同口径） */
 function toFileUrl(p: string): string {
   return 'file:///' + encodeURI(String(p).replace(/\\/g, '/')).replace(/#/g, '%23')
+}
+
+// ── 音效包装（2026-09-22 用户裁决）：按分镜脚本逐镜「音效建议」提示词，AI 生成音效
+//  （/audio/gen/sfx，duration=该镜镜标时长）并挂回对应镜头（shot.sfxWavUrl，客户端态
+//  字段不上传脚本库）；分镜卡音效信息行内嵌播放条试听。逐镜串行生成、进度逐镜推进；
+//  已生成的跳过（重按可增量补齐），全部完成按钮前缀对号标识 ──
+const sfxBusy = ref(false)
+const sfxStage = ref('')
+const sfxPromptShots = computed(() =>
+  storyboards.value.flatMap((t) => t.shots.filter((s) => String(s.sfx || '').trim())))
+const sfxAllDone = computed(() =>
+  sfxPromptShots.value.length > 0 && sfxPromptShots.value.every((s) => !!s.sfxWavUrl))
+async function runSfxPack(): Promise<void> {
+  if (sfxBusy.value) return
+  const jobs = sfxPromptShots.value.filter((s) => !s.sfxWavUrl)
+  if (!sfxPromptShots.value.length) {
+    notify('没有音效提示词', '分镜脚本的「音效建议」为空：请先在分镜卡上为需要音效的镜头填写音效提示词。')
+    return
+  }
+  if (!jobs.length) {
+    notify('音效已全部生成', '所有带音效提示词的镜头都已有生成产物。')
+    return
+  }
+  sfxBusy.value = true
+  try {
+    let done = 0
+    for (const s of jobs) {
+      sfxStage.value = `AI 生成音效 (${done + 1}/${jobs.length})：${s.sfx.trim()}`
+      const res = await window.tintin.server.audioGenSfx({
+        prompt: s.sfx.trim(),
+        duration: Math.max(1, Math.round(Number(s.duration) || 3)),
+      })
+      if (!res || typeof res !== 'object' || 'error' in res || !res.url) {
+        throw new Error('error' in (res ?? {}) ? String((res as { error: string }).error) : '服务端未返回音效地址')
+      }
+      s.sfxWavUrl = String(res.url)
+      s.sfxDurSec = Number(res.duration) || 0
+      done++
+    }
+    sfxStage.value = `完成：已生成 ${done} 个音效，分镜卡「音效」行可试听`
+  } catch (e) {
+    clientError('copy-montage', '音效包装失败', errText(e))
+    sfxStage.value = `失败：${errText(e)}（已生成的保留，重按从缺失处继续）`
+    notify('音效包装失败', errText(e))
+  } finally {
+    sfxBusy.value = false
+  }
 }
 
 /** 逐视频 BGM 行播放条 src（2026-09-18 用户裁决）：该行生效 BGM=逐行指派优先、
@@ -440,6 +490,16 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
           </div>
         </div>
 
+        <!-- 音效包装（2026-09-22 用户裁决：按分镜脚本逐镜「音效建议」提示词 AI 生成音效，
+             挂回对应镜头——分镜卡音效信息行内嵌播放条；进度逐镜推进，全部完成按钮对号标识） -->
+        <div class="row">
+          <TButton label="音效包装" :loading="sfxBusy" :icon="sfxAllDone ? 'check' : ''"
+            :title="sfxAllDone ? '音效包装已完成；在分镜脚本补充/修改音效提示词后重按可增量生成' : '按分镜脚本各镜的音效提示词，AI 生成音效并挂回对应镜头（时长=镜标时长）'"
+            @click="runSfxPack" />
+          <span v-if="sfxAllDone" class="muted">音效包装完成（{{ sfxPromptShots.length }} 镜），分镜卡音效行可试听</span>
+        </div>
+        <div v-if="sfxStage" class="concat-status-line" :class="{ 'sfx-fail': sfxStage.startsWith('失败') }">{{ sfxStage }}</div>
+
         <!-- 2026-09-14 服务端 /montage/concat 新增 lut_restore（默认 false=不还原 LUT）：
              勾选=恢复旧行为（无显式 LUT 文件时自动抽帧匹配 LUT 库）；显式 LUT 文件上传
              始终优先不受开关影响。仅服务端合成消费（本地 ffmpeg 无 LUT 概念） -->
@@ -491,13 +551,21 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
                紧跟方案一按钮（不放到服务端合成下面）；2026-09-20 用户反馈：进度条与按钮拉开间距 -->
           <div v-if="exportBusy" class="pbar" style="margin-top:8px"><div class="pbar-inner" :style="{ width: exportProgress + '%' }"></div></div>
           <div v-if="exportBusy && exportStage" class="muted" style="margin-top:4px;font-size:12px">{{ exportStage }}</div>
-          <div v-if="exportDoneMsg" class="row left" style="gap: var(--space-2); margin-top: 4px">
-            <span class="concat-status-line">{{ exportDoneMsg }}</span>
-            <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" size="small" @click="openExportDraftDir" />
+          <!-- 2026-09-22 用户裁决：导出完成提示样式对齐智能混剪（export-done-bar：✓圆标 +
+               绿底横条 + 打开草稿目录按钮右侧归位），替换原裸 concat-status-line 行 -->
+          <div v-if="exportDoneMsg" class="export-done-bar">
+            <span class="export-done-icon">✓</span>
+            <span class="export-done-text">{{ exportDoneMsg }}</span>
+            <div class="export-done-actions">
+              <TButton v-if="lastExportDraftPath" label="打开草稿目录" variant="secondary" size="small" @click="openExportDraftDir" />
+            </div>
           </div>
           <div class="vd4-scheme-line">方案二，服务端合成视频，时间较长</div>
+          <!-- 2026-09-22 用户裁决：文案混剪流程「服务端合成」暂不可用（服务端无本流程的
+               脚本匹配链路），恒禁用——对齐智能混剪 MontageStep4Panel 2026-09-20 同款处理；
+               恢复时把 :disabled="true" 改回 "finalBusy"、title 改回原文案即可 -->
           <TButton label="服务端合成" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
-            :disabled="finalBusy" title="特效烧制 + BGM 混音全部走服务端一次合成（字幕入场动画服务端无字段，不生效）" @click="startFinalMix()" />
+            :disabled="true" title="该功能暂时停用" @click="startFinalMix()" />
         </div>
         <!-- 服务端合成进度条（独立于导出进度；导出进度/完成提示已移至方案一按钮下方） -->
         <div v-if="finalBusy" class="pbar"><div class="pbar-inner" :style="{ width: finalProgress + '%' }"></div></div>
@@ -616,6 +684,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
 .icon-btn:hover:not(:disabled) { border-color: var(--primary); }
 .icon-btn:disabled { opacity: .4; cursor: not-allowed; }
 .concat-status-line { font-size: 11px; color: var(--primary); margin: 4px 0 2px; }
+.concat-status-line.sfx-fail { color: var(--error, var(--destructive, #e5484d)); }
 .vd-tag { flex: none; font-size: 12px; }
 .muted-tag { width: 48px; color: var(--muted-foreground); }
 /* 2026-09-09 用户裁决：克隆按钮独立外框 + 配音设置分组（字幕/花字/配音按钮） */
@@ -866,5 +935,26 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
 .vd-split:hover { background: var(--primary); opacity: 0.35; }
 /* 还原 LUT：库内选择列表（2026-09-14） */
 .lut-list { display: flex; flex-direction: column; gap: 4px; max-height: 132px; overflow-y: auto; }
+/* 导出完成提示条（2026-09-22 用户裁决：样式对齐智能混剪 MontageStep4Panel 同名类） */
+.export-done-bar {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-3); margin-top: var(--space-3);
+  background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius-md);
+}
+.export-done-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--success); color: white; font-size: 12px; font-weight: bold;
+}
+.export-done-text {
+  flex: 1 1 auto; min-width: 0;
+  font-size: var(--font-size-caption); color: var(--foreground);
+  white-space: pre-line;
+}
+.export-done-actions {
+  display: flex; align-items: center; gap: var(--space-1); margin-left: auto; flex-shrink: 0;
+}
 </style>
 

@@ -60,6 +60,10 @@ export interface StoryboardShot {
   material_id: number
   /** 展示辅助（不上传）：素材名 */
   material_name?: string
+  /** AI 生成的音效（2026-09-22 用户裁决「音效包装」：按该镜音效提示词生成的音频地址
+   *  与时长；客户端态字段——toServerShot 不上传，服务端 Shot 契约无此字段） */
+  sfxWavUrl?: string
+  sfxDurSec?: number
 }
 
 /** 镜头默认值归一（对齐 _render_shots L2130-2142） */

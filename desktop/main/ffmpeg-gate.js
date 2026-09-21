@@ -418,6 +418,9 @@ function cutClip(ffmpegPath, video, outPath, startSec, endSec, opts) {
     const end = Number(endSec) || Math.max(start + 1, start)
     const reencode = !!(opts && opts.reencode)
     const srtPath = (opts && opts.srtPath) || ''
+    // 输出目录不存在时 ffmpeg 直接失败（No such file or directory）——先建目录
+    // （2026-09-22 实测：镜内渲染 g{i}_s{j}.mp4 落 groups 目录未创建致 cutClip 全灭）
+    try { fs.mkdirSync(path.dirname(outPath), { recursive: true }) } catch (_) {}
     let args
     let cwd
     if (!reencode) {

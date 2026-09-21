@@ -628,8 +628,9 @@ function clearVoiceProgressListener(): void {
     /** 该脚本的旁白（第一步文案框绑定激活 tab 的旁白） */
     narrative: string
     shots: StoryboardShot[]
-    /** 每镜绑定的分割素材 idx（-1=未绑定） */
-    clipIdxs: number[]
+    /** 每镜绑定的分割素材 idx 有序组（2026-09-22 用户裁决：一镜多片·按时长装填——
+     *  外层=镜、内层=该镜按序使用的片段；空数组=未绑定） */
+    clipGroups: number[][]
     /** 分镜生成/应用时的旁白快照（过期判定：narrative 改过即过期） */
     sourceNarrative: string
     /** 整体克隆产物（2026-09-21 用户裁决：每分镜脚本一条整段声音；二/三步批量处理） */
@@ -659,7 +660,7 @@ function clearVoiceProgressListener(): void {
       topic: init.topic || '',
       narrative: init.narrative,
       shots: init.shots,
-      clipIdxs: init.shots.map(() => -1),
+      clipGroups: init.shots.map(() => []),
       sourceNarrative: init.narrative,
       voiceWav: '',
       voiceDurSec: 0,
@@ -704,25 +705,39 @@ function clearVoiceProgressListener(): void {
     const tab = activeStoryboard.value
     return !!tab && tab.sourceNarrative.trim() !== tab.narrative.trim()
   })
-  /** 每镜绑定的分割素材 idx（-1=未绑定）。第三步「自动分配/选择素材/解绑」写这里，
-   *  确认合成按它从分割镜头表解析素材来源 */
-  const shotClipIdx = computed<number[]>({
-    get: () => activeStoryboard.value?.clipIdxs || [],
-    set: (v) => { const tab = activeStoryboard.value; if (tab) tab.clipIdxs = v },
+  /** 每镜绑定的分割素材组（2026-09-22 用户裁决：一镜多片）。第三步「智能匹配/选择素材/
+   *  解绑」写这里；确认预合成按组装填出方案 */
+  const shotClipGroup = computed<number[][]>({
+    get: () => activeStoryboard.value?.clipGroups || [],
+    set: (v) => { const tab = activeStoryboard.value; if (tab) tab.clipGroups = v },
   })
+  /** 单镜追加绑定（追加式选材；同片去重） */
   function bindShotMaterial(shotIdx: number, sceneIdx: number): void {
     if (shotIdx < 0 || shotIdx >= copyShots.value.length) return
-    const arr = shotClipIdx.value.slice()
-    while (arr.length < copyShots.value.length) arr.push(-1)
-    arr[shotIdx] = sceneIdx
-    shotClipIdx.value = arr
+    const arr = shotClipGroup.value.map((g) => g.slice())
+    while (arr.length < copyShots.value.length) arr.push([])
+    const g = arr[shotIdx] || []
+    if (!g.includes(sceneIdx)) g.push(sceneIdx)
+    arr[shotIdx] = g
+    shotClipGroup.value = arr
   }
+  /** 移除单镜组内指定位置的片段 */
+  function removeShotClipAt(shotIdx: number, pos: number): void {
+    if (shotIdx < 0 || shotIdx >= copyShots.value.length) return
+    const arr = shotClipGroup.value.map((g) => g.slice())
+    while (arr.length < copyShots.value.length) arr.push([])
+    const g = arr[shotIdx] || []
+    if (pos >= 0 && pos < g.length) g.splice(pos, 1)
+    arr[shotIdx] = g
+    shotClipGroup.value = arr
+  }
+  /** 清空单镜整组绑定 */
   function unbindShotMaterial(shotIdx: number): void {
     if (shotIdx < 0 || shotIdx >= copyShots.value.length) return
-    const arr = shotClipIdx.value.slice()
-    while (arr.length < copyShots.value.length) arr.push(-1)
-    arr[shotIdx] = -1
-    shotClipIdx.value = arr
+    const arr = shotClipGroup.value.map((g) => g.slice())
+    while (arr.length < copyShots.value.length) arr.push([])
+    arr[shotIdx] = []
+    shotClipGroup.value = arr
   }
   /** 克隆合成全文 = 当前激活分镜的旁白（无分镜 tab → 全局草稿） */
   function copyShotsText(): string {
@@ -762,7 +777,9 @@ function clearVoiceProgressListener(): void {
    *  解析失败（fallback 单镜回退标记）保留现有卡并报错，不吞用户已编辑内容 */
   const storyboardBusy = ref(false)
   async function genStoryboard(): Promise<void> {
-    const copy = getScriptCopy().trim()
+    // 2026-09-21 用户裁决：口播文案与分镜脚本绑定——生成分镜取激活旁白
+    // （activeNarrative：有 tab=激活 tab.narrative，无 tab=全局草稿），不再读全局草稿
+    const copy = activeNarrative.value.trim()
     if (!copy) { notify('文案为空', '请先在「文案编写」页生成或填写视频文案。'); return }
     if (storyboardBusy.value) return
     storyboardBusy.value = true
@@ -1314,7 +1331,7 @@ function clearVoiceProgressListener(): void {
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
-    copyShots, copyShotsStale, shotClipIdx, bindShotMaterial, unbindShotMaterial,
+    copyShots, copyShotsStale, shotClipGroup, bindShotMaterial, removeShotClipAt, unbindShotMaterial,
     storyboards, activeStoryboardId, activeStoryboard, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, activeNarrative, COPY_STORYBOARD_MAX,
     scriptSyncing, syncStoryboardsToServer,
     genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,

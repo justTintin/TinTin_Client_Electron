@@ -19,7 +19,7 @@ const shell = inject(copyMontageShellKey)!
 const {
   copyShots, copyShotsStale, genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
   scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript,
-  scenes, shotClipIdx, bindShotMaterial, unbindShotMaterial, toAbsolute,
+  scenes, shotClipGroup, bindShotMaterial, removeShotClipAt, unbindShotMaterial, toAbsolute,
   storyboards, activeStoryboardId, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, COPY_STORYBOARD_MAX,
 } = shell.s
 
@@ -52,18 +52,23 @@ function onTabClose(id: string): void {
   }
 }
 
-/** 第 i 镜绑定的分割素材行（未绑定 → null） */
-function boundScene(i: number) {
-  const idx = Number(shotClipIdx.value[i])
-  if (!(idx >= 0)) return null
-  return scenes.value.find((s) => s.idx === idx) || null
+/** 第 i 镜绑定的分割素材组（2026-09-22 用户裁决：一镜多片——按序返回已解析片段行） */
+function boundClips(i: number) {
+  const g = shotClipGroup.value[i] || []
+  return g
+    .map((idx) => scenes.value.find((s) => s.idx === idx))
+    .filter((s): s is NonNullable<typeof s> => !!s)
+}
+/** 第 i 镜装填覆盖时长（Σ片段全长；裁剪在预合成渲染时落地，此处按全长估算） */
+function coveredSec(i: number): number {
+  return boundClips(i).reduce((acc, s) => acc + (Number(s.duration) || 0), 0)
 }
 /** 单镜选素材弹窗：目标分镜下标（-1=关闭） */
 const matPickIdx = ref(-1)
-/** 第 i 镜的视频预览地址 = 该镜绑定的分割素材视频（相对路径拼服务端地址） */
+/** 第 i 镜的视频预览地址 = 该镜首个绑定片段（相对路径拼服务端地址） */
 function previewSrc(i: number): string {
-  const s = boundScene(i)
-  return s ? toAbsolute(s.clipUrl || '') : ''
+  const first = boundClips(i)[0]
+  return first ? toAbsolute(first.clipUrl || '') : ''
 }
 
 const MODE_STATUS: Record<string, string> = {
@@ -150,15 +155,30 @@ const EMPTY_HINT: Record<string, string> = {
           <input v-model="shot.sfx" class="input" placeholder="可选：如 按键声 / 轻快 BGM 起拍" />
         </label>
         <div v-else-if="shot.sfx" class="sb-line">音效：{{ shot.sfx }}</div>
+        <!-- 音效包装产物（2026-09-22 用户裁决：AI 按音效提示词生成的音效挂在对应镜，就地试听） -->
+        <audio
+          v-if="mode === 'fx' && shot.sfxWavUrl"
+          class="sfx-audio"
+          controls
+          preload="none"
+          :src="toAbsolute(shot.sfxWavUrl)"
+          :title="`AI 生成音效（${shot.sfx}）`"
+        />
 
-        <!-- 绑定素材（material 态；2026-09-21 用户裁决：每镜可单独选择素材，展示同分镜脚本页绑定样式） -->
+        <!-- 绑定素材（material 态；2026-09-22 用户裁决：一镜多片·按时长装填——
+             逐片列表 + 覆盖时长/镜标对比；「选择素材」追加式，单片可移除，「解绑」清空整组） -->
         <template v-if="mode === 'material'">
           <div class="seg-field"><span class="lbl">绑定素材</span>
-            <div v-if="boundScene(i)" class="sb-line">已绑定：{{ boundScene(i)!.name }}{{ boundScene(i)!.duration > 0 ? `（${boundScene(i)!.duration.toFixed(1)}s）` : '' }}
-              <button class="unbind-btn" title="解除绑定" @click="unbindShotMaterial(i)">解绑</button>
+            <div v-if="boundClips(i).length" class="sb-line">
+              <span v-for="(s, j) in boundClips(i)" :key="s.idx" class="bound-clip">
+                {{ j + 1 }}. {{ s.name }}（{{ s.duration > 0 ? s.duration.toFixed(1) + 's' : '—' }}）
+                <button class="unbind-btn" title="移除该片段" @click="removeShotClipAt(i, j)">×</button>
+              </span>
+              <span class="muted">共 {{ boundClips(i).length }} 片 · {{ coveredSec(i).toFixed(1) }}s / 标 {{ shot.duration }}s</span>
             </div>
             <div v-else class="muted">未绑定素材</div>
-            <TButton label="选择素材" variant="secondary" size="small" @click="matPickIdx = i" />
+            <TButton label="选择素材（追加）" variant="secondary" size="small" @click="matPickIdx = i" />
+            <TButton v-if="boundClips(i).length" label="解绑全部" variant="secondary" size="small" @click="unbindShotMaterial(i)" />
           </div>
         </template>
           </div><!-- /seg-main -->
@@ -177,14 +197,15 @@ const EMPTY_HINT: Record<string, string> = {
     </template>
     <div v-else class="muted">{{ EMPTY_HINT[mode] }}</div>
 
-    <!-- 单镜选素材弹窗（material 态；素材池=本地上传分割出的镜头） -->
+    <!-- 单镜选素材弹窗（material 态；素材池=本地上传分割出的镜头；2026-09-22 用户裁决：
+         一镜多片——点选即追加进该镜绑定组，组内已选片段自动去重跳过） -->
     <teleport to="body">
       <div v-if="matPickIdx >= 0" class="modal-mask" @click.self="matPickIdx = -1">
         <div class="modal">
-          <span class="modal-title">为分镜 #{{ matPickIdx + 1 }} 选择素材</span>
+          <span class="modal-title">为分镜 #{{ matPickIdx + 1 }} 追加素材（点击追加，可多次选择）</span>
           <div class="script-list">
             <button v-for="s in scenes" :key="s.idx" class="script-row" :title="s.description"
-              @click="bindShotMaterial(matPickIdx, s.idx); matPickIdx = -1">
+              @click="bindShotMaterial(matPickIdx, s.idx)">
               <span class="script-topic">{{ s.idx }}. {{ s.name }}</span>
               <span class="script-meta">{{ s.duration > 0 ? s.duration.toFixed(1) + 's' : '—' }}{{ s.description ? ` · ${s.description}` : '' }}</span>
             </button>
@@ -346,4 +367,12 @@ const EMPTY_HINT: Record<string, string> = {
 .script-shots { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .shot-line { padding: 4px 6px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--foreground); line-height: 1.5; }
 .shot-line b { color: var(--primary); margin-right: 4px; }
+/* 一镜多片绑定（2026-09-22 用户裁决：逐片列表 + 移除） */
+.bound-clip {
+  display: inline-flex; align-items: center; gap: 2px; margin-right: 8px;
+  padding: 1px 6px; background: var(--surface-container); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 12px; color: var(--foreground);
+}
+/* 音效包装播放条（fx 态音效信息行内嵌，2026-09-22 用户裁决） */
+.sfx-audio { width: 240px; height: 28px; margin-top: 2px; }
 </style>

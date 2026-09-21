@@ -5,7 +5,7 @@
 // 分层：本文件纯函数零 IPC/DOM（IRON-06/07）；LLM 调用编排在 CopyStep2Panel。
 // 数据流：buildAssignPool 去重池 → buildAssignCandidateSet 逐镜预筛并集（景别桶+
 // 时长窗+评分序）→ buildAssignMatchPrompt 单脚本一次 llm:chat → parseAssignMatchResponse
-// 校验解析 → mergeTabAssignment 命中写回+缺口循环兜底 → 写 tab.clipIdxs。
+// 校验解析 → mergeTabAssignment 命中写回+缺口循环兜底 → planShotGroup 装填写 tab.clipGroups。
 // ═══════════════════════════════════════════════════════════════
 import { SHOT_TYPE_LABELS } from './copyMontageStep1SplitLogic.ts'
 import type { StoryboardShot } from './opsStoryboardLogic.ts'
@@ -15,10 +15,12 @@ import type { AssignPoolItem } from './copyMontageStep2ConcatLogic.ts'
 export const ASSIGN_MATCH_CANDIDATE_CAP = 40
 /** 逐镜预筛每镜候选上限（轮转并集前各镜独立排名截断） */
 export const ASSIGN_MATCH_PER_SHOT_TOPK = 8
-/** 时长窗（相对镜标注时长）：素材时长落在 [0.4×, 2.5×] 内视为接近；
- *  镜时长未知（0）视为全通过 */
-export const ASSIGN_DUR_WIN_MIN = 0.4
-export const ASSIGN_DUR_WIN_MAX = 2.5
+/** 时长窗（相对镜标注时长，2026-09-22 用户裁决方案C收紧为紧窗）：素材时长落在
+ *  [0.8×, 1.5×] 内视为接近（从源头减少超长/欠装）；镜时长未知（0）视为全通过 */
+export const ASSIGN_DUR_WIN_MIN = 0.8
+export const ASSIGN_DUR_WIN_MAX = 1.5
+/** 封镜阈值（2026-09-22 用户裁决）：装填累计 ≥ 镜标×0.9 即封镜（略欠优于超） */
+export const ASSIGN_SEAL_RATIO = 0.9
 
 /** 景别是否同桶：素材侧存服务端键（closeup/medium/…），分镜侧多为中文
  *  （特写/中景/…）——键相等或键的中文名相等均算命中；任一方空=不命中
@@ -186,4 +188,56 @@ export function mergeTabAssignment(
     }
   }
   return { idxs, matched, nextK: k }
+}
+
+// ── 一镜多片·按时长装填（2026-09-22 用户裁决开工：方案C裁决项落地——
+//    超长处置=换片优先+裁剪兜底；封镜阈值 0.9；镜内片间硬切）──
+
+/** 单镜装填结果：idxs=按序片段 scene.idx；useDurs=每片使用的时长（< 片段全长
+ *  即需本地裁剪，末端裁到镜标）；coveredSec=装填后镜长（ΣuseDurs）；
+ *  sealed=是否装到封镜阈值（false=素材耗尽欠装） */
+export interface ShotFillPlan {
+  idxs: number[]
+  useDurs: number[]
+  coveredSec: number
+  sealed: boolean
+}
+
+/** 按镜标时长装填单镜（2026-09-22 用户裁决方案C开工）：主片（LLM 语义选定）置首，
+ *  其后按预筛排名继续取片，累计达 镜标×封镜阈值(0.9) 即封镜；末端片段超出镜标时
+ *  裁剪到剩余量（超长裁剪兜底）；主片自身超长 → 单片裁到镜标；镜标未知 → 主片全长单片。
+ *  组内按片段 idx 去重（不复用同一段） */
+export function planShotGroup(
+  shot: StoryboardShot,
+  primaryIdx: number,
+  pool: AssignPoolItem[],
+  opts?: { sealRatio?: number },
+): ShotFillPlan {
+  const sealRatio = opts?.sealRatio ?? ASSIGN_SEAL_RATIO
+  const target = Math.max(0, Number(shot.duration) || 0)
+  const primary = pool.find((c) => c.scene.idx === primaryIdx) || null
+  if (!primary) return { idxs: [], useDurs: [], coveredSec: 0, sealed: false }
+  const primaryFull = Math.max(0, Number(primary.scene.duration) || 0)
+  if (target <= 0) {
+    return { idxs: [primary.scene.idx], useDurs: [primaryFull], coveredSec: primaryFull, sealed: true }
+  }
+  const ranked = prefilterShotCandidates(shot, pool).filter((c) => c.scene.idx !== primary.scene.idx)
+  const seen = new Set<number>([primary.scene.idx])
+  const idxs: number[] = []
+  const useDurs: number[] = []
+  let covered = 0
+  let sealed = false
+  for (const cand of [primary, ...ranked]) {
+    if (seen.has(cand.scene.idx) && idxs.length) continue
+    const full = Math.max(0, Number(cand.scene.duration) || 0)
+    if (full <= 0) continue
+    if (covered >= target * sealRatio - 1e-6) { sealed = true; break }
+    let use = full
+    if (covered + full > target) use = Math.max(0.05, target - covered) // 末端超长 → 裁到剩余量
+    idxs.push(cand.scene.idx)
+    useDurs.push(Math.round(use * 100) / 100)
+    covered += use
+    if (covered >= target * sealRatio - 1e-6) sealed = true
+  }
+  return { idxs, useDurs, coveredSec: Math.round(covered * 100) / 100, sealed }
 }

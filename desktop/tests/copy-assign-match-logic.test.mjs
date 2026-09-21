@@ -1,9 +1,11 @@
 // 分镜×素材智能匹配纯逻辑单测（2026-09-21 用户裁决方案 C：
-// 本地预筛 + LLM 精选 + 循环兜底，实现在 copyMontageAssignLogic.ts）
+// 本地预筛 + LLM 精选 + 循环兜底，实现在 copyMontageAssignLogic.ts；
+// 2026-09-22 用户裁决开工：一镜多片·按时长装填——planShotGroup/groupUseDurs 等）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 const M = await import('../renderer/src/composables/copyMontageAssignLogic.ts')
+const S = await import('../renderer/src/composables/copyMontageStep2ConcatLogic.ts')
 
 /** 造池项：key 按 源片|起|止 指纹（与 sceneHashKey 同口径即可，测试只要求唯一） */
 function item(idx, { type = '', dur = 3, score = 0, desc = '' } = {}) {
@@ -109,4 +111,81 @@ test('mergeTabAssignment：空池全 -1；解析失败整组兜底', () => {
   const pool = [item(7)]
   const full = M.mergeTabAssignment(2, null, [], pool, 0)
   assert.deepEqual(full.idxs, [7, 7]) // 池=1 相邻重复不可避免（兜底口径与原版一致）
+})
+
+// ── 一镜多片·按时长装填（2026-09-22 用户裁决开工）──
+
+function shotOf(dur) {
+  return { index: 1, shot_type: '', visual: '', audio: '', sfx: '', duration: dur,
+    material_path: '', material_type: '', material_hash: '', material_id: 0 }
+}
+
+test('planShotGroup：主片够长单片段封镜（超镜标裁到镜标）；主片严重超长同样裁', () => {
+  const pool = [item(1, { dur: 5, score: 9 }), item(2, { dur: 4, score: 8 })]
+  // 主片 5s > 镜标 4 → 单片封镜并裁到 4
+  const r1 = M.planShotGroup(shotOf(4), 1, pool)
+  assert.deepEqual(r1.idxs, [1])
+  assert.deepEqual(r1.useDurs, [4])
+  assert.equal(r1.coveredSec, 4)
+  assert.equal(r1.sealed, true)
+  // 主片 5s > 镜标 3 → 裁到 3
+  const r2 = M.planShotGroup(shotOf(3), 1, pool)
+  assert.deepEqual(r2.idxs, [1])
+  assert.deepEqual(r2.useDurs, [3])
+  assert.equal(r2.coveredSec, 3)
+  assert.equal(r2.sealed, true)
+})
+
+test('planShotGroup：欠长装填补片，末端裁到镜标；素材耗尽欠装未封镜', () => {
+  const pool = [item(1, { dur: 2, score: 9 }), item(2, { dur: 2, score: 8 }), item(3, { dur: 2, score: 7 }), item(4, { dur: 2, score: 6 })]
+  // 镜标 5：主片 2 + 补 2 = 4 <5 继续补 2 → 6>5 末端裁到 1 → covered=5 sealed
+  const r1 = M.planShotGroup(shotOf(5), 1, pool)
+  assert.deepEqual(r1.idxs, [1, 2, 3])
+  assert.deepEqual(r1.useDurs, [2, 2, 1])
+  assert.equal(r1.coveredSec, 5)
+  assert.equal(r1.sealed, true)
+  // 镜标 6：池尽 2+2+2+2=8≥5.4 封镜且 8>6 末端裁到 0？——2+2+2=6 封镜（covered≥5.4 后停）
+  const r2 = M.planShotGroup(shotOf(6), 1, pool)
+  assert.deepEqual(r2.useDurs, [2, 2, 2])
+  assert.equal(r2.coveredSec, 6)
+  // 素材耗尽欠装：池仅 1 段 2s、镜标 5 → covered 2 <4.5 未封镜
+  const small = [item(1, { dur: 2 })]
+  const r3 = M.planShotGroup(shotOf(5), 1, small)
+  assert.deepEqual(r3.idxs, [1])
+  assert.equal(r3.coveredSec, 2)
+  assert.equal(r3.sealed, false)
+})
+
+test('planShotGroup：主片不在池 → 空计划；镜标 0 → 主片全长单片', () => {
+  const pool = [item(1, { dur: 3 })]
+  assert.deepEqual(M.planShotGroup(shotOf(3), 99, pool), { idxs: [], useDurs: [], coveredSec: 0, sealed: false })
+  const r = M.planShotGroup(shotOf(0), 1, pool)
+  assert.deepEqual(r.idxs, [1])
+  assert.equal(r.sealed, true)
+})
+
+test('groupUseDurs：顺序消耗镜标，末端裁到剩余量；组短于镜标全长使用', () => {
+  const g = [item(1, { dur: 2 }).scene, item(2, { dur: 2 }).scene, item(3, { dur: 2 }).scene]
+  assert.deepEqual(S.groupUseDurs(g, 5), [2, 2, 1])
+  assert.deepEqual(S.groupUseDurs(g, 10), [2, 2, 2])
+  assert.deepEqual(S.groupUseDurs(g, 0), [2, 2, 2])
+})
+
+test('planNeedsGroupRender：多片组/裁剪组触发；单片段全长不触发', () => {
+  const a = item(1, { dur: 4 }).scene
+  const b = item(2, { dur: 4 }).scene
+  assert.equal(S.planNeedsGroupRender([{ scenes: [a], useDurs: [4] }]), false)
+  assert.equal(S.planNeedsGroupRender([{ scenes: [a, b], useDurs: [4, 4] }]), true)
+  assert.equal(S.planNeedsGroupRender([{ scenes: [a], useDurs: [2.5] }]), true)
+})
+
+test('buildGroupedPrecomposePlan：组保序摊平 clips，groups 带 useDurs', () => {
+  const g1 = [item(1, { dur: 3 }).scene]
+  const g2 = [item(2, { dur: 2 }).scene, item(3, { dur: 2 }).scene]
+  const plan = S.buildGroupedPrecomposePlan([g1, g2], [3, 5])
+  assert.equal(plan.clips.length, 3)
+  assert.equal(plan.groups.length, 2)
+  assert.deepEqual(plan.groups[1].useDurs, [2, 2])
+  assert.deepEqual(plan.groups[1].scenes.map((s) => s.idx), [2, 3])
+  assert.equal(plan.confirmed, false)
 })

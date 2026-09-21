@@ -13,8 +13,8 @@ import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import VdStepBar from '../VdStepBar.vue'
 import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
 import { copyPreviewText, SHOT_TYPE_COLORS, SHOT_TYPE_LABELS, buildAssignPool } from '@/composables/copyMontageLogic'
-import { buildAssignCandidateSet, buildAssignMatchPrompt, parseAssignMatchResponse, mergeTabAssignment } from '@/composables/copyMontageAssignLogic'
-import { errText } from '@/composables/copyMontage/context'
+import { buildAssignCandidateSet, buildAssignMatchPrompt, parseAssignMatchResponse, mergeTabAssignment, planShotGroup } from '@/composables/copyMontageAssignLogic'
+import { errText, notify } from '@/composables/copyMontage/context'
 import { clientError } from '@/utils/clientLog'
 import CopyStoryboard from './CopyStoryboard.vue'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
@@ -32,7 +32,7 @@ const {
   hasUnconfirmed, confirmedPaths, concatResults, planDurText,
   // 上一步（口播配音）的分镜脚本 + 每镜绑定素材（2026-09-21 用户裁决：
   // 确认合成的视频来源=分割镜头按分镜绑定；自动分配/单独选素材都写 shotClipIdx）
-  storyboards, shotClipIdx, runConcatFromAllStoryboards, syncStoryboardsToServer,
+  storyboards, shotClipGroup, runConcatFromAllStoryboards, syncStoryboardsToServer,
   // 素材上传与镜头分割（2026-09-21 用户裁决：自智能混剪 Step1 移植到本页「本地上传」tab）
   srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
   scenes, scoreFilter, splitBusy, splitError, splitMsg, splitProgress,
@@ -99,12 +99,22 @@ const LAYOUTS = computed(() => [
 
 const assignMsg = ref('')
 
+/** 已分割镜头表显隐（2026-09-22 用户裁决：暂时不显示；恢复时改 true。
+ *  显式 boolean 注解——字面量 false 会让 vue-tsc 对分支内类型收窄变严连锁报错） */
+const splitTableVisible: boolean = false
+
 /** 智能匹配到分镜脚本（2026-09-21 用户裁决方案 C：「自动分配到分镜脚本」按钮直接升级——
  *  逐脚本一次 llm:chat：本地硬约束预筛候选（景别桶>时长窗>评分，copyMontageAssignLogic）
  *  → LLM 候选内语义精选 → 校验解析；失败/缺槽按原循环轮转兜底（全局镜头序跨脚本连续
  *  取模，各素材使用次数均衡）。素材来源将来含在线/AI 生成时同样进 buildAssignPool 池 */
 const smartAssignBusy = ref(false)
 async function applyAssignment(): Promise<void> {
+  // 2026-09-22 用户报障：分割未完成时匹配成功、合成有进度，但分割完成刷新表格后
+  // 合成"丢失"（产物孤儿化 + 方案素材集过期）——分割期间禁入，双按钮同口径禁用
+  if (splitBusy.value) {
+    assignMsg.value = '镜头分割进行中：素材池尚未完整，请等分割完成后再智能匹配。'
+    return
+  }
   const pool = buildAssignPool(filteredScenes.value)
   if (!pool.length) {
     assignMsg.value = '没有可用素材：请先上传素材并完成镜头分割。'
@@ -116,15 +126,16 @@ async function applyAssignment(): Promise<void> {
     return
   }
   smartAssignBusy.value = true
-  const sceneByIdx = new Map(pool.map((p) => [p.scene.idx, p.scene]))
   let cyclicK = 0
   let total = 0
   let aiHit = 0
+  let coveredAll = 0
+  let targetAll = 0
   const failedTabs: string[] = []
   try {
     for (let ti = 0; ti < tabs.length; ti++) {
       const tab = tabs[ti]
-      if (!tab.shots.length) { tab.clipIdxs = []; continue }
+      if (!tab.shots.length) { tab.clipGroups = []; continue }
       statusText.value = `智能匹配中（第 ${ti + 1}/${tabs.length} 个分镜脚本）…`
       const candidates = buildAssignCandidateSet(tab.shots, pool)
       let parsed: Map<number, number> | null = null
@@ -148,20 +159,27 @@ async function applyAssignment(): Promise<void> {
       }
       const { idxs, matched, nextK } = mergeTabAssignment(tab.shots.length, parsed, candidates, pool, cyclicK)
       cyclicK = nextK
-      tab.clipIdxs = idxs
+      // 一镜多片装填（2026-09-22 用户裁决开工：方案C——主片按镜标×0.9 封镜，末端超长
+      // 裁剪到剩余量；每镜绑定组写 tab.clipGroups，确认预合成按组渲染/拼接）
+      const groups: number[][] = []
       tab.shots.forEach((shot, si) => {
-        const sc = sceneByIdx.get(idxs[si])
-        if (sc && shot) {
-          shot.material_path = sc.clipUrl || sc.name || ''
+        const fill = planShotGroup(shot, idxs[si] ?? -1, pool)
+        groups.push(fill.idxs)
+        coveredAll += fill.coveredSec
+        targetAll += Math.max(0, Number(shot.duration) || 0)
+        const first = pool.find((pc) => pc.scene.idx === (fill.idxs[0] ?? -1))
+        if (first && shot) {
+          shot.material_path = first.scene.clipUrl || first.scene.name || ''
           shot.material_type = 'video'
         }
       })
+      tab.clipGroups = groups
       total += tab.shots.length
       aiHit += matched
     }
     const fallback = total - aiHit
     const failNote = failedTabs.length ? `；脚本「${failedTabs.join('」「')}」LLM 不可用已整组兜底` : ''
-    assignMsg.value = `智能匹配完成：${tabs.length} 个分镜脚本共 ${total} 镜，AI 命中 ${aiHit}、循环兜底 ${fallback}（素材池去重后 ${pool.length} 段）${failNote}`
+    assignMsg.value = `智能匹配完成：${tabs.length} 个分镜脚本共 ${total} 镜，AI 命中 ${aiHit}、循环兜底 ${fallback}；装填后画面 Σ${coveredAll.toFixed(1)}s（镜标设计 Σ${targetAll.toFixed(1)}s，素材池去重后 ${pool.length} 段）${failNote}`
     void syncStoryboardsToServer()
   } finally {
     smartAssignBusy.value = false
@@ -171,7 +189,12 @@ async function applyAssignment(): Promise<void> {
 /** 确认合成视频（2026-09-21 用户裁决：视频来源=分割镜头按分镜绑定；任一分镜未绑定
  *  镜头则不能合成——runConcatFromShots 内校验并提示）：按分镜出方案 → 确认合成 */
 async function onConfirmCompose(): Promise<void> {
-  const tabs = storyboards.value.map((s) => ({ id: s.id, name: s.name, narrative: s.narrative, shots: s.shots, clipIdxs: s.clipIdxs.slice() }))
+  // 2026-09-22 用户报障：分割未完成时的合成产物孤儿化/素材集过期——分割期间禁入
+  if (splitBusy.value) {
+    notify('镜头分割进行中', '素材池尚未完整，请等分割完成后再确认预合成视频。')
+    return
+  }
+  const tabs = storyboards.value.map((s) => ({ id: s.id, name: s.name, narrative: s.narrative, shots: s.shots, clipGroups: s.clipGroups.map((g) => g.slice()) }))
   const ok = await runConcatFromAllStoryboards(tabs)
   if (ok) {
     await confirmAllPrecompose()
@@ -179,11 +202,15 @@ async function onConfirmCompose(): Promise<void> {
   }
 }
 
-/** 全部 tab 绑定齐全才允许合成（用户裁决 4：必须全部 tab 绑定全） */
+/** 全部 tab 绑定齐全才允许预合成（用户裁决 4：必须全部 tab 绑定全——每镜至少 1 片） */
 const tabsAllBound = computed(() =>
   storyboards.value.length > 0 &&
   storyboards.value.every((tab) =>
-    tab.shots.length > 0 && tab.clipIdxs.length === tab.shots.length && tab.clipIdxs.every((v) => Number(v) >= 0)))
+    tab.shots.length > 0 && tab.clipGroups.length === tab.shots.length && tab.clipGroups.every((g) => g.length >= 1)))
+
+/** 预合成完成标识（2026-09-22 用户裁决）：全部方案已确认合成 → 按钮前缀对号，
+ *  同智能匹配完成形态；重新智能匹配生成新方案（未确认）后对号自然消失 */
+const precomposeDone = computed(() => assemblePlans.value.length > 0 && !hasUnconfirmed.value)
 
 /** 评分着色（原版 L1443-1448：≥8 绿 / ≥6 黄 / ≥0 红）；Step1 用途已迁 Step1Panel，Step2 详情表仍消费 */
 function scoreClass(score: number | undefined): string {
@@ -246,7 +273,9 @@ function scoreClass(score: number | undefined): string {
           <div v-if="splitMsg" class="hint">{{ splitMsg }}</div>
           <div v-if="splitError" class="error-msg">⚠ {{ splitError }}（修正后重按「开始智能镜头分割」重试）</div>
 
-          <!-- 已分割镜头表（评分过滤同智能混剪口径；勾选镜头经「自动分配到分镜脚本」落到各分镜） -->
+          <!-- 已分割镜头表（2026-09-22 用户裁决：暂时不显示——分割结果由智能匹配直接消费，
+               无需人工浏览勾选；恢复显示时把 splitTableVisible 改回 true 即可） -->
+          <template v-if="splitTableVisible">
           <div class="row between">
             <span class="sec-label">已分割出的最小单位镜头片段 (双击可播放预览，双击画面描述列可手动修改):</span>
             <label class="muted">评分过滤:
@@ -295,15 +324,22 @@ function scoreClass(score: number | undefined): string {
               </tbody>
             </table>
           </div>
+          </template>
         </template>
         <div v-else class="src-placeholder muted">「{{ sourceTab }}」素材来源暂不支持，当前仅支持本地上传</div>
+      </section>
 
+      <!-- 合成执行组（2026-09-21 用户裁决：智能匹配/视频设置/确认合成/导航单独分组，
+           自上方素材准备卡拆出放到下面——素材准备与合成执行两卡分界） -->
+      <section class="card">
         <!-- 智能匹配到分镜脚本（2026-09-21 用户裁决方案 C：原「自动分配到分镜脚本」
              直接升级——本地预筛+LLM 精选+循环兜底；分配明细见顶部分镜脚本各镜） -->
         <div class="param-row">
           <span class="spacer"></span>
           <span v-if="assignMsg" class="hint">{{ assignMsg }}</span>
-          <TButton label="智能匹配到分镜脚本" icon="check" :loading="smartAssignBusy" :disabled="!filteredScenes.length || !storyboards.length" @click="applyAssignment" />
+          <TButton label="智能匹配到分镜脚本" icon="check" :loading="smartAssignBusy"
+            :disabled="splitBusy || !filteredScenes.length || !storyboards.length"
+            :title="splitBusy ? '镜头分割进行中：素材池尚未完整，请等分割完成后再智能匹配' : '按分镜镜头的景别/时长/画面语义，从已分割素材中智能匹配并绑定素材'" @click="applyAssignment" />
         </div>
 
         <!-- 参数设置组（原版 params_group：统一边框背景内两行参数；2026-09-21 用户裁决（图2标注）：
@@ -352,10 +388,13 @@ function scoreClass(score: number | undefined): string {
           </div>
         </div>
 
-        <!-- 确认行（原版 confirm_row L268-286：确认合成视频 + 生成口播文案，初始禁用；
-             2026-09-10 界面统一：属执行步骤，归左栏底部） -->
+        <!-- 确认行（2026-09-22 用户裁决：更名「确认预合成视频」对齐本步预合成语义；
+             预合成完成（全部方案已确认）→ 按钮前缀对号作明确标识，同智能匹配完成形态） -->
         <div class="row confirm-row">
-          <TButton label="确认合成视频" :loading="confirmBusy" :disabled="!tabsAllBound" title="所有分镜脚本绑定完整素材后才能合成；有分镜缺素材时不能合成" @click="onConfirmCompose" />
+          <TButton label="确认预合成视频" :loading="confirmBusy"
+            :icon="precomposeDone ? 'check' : ''"
+            :disabled="splitBusy || !tabsAllBound"
+            :title="splitBusy ? '镜头分割进行中：请等分割完成后再确认预合成视频' : (precomposeDone ? '预合成已完成；重新智能匹配后可再次预合成' : '所有分镜脚本绑定完整素材后才能预合成；有分镜缺素材时不能预合成')" @click="onConfirmCompose" />
           <!-- 2026-09-21 用户裁决：「生成口播文案」删除——文案在第一步编写/生成，旁白已在第二步克隆 -->
         </div>
         <template v-if="confirmBusy">

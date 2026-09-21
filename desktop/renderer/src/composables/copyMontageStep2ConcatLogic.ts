@@ -155,6 +155,55 @@ export interface PrecomposePlan {
   copy: string
   /** 成片实际时长（秒；确认合成后渲染层 ffmpeg:probeDuration 探测回写，0=探测中/失败） */
   durationSec?: number
+  /** 镜分组（2026-09-22 用户裁决：一镜多片·按时长装填）——每镜一组片段与各自
+   *  使用时长（useDur < 片段全长 → 本地裁剪到该值）；预合成提交按组渲染/拼接 */
+  groups?: PlanShotGroup[]
+}
+
+/** 镜分组：一镜的有序片段 + 每片使用时长（秒，与 scenes 平行对齐） */
+export interface PlanShotGroup {
+  scenes: SplitSceneRow[]
+  useDurs: number[]
+}
+
+/** 组内每片使用时长分配（装填口径复算）：顺序消耗镜标时长，末端片段裁到剩余量；
+ *  镜标 ≤0 或组短于镜标 → 片段全长使用 */
+export function groupUseDurs(group: SplitSceneRow[], targetSec: number): number[] {
+  let remaining = targetSec > 0 ? targetSec : Infinity
+  return group.map((s) => {
+    const full = Math.max(0, Number(s.duration) || 0)
+    const use = Math.min(full, remaining)
+    remaining -= use
+    return Math.round(use * 100) / 100
+  })
+}
+
+/** 分组方案是否需要本地渲染（镜内多片拼接 或 有片段被裁剪）：
+ *  全部组=单片段且全长 → 走服务端 clip_urls 快路径（零本地处理） */
+export function planNeedsGroupRender(groups: PlanShotGroup[]): boolean {
+  return groups.some((g) => g.scenes.length > 1 ||
+    g.scenes.some((s, i) => {
+      const use = Number(g.useDurs[i]) || 0
+      const full = Math.max(0, Number(s.duration) || 0)
+      return use > 0 && use < full - 0.05
+    }))
+}
+
+/** 分组化预合成方案（2026-09-22 用户裁决：一镜多片——每个分镜脚本的镜序列
+ *  按组保序进入方案；clips=摊平视图供既有展示/统计兼容） */
+export function buildGroupedPrecomposePlan(
+  sceneGroups: SplitSceneRow[][],
+  shotTargets: number[],
+  mode = 'grouped',
+): PrecomposePlan {
+  const groups: PlanShotGroup[] = sceneGroups.map((g, i) => ({
+    scenes: g,
+    useDurs: groupUseDurs(g, Number(shotTargets[i]) || 0),
+  }))
+  const clips = groups.flatMap((g) => g.scenes)
+  const plan = newPrecomposePlan(clips, mode)
+  plan.groups = groups
+  return plan
 }
 
 /** 预合成行估计时长（秒）：未删除镜头时长之和（对照原版 sum(cut.end - cut.start) 口径；

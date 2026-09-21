@@ -19,7 +19,7 @@ const { step, go, steps } = shell
 const {
   // 文案编写（2026-09-21 用户裁决：高级脚本设置 + AI 生成视频文案与关键词）
   sharedProductInfo, applyScriptProduct, clearScriptProduct,
-  manualCopy, manualCopyBusy, suggestDuration,
+  manualCopy, manualCopyBusy, suggestDuration, activeNarrative,
   scriptProvider, scriptProviderOptions, paragraphCount, customRequirement, systemPrompt,
   scriptScene, SCRIPT_SCENE_OPTIONS,
   resetSystemPrompt, promptPreviewDlg, openPromptPreview, closePromptPreview,
@@ -74,10 +74,10 @@ onMounted(() => { void loadScriptProviders() })
         <div class="field">
           <label class="field-label">
             视频文案（可选）
-            <span class="info-i" title="可直接手动编写，或点击上方按钮由 AI 生成；本页文案为草稿，随本地设置保存">ⓘ</span>
+            <span class="info-i" title="可直接手动编写，或点击上方按钮由 AI 生成。2026-09-21 用户裁决：口播文案与分镜脚本绑定——有分镜脚本时本框即激活分镜的旁白（克隆声音以此为准），无分镜时为全局草稿（随本地设置保存）">ⓘ</span>
           </label>
           <textarea
-            v-model="manualCopy"
+            v-model="activeNarrative"
             class="input ta ta--copy"
             rows="12"
             placeholder="在此编写视频文案，或点击上方按钮由 AI 生成"

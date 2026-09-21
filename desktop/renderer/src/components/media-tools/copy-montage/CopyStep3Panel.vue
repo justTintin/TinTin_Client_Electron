@@ -18,10 +18,8 @@ const shell = inject(copyMontageShellKey)!
 const { step, go, steps } = shell
 const {
   statusText,
-  manualCopy,
+  activeNarrative,
   storyboards,
-  onDrop,
-  voiceRows,
   refSamples,
   selectedRefSample,
   refText,
@@ -35,9 +33,6 @@ const {
   openCloneParams,
   closeCloneParams,
   saveCloneParams,
-  editDlg,
-  openEditDlg,
-  saveEditDlg,
   voiceBusy,
   refPreviewUrl,
   nsFilePath,
@@ -50,11 +45,6 @@ const {
   transcribeNewSample,
   uploadNewSampleRef,
   startSynthesizeVoice,
-  regenVoice,
-  toggleLengthMode,
-  lengthModeTip,
-  voiceStatusText,
-  voiceStatusClass,
   fmtDur,
   pathBasename,
 } = shell.s
@@ -133,110 +123,38 @@ const tabVoices = computed(() =>
         <!-- 分镜脚本（公共组件 voice 态，始终显示；2026-09-21 用户报障：从视频素材返回本步时分镜消失） -->
         <CopyStoryboard mode="voice" />
 
-        <!-- 4. 表格标题行（L177-196；2026-09-10 用户裁决：TTS 引擎/克隆/文案设置组移到「开始批量克隆」前面） -->
-        <div class="row">
-          <span class="card-title"> 待合成视频列表与配音文案映射 (在配音文案栏直接输入):</span>
-        </div>
+        <!-- 2026-09-22 用户裁决：移除旧「待合成视频列表与配音文案映射」表（智能混剪遗留的
+             逐视频配音界面——编辑/重生成/时长:视频）；文案混剪声音=每分镜脚本一条
+             （tab.voiceWav）。本框不再随视频行切换，恒显：口播文案（与激活分镜绑定）
+             + 各分镜克隆声音播放条 -->
+        <div v-if="activeNarrative.trim()" class="carry-copy">
+          <!-- 2026-09-21 用户裁决：口播文案与分镜脚本绑定——显示激活分镜的旁白
+               （= 批量克隆的声音来源），不再是全局草稿 manualCopy（曾致框文与声音不一致） -->
+          <span class="sb-info">口播文案（旁白，与激活分镜脚本绑定，共 {{ activeNarrative.length }} 字；在「文案编写」页编辑）：</span>
+          <textarea readonly rows="3" class="input carry-textarea">{{ activeNarrative }}</textarea>
 
-        <!-- 5. 待合成视频表（L198-208 两列：序号 | 视频/配音/文案/状态/操作；行结构对照 dialogs.py VoiceRowDetailWidget L392-459） -->
-        <table v-if="voiceRows.length" class="tbl voice-table">
-          <thead>
-            <tr>
-              <th class="w-idx">序号</th>
-              <th>视频/配音/文案/状态/操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, i) in voiceRows" :key="row.path">
-              <td class="ta-c">{{ i + 1 }}</td>
-              <td>
-                <div class="vd-detail">
-                  <!-- 行 1：文件名 + 状态 + 操作（2026-09-10 用户裁决：删行内 ▶ 播放按钮，视频预览已在右侧统一预览栏） -->
-                  <div class="vd-top">
-                    <span class="vd-name" :title="row.path">视频: {{ row.name }}</span>
-                    <span class="spacer"></span>
-                    <span v-if="row.status === 'generating'" class="vd-progress-text">{{ row.progress }}%</span>
-                    <span class="vd-status" :class="voiceStatusClass(row)">{{ voiceStatusText(row) }}</span>
-                    <!-- 2026-09-11 用户裁决：原 emoji 图标（🔊💾⚖↻🎬📽）与全局按钮体系
-                         不统一、含义不明 → 统一为 TButton 文字小按钮（显示作用），
-                         成组右对齐（.vd-actions，窄宽度换行后仍贴右）；
-                         二次裁决：删「导出」「试看」两按钮（不需要） -->
-                    <div class="vd-actions">
-                      <!-- 2026-09-15 用户裁决：试听按钮 → 行内原生播放条（<audio controls>，
-                           即浏览器原生控件：播放/进度拖动/时长/音量），生成后就地试听；
-                           key 带 voiceDurSec——重生成覆写同路径 wav 时强制重建元素避开媒体缓存 -->
-                      <audio
-                        v-if="row.wavPath"
-                        :key="row.wavPath + '|' + (row.voiceDurSec || 0)"
-                        class="vd-voice-audio"
-                        controls
-                        preload="none"
-                        :src="toFileUrl(row.wavPath)"
-                        :title="`试听克隆声音（${fmtDur(row.voiceDurSec)}）`"
-                      />
-                      <audio v-else class="vd-voice-audio" controls preload="none" disabled title="尚未生成克隆声音" />
-                      <TButton label="编辑" variant="secondary" size="small" title="对比与编辑文案（双击配音文案栏同效）" @click="openEditDlg(i)" />
-                      <TButton label="重生成" variant="secondary" size="small" :disabled="row.status === 'generating'" :title="row.status === 'generating' ? '生成中，请稍候' : '仅重新生成该声音'" @click="regenVoice(i)" />
-                      <TButton :label="row.lengthMode === 'video' ? '时长:视频' : '时长:音频'" variant="secondary" size="small" :title="lengthModeTip(row)" @click="toggleLengthMode(i)" />
-                    </div>
-                  </div>
-                  <!-- 行 2：原文 + 视频时长（dialogs.py L424-439） -->
-                  <div class="vd-row2">
-                    <span class="vd-tag muted-tag">原文:</span>
-                    <span class="vd-orig">{{ row.originalText || '(无)' }}</span>
-                    <span v-if="row.durationSec > 0" class="vd-dur-vid">{{ fmtDur(row.durationSec) }}</span>
-                  </div>
-                  <!-- 行 3：修改后 + 配音文案编辑框 + 克隆音频时长（dialogs.py L441-459；绿背景 = 已生成，L1718-1745） -->
-                  <div class="vd-row3">
-                    <span class="vd-tag accent-tag">修改后:</span>
-                    <input
-                      class="vd-edit" :class="{ 'has-wav': row.wavPath }"
-                      :value="row.text"
-                      placeholder="双击可弹窗编辑大段文案，留空则不克隆此视频的声音"
-                      @change="row.text = ($event.target as HTMLInputElement).value"
-                      @dblclick="openEditDlg(i)"
-                    />
-                    <span class="vd-dur-voice" :class="{ none: !row.voiceDurSec }">{{ row.voiceDurSec > 0 ? fmtDur(row.voiceDurSec) : '--:--' }}</span>
-                  </div>
-                  <progress v-if="row.status === 'generating'" class="vd-progress" :value="row.progress" max="100" />
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <template v-else>
-          <!-- 2026-09-21 用户裁决：口播文案=旁白（作为口播连续存在，本身不是分镜）；
-               分镜脚本由 AI 根据旁白单独生成梳理（text-storyboard skill 画面规则 +
-               Viral_Writer 口播节奏），镜头卡字段对齐现有分镜脚本规范：
-               镜别/时长/画面/旁白/音效。确认合成产物出现后旁白自动填入每行配音文案 -->
-          <div v-if="manualCopy.trim()" class="carry-copy">
-            <span class="sb-info">口播文案（旁白，来自「文案编写」，共 {{ manualCopy.length }} 字；在「文案编写」页编辑）：</span>
-            <textarea readonly rows="3" class="input carry-textarea">{{ manualCopy }}</textarea>
-
-            <!-- 2026-09-21 用户裁决（再次下达，补漏实现）：批量克隆完成后在本框就地显示
-                 完成的播放条——tabVoices=每分镜脚本一条整段声音（cloneAllTabVoices 产物
-                 tab.voiceWav）；此前播放条只备了 tabVoices 计算属性未渲染 -->
-            <template v-if="tabVoices.length">
-              <div class="carry-voice-list">
-                <div v-for="v in tabVoices" :key="v.tabId" class="carry-voice-row">
-                  <span class="carry-voice-name" :title="v.name">{{ v.name }}</span>
-                  <audio
-                    :key="v.wav + '|' + (v.dur || 0)"
-                    class="vd-voice-audio"
-                    controls
-                    preload="auto"
-                    :src="toFileUrl(v.wav)"
-                    :title="`分镜「${v.name}」克隆声音（${v.dur > 0 ? fmtDur(v.dur) : '时长未知'}）`"
-                  />
-                  <span class="vd-dur-voice" :class="{ none: !v.dur }">{{ v.dur > 0 ? fmtDur(v.dur) : '--:--' }}</span>
-                </div>
+          <!-- 2026-09-22 用户裁决：播放条自空态分支上提为常显——此前预合成后 voiceRows
+               非空顶掉本框，声音播放条随之消失（用户报障②） -->
+          <template v-if="tabVoices.length">
+            <div class="carry-voice-list">
+              <div v-for="v in tabVoices" :key="v.tabId" class="carry-voice-row">
+                <span class="carry-voice-name" :title="v.name">{{ v.name }}</span>
+                <audio
+                  :key="v.wav + '|' + (v.dur || 0)"
+                  class="vd-voice-audio"
+                  controls
+                  preload="auto"
+                  :src="toFileUrl(v.wav)"
+                  :title="`分镜「${v.name}」克隆声音（${v.dur > 0 ? fmtDur(v.dur) : '时长未知'}）`"
+                />
+                <span class="vd-dur-voice" :class="{ none: !v.dur }">{{ v.dur > 0 ? fmtDur(v.dur) : '--:--' }}</span>
               </div>
-              <span class="muted">分镜声音已生成（{{ tabVoices.length }} 条），可就地试听；确认合成完成后，旁白会自动填入每条视频的配音文案栏</span>
-            </template>
-            <span v-else class="muted">当前还没有视频：点击「开始批量克隆人声合成」即为口播旁白生成声音；确认合成完成后，旁白也会自动填入每条视频的配音文案栏</span>
-          </div>
-          <div v-else class="muted">确认合成完成后，Step2 的成片视频会自动出现在这里</div>
-        </template>
+            </div>
+            <span class="muted">分镜声音已生成（{{ tabVoices.length }} 条），可就地试听；点「开始批量克隆人声合成」可重新生成</span>
+          </template>
+          <span v-else class="muted">暂无分镜声音：点击下方「开始批量克隆人声合成」，即为各分镜旁白生成声音</span>
+        </div>
+        <div v-else class="muted">先在「文案编写」页生成文案与分镜脚本，再点击「开始批量克隆人声合成」生成声音</div>
 
       </section>
 
@@ -383,27 +301,6 @@ const tabVoices = computed(() =>
           </div>
         </div>
       </div>
-      <div v-if="editDlg.show" class="modal-mask" @click.self="editDlg.show = false">
-        <div class="modal modal-wide">
-          <span class="modal-title">{{ editDlg.title }}</span>
-          <!-- 2026-09-11 用户裁决：对比改左右并排 1:1（左=原文只读栏、右=修改编辑栏；
-               原「配音文案编辑:」提示行删除——两栏标签已自明） -->
-          <div class="edit-cols">
-            <div v-if="editDlg.original" class="edit-col">
-              <span class="vd-tag muted-tag">原文:</span>
-              <div class="vd-orig">{{ editDlg.original }}</div>
-            </div>
-            <div class="edit-col">
-              <span class="vd-tag accent-tag">修改后:</span>
-              <textarea v-model="editDlg.content" class="modal-textarea modal-copy"></textarea>
-            </div>
-          </div>
-          <div class="modal-actions">
-            <TButton label="确定" @click="saveEditDlg" />
-            <TButton label="取消" plain @click="editDlg.show = false" />
-          </div>
-        </div>
-      </div>
 </template>
 
 <style scoped>
@@ -425,16 +322,6 @@ const tabVoices = computed(() =>
 .input { height: 32px; padding: 0 10px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--foreground); outline: none; font-size: 13px; }
 .input:focus { border-color: var(--primary); }
 .input.grow { flex: 1; min-width: 120px; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.tbl-scroll-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); }
-.tbl-scroll-wrap .tbl { border-radius: 0; }
-.tbl th, .tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-.tbl th { color: var(--muted-foreground); font-weight: 500; font-size: 12px; position: sticky; top: 0; background: var(--surface-container); z-index: 1; }
-.detail-scroll-wrap .tbl { border-radius: 0; }
-.row-deleted td {
-  color: var(--muted-foreground); text-decoration: line-through;
-  background: rgba(231, 76, 60, 0.12);
-}
 /* 弹窗（产品信息 / 口播文案查看） */
 .modal-mask {
   position: fixed; inset: 0; z-index: 1002; display: flex; align-items: center; justify-content: center;
@@ -466,13 +353,6 @@ const tabVoices = computed(() =>
 .modal-field { display: flex; align-items: center; gap: 8px; }
 .modal-field label { width: 64px; flex: none; font-size: 13px; }
 .modal-field.modal-extra { align-items: flex-start; }
-.modal-textarea {
-  flex: 1; min-height: 72px; padding: 8px; background: var(--surface-container);
-  border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--foreground);
-  font-size: 13px; font-family: inherit; resize: vertical; outline: none;
-}
-.modal-textarea:focus { border-color: var(--primary); }
-.modal-copy { min-height: 300px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 /* Step3 口播配音样式（对照 VoiceRowDetailWidget 三行布局；颜色走 V3 design tokens） */
 /* Step3 参考声音行（2026-09-09 用户裁决：播放条与样本下拉同行、位于其后；
@@ -518,59 +398,15 @@ const tabVoices = computed(() =>
 .ns-msg { font-size: var(--font-size-caption); }
 .ns-err { color: var(--error, var(--destructive, #e5484d)); }
 .ns-ok { color: var(--success, #2e9e5b); }
-/* 2026-09-10 用户报障：左栏折叠时操作按钮被截断隐藏、文本不能缩短 →
-   table-layout:fixed 强制列宽受容器约束（序号 48px 定宽 + 详情列吃剩余），
-   列内按钮 flex-wrap 换行、长文本省略，窄宽度不再把操作列挤出可视区 */
-.voice-table { margin-top: var(--space-3); width: 100%; table-layout: fixed; }
-.voice-table .w-idx { width: 48px; }
-/* 整个列表底色（2026-09-11 用户裁决）：表体整体铺 surface-container 浅底，
-   表头再深一档 surface-container-high 保持层级；行内编辑框连带反转为白底
-   （见 .vd-edit 的 .voice-table 覆盖），避免灰底上输入框消失 */
-.voice-table { background: var(--surface-container); }
-.voice-table th { background: var(--surface-container-high); }
-.vd-detail { display: flex; flex-direction: column; gap: 6px; }
-.vd-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-/* 行内操作按钮组（2026-09-11 用户裁决：emoji 图标统一为文字小按钮；成组右对齐，
-   且右缘与行 2/3「原文/修改后」文案栏右缘对齐——不是与时间列对齐。
-   偏移 66px = 时间列 60px（.vd-dur-*）+ 行间隙 6px（.vd-row2/3 gap），同步维护） */
-.vd-actions {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  margin-left: auto; margin-right: 66px;
-}
+/* 2026-09-22 用户裁决：旧「待合成视频列表」表移除，其行样式（voice-table/vd-* 行簇）一并清除；
+   保留 .vd-voice-audio/.vd-dur-voice/.vd-progress/.concat-status-line（分镜声音播放条与克隆进度仍用） */
 /* 行内原生试听播放条（2026-09-15 用户裁决：<audio controls>，Chromium 原生控件） */
 .vd-voice-audio {
   width: 260px; height: 32px; vertical-align: middle;
 }
-.vd-voice-audio[disabled] { opacity: 0.45; }
-.vd-name {
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 13px; font-weight: 600; color: var(--foreground);
-}
-.vd-status { font-size: 11px; margin-left: 4px; }
-.vd-progress-text { font-size: 11px; color: var(--primary); }
 .concat-status-line { font-size: 11px; color: var(--primary); margin: 4px 0 2px; }
-.vd-row2, .vd-row3 { display: flex; align-items: center; gap: 6px; }
-.vd-tag { flex: none; font-size: 12px; }
-.muted-tag { width: 48px; color: var(--muted-foreground); }
-.accent-tag { color: var(--primary); }
-.vd-orig {
-  flex: 1; min-width: 0; font-size: 12px; color: var(--muted-foreground);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.vd-dur-vid { flex: none; width: 60px; text-align: right; font-size: 11px; font-weight: 700; color: var(--warning); }
 .vd-dur-voice { flex: none; width: 60px; text-align: right; font-size: 11px; font-weight: 700; color: var(--success); }
 .vd-dur-voice.none { color: var(--muted-foreground); font-weight: 400; }
-.vd-edit {
-  flex: 1; min-width: 0; height: 30px; padding: 4px 8px; font-size: 13px;
-  background: var(--surface-container); border: 1px solid var(--border); border-radius: 4px;
-  color: var(--foreground); outline: none;
-}
-.vd-edit:focus { border-color: var(--success); }
-/* 已生成绿背景（原版 rgba(46,204,113,0.25) + border #2ecc71，L1718-1745） */
-.vd-edit.has-wav { background: rgba(46, 204, 113, 0.25); border-color: #2ecc71; }
-/* 2026-09-11 列表底色裁决连带：表体已铺浅灰底，默认态编辑框反转为白底保持可辨识。
-   必须用 :not(.has-wav) —— 绿底规则同特异性且在本规则之前，不限定会被罩掉 */
-.voice-table .vd-edit:not(.has-wav) { background: var(--card); }
 .vd-progress { width: 100%; height: 6px; appearance: none; border-radius: 3px; overflow: hidden; }
 .vd-progress::-webkit-progress-bar { background: var(--surface-container); }
 .vd-progress::-webkit-progress-value { background: var(--primary); transition: width 0.3s; }

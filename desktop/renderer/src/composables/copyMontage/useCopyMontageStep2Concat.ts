@@ -20,6 +20,9 @@ import {
   mapTaskStatus,
   pollPhaseText,
   buildPrecomposePlans,
+  buildGroupedPrecomposePlan,
+  planNeedsGroupRender,
+  type PlanShotGroup,
   planActiveDurationSec,
   buildVoiceoverPayload,
   parseVoiceoverResponse,
@@ -30,6 +33,7 @@ import {
   type SplitSceneRow,
 } from '../copyMontageLogic'
 import { notify, unwrapIpc, errText, joinPath, POLL_INTERVAL_MS, type MontageSharedRuntime } from './context'
+import { pathBasename } from '../copyMontageCommonLogic.ts'
 
 /** TSelect 选项最小结构（避免组件层依赖方向反转） */
 export interface SelectOptionLite {
@@ -173,22 +177,21 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
     })
   }
 
-  /** 批量按分镜出预合成方案（2026-09-21 用户裁决：二/三步批量处理——每个分镜脚本
-   *  一条方案=一个视频，按分镜顺序拼接其绑定素材；素材跨脚本复用（分配在面板完成，
-   *  此处按绑定顺序拼接）；任一分镜绑定不完整则整体拦截并点名）。
+  /** 批量按分镜出预合成方案（2026-09-22 用户裁决：一镜多片·按时长装填——每镜的绑定组
+   *  按序进入方案，组内 useDurs 按镜标分配（末端超长裁剪）；任一分镜绑定不完整则整体拦截点名）。
    *  返回是否成功出方案（供确认合成串联） */
   async function runConcatFromAllStoryboards(
-    tabs: Array<{ id: string; name: string; narrative: string; shots: { length: number }; clipIdxs: number[] }>,
+    tabs: Array<{ id: string; name: string; narrative: string; shots: Array<{ duration: number }>; clipGroups: number[][] }>,
   ): Promise<boolean> {
     if (concatBusy.value) return false
-    if (!tabs.length) { concatError.value = '尚未生成分镜脚本，无法合成。请回第一步「AI 生成分镜」。'; return false }
+    if (!tabs.length) { concatError.value = '尚未生成分镜脚本，无法预合成。请回第一步「AI 生成分镜」。'; return false }
     // 全部 tab 绑定齐全才允许合成（用户裁决 4：必须全部 tab 绑定全）
     const incomplete = tabs
       .map((tab, i) => ({ tab, i }))
-      .filter(({ tab }) => tab.clipIdxs.length !== tab.shots.length || tab.clipIdxs.some((v) => Number(v) < 0))
+      .filter(({ tab }) => tab.clipGroups.length !== tab.shots.length || tab.clipGroups.some((g) => !g.length))
       .map(({ tab, i }) => `第${i + 1} 个分镜「${tab.name}」`)
     if (incomplete.length) {
-      concatError.value = `以下分镜未绑定完整素材，不能合成：${incomplete.join('、')}。请在分镜卡上为每个镜头选择素材。`
+      concatError.value = `以下分镜未绑定完整素材，不能预合成：${incomplete.join('、')}。请在分镜卡上为每个镜头选择素材。`
       notify('有分镜未绑定素材', concatError.value)
       return false
     }
@@ -199,26 +202,27 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
     let failed = ''
     await Promise.resolve().then(() => {
       for (const tab of tabs) {
-        const clips = tab.clipIdxs
-          .map((idx) => scenes.value.find((s) => s.idx === idx))
-          .filter((s): s is SplitSceneRow => !!s)
-        if (clips.length !== tab.clipIdxs.length) {
+        const sceneGroups: SplitSceneRow[][] = []
+        let stale = false
+        for (const g of tab.clipGroups) {
+          const rows = g
+            .map((idx) => scenes.value.find((s) => s.idx === idx))
+            .filter((s): s is SplitSceneRow => !!s)
+          if (rows.length !== g.length || !rows.length) { stale = true; break }
+          sceneGroups.push(rows)
+        }
+        if (stale) {
           failed += `「${tab.name}」绑定的素材已失效；`
           continue
         }
-        // 每个分镜脚本一条方案：分镜顺序即成片顺序，不洗牌、不裁时长、不做位置重排
-        const one = buildPrecomposePlans({
-          clips,
-          batchCount: 1,
-          durationLimitSec: 0,
-          randomness: 'low',
-          positionOf: () => '',
-        })
-        const plan = one[0]
-        if (plan) {
-          plan.copy = tab.narrative
-          plans.push(plan)
-        }
+        // 每个分镜脚本一条分组方案：镜序即成片序；组内按镜标分配 useDurs（末端超长
+        // 裁剪、组内硬切——2026-09-22 用户裁决：一镜多片·按时长装填）
+        const plan = buildGroupedPrecomposePlan(
+          sceneGroups,
+          tab.shots.map((s) => Number(s.duration) || 0),
+        )
+        plan.copy = tab.narrative
+        plans.push(plan)
       }
     })
     if (failed || !plans.length) {
@@ -523,6 +527,45 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
     }
   }
 
+  /** 镜内渲染（2026-09-22 用户裁决：一镜多片·按时长装填）：每组按 useDurs 把片段
+   *  裁剪（ffmpeg:cut reencode 精剪）并硬切拼接（montage:concatClips，concat demuxer），
+   *  产出一镜一文件；单片段全长组直接复用已落盘片段（零处理）。组内任一片段未落盘
+   *  即抛错（分割完成后批量下载已保证落盘，属异常场景） */
+  async function renderGroupSegments(groups: PlanShotGroup[]): Promise<{ files: string[]; shotTypes: Record<string, string> }> {
+    const outDir = joinPath(await readCacheDir(), 'montage_cache', splitsJobId.value || 'session', 'groups')
+    const files: string[] = []
+    const shotTypes: Record<string, string> = {}
+    let gi = 0
+    for (const g of groups) {
+      gi++
+      const segs: string[] = []
+      for (let i = 0; i < g.scenes.length; i++) {
+        const s = g.scenes[i]
+        const full = Math.max(0, Number(s.duration) || 0)
+        const useDur = Number(g.useDurs[i]) || 0
+        const local = s.clipLocalPath
+        if (!local) throw new Error(`片段 ${s.name} 未落盘本地，请等待分割下载完成后重试`)
+        if (full <= 0 || useDur >= full - 0.05) { segs.push(local); continue }
+        const segPath = joinPath(outDir, `g${gi}_s${i + 1}.mp4`)
+        await window.tintin.ffmpeg.cut(local, segPath, 0, useDur, { reencode: true })
+        segs.push(segPath)
+      }
+      let groupFile = segs[0]
+      if (segs.length > 1) {
+        groupFile = joinPath(outDir, `shot_group_${gi}.mp4`)
+        const r = await window.tintin.server.montageConcatClips({ clips: segs, outPath: groupFile })
+        if (!r || typeof r !== 'object' || !('path' in (r as Record<string, unknown>)) || !(r as { path?: string }).path) {
+          throw new Error(`镜内拼接失败：${(r as { error?: string } | null)?.error || '未知原因'}`)
+        }
+        groupFile = (r as { path: string }).path
+      }
+      files.push(groupFile)
+      // 位置标注按组首片段（出入场加速按镜文件摊平，2026-09-09 裁决口径兼容）
+      shotTypes[pathBasename(groupFile)] = g.scenes[0]?.position || ''
+    }
+    return { files, shotTypes }
+  }
+
   /** 单条确认合成（不含队列推进）：成片下载落盘 outputs 目录（原版 download_result 口径） */
   async function confirmPlanOne(index: number): Promise<void> {
     const p = assemblePlans.value[index]
@@ -539,21 +582,34 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
     // 本端提交前置 10 以区分上传阶段）
     concatProgress.value = 10
     try {
-      // 位置标注随载荷（key = 片段文件名，对照原版 os.path.basename(clip)；裁剪后行名已同步改写；
-      // 2026-09-09 裁决：clip_shot_types 语义是出入场位置——服务端仅对 entrance/exit 应用 edge_speedup）
-      const activeClips = p.clips.filter((_, i) => !p.deletedFlags[i])
-      const shotTypes = Object.fromEntries(activeClips.map((c) => [c.name, c.position || '']))
-      // PR#4 条目10：有被裁剪片段且全部活动片段均已本地落盘 → 改走本地 files 上传
-      // （顺序与 clipUrls 一致；有片段未落盘时回退 clip_urls，注：该方案内被裁片段
-      // 将以服务端未裁剪原件参与合成，属下载失败兑底场景）
-      const hasTrimmed = activeClips.some((c) => c.trimmed && c.clipLocalPath)
-      const localFiles = hasTrimmed && activeClips.every((c) => c.clipLocalPath)
-        ? activeClips.map((c) => c.clipLocalPath as string)
-        : undefined
+      // 镜内渲染分支（2026-09-22 用户裁决：一镜多片·按时长装填——组内多片或末端裁剪的
+      // 方案先本地渲染为一镜一文件，整组 files 上传；单片段全长组直用已落盘片段）
+      let submitClips = clipUrls
+      let localFiles: string[] | undefined
+      let shotTypes: Record<string, string>
+      const groups: PlanShotGroup[] = p.groups || []
+      if (groups.length && planNeedsGroupRender(groups)) {
+        const rendered = await renderGroupSegments(groups)
+        localFiles = rendered.files
+        submitClips = rendered.files // 与 localFiles 等长 → submitConcatTask 走 files 通道
+        shotTypes = rendered.shotTypes
+      } else {
+        // 位置标注随载荷（key = 片段文件名，对照原版 os.path.basename(clip)；裁剪后行名已同步改写；
+        // 2026-09-09 裁决：clip_shot_types 语义是出入场位置——服务端仅对 entrance/exit 应用 edge_speedup）
+        const activeClips = p.clips.filter((_, i) => !p.deletedFlags[i])
+        shotTypes = Object.fromEntries(activeClips.map((c) => [c.name, c.position || '']))
+        // PR#4 条目10：有被裁剪片段且全部活动片段均已本地落盘 → 改走本地 files 上传
+        // （顺序与 clipUrls 一致；有片段未落盘时回退 clip_urls，注：该方案内被裁片段
+        // 将以服务端未裁剪原件参与合成，属下载失败兑底场景）
+        const hasTrimmed = activeClips.some((c) => c.trimmed && c.clipLocalPath)
+        localFiles = hasTrimmed && activeClips.every((c) => c.clipLocalPath)
+          ? activeClips.map((c) => c.clipLocalPath as string)
+          : undefined
+      }
       // 2026-09-16 用户裁决（服务端反馈）：预合成=纯镜头拼接，不随请求传字幕字段——
       // 原实现传 burn_subtitle=true 但预合成阶段无口播文案/SRT（服务端收到空烧制请求）；
       // 字幕数据只在最终合成（Step4 特效包装）随 buildServerFxFields 下发
-      const { url, id } = await submitConcatTask(clipUrls, shotTypes, localFiles)
+      const { url, id } = await submitConcatTask(submitClips, shotTypes, localFiles)
       concatProgress.value = 30
       statusText.value = `已提交服务端合成，任务 ID=${id}，正在轮询...`
       const name = `montage_concat_server_${Math.floor(Math.random() * 9000 + 1000)}_1.mp4`

@@ -255,6 +255,8 @@ const server = {
   clearMontageCache: (dir) => ipcRenderer.invoke('montage:clearCache', { dir }),
   // 出入场超长片段裁剪（PR#4 条目10：本地 ffmpeg 取中间段替换+改名，对照 EdgeClipTrimWorker）
   trimEdgeClips: (payload) => ipcRenderer.invoke('montage:trimEdgeClips', payload),
+  // 镜内硬切拼接（2026-09-22 用户裁决：一镜多片——组内片段 concat demuxer 拼接为一镜一文件）
+  montageConcatClips: (payload) => ipcRenderer.invoke('montage:concatClips', payload),
   // 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读，对照 _probe_video_ok）
   montageValidateFinal: (p) => ipcRenderer.invoke('montage:validateFinal', { path: p }),
     // 删除下载校验未通过的坏成片（防坏片残留 outputs 被后续步骤扫描带入，2026-09-10）

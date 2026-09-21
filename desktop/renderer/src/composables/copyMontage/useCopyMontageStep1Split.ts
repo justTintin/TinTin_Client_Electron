@@ -140,6 +140,11 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
     splitBusy.value = true
     splitError.value = ''
     splitMsg.value = '正在解析素材…'
+    // 2026-09-22 用户报障：分割未完成期间确认合成时 splitsJobId 为空，产物落
+    // montage_cache\session 兜底目录；分割完成 jobId 才生成 → 该产物孤儿化
+    // （后续步骤按新 jobId 找成片 =「合成丢失」）。jobId 改在分割启动时即生成，
+    // 合成中途产物始终落当前任务目录
+    splitsJobId.value = (crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')
     try {
       const rows: SplitSceneRow[] = []
       // 最后一次素材的 source_resolution（供分割后画幅兜底链 ③ 使用；帧率取 fps 字段）
@@ -206,9 +211,9 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
         ? `解析完成：共 ${rows.length} 个镜头片段`
         : '未解析出镜头片段（可调低分割阈值后重试）'
       // 片段落盘本地 splits 目录（原版分割产物在 .runtime/montage_cache/<job_id>/splits/<短视频名>/；
-      // 本端片段在服务端，分割完成后批量下载补齐同一目录结构，供「打开已分割镜头目录」与双击预览）
+      // 本端片段在服务端，分割完成后批量下载补齐同一目录结构，供「打开已分割镜头目录」与双击预览；
+      // jobId 已在 runSplit 启动时生成，见函数头注释）
       if (rows.length) {
-        splitsJobId.value = (crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')
         await downloadClipsToSplits()
       }
       // PR#4 条目10：出入场超长片段自动裁剪（后台，对照 _maybe_trim_edge_clips L1706

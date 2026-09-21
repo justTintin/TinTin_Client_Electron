@@ -529,6 +529,8 @@ declare interface TintinBridgeServer {
     jobs: Array<{ path: string; startSec: number; endSec: number; idx: number; desc?: string; shotType?: string }>
     maxSec?: number
   }): Promise<{ renamed: Array<[string, string, number]>; skipped: number } | { error: string }>
+  /** 镜内硬切拼接（2026-09-22 用户裁决：一镜多片——组内片段 concat demuxer 重编码拼接为一镜一文件） */
+  montageConcatClips(payload: { clips: string[]; outPath: string }): Promise<{ path: string } | { error: string }>
   /** 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读；对照 _probe_video_ok；hasFile 区分未取到/损坏） */
   montageValidateFinal(path: string): Promise<{ ok: boolean; hasFile: boolean; duration?: number; error?: string }>
     /** 删除下载校验未通过的坏成片（防误删：仅限 montage_cache 目录内，2026-09-10） */

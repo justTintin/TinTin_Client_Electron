@@ -281,6 +281,38 @@ function createMontageProxyIpc(ipcMain, { multipartUpload, API_ENDPOINTS, isExpe
     return { renamed, skipped }
   })
 
+  // ── 镜内硬切拼接（2026-09-22 用户裁决：一镜多片·按时长装填——组内片段先经
+  //  ffmpeg:cut reencode 精剪为统一编码，此处 concat demuxer 拼接重编码产出一镜一文件；
+  //  片段缺失/ffmpeg 失败返回 { error }，渲染层按方案失败处理）──
+  ipcMain.handle('montage:concatClips', async (_e, payload) => {
+    const p = payload || {}
+    const clips = Array.isArray(p.clips) ? p.clips.filter((c) => c && fs.existsSync(c)) : []
+    const outPath = String(p.outPath || '')
+    if (!clips.length || !outPath) return { error: 'concatClips 需要 clips 与 outPath' }
+    const listPath = outPath + '.list.txt'
+    try {
+      // 输出目录不存在时先建（groups 目录由主进程创建；渲染层无 fs）
+      fs.mkdirSync(path.dirname(outPath), { recursive: true })
+      const lines = clips
+        .map((c) => `file '${path.resolve(c).replace(/\\/g, '/').replace(/'/g, "'\\''")}'`)
+        .join('\n')
+      fs.writeFileSync(listPath, lines, 'utf-8')
+      const r = await runFfmpeg([
+        '-y', '-f', 'concat', '-safe', '0', '-i', listPath,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+        '-c:a', 'aac', '-avoid_negative_ts', 'make_zero', outPath,
+      ])
+      if (r.code !== 0 || !fs.existsSync(outPath) || fs.statSync(outPath).size < 1024) {
+        return { error: `ffmpeg concat 失败 (code=${r.code})` }
+      }
+      return { path: outPath }
+    } catch (err) {
+      return { error: err && err.message }
+    } finally {
+      try { fs.unlinkSync(listPath) } catch (_) {}
+    }
+  })
+
   // ── 成片完整性校验（PR#4 条目12，对照 _probe_video_ok/_validate_downloaded_file L263-304：
   //  >1KB 且 ffprobe 能读出时长>0 视为完整（moov 缺失/截断文件会失败）；
   //  无 ffprobe 时退化为只做大小校验不阻塞流程。hasFile 供渲染层区分

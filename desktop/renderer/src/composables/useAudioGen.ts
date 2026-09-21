@@ -519,6 +519,29 @@ export function useAudioGen() {
     }
     listRows.value = out
     listStat.value = `共 ${listTotal.value} 条音频（本页显示 ${out.length} 条）`
+    for (const it of out) probeRowDuration(it)
+  }
+
+  /** 逐行时长探测（2026-09-22 用户报障：列表「时长」列恒显 —。实测 GET /audio/library
+   *  的 duration_s 全 0——analysis_status=pending，服务端媒体分析未跑，字段层拿不到。
+   *  用 <audio> preload=metadata 只拉流头部读时长（不下载全文件），回填 durStr；
+   *  服务端分析上线后 duration_s>0 的行走字段不再探测；探测失败保持 — */
+  const durProbed = new Set<string>()
+  function probeRowDuration(item: AudioListItem): void {
+    if (item.durStr !== '—' || durProbed.has(item.mid) || !serverUrl.value) return
+    durProbed.add(item.mid)
+    const el = new Audio()
+    el.preload = 'metadata'
+    const release = (): void => {
+      el.removeAttribute('src')
+      try { el.load() } catch (_) { /* 释放媒体元素 */ }
+    }
+    el.addEventListener('loadedmetadata', () => {
+      if (Number.isFinite(el.duration) && el.duration > 0) item.durStr = fmtSec(el.duration)
+      release()
+    }, { once: true })
+    el.addEventListener('error', release, { once: true })
+    el.src = buildAudioFileUrl(item.mid)
   }
 
   /** 通用 GET 三态分流（server:get 兜底通道） */

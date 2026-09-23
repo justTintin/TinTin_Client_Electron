@@ -508,6 +508,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     videoPaths?: string[]
     srtPath?: string
     srtPaths?: Array<string | null>
+    /** 每条 SRT 的字幕窗口上限（µs，2026-09-24）：与 srtPaths 对齐；null=该段自身时长 */
+    srtLimitUs?: Array<number | null>
     /** 逐边界转场（2026-09-22 虚拟时间轴：镜间=转场设置、镜内=none 硬切） */
     transitions?: string | string[]
     bgmPath?: string
@@ -859,6 +861,12 @@ async function exportAllToJianyingDraft(): Promise<void> {
     const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     const fancyEvents: Array<Array<{ word: string; startUs: number; durUs: number }>> = []
     const sfxClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
+    // 各方案总时长（µs）：整段旁白 SRT 的字幕窗口（2026-09-24 修复：曾限首段时长致 4s 后字幕全丢）
+    const planDurUsByPlanIdx = new Map<number, number>()
+    for (const m of segs) {
+      planDurUsByPlanIdx.set(m.planIdx, Math.max(planDurUsByPlanIdx.get(m.planIdx) || 0, m.c1))
+    }
+    const srtLimitUs: Array<number | null> = []
     // 口播挂载登记（2026-09-23 用户裁决：口播=每分镜一条整段旁白挂分镜首片段——
     //  其余片段共享该旁白属设计，完成提示改按「分镜」口径提示缺失，不再按段误报）
     const planVoiceOk = new Set<number>()
@@ -869,8 +877,13 @@ async function exportAllToJianyingDraft(): Promise<void> {
       // 字幕 SRT：仅每分镜首片段携带（SRT=该分镜旁白整段时间轴，2026-09-18 后处理资产口径）
       {
         const srtFile = m.planFirst && m.text ? await ensureProcessedSrt(m.text, m.voicePath, m.srtKey) : ''
-        if (srtFile) srtPaths.push(srtFile)
-        else srtPaths.push(null)
+        if (srtFile) {
+          srtPaths.push(srtFile)
+          srtLimitUs.push(Math.round((planDurUsByPlanIdx.get(m.planIdx) || 0) * 1e6))
+        } else {
+          srtPaths.push(null)
+          srtLimitUs.push(null)
+        }
       }
       const hits = planHits[m.planIdx] || []
       // 命中按本片段时间窗重定位（片段=镜时间轴的 [c0,c1) 区间）
@@ -954,6 +967,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
       videoDurations,
       muteVideoAudio: true,
       srtPaths,
+      srtLimitUs,
       // 逐边界转场：镜间=转场设置、镜内=硬切（导出器 normalizeTransitions 数组口径）
       transitions: transitionsArr,
       ...jianyingFxParams(),

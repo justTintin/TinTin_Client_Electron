@@ -1116,7 +1116,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。
  *  sfxPaths（2026-09-18 用户裁决）：音效池=服务端音频库剪映音效库 <2s 条目
  *  下载产物（主进程 resolveJianyingSfxPool 解析），按文字模板命中全局索引循环指派。 */
-function exportMultiToDraft({ videoPaths, videoDurations = null, muteVideoAudio = false, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, fancyEvents = null, voiceClips = null, sfxClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
+function exportMultiToDraft({ videoPaths, videoDurations = null, muteVideoAudio = false, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, srtLimitUs = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, fancyEvents = null, voiceClips = null, sfxClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -1323,9 +1323,13 @@ function exportMultiToDraft({ videoPaths, videoDurations = null, muteVideoAudio 
       cursorUs = 0
       clips.forEach((clip, i) => {
         if (srtPaths && i < srtPaths.length && srtPaths[i] && fs.existsSync(srtPaths[i])) {
-          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + clip.durationUs, { anim: subAnimName || textAnim, subtitleStyle: subStyleMapped, fontSize: subtitleFontSize })
+          // 窗口上限：srtLimitUs[i]（µs）优先——文案混剪整段旁白 SRT 挂方案首段，
+          // 窗口=整个方案时长（2026-09-24 修复：曾限首段时长致 4s 后字幕全丢）；
+          // 缺省回退本片段时长（智能混剪逐视频 SRT 口径不变）
+          const winUs = (Array.isArray(srtLimitUs) && srtLimitUs[i]) || clip.durationUs
+          appendSubtitleTrack(subtitleTrack, materials, srtPaths[i], cursorUs, cursorUs + winUs, { anim: subAnimName || textAnim, subtitleStyle: subStyleMapped, fontSize: subtitleFontSize })
           for (const kind of effKinds) {
-            appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + clip.durationUs, fxTrackCache, {
+            appendKeywordTrack(tracks, materials, srtPaths[i], kwWords, kind, cursorUs, cursorUs + winUs, fxTrackCache, {
               anim: textAnim,
               effectId: kind === 'fancy' ? fancyEffectId : tplEffectId,
             })

@@ -427,6 +427,8 @@ declare interface TintinBridgeServer {
     bgmVolume?: number
     srtPath?: string
     srtPaths?: Array<string | null>
+    /** 每条 SRT 的字幕窗口上限（µs，2026-09-24 文案混剪整段旁白）；null=该段自身时长 */
+    srtLimitUs?: Array<number | null>
     fxWords?: string[]
     fxKinds?: Array<'fancy' | 'tpl'>
     textAnim?: string

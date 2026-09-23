@@ -185,11 +185,17 @@ function confirmStopAndReselect(): void {
   srcStopConfirm.value = false
   srcDlg.value = true
 }
+const pendingSplit = computed(() => srcVideos.value.some((v) => splitStatusOf(v) !== 'done'))
+const confirmLabel = computed(() => {
+  if (!hasSelected.value) return '选择完成，开始智能镜头分割'
+  return pendingSplit.value ? '选择完成，重新分割' : '确定'
+})
 function confirmSrcDlg(): void {
   srcDlg.value = false
   hasSelected.value = true
-  // 断点续分：已完成的素材自动跳过，只分割未完成的（重新选择=只补分割新素材）
-  if (srcVideos.value.length) void runSplit()
+  // 2026-09-23 用户裁决：确认语义分态——首次/有未分割新素材才自动分割；
+  // 全部已分割时「确定」仅关弹窗（重切走弹窗内「开始智能镜头分割」按钮）
+  if (srcVideos.value.length && pendingSplit.value) void runSplit()
 }
 
 function libMid(it: PickerItem): string {
@@ -485,7 +491,8 @@ async function applyAssignment(matchIds?: string[]): Promise<void> {
     const fallback = total - aiHit
     const failNote = failedTabs.length ? `；脚本「${failedTabs.join('」「')}」LLM 不可用已整组兜底` : ''
     assignMsg.value = `智能匹配完成：${tabs.length} 个分镜脚本共 ${total} 镜，AI 命中 ${aiHit}、循环兜底 ${fallback}；装填后画面 Σ${coveredAll.toFixed(1)}s（镜标设计 Σ${targetAll.toFixed(1)}s，素材池去重后 ${pool.length} 段）${failNote}`
-    void syncStoryboardsToServer()
+    // 2026-09-23 用户裁决：匹配为探索动作不再触发同步——脚本库同步点收敛到
+    // 「生成剪辑方案」定稿时（onConfirmCompose await sync）
   } finally {
     smartAssignBusy.value = false
   }
@@ -772,7 +779,7 @@ function scoreClass(score: number | undefined): string {
             </div>
             <div class="modal-actions">
               <TButton label="取消" plain @click="srcDlg = false" />
-              <TButton :label="hasSelected ? '选择完成，重新分割' : '选择完成，开始智能镜头分割'"
+              <TButton :label="confirmLabel"
                 :disabled="!srcVideos.length && !filteredScenes.length" @click="confirmSrcDlg" />
             </div>
           </div>
@@ -832,7 +839,7 @@ function scoreClass(score: number | undefined): string {
         <div class="row duel-row">
           <TButton :label="hasSelected ? '重新选择素材' : '选择素材'" class="duel-half"
             title="选择素材来源（本地上传 / 素材库）" @click="openSrcDlg" />
-          <TButton label="智能匹配到分镜脚本" icon="check" class="duel-half" :loading="smartAssignBusy"
+          <TButton label="智能匹配到分镜脚本" :icon="tabsAllBound ? 'check' : ''" class="duel-half" :loading="smartAssignBusy"
             :disabled="splitBusy || !filteredScenes.length || !storyboards.length"
             :title="splitBusy ? '镜头分割进行中：素材池尚未完整，请等分割完成后再智能匹配' : '选择要匹配的分镜脚本，按分镜镜头的景别/时长/画面语义，从已分割素材中智能匹配并绑定素材'" @click="openMatchDlg" />
         </div>

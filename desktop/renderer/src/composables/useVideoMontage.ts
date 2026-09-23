@@ -141,7 +141,7 @@ export function useVideoMontage() {
     submitConcatTask, confirmAllPrecompose, confirmPlanSingle,
     openProductDlg, productDlg, closeProductDlg, productDlgGenerate,
     copyViewDlg, viewPlanCopy, closeCopyView,
-    planMenu, openPlanMenu, closePlanMenu,
+    planMenu, openPlanMenu, closePlanMenu, restartPlanSingle, removePlan,
     onDetailDragStart, onDetailDragEnd, onDetailDrop, toggleClipDeleted,
   } = step2
 
@@ -237,7 +237,7 @@ export function useVideoMontage() {
     submitConcatTask, confirmAllPrecompose, confirmPlanSingle,
     openProductDlg, productDlg, closeProductDlg, productDlgGenerate,
     copyViewDlg, viewPlanCopy, closeCopyView,
-    planMenu, openPlanMenu, closePlanMenu,
+    planMenu, openPlanMenu, closePlanMenu, restartPlanSingle, removePlan,
     seqClips, seqIdx, seqSrc,
     onSeqEnded,
     concatResults,

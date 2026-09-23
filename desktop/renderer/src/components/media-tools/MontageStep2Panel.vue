@@ -31,7 +31,7 @@ const {
   runConcat, planRowText, selectPlan, startSeqPreview, onSeqEnded,
   submitConcatTask, confirmAllPrecompose, confirmPlanSingle,
   openProductDlg, productDlg, closeProductDlg, productDlgGenerate,
-  copyViewDlg, viewPlanCopy, closeCopyView, planMenu, openPlanMenu, closePlanMenu,
+  copyViewDlg, viewPlanCopy, closeCopyView, planMenu, openPlanMenu, closePlanMenu, restartPlanSingle, removePlan,
   onDetailDragStart, onDetailDragEnd, onDetailDrop, toggleClipDeleted,
   toAbsolute: vdToAbsolute,
 } = shell.s
@@ -89,6 +89,8 @@ function menuToggleDeleted(): void {
 function planMenuConfirm(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) void confirmPlanSingle(i) }
 function planMenuGen(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) openProductDlg(i) }
 function planMenuView(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) viewPlanCopy(i) }
+function planMenuRestart(): void { const i = planMenu.value.index; closePlanMenu(); if (i >= 0) void restartPlanSingle(i) }
+function planMenuRemove(): void { const i = planMenu.value.index; closePlanMenu(); removePlan(i) }
 
 
 // ── 口播弹窗左侧内嵌产品选择区（WbPickProductPanel：左列表右参数/卖点；
@@ -314,6 +316,20 @@ function scoreClass(score: number | undefined): string {
 </template>
 
 <style scoped>
+/* 右键菜单（teleport 到 body，scoped 样式须在本面板内自带；样式对齐 VideoMontage 壳） */
+.ctx-mask { position: fixed; inset: 0; z-index: 1000; }
+.ctx-menu {
+  position: fixed; min-width: 140px; padding: 4px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: 0 6px 24px rgba(0,0,0,.4);
+}
+.ctx-item {
+  display: block; width: 100%; padding: 6px 12px; border: none; border-radius: var(--radius-sm);
+  background: none; color: var(--foreground); font-size: 13px; text-align: left; cursor: pointer;
+}
+.ctx-item:hover { background: var(--surface-container); }
+.ctx-item--danger { color: var(--destructive, #e5484d); }
+.ctx-item--danger:hover { background: color-mix(in srgb, var(--destructive, #e5484d) 12%, transparent); }
 /* 顶部步骤条 .step-bar 系样式已迁入 VdStepBar.vue（2026-09-10 tab 入操作区） */
 
 .sec-label { font-size: 13px; font-weight: 600; color: var(--foreground); }

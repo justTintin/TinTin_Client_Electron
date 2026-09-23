@@ -685,12 +685,28 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
   function closeCopyView(): void { copyViewDlg.value.show = false }
 
   // ── 预合成列表右键菜单（对照 _show_assembled_context_menu L5411-5434）──
-  const planMenu = ref({ show: false, x: 0, y: 0, index: -1, hasCopy: false })
+  const planMenu = ref({ show: false, x: 0, y: 0, index: -1, hasCopy: false, composed: false })
   function openPlanMenu(e: MouseEvent, i: number): void {
     const p = assemblePlans.value[i]
-    planMenu.value = { show: true, x: e.clientX, y: e.clientY, index: i, hasCopy: !!p?.copy }
+    planMenu.value = { show: true, x: e.clientX, y: e.clientY, index: i, hasCopy: !!p?.copy, composed: !!p?.confirmed && !!p?.outputName }
   }
   function closePlanMenu(): void { planMenu.value.show = false }
+
+  // 重启合成（2026-09-23 用户裁决：右键菜单补齐原版能力——已合成方案重置确认态后重走单条合成）
+  async function restartPlanSingle(index: number): Promise<void> {
+    const p = assemblePlans.value[index]
+    if (!p || confirmBusy.value) return
+    p.confirmed = false
+    await confirmPlanSingle(index)
+  }
+  // 删除方案（2026-09-23 用户裁决：右键菜单补「删除」——从预合成列表移除该条）
+  function removePlan(index: number): void {
+    if (index < 0 || index >= assemblePlans.value.length) return
+    assemblePlans.value.splice(index, 1)
+    if (currentPlanIdx.value >= assemblePlans.value.length) {
+      currentPlanIdx.value = assemblePlans.value.length - 1
+    }
+  }
 
   return {
     // refs / computed
@@ -707,6 +723,6 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
     planClipUrls, ensureSourceFps, submitConcatTask, downloadFinalChecked,
     pollResultEndpoint, confirmPlanOne, confirmAllPrecompose, confirmPlanSingle,
     openProductDlg, closeProductDlg, genCopyForPlan, productDlgGenerate,
-    viewPlanCopy, closeCopyView, openPlanMenu, closePlanMenu,
+    viewPlanCopy, closeCopyView, openPlanMenu, closePlanMenu, restartPlanSingle, removePlan,
   }
 }

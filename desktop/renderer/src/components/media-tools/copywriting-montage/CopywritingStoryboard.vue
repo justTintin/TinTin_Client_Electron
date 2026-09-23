@@ -15,7 +15,7 @@ import type { StoryboardShot } from '@/composables/opsStoryboardLogic'
 import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 
 const props = defineProps<{ mode: 'edit' | 'voice' | 'material' | 'fx'; sfxBusy?: boolean }>()
-const emit = defineEmits<{ (e: 'sfx-regen', shot: StoryboardShot): void }>()
+const emit = defineEmits<{ (e: 'sfx-regen', shot: StoryboardShot): void; (e: 'sfx-remove', shot: StoryboardShot): void }>()
 
 const shell = inject(copywritingMontageShellKey)!
 const {
@@ -187,6 +187,15 @@ const EMPTY_HINT: Record<string, string> = {
             preload="none"
             :src="toAbsolute(shot.sfxWavUrl)"
             :title="`AI 生成音效（${shot.sfx}）`"
+          />
+          <TButton
+            label="删除音效"
+            variant="secondary"
+            size="small"
+            class="sfx-del"
+            :disabled="!!sfxBusy"
+            title="移除该镜已绑定的音效（音效建议文字保留，可重新匹配/生成）"
+            @click="emit('sfx-remove', shot)"
           />
           <TButton
             label="重新生成音效"
@@ -433,7 +442,8 @@ const EMPTY_HINT: Record<string, string> = {
 .sfx-audio { width: 240px; height: 28px; margin-top: 2px; }
 /* 音效行：播放条 + 右对齐重生成按钮（2026-09-22 二次裁决） */
 .sfx-row { display: flex; align-items: center; gap: 8px; }
-.sfx-row .sfx-regen { margin-left: auto; }
+.sfx-row .sfx-del { margin-left: auto; }
+.sfx-row .sfx-regen { margin-left: 0; }
 /* 装填达标徽标（2026-09-22 用户裁决 B2，方案文档 §六：差值<15% 绿、欠装黄/红） */
 .fill-line { display: inline-flex; align-items: center; gap: 6px; }
 .fill-badge { padding: 1px 6px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; }

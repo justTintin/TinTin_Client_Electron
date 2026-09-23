@@ -280,6 +280,15 @@ async function genOneSfx(s: StoryboardShot): Promise<void> {
   } catch (_) { /* 落盘失败：保留 URL 预览；导出音效轨跳过该片 */ }
 }
 /** 单镜重新生成（2026-09-22 用户裁决：分镜卡音效行右对齐按钮）——与批量共享忙态 */
+/** 删除音效（2026-09-23 用户裁决）：清除该镜已绑定的音效产物（wav 引用/时长），
+ *  音效建议文字保留；导出音效轨不再包含该镜。本地缓存文件不删（可重新匹配/生成找回）。 */
+function removeSfx(s: StoryboardShot): void {
+  if (sfxBusy.value) { notify('音效处理进行中', '请等当前音效操作完成后再删除。'); return }
+  s.sfxWavUrl = ''
+  s.sfxWavLocal = ''
+  s.sfxDurSec = 0
+  sfxStage.value = '已删除该镜音效（音效建议保留，可重新匹配/生成）'
+}
 async function regenSfx(s: StoryboardShot): Promise<void> {
   if (sfxBusy.value) { notify('音效生成进行中', '请等当前生成完成后再试。'); return }
   if (!String(s.sfx || '').trim()) { notify('没有音效提示词', '请先在分镜卡填写该镜音效提示词。'); return }
@@ -467,7 +476,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
       <section class="card">
         <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 分镜脚本（2026-09-21 用户裁决：四步公共显示组件，本步 fx 态只读） -->
-        <CopywritingStoryboard mode="fx" :sfx-busy="sfxBusy" @sfx-regen="regenSfx" />
+        <CopywritingStoryboard mode="fx" :sfx-busy="sfxBusy" @sfx-regen="regenSfx" @sfx-remove="removeSfx" />
         <!-- 特效包装分组（2026-09-13 用户裁决：字幕拆出单独成组、置于背景音乐上方）：花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
           <div class="fx-pack-title">花字</div>

@@ -91,7 +91,7 @@ import { usePlanMontageStep3Voice } from './planMontage/usePlanMontageStep3Voice
 import { usePlanMontageStep4Final } from './planMontage/usePlanMontageStep4Final'
 
 export function usePlanMontage() {
-  // 2026-09-23 模块重命名（文案混剪→方案混剪，copy-montage → plan-montage）：
+  // 2026-09-23 模块代码前缀重命名（产品名仍为文案混剪；代码标识 copy-montage → plan-montage）：
   // localStorage 旧键一次性迁移——新键不存在时整串复制（旧键保留作回滚保险）。
   // 必须先于各 step 组合函数的 revive/恢复逻辑执行，故置于本函数首行。
   try {

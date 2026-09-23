@@ -736,6 +736,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
         const ex = await window.tintin?.liveclip?.fileExists?.({ path: hit })
         if (ex?.exists) return hit
       }
+      clientError('copywriting-montage', '字幕资产未找到',
+        `aligned=${aligned || '(空)'} 与 srt 目录候选均不存在（srtKey=${candidate}，text 长度=${String(text || '').length}）`)
       return ''
     } catch (_) {
       return ''
@@ -988,7 +990,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
       const sfxN = sfxClips.filter((s) => s.length > 0).length
       trackReport.push(`视频轨 ${cands.length} 段`)
       if (voicedN) trackReport.push(`口播轨 ${voicedN} 段`)
-      if (srtN) trackReport.push(`字幕轨 ${srtN} 条`)
+      trackReport.push(`字幕轨 ${srtN} 条`)
       if (tplN) trackReport.push(`文字模板轨 ${tplN} 段`)
       if (fancyN) trackReport.push(`花字轨 ${fancyN} 词条`)
       if (bgmPath.value) trackReport.push(`BGM ✓`)

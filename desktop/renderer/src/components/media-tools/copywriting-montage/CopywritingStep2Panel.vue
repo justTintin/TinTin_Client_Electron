@@ -78,6 +78,28 @@ const libBrandOpts = ref<string[]>([])
 const libModelOpts = ref<string[]>([])
 const libCatOpts = ref<string[]>([])
 const libItems = ref<PickerItem[]>([])
+// 2026-09-23 用户报障（型号输入卡死）：/material/distinct?field=model 实测 4.4 万条，
+// 全量 v-for 进 datalist 每键过滤渲染即卡死——全量存非响应式缓存，datalist 只挂
+// 「按已输入内容过滤后的前 200 条」（防抖 200ms）。
+let libBrandOptsAll: string[] = []
+let libModelOptsAll: string[] = []
+let libCatOptsAll: string[] = []
+const LIB_DATALIST_CAP = 200
+let libOptsFilterTimer: ReturnType<typeof setTimeout> | null = null
+function applyLibOptsFilter(): void {
+  const f = (all: string[], kw: string): string[] => {
+    const q = kw.trim().toLowerCase()
+    const src = q ? all.filter((v) => v.toLowerCase().includes(q)) : all
+    return src.slice(0, LIB_DATALIST_CAP)
+  }
+  libBrandOpts.value = f(libBrandOptsAll, libBrand.value)
+  libModelOpts.value = f(libModelOptsAll, libModel.value)
+  libCatOpts.value = f(libCatOptsAll, libCategory.value)
+}
+function onLibFilterInput(): void {
+  if (libOptsFilterTimer) clearTimeout(libOptsFilterTimer)
+  libOptsFilterTimer = setTimeout(applyLibOptsFilter, 200)
+}
 const libLoading = ref(false)
 const libError = ref('')
 const libPage = ref(1)
@@ -208,9 +230,10 @@ async function loadLibOpts(): Promise<void> {
       fetchMaterialDistinct('model'),
       fetchMaterialDistinct('category'),
     ])
-    libBrandOpts.value = b
-    libModelOpts.value = m
-    libCatOpts.value = c
+    libBrandOptsAll = b
+    libModelOptsAll = m
+    libCatOptsAll = c
+    applyLibOptsFilter()
   } catch (_) { /* 候选拉取失败静默（过滤框仍可手输） */ }
 }
 async function runLib(p = 1): Promise<void> {
@@ -663,9 +686,9 @@ function scoreClass(score: number | undefined): string {
                网格勾选（跨页保留）+ 分页 + 加入素材池；时长/景别/描述/评分走服务端字段） -->
           <div class="row">
             <input v-model="libKw" class="input grow" placeholder="搜索文件名/关键字…" @keydown.enter="runLib(1)" />
-            <input v-model="libBrand" class="input lib-input-sm" list="lib-brand-opts" placeholder="品牌…" @keydown.enter="runLib(1)" />
-            <input v-model="libModel" class="input lib-input-sm" list="lib-model-opts" placeholder="型号…" @keydown.enter="runLib(1)" />
-            <input v-model="libCategory" class="input lib-input-sm" list="lib-cat-opts" placeholder="分类…" @keydown.enter="runLib(1)" />
+            <input v-model="libBrand" class="input lib-input-sm" list="lib-brand-opts" placeholder="品牌…" @input="onLibFilterInput" @keydown.enter="runLib(1)" />
+            <input v-model="libModel" class="input lib-input-sm" list="lib-model-opts" placeholder="型号…" @input="onLibFilterInput" @keydown.enter="runLib(1)" />
+            <input v-model="libCategory" class="input lib-input-sm" list="lib-cat-opts" placeholder="分类…" @input="onLibFilterInput" @keydown.enter="runLib(1)" />
             <select v-model="libMediaType" class="input lib-input-sm" title="按媒体类型过滤" @change="runLib(1)">
               <option value="video">视频</option>
               <option value="image">图片</option>

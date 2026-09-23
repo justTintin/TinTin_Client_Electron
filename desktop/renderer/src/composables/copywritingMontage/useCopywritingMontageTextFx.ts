@@ -275,9 +275,16 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
       const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)) || 0
       // planKey=候选视频路径：手工标注关键词按视频维度存取（预览与导出同键同词表）
-      const st = await resolveKeywordState(
-        String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '', c,
-      )
+      // 单条取数异常（离线/IPC 抖动）→ 保留上一轮标注数据，不冻结不清空面板
+      let st: { rows: Array<{ text: string; start: number; end: number }>; hits: KeywordHit[]; words: string[] }
+      try {
+        st = await resolveKeywordState(
+          String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '', c,
+        )
+      } catch (_) {
+        const prev = textFxAnnotate.value.find((a) => a.key === c)
+        st = prev || { key: c, name: pathBasename(c), durationSec: dur, rows: [], hits: [], words: [] }
+      }
       matched.push({ name: pathBasename(c), durationSec: dur, lines: st.hits })
       annotate.push({ key: c, name: pathBasename(c), durationSec: dur, rows: st.rows, hits: st.hits, words: st.words })
     }

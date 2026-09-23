@@ -169,7 +169,7 @@ export function useVideoMontage() {
     fancyPreviews, fancyTemplatesLoading, textFxEnabled, lutRestore, lutId, lutList,
     lutListLoading, textTemplateId, textRandomCount, textKeywordDensity, textTemplates,
     textTemplatesLoading, activeTextPool, activeTextCount, textTemplateOptions,
-    textFxPreviewTracks, textFxStyleSamples, srvBase,
+    textFxPreviewTracks, textFxStyleSamples, srvBase, textFxAnnotate, addManualKeyword, removeManualKeyword,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, voiceProgress, voiceStopRequested, stopVoiceClone,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
@@ -259,7 +259,7 @@ export function useVideoMontage() {
     // 文字模板（textfx；与花字独立；随机样式默认 3 个）
     lutRestore, lutId, lutList, lutListLoading, loadLuts, textFxEnabled, textTemplateId, textTemplateOptions, textTemplates,
     textRandomCount, textKeywordDensity, TEXT_RANDOM_COUNT_OPTIONS, TEXT_KEYWORD_DENSITY_OPTIONS,
-    textFxPreviewTracks, textFxStyleSamples, loadTextTemplates,
+    textFxPreviewTracks, textFxStyleSamples, loadTextTemplates, textFxAnnotate, addManualKeyword, removeManualKeyword,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs,
     cloneParamsDlg, openCloneParams, closeCloneParams, saveCloneParams,
     editDlg, openEditDlg, saveEditDlg,

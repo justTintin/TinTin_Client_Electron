@@ -136,6 +136,16 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
    *  合成口径补足；density 档位透传，不传 duration——与合成端同口径由服务端取字幕
    *  末行 t1）；客户端不再本地提取关键词，服务端离线/失败时呈空轨（不造数）。 */
   const textFxPreviewTracks = ref<TextFxTrack[]>([])
+  /** 交互标注数据（2026-09-23 用户裁决，与智能混剪同款）：每视频一块 */
+  interface TextFxAnnotateTrack {
+    key: string
+    name: string
+    durationSec: number
+    rows: Array<{ text: string; start: number; end: number }>
+    hits: KeywordHit[]
+    words: string[]
+  }
+  const textFxAnnotate = ref<TextFxAnnotateTrack[]>([])
   let textFxTrackSeq = 0
   // ── 关键词命中（2026-09-19 架构：服务端 /text_templates/match 删除，客户端不再调用）──
   // 词源=产品资料关联关键词（sharedProductInfo.keywords，产品库选择时带回）；
@@ -145,29 +155,81 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
   type KeywordHit = { text: string; start: number; end: number; keywords: string[]; templateId?: string }
   /** LLM 兜底提词缓存（键=文案原文；同一文案整会话只调一次 LLM；空结果不缓存，下次重试） */
   const llmKeywordsCache = new Map<string, string[]>()
-  /** 关键词命中判定（效果预览与剪映草稿导出共用同一取数口径）：
-   *  文案空/行组装为空 → 空（不造数）；LLM 失败 → 空（失败不冒充命中） */
-  async function resolveKeywordHits(
-    text: string,
-    timingPath: string,
-  ): Promise<KeywordHit[]> {
+  // ── 手工标注关键词（2026-09-23 用户裁决，与智能混剪同款）：字幕文本选中→右键标注，
+  //  右键已标注词→取消；按视频路径（planKey）存储并 localStorage 持久化；
+  //  词表优先级=手工 → 产品关联 → LLM 补足（命中判定沿用 matchKeywordHits 词表序）──
+  const MANUAL_KW_LS_KEY = 'copywriting-montage.textfx.manualKeywords'
+  const manualKeywords = ref<Record<string, string[]>>(loadManualKeywords())
+  function loadManualKeywords(): Record<string, string[]> {
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem(MANUAL_KW_LS_KEY) || '{}')
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, string[]>) : {}
+    } catch (_) { return {} }
+  }
+  function persistManualKeywords(): void {
+    try { localStorage.setItem(MANUAL_KW_LS_KEY, JSON.stringify(manualKeywords.value)) } catch (_) {}
+  }
+  function addManualKeyword(planKey: string, word: string): boolean {
+    const w = String(word || '').trim().slice(0, 30)
+    if (!w || !planKey) return false
+    const list = manualKeywords.value[planKey] || []
+    if (list.some((x) => x === w)) return false
+    manualKeywords.value = { ...manualKeywords.value, [planKey]: [...list, w].slice(0, 30) }
+    persistManualKeywords()
+    scheduleManualKwRefresh()
+    return true
+  }
+  function removeManualKeyword(planKey: string, word: string): boolean {
+    const list = manualKeywords.value[planKey] || []
+    const next = list.filter((x) => x !== word)
+    manualKeywords.value = { ...manualKeywords.value, [planKey]: next }
+    persistManualKeywords()
+    scheduleManualKwRefresh()
+    return next.length !== list.length
+  }
+  let manualKwTimer: ReturnType<typeof setTimeout> | null = null
+  function scheduleManualKwRefresh(): void {
+    if (manualKwTimer) clearTimeout(manualKwTimer)
+    manualKwTimer = setTimeout(() => { void refreshTextFxTracks() }, 300)
+  }
+  /** 关键词判定 v2（2026-09-23 用户裁决，与智能混剪同款）：词表优先级=手工标注
+   *  （planKey 维度）→ 产品关联词 → LLM 补足；命中词覆盖不足 min(3, 行数) 时自动
+   *  追加 LLM 提取词重匹配（保证每条至少 3 词可命中）。门面保留只返回 hits。 */
+  async function resolveKeywordState(text: string, timingPath: string, planKey = ''): Promise<{
+    rows: Array<{ text: string; start: number; end: number }>
+    hits: KeywordHit[]
+    words: string[]
+  }> {
     let timing: Array<{ text: string; start: number; end: number }> = []
     if (timingPath) {
       const res = await window.tintin?.server?.finalReadTiming?.({ timingPath })
       timing = res && 'items' in res ? res.items : []
     }
     const rows = buildSubtitleRows(String(text || '').trim(), timing, 0)
-    if (!rows.length) return []
+    if (!rows.length) return { rows: [], hits: [], words: [] }
     const pool = currentMatchTemplateIds()
+    const manual = (manualKeywords.value[planKey] || []).map((w) => String(w || '').trim()).filter(Boolean)
     const owned = sharedProductInfo.value.keywords.map((w) => String(w || '').trim()).filter(Boolean)
-    if (owned.length) return matchKeywordHits(owned, rows, pool)
-    const key = String(text || '').trim()
-    let words = llmKeywordsCache.get(key)
-    if (!words) {
-      words = await llmExtractKeywords(key)
-      if (words.length) llmKeywordsCache.set(key, words)
+    let words = [...new Set([...manual, ...owned])]
+    let hits = matchKeywordHits(words, rows, pool)
+    const want = Math.min(3, rows.length)
+    if (hits.length < want) {
+      const key = String(text || '').trim()
+      let llm = llmKeywordsCache.get(key)
+      if (!llm) {
+        llm = await llmExtractKeywords(key)
+        if (llm.length) llmKeywordsCache.set(key, llm)
+      }
+      const extra = llm.filter((w) => !words.some((x) => x.toLowerCase() === w.toLowerCase()))
+      if (extra.length) {
+        words = [...words, ...extra]
+        hits = matchKeywordHits(words, rows, pool)
+      }
     }
-    return words.length ? matchKeywordHits(words, rows, pool) : []
+    return { rows, hits, words }
+  }
+  async function resolveKeywordHits(text: string, timingPath: string, planKey = ''): Promise<KeywordHit[]> {
+    return (await resolveKeywordState(text, timingPath, planKey)).hits
   }
   /** LLM 兜底：从口播文案提取卖点关键词（数量随「关键词密度」档位；失败 → 空） */
   async function llmExtractKeywords(text: string): Promise<string[]> {
@@ -208,19 +270,23 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
     // 逐视频取关键词命中（与剪映导出同一取数函数 resolveKeywordHits：产品关联词，
     // 无关联词 LLM 兜底）；串行取数（2026-09-12：并发连击曾致服务端 500 的教训）
     const matched: Array<{ name: string; durationSec: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }> }> = []
+    const annotate: TextFxAnnotateTrack[] = []
     for (const c of outputs) {
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
       const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)) || 0
-      const lines = await resolveKeywordHits(
-        String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '',
+      // planKey=候选视频路径：手工标注关键词按视频维度存取（预览与导出同键同词表）
+      const st = await resolveKeywordState(
+        String(row?.text || '').trim(), row?.wavPath ? `${row.wavPath}.timing.json` : '', c,
       )
-      matched.push({ name: pathBasename(c), durationSec: dur, lines })
+      matched.push({ name: pathBasename(c), durationSec: dur, lines: st.hits })
+      annotate.push({ key: c, name: pathBasename(c), durationSec: dur, rows: st.rows, hits: st.hits, words: st.words })
     }
     if (seq !== textFxTrackSeq) return // 过期响应丢弃（连续触发只保留最新）
     // 2026-09-10 用户终裁：轨名列显示视频名（模板名拼接方案废止；name 字段自此=文件名）
     // 2026-09-11 用户二次裁决：展示层改「第N条」序号，见 VideoMontage.vue .textfx-track-name
     // 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与样式橱窗 textFxStyleSamples
     //  同源同构，去除 fontSize 只取颜色/渐变；不命中模板的词条走 CSS 默认色）
+    textFxAnnotate.value = annotate
     textFxPreviewTracks.value = buildTextFxTracks({
       rows: matched,
       tplNames,
@@ -343,5 +409,6 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates,
     resolveKeywordHits, currentMatchTemplateIds, refreshTextFxTracks,
+    textFxAnnotate, addManualKeyword, removeManualKeyword,
   }
 }

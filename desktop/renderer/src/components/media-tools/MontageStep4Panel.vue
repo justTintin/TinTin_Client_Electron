@@ -10,6 +10,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from '
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import StepPreviewPane, { type StepPreviewItem, type StepPreviewKeyword } from './StepPreviewPane.vue'
+import KeywordAnnotateRows from './KeywordAnnotateRows.vue'
 import VdStepBar from './VdStepBar.vue'
 import MontageBgmPickDialog from './MontageBgmPickDialog.vue'
 import { montageShellKey } from './montageUiContext'
@@ -55,6 +56,7 @@ const {
   TEXT_RANDOM_COUNT_OPTIONS,
   TEXT_KEYWORD_DENSITY_OPTIONS,
   textFxPreviewTracks,
+  textFxAnnotate, addManualKeyword, removeManualKeyword,
   textFxStyleSamples,
   loadTextTemplates,
   FANCY_STYLE_OPTIONS,
@@ -210,6 +212,12 @@ async function toggleTextFxStyles(): Promise<void> {
   textFxExpanded.value = !textFxExpanded.value
   await nextTick()
   measureTextFxStyles()
+}
+function onAnnotateAdd(planKey: string, word: string): void {
+  addManualKeyword(planKey, word)
+}
+function onAnnotateRemove(planKey: string, word: string): void {
+  removeManualKeyword(planKey, word)
 }
 watch(textFxStyleSamples, async () => {
   textFxExpanded.value = false
@@ -403,24 +411,11 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
                （模板名小字废止，仅保留在 hover 提示里）。
                2026-09-11 用户裁决：行左侧改显示「第N条」序号（完整视频名保留在悬停提示） -->
           <div v-if="textFxEnabled" class="row">
-            <!-- 上一步合成几条就几条轨（2026-09-11 裁决：全部平铺不截断），
-                 轨名=第N条，背景条本身即时长，词条按真实时间点定位 -->
+            <!-- 2026-09-23 用户裁决：词条时间轴条带升级为字幕关键词标注面板——
+                 每视频一块字幕文本（时间戳+字级对齐），命中词彩色标注；
+                 选中文字右键标注为关键词，右键彩色词取消；词表=手工→产品关联→LLM≥3 -->
             <div class="style-preview-canvas textfx-tracks">
-              <template v-if="textFxPreviewTracks.length">
-                <div v-for="(tr, ti) in textFxPreviewTracks" :key="'tt' + ti" class="textfx-track">
-                  <span class="textfx-track-name" :title="tr.name">第{{ ti + 1 }}条</span>
-                  <div class="textfx-track-bar">
-                    <span v-for="(it, ii) in tr.items" :key="'ti' + ii" class="textfx-track-item"
-                      :style="{ left: (tr.durationSec > 0 ? Math.min(92, (it.start / tr.durationSec) * 100) : 0) + '%' }"
-                      :title="`${it.fullText || it.word} · ${it.tplName} · ${fmtDur(it.start)} / ${fmtDur(tr.durationSec)}`">
-                      <!-- 2026-09-15 用户裁决：词条=纯关键词标记（哪些词/哪个位置），不播
-                           render-preview 片段——那是近似物（默认字体+CSS 动画），渲染只在合成时发生 -->
-                      <b>{{ it.word }}</b>
-                    </span>
-                  </div>
-                </div>
-              </template>
-              <span v-else class="muted">{{ textTemplates.length ? '上一步合成的视频将在此逐条预览关键词效果' : '文字模板库为空，请先在服务端上传文字模板' }}</span>
+              <KeywordAnnotateRows :tracks="textFxAnnotate" @add="onAnnotateAdd" @remove="onAnnotateRemove" />
             </div>
           </div>
         </div>

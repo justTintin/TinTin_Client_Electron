@@ -330,7 +330,7 @@ export function useMontageStep4Final(ctx: MontageStep4Context) {
         statusText.value = '正在判定关键词命中...'
         const empty: string[] = []
         for (const st of subtitleTexts) {
-          st.fxLines = await resolveKeywordHits(st.text, st.timingPath)
+          st.fxLines = await resolveKeywordHits(st.text, st.timingPath, st.videoPath)
           if (!st.fxLines.length) empty.push(pathBasename(st.videoPath))
         }
         if (empty.length) {

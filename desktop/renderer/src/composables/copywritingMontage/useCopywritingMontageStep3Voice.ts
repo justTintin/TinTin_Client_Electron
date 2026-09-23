@@ -116,6 +116,7 @@ export function useCopywritingMontageStep3Voice(ctx: CopywritingMontageStep3Cont
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates,
+    textFxAnnotate, addManualKeyword, removeManualKeyword,
     resolveKeywordHits, currentMatchTemplateIds, refreshTextFxTracks,
   } = tfx
 
@@ -1441,6 +1442,7 @@ function clearVoiceProgressListener(): void {
     lutListLoading, textTemplateId, textRandomCount, textKeywordDensity, textTemplates,
     textTemplatesLoading, activeTextPool, activeTextCount, textTemplateOptions,
     textFxPreviewTracks, textFxStyleSamples, srvBase, rewriteTemp, aiRewriteDlg,
+    textFxAnnotate, addManualKeyword, removeManualKeyword,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, rewriteBusy, voiceProgress,
     loadLuts, loadCatalogLanes, resolveKeywordHits,

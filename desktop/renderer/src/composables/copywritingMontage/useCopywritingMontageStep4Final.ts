@@ -363,7 +363,7 @@ export function useCopywritingMontageStep4Final(ctx: MontageStep4Context) {
         statusText.value = '正在判定关键词命中...'
         const empty: string[] = []
         for (const st of subtitleTexts) {
-          st.fxLines = await resolveKeywordHits(st.text, st.timingPath)
+          st.fxLines = await resolveKeywordHits(st.text, st.timingPath, st.videoPath)
           if (!st.fxLines.length) empty.push(pathBasename(st.videoPath))
         }
         if (empty.length) {
@@ -824,7 +824,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
       if (!tab) continue
       if (textFxEnabled.value || fancyEnabled.value) {
         exportStage.value = `关键词命中判定（分镜 ${pi + 1}/${vPlans.length}）...`
-        planHits.push(...[await resolveKeywordHits(tab.narrative, tab.voiceWav ? tab.voiceWav + '.timing.json' : '')])
+        planHits.push(...[await resolveKeywordHits(tab.narrative, tab.voiceWav ? tab.voiceWav + '.timing.json' : '', vPlans[pi].outputPath)])
       } else {
         planHits.push([])
       }

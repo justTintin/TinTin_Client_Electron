@@ -98,6 +98,7 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates,
+    textFxAnnotate, addManualKeyword, removeManualKeyword,
     resolveKeywordHits, currentMatchTemplateIds, refreshTextFxTracks,
   } = tfx
 
@@ -885,7 +886,7 @@ function clearVoiceProgressListener(): void {
     fancyPreviews, fancyTemplatesLoading, textFxEnabled, lutRestore, lutId, lutList,
     lutListLoading, textTemplateId, textRandomCount, textKeywordDensity, textTemplates,
     textTemplatesLoading, activeTextPool, activeTextCount, textTemplateOptions,
-    textFxPreviewTracks, textFxStyleSamples, srvBase,
+    textFxPreviewTracks, textFxStyleSamples, srvBase, textFxAnnotate, addManualKeyword, removeManualKeyword,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
     editDlg, voiceBusy, voiceProgress, voiceStopRequested, stopVoiceClone,
     loadLuts, loadCatalogLanes, resolveKeywordHits,

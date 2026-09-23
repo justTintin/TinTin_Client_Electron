@@ -53,6 +53,26 @@ export function useCopywritingMontageStep1Split(ctx: MontageStep1Context) {
   const minSceneLen = ref(0.5)     // 最小镜头秒（原版 L76 默认 0.5，范围 0.1-60）
   const imageDuration = ref(3)     // 精华时长（原版 L85 默认 3；无法分割的视频自动挑出多长的精华片段）
   const scenes = ref<SplitSceneRow[]>([])
+  // ── 素材池持久化（2026-09-23 用户报障：重启后分镜卡全部「未绑定素材」）——
+  //  分镜的 clipGroups 绑定已随 A5 持久化恢复，但素材池（scenes）此前是内存态，
+  //  重启即空 → 绑定引用悬空。现持久化素材池与原始视频清单：启动时恢复，
+  //  分割/清空/入池变化即保存（deep watch）。清空缓存入口会显式清空本键。──
+  const POOL_LS_KEY = 'copywriting-montage.pool'
+  const SRC_LS_KEY = 'copywriting-montage.srcVideos'
+  try {
+    const savedPool: unknown = JSON.parse(localStorage.getItem(POOL_LS_KEY) || '[]')
+    if (Array.isArray(savedPool) && savedPool.length) {
+      scenes.value = (savedPool as SplitSceneRow[]).filter((r) => r && r.idx != null && (r.serverPath || r.clipUrl || r.clipLocalPath))
+    }
+    const savedSrc: unknown = JSON.parse(localStorage.getItem(SRC_LS_KEY) || '[]')
+    if (Array.isArray(savedSrc) && savedSrc.length) srcVideos.value = savedSrc as string[]
+  } catch (_) { /* 恢复失败走空池 */ }
+  watch(scenes, (list) => {
+    try { localStorage.setItem(POOL_LS_KEY, JSON.stringify(list)) } catch (_) { /* 超限静默 */ }
+  }, { deep: true })
+  watch(srcVideos, (list) => {
+    try { localStorage.setItem(SRC_LS_KEY, JSON.stringify(list)) } catch (_) {}
+  })
   const scoreFilter = ref(0)       // 默认不过滤（0=全部显示；原版 L116 默认 ≥6，用户要求默认不过滤）
   const splitBusy = ref(false)
   const splitError = ref('')

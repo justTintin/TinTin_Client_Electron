@@ -1,0 +1,94 @@
+# ─────────────────────────────────────────────────────────────────────
+# TinTin Client Electron — .gitignore
+# 排除 node_modules / 构建产物 / 临时调试文件 / IDE / OS 垃圾
+# ─────────────────────────────────────────────────────────────────────
+
+# 依赖
+node_modules/
+**/node_modules/
+
+# 构建产物
+desktop/renderer/dist/
+dist/
+dist-*/
+desktop/dist-*/
+*.app
+*.exe
+*.msi
+*.nupkg
+*.blockmap
+
+# Electron 下载缓存（国内镜像落地目录）
+desktop/.electron-cache/
+
+# 浏览器扩展程序包与解包产物（运行时资源，体积大且非工程源码）
+assets/
+
+# 临时调试脚本与截图（非工程代码）
+find_window.ps1
+screenshot_step1.png
+screenshot_step1.ps1
+debug-*.md
+trae-debug-log-*.ndjson
+desktop/probe-ext.js
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Electron-builder 缓存
+desktop/build/Release/
+desktop/build/obj/
+
+# TypeScript 增量缓存
+*.tsbuildinfo
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

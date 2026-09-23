@@ -484,6 +484,16 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   }
 
   // 单条失败记录跳过不中断；任务间 sleep 0.3s；变速对齐视频时长（clamp+timing 缩放）。
+  // ── voice:cloneBatchStop — 停止批量克隆（2026-09-23 用户裁决：服务端无响应时
+  //  不必等全批跑完；按 progressChannel 定向置停止标记，当前素材完成后停止，
+  //  剩余任务保持待合成可直接重试。半截 wav 不会存在：写盘在单条合成末尾整文件落）──
+  const voiceBatchStopChannels = new Set()
+  ipcMain.handle('voice:cloneBatchStop', (_event, payload) => {
+    const ch = String((payload || {}).progressChannel || '')
+    if (ch) voiceBatchStopChannels.add(ch)
+    return { ok: true }
+  })
+
   // ── voice:cloneBatch — 批量克隆人声（VoiceCloneWorker.run L330-412 口径）──
   ipcMain.handle('voice:cloneBatch', async (event, payload) => {
     try {
@@ -539,7 +549,13 @@ function createMontageVoiceIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
       const durations = {} // videoPath → 克隆音频时长（原版 voice_audio_durations 口径）
       const failures = []
       const total = tasks.length
+      let stopped = false
       for (let index = 0; index < total; index++) {
+        if (channel && voiceBatchStopChannels.has(channel)) {
+          stopped = true
+          emitStage(`已停止：剩余 ${total - index} 条保持待合成，可直接重试`)
+          break
+        }
         const t = tasks[index]
         const text = String(t.text || '').trim()
         if (!text) continue

@@ -182,6 +182,7 @@ const server = {
   // ---------- 智能混剪 Step3 口播配音（原版 VoiceCloneWorker/VideoDubbingWorker 主进程化）----------
   voiceScanDir:         (p) => ipcRenderer.invoke('voice:scanDir', p),
   voiceCloneBatch:      (p) => ipcRenderer.invoke('voice:cloneBatch', p),
+  voiceCloneBatchStop:  (p) => ipcRenderer.invoke('voice:cloneBatchStop', p),
   voiceDubVideos:       (p) => ipcRenderer.invoke('voice:dubVideos', p),
   voiceFonts:           () => ipcRenderer.invoke('voice:fonts'),
   // 服务端字体文件字节（GET /config/fonts/{id}/file；字体下拉按自身字体自渲染用）

@@ -457,6 +457,16 @@ function clearVoiceProgressListener(): void {
     cloneParamsDlg.value.show = false
   }
 
+  // 停止批量克隆（2026-09-23 用户裁决：串行批次可中止——当前条完成后停止，
+  // 剩余条保持待合成可直接重试；语音合成串行+3 次重试+恢复等待，服务端无响应时
+  // 不再被迫等全批跑完）
+  const voiceStopRequested = ref(false)
+  let activeCloneChannel = ''
+  function stopVoiceClone(): void {
+    if (!voiceBusy.value || !activeCloneChannel) return
+    voiceStopRequested.value = true
+    try { void window.tintin?.server?.voiceCloneBatchStop?.({ progressChannel: activeCloneChannel }) } catch (_) {}
+  }
   /** 单条/批量克隆人声（对照 _start_synthesize_voice + VoiceCloneWorker.run） */
   async function runCloneBatch(rowIdxs: number[]): Promise<{ ok: number; failures: Array<{ rowIdx: number; msg: string }> }> {
     const tasks = rowIdxs
@@ -468,8 +478,10 @@ function clearVoiceProgressListener(): void {
         outWavPath: joinPath(voicesDir.value, `voice_${i + 1}.wav`),
       }))
     voiceBusy.value = true
+    voiceStopRequested.value = false
     voiceTotal = tasks.length; voiceDone = 0; voiceProgress.value = 0
     const channel = nextVoiceChannel()
+    activeCloneChannel = channel
     try {
       const res = await window.tintin?.server?.voiceCloneBatch?.({
         tasks,
@@ -497,6 +509,9 @@ function clearVoiceProgressListener(): void {
       })
       if (!res) throw new Error('主进程不可达')
       if ('error' in res) throw new Error(res.error)
+      if ((res as { stopped?: boolean }).stopped) {
+        statusText.value = '已停止声音克隆：剩余条保持待合成，可直接重试'
+      }
       // 回写已生成 wav（generated_voice_paths 口径）+ 状态
       for (const t of tasks) {
         const wav = res.results[t.videoPath]
@@ -523,6 +538,7 @@ function clearVoiceProgressListener(): void {
       return { ok: Object.keys(res.results).length, failures: res.failures }
     } finally {
       voiceBusy.value = false
+      voiceStopRequested.value = false
       offVoiceProgress?.(); offVoiceProgress = null
     }
   }
@@ -539,8 +555,16 @@ function clearVoiceProgressListener(): void {
       notify('路径无效', '请选择有效的视频输入目录。')
       return
     }
-    const idxs = voiceRows.value.map((_, i) => i).filter((i) => voiceRows.value[i].text.trim())
+    // 2026-09-23 用户裁决：批量克隆=补齐未生成的条目（断点续跑）——已生成（wavPath 在）
+    // 的行跳过，配合「停止克隆」实现中断后续跑；单行重做走行内「重新生成」
+    const idxs = voiceRows.value
+      .map((_, i) => i)
+      .filter((i) => voiceRows.value[i].text.trim() && !voiceRows.value[i].wavPath)
     if (!idxs.length) {
+      if (voiceRows.value.some((r) => r.text.trim() && r.wavPath)) {
+        notify('已全部生成', '所有带文案的条目都已有克隆音频。如需重做某条，请使用该行的「重新生成」。')
+        return
+      }
       notify('文案为空', '没有检测到任何有配音文案的视频。请在表格的“配音文案”栏输入内容。')
       return
     }
@@ -863,7 +887,7 @@ function clearVoiceProgressListener(): void {
     textTemplatesLoading, activeTextPool, activeTextCount, textTemplateOptions,
     textFxPreviewTracks, textFxStyleSamples, srvBase,
     ttsEngine, ttsDurationFactor, ttsEmoText, ttsEmoAlpha, ttsPauseMs, cloneParamsDlg,
-    editDlg, voiceBusy, voiceProgress,
+    editDlg, voiceBusy, voiceProgress, voiceStopRequested, stopVoiceClone,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,

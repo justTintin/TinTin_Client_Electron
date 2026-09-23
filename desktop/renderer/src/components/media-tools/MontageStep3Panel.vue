@@ -35,7 +35,7 @@ const {
   editDlg,
   openEditDlg,
   saveEditDlg,
-  voiceBusy,
+  voiceBusy, voiceStopRequested, stopVoiceClone,
   refPreviewUrl,
   nsFilePath,
   nsName,
@@ -240,6 +240,7 @@ function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) 
             <TButton label="设置声音克隆" variant="secondary" size="small" @click="openCloneParams" />
           </div>
           <TButton label="开始批量克隆人声合成" :loading="voiceBusy" @click="startSynthesizeVoice" />
+          <TButton label="停止克隆" variant="secondary" :disabled="!voiceBusy || voiceStopRequested" title="当前条合成完成后停止，剩余条保持待合成，可直接重试" @click="stopVoiceClone" />
         </div>
 
         <!-- 7. 配音动作已迁 Step4 统一合成（2026-09-09 用户裁决：Step3 只合成口播声音，

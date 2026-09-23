@@ -283,6 +283,8 @@ declare interface TintinBridgeServer {
     refText?: string
     progressChannel?: string
   }): Promise<{ results: Record<string, string>; durations: Record<string, number>; failures: Array<{ rowIdx: number; msg: string }> } | { error: string }>
+  /** 停止批量克隆（2026-09-23 用户裁决）：按 progressChannel 定向置停止标记，当前条完成后停止 */
+  voiceCloneBatchStop(payload: { progressChannel: string }): Promise<{ ok?: boolean }>
   /** 批量替换原声（ffmpeg 字幕/花字/atempo；对照 VideoDubbingWorker；2026-09-07 PR#4 新口径） */
   voiceDubVideos(payload: {
     tasks: Array<{ videoPath: string; voiceWavPath: string; outVideoPath: string; text: string }>

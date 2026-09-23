@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// copyMontageStep1SplitLogic.ts — 智能混剪 Step1 素材解析纯逻辑
-// 自 copyMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
+// planMontageStep1SplitLogic.ts — 智能混剪 Step1 素材解析纯逻辑
+// 自 planMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
 // 拆分过程过 SKILL.md IRON-02 五项 checklist）。
 // 对照原客户端 studio/gui：
 //   · gui/montage/workers/split_workers.py ServerSplitWorker L121-171

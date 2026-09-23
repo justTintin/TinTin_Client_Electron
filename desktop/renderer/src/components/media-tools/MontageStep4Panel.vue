@@ -260,7 +260,7 @@ const SUBTITLE_ANIM_OPTIONS = [
   { label: '无动画', value: 'none' },
 ]
 const subtitleAnimOptions = SUBTITLE_ANIM_OPTIONS
-/** 字幕字号下拉（2026-09-18 用户裁决：默认 10 号，置于「动画」后；
+/** 字幕字号下拉（2026-09-22 用户裁决：默认改 12 号，置于「动画」后；
  *  值=剪映草稿 texts content styles[].size，预览同比例缩放） */
 const subtitleFontSizeOptions = [6, 8, 10, 12, 15, 20, 25, 30].map((v) => ({ label: String(v), value: v }))
 /** 花字模板下拉（原版 fancy_template_combo：首项「自定义 (下方样式)」value=''，L269-274；
@@ -448,7 +448,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
               title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
             <label class="param-label">字号:</label>
             <TSelect v-model="subtitleFontSize" :options="subtitleFontSizeOptions" class="w90"
-              title="字幕字号（剪映草稿文本 size，默认 10 号）。&#10;值越大字幕越大，效果预览同比例缩放。" />
+              title="字幕字号（剪映草稿文本 size，默认 12 号）。&#10;值越大字幕越大，效果预览同比例缩放。" />
             <label class="param-label">样式:</label>
             <div class="sub-style-grid" title="字幕样式来自服务端 /subtitle_styles 库（烧制时以 ffmpeg drawtext 或服务端引擎实现，效果以成品为准）">
               <button v-for="p in subtitleStylePresets" :key="p.key" type="button" class="sub-style-tile"

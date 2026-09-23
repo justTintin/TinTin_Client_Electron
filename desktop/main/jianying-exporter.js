@@ -714,6 +714,50 @@ function appendSfxTrackFromEvents(tracks, materials, events, offsetUs, limitEndU
   if (sfxTrack.segments.length) tracks.push(sfxTrack)
 }
 
+/** 音效轨·镜级显式指派（2026-09-22 用户裁决「音效包装对齐剪映导出」）：音效包装按镜
+ *  生成的 AI 音效直接落段——clips=[{path,startUs,durUs}]（该成片局部系；startUs=镜起点，
+ *  由渲染层按方案 groups 装填时长累计）。与事件池轨互斥：本视频有显式指派时事件池让位。
+ *  文件缺失→该段跳过（不造假）；probeCache/probeDur 同事件池轨口径。 */
+function appendSfxTrackFromClips(tracks, materials, clips, offsetUs, limitEndUs, opts = {}) {
+  const list = (Array.isArray(clips) ? clips : [])
+    .map((c) => (c && c.path ? { path: String(c.path), startUs: Math.max(0, Math.round(Number(c.startUs) || 0)), durUs: Math.max(1, Math.round(Number(c.durUs) || 0)) } : null))
+    .filter((c) => c && c.durUs > 0 && fs.existsSync(c.path))
+  if (!list.length) return
+  const probeCache = opts.probeCache instanceof Map ? opts.probeCache : new Map()
+  const probeDur = (fp) => {
+    if (probeCache.has(fp)) return probeCache.get(fp)
+    let sec = 0
+    try { sec = Number(opts.probeDur ? opts.probeDur(fp) : 0) || 0 } catch (_) { sec = 0 }
+    probeCache.set(fp, sec)
+    return sec
+  }
+  const gainDb = Number(opts.gainDb)
+  const volume = Number.isFinite(gainDb) ? Math.min(1, Math.max(0, Math.pow(10, gainDb / 20))) : 1.0
+  const sfxTrack = newTrack('audio')
+  list.forEach((c) => {
+    const sfxDurUs = Math.round(Math.max(0.05, probeDur(c.path) || 0.5) * 1e6)
+    const startUs = offsetUs + c.startUs
+    let durUs = Math.min(sfxDurUs, c.durUs)
+    if (limitEndUs !== null && startUs + durUs > limitEndUs) durUs = limitEndUs - startUs
+    if (durUs <= 0) return
+    const mat = audioMaterialFields(c.path, durUs)
+    materials.audios.push(mat)
+    const ssp = speedMaterial(1.0)
+    if (Array.isArray(materials.speeds)) materials.speeds.push(ssp)
+    sfxTrack.segments.push({
+      ...baseSegmentFields(mat.id, startUs, durUs),
+      source_timerange: { start: 0, duration: durUs },
+      speed: 1.0,
+      volume,
+      extra_material_refs: [ssp.id],
+      is_tone_modify: false,
+      clip: null,
+      hdr_settings: null,
+    })
+  })
+  if (sfxTrack.segments.length) tracks.push(sfxTrack)
+}
+
 
 
 function draft_content_tracks_render_index(tracks) {
@@ -1072,7 +1116,7 @@ function exportToDraft({ videoPath, bgmPath = '', bgmVolume = 50, srtPath = '', 
  *  不再导出旧 'tpl' 蓝字关键词轨（原生模板实例替代），'fancy' 花字轨照旧。
  *  sfxPaths（2026-09-18 用户裁决）：音效池=服务端音频库剪映音效库 <2s 条目
  *  下载产物（主进程 resolveJianyingSfxPool 解析），按文字模板命中全局索引循环指派。 */
-function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, fancyEvents = null, voiceClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
+function exportMultiToDraft({ videoPaths, videoDurations = null, muteVideoAudio = false, transitions = null, bgmPath = '', bgmPaths = null, bgmVolume = 50, srtPaths = null, draftName = '', fxWords = null, fxKinds = null, textAnim = '', fancyEffectId = '', tplEffectId = '', subAnim = '', videoEffectId = '', videoEffectName = '', textTemplateClips = null, fancyEvents = null, voiceClips = null, sfxClips = null, sfxPaths = null, sfxGainDb = null, subtitleStyle = null, subtitleBoxOpacity = null, subtitleFontSize = null, deps }) {
   const paths = (videoPaths || []).filter(Boolean)
   if (!paths.length) return { success: false, message: '没有可导出的视频' }
   for (const p of paths) {
@@ -1081,14 +1125,17 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
 
   try {
     // 1. 探测每个视频的时长与分辨率（失败兜底 10s / 1080x1920）
+    // 2026-09-22 用户裁决（虚拟时间轴）：videoDurations[i]（微秒）>0 时按其作为
+    //  段时长（源裁剪=用源文件前 N 秒），不再按 ffprobe 全长——剪辑方案的 useDurs 直通
     const clips = []
     let totalDurationUs = 0
     for (const p of paths) {
       const [durationUs, width, height] = probeVideo(p, deps)
+      const override = Number(videoDurations && videoDurations[clips.length]) || 0
       clips.push({
         path: p.split('\\').join('/'),
         name: path.basename(p),
-        durationUs: durationUs > 0 ? durationUs : 10000000,
+        durationUs: override > 0 ? override : (durationUs > 0 ? durationUs : 10000000),
         width: width || 1080,
         height: height || 1920,
       })
@@ -1166,7 +1213,11 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
       const sp = speedMaterial(1.0)
       speeds.push(sp)
       bgmWindows.push({ startUs: cursorUs, durUs: clip.durationUs, bgmPath: (Array.isArray(bgmPaths) && bgmPaths[i]) ? String(bgmPaths[i]) : '' })
-      const voiced = (voiceSegsByVideo[i] || []).length > 0
+      // 静音判定（2026-09-22 虚拟时间轴）：muteVideoAudio=true 全片视频段静音（旁白
+      //  覆盖口径）；数组=逐段静音标记；行级口播段沿用原判定
+      const segMuted = muteVideoAudio === true
+        || (Array.isArray(muteVideoAudio) && muteVideoAudio[i] === true)
+      const voiced = segMuted || (voiceSegsByVideo[i] || []).length > 0
       const seg = {
         ...baseSegmentFields(materialId, cursorUs, clip.durationUs),
         ...mediaSegmentFields(clip.durationUs, sp.id, { volume: voiced ? 0 : 1.0 }),
@@ -1218,6 +1269,19 @@ function exportMultiToDraft({ videoPaths, transitions = null, bgmPath = '', bgmP
     let sfxEventCursor = 0
     const sfxProbeCache = new Map()
     const appendSfxForVideo = (i, offsetUs, limitEndUs) => {
+      // 镜级显式指派优先（2026-09-22 用户裁决「音效包装对齐导出」）：音效包装产物
+      // （AI 按镜提示词生成）直接按镜时间轴落段；无显式指派 → 事件池轨原口径
+      const explicit = (Array.isArray(sfxClips) && Array.isArray(sfxClips[i])) ? sfxClips[i] : null
+      if (explicit && explicit.length) {
+        try {
+          appendSfxTrackFromClips(tracks, materials, explicit, offsetUs, limitEndUs, {
+            gainDb: sfxGainDb,
+            probeCache: sfxProbeCache,
+            probeDur: (fp) => (deps && typeof deps.probeMedia === 'function' ? (deps.probeMedia(fp).durationSec || 0) : 0),
+          })
+        } catch (_) { /* 音效轨失败不阻断导出 */ }
+        return
+      }
       const evs = (tplClips && tplClips[i]) || []
       if (!evs.length) return
       if (sfxPool.length) {

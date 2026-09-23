@@ -15,7 +15,7 @@ const {
   srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
   scenes, scoreFilter, filteredScenes,
   splitBusy, splitError, splitMsg, splitProgress, splitResolution,
-  selectFolder, onDrop, removeVideo, runSplit, updateSceneDesc,
+  selectFolder, onDrop, removeVideo, runSplit, requestStopSplit, splitStatusOf, updateSceneDesc,
   previewSourceVideo, previewScene, clearSplitCache, openSplitsDir, splitsDownloading,
   SHOT_TYPE_COLORS, SHOT_TYPE_LABELS,
 } = shell.s
@@ -78,7 +78,7 @@ function scoreClass(score: number | undefined): string {
 
         <span class="sec-label">已选择的原始视频素材 (双击可播放预览):</span>
         <ul class="file-list src-video-list">
-          <li v-for="(v, i) in srcVideos" :key="v" :title="v">
+          <li v-for="(v, i) in srcVideos" :key="v" :title="v" class="split-status-row" :class="'split-' + (splitStatusOf(v) || 'none')">
             <!-- 2026-09-07 缩略图改主进程 ffmpeg 抽帧 dataURL（根治多路 <video> 并发
                  初始化崩溃，且全部行有缩略图）；抽帧失败行显示占位图标 -->
             <img v-if="thumbs.get(v)" class="video-thumb" :src="thumbs.get(v)" alt="" />
@@ -106,6 +106,8 @@ function scoreClass(score: number | undefined): string {
             title="无法分割的视频，自动挑出多长的片段" class="input w80" />
           <span class="spacer"></span>
           <TButton label="开始智能镜头分割" icon="cut" :loading="splitBusy" @click="runSplit" />
+          <!-- 2026-09-22 用户裁决：停止分割（当前素材完成后停止，已完成素材保留可断点续分） -->
+          <TButton label="停止分割" variant="secondary" :disabled="!splitBusy" title="停止智能镜头分割：当前素材完成后停止，已完成素材保留（列表淡绿标识）" @click="requestStopSplit" />
         </div>
         <!-- 解析进度（对照原版 step1_split_controller _progress：按素材数 0-100 推进） -->
         <progress v-if="splitBusy" class="vd-progress split-progress" :value="splitProgress" max="100" />
@@ -247,6 +249,10 @@ function scoreClass(score: number | undefined): string {
 .split-progress { margin: 6px 0 2px; }
 
 .video-count-footer { text-align: center; color: var(--muted-foreground); font-size: 12px; padding: 4px 0; }
+/* 逐素材分割状态行底色（2026-09-22 用户裁决：done=淡绿、splitting=淡黄、failed=淡红、未分割无底色） */
+.split-status-row.split-done { background: rgba(46, 204, 113, 0.14); }
+.split-status-row.split-splitting { background: rgba(241, 196, 15, 0.14); }
+.split-status-row.split-failed { background: rgba(231, 76, 60, 0.12); }
 
 .row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 

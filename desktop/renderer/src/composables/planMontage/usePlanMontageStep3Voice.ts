@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════
-// useCopyMontageStep3Voice.ts — 智能混剪 Step3 口播配音/字幕花字/文字模板编排（铁律 10 拆分，2026-09-18）
-// 自 useCopyMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// usePlanMontageStep3Voice.ts — 智能混剪 Step3 口播配音/字幕花字/文字模板编排（铁律 10 拆分，2026-09-18）
+// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step3）。
 // 跨步依赖经 ctx 注入：共享运行时（statusText/serverUrl/ensureServerUrl）+
 //   Step2 assemblePlans + Step1 previewUrl + 上提 ref（finalBusy/step4Candidates）+
@@ -18,7 +18,7 @@ import {
   buildRewriteSystemPrompt, cleanRewriteContent, resolveOutMontageDir, pathBasename,
   shotsNarrationText, buildCopyStoryboardPrompt,
   type TextFxTrack, type SubtitleStylePreset, type PrecomposePlan, type VoiceRow,
-} from '../copyMontageLogic'
+} from '../planMontageLogic'
 import { notify, errText, joinPath } from './context'
 import { readCacheDir } from '../useSettingsConfig'
 import {
@@ -33,9 +33,9 @@ import {
   type ScriptSummary,
   type StoryboardShot,
 } from '../opsStoryboardLogic'
-import { useCopyMontageTextFx } from './useCopyMontageTextFx'
+import { usePlanMontageTextFx } from './usePlanMontageTextFx'
 
-export interface CopyMontageStep3Context {
+export interface PlanMontageStep3Context {
   statusText: Ref<string>
   serverUrl: Ref<string>
   ensureServerUrl: () => Promise<string>
@@ -57,7 +57,7 @@ export interface CopyMontageStep3Context {
   setScriptCopy: (text: string) => void
 }
 
-export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
+export function usePlanMontageStep3Voice(ctx: PlanMontageStep3Context) {
   const { statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
     step4Candidates, collectCandidates, ensureProcessedSrt, sharedProductInfo, getScriptCopy, setScriptCopy } = ctx
@@ -98,9 +98,9 @@ export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
   // 字幕入场动画 key（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；
   // key 与主进程 VALID_ANIMS 同表：fade/rise/slide/pop/none）
   const subtitleAnimKey = ref('fade')
-  // 2026-09-18 用户裁决：字幕字号（剪映草稿 texts content styles[].size），默认 10 号
-  // （原导出器缺省 8 实测偏小）；第四步「字号」下拉覆写，预览同比例缩放
-  const subtitleFontSize = ref(10)
+  // 2026-09-22 用户裁决：字幕字号默认 12 号（2026-09-18 曾定 10，实测仍偏小）；
+  // 第四步「字号」下拉覆写，预览同比例缩放
+  const subtitleFontSize = ref(12)
   // 花字位置/字幕背景/模板（L224-352；模板首项「自定义 (下方样式)」value=''）
   const fancyPosition = ref('upper_middle')
   // 字幕背景不透明度默认 20%（2026-09-15 用户裁决：背景里的透明默认设计为 20%，原 0.5）
@@ -109,8 +109,8 @@ export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
   const fancyTemplates = ref<FancyTemplateItem[]>([])
   const fancyPreviews = ref<Record<string, string>>({})
   const fancyTemplatesLoading = ref(false)
-  // ── 文字模板 textfx（已迁 montage/useCopyMontageTextFx.ts，铁律 10 E3b 纯搬迁）──
-  const tfx = useCopyMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo })
+  // ── 文字模板 textfx（已迁 montage/usePlanMontageTextFx.ts，铁律 10 E3b 纯搬迁）──
+  const tfx = usePlanMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo })
   const {
     textFxEnabled, lutRestore, lutId, lutList, lutListLoading, loadLuts,
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
@@ -154,7 +154,7 @@ export function useCopyMontageStep3Voice(ctx: CopyMontageStep3Context) {
 
   let offVoiceProgress: (() => void) | null = null
 
-/** 清理口播进度监听（原 useCopyMontage 闭包槽复位口径：有则调用并置空） */
+/** 清理口播进度监听（原 usePlanMontage 闭包槽复位口径：有则调用并置空） */
 function clearVoiceProgressListener(): void {
   offVoiceProgress?.()
   offVoiceProgress = null
@@ -636,10 +636,88 @@ function clearVoiceProgressListener(): void {
     /** 整体克隆产物（2026-09-21 用户裁决：每分镜脚本一条整段声音；二/三步批量处理） */
     voiceWav: string
     voiceDurSec: number
+    /** 每脚本视频设置（2026-09-23 用户裁决：输出画幅/转场动画/输出帧率按 tab 绑定——
+     *  切 tab 即切设置，导出按各 tab 自身 transition 消费；时长限制=跟随本 tab 声音时长派生值） */
+    layout: string
+    transition: string
+    fps: number | 'source'
+    /** 产品快照（2026-09-23 用户裁决：品牌/产品/型号 摘要，创建时自 sharedProductInfo
+     *  快照、选择脚本时自服务端 detail.product 带回；选择弹窗等处展示脚本基本信息） */
+    productBrief: string
   }
   const COPY_STORYBOARD_MAX = 10
   const storyboards = ref<StoryboardTab[]>([])
   const activeStoryboardId = ref('')
+
+  // ── 会话持久化（2026-09-22 用户裁决 A5：装填结果/克隆声音/音效包装产物落
+  //  localStorage，重启恢复——分镜内容仍以服务端脚本库为权威（选择脚本整组刷新），
+  //  本缓存只恢复本地态：绑定组/声音/音效路径，避免重跑智能匹配与音效包装。
+  //  声音/音效为 cacheDir 下的稳定本地路径，重启后仍有效；缓存被清则路径失效，
+  //  重按批量克隆/音效包装即可重建）──
+  const STORYBOARDS_LS_KEY = 'plan-montage.storyboards'
+  const STORYBOARDS_LS_ACTIVE = 'plan-montage.storyboards.active'
+  function reviveTab(raw: unknown): StoryboardTab | null {
+    if (!raw || typeof raw !== 'object') return null
+    const t = raw as Record<string, unknown>
+    const shots = Array.isArray(t.shots) ? (t.shots as StoryboardShot[]) : []
+    if (!shots.length || !String(t.id || '')) return null
+    const rawGroups = Array.isArray(t.clipGroups) ? (t.clipGroups as unknown[]) : []
+    const clipGroups = rawGroups
+      .map((g) => (Array.isArray(g) ? (g as unknown[]).map((v) => Number(v)).filter((v) => Number.isInteger(v) && v >= 0) : []))
+      .slice(0, shots.length)
+    while (clipGroups.length < shots.length) clipGroups.push([])
+    return {
+      id: String(t.id),
+      name: String(t.name || '').slice(0, 20) || '未命名分镜',
+      scriptId: String(t.scriptId || ''),
+      topic: String(t.topic || ''),
+      narrative: String(t.narrative || ''),
+      shots,
+      clipGroups,
+      sourceNarrative: String(t.sourceNarrative || t.narrative || ''),
+      voiceWav: String(t.voiceWav || ''),
+      voiceDurSec: Number(t.voiceDurSec) || 0,
+      // 每脚本视频设置（恢复失败/旧缓存缺字段回退全局默认）
+      layout: String(t.layout || 'vertical'),
+      transition: String(t.transition || 'random'),
+      fps: t.fps === 'source' || Number(t.fps) > 0 ? (t.fps === 'source' ? 'source' : Number(t.fps)) : 'source',
+      productBrief: String(t.productBrief || ''),
+    }
+  }
+  function restoreStoryboards(): void {
+    try {
+      const raw = localStorage.getItem(STORYBOARDS_LS_KEY)
+      if (!raw) return
+      const parsed: unknown = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return
+      const seen = new Set<string>()
+      const tabs = parsed.slice(0, COPY_STORYBOARD_MAX)
+        .map(reviveTab)
+        .filter((t): t is StoryboardTab => !!t)
+        // 2026-09-22 用户裁决：脚本身份统一——同服务端脚本 id 的重复 tab 只保留一个
+        //（修复历史缓存里「同内容双 tab」），后续新写入不再产生重复
+        .filter((t) => {
+          if (t.scriptId && seen.has(t.scriptId)) return false
+          if (t.scriptId) seen.add(t.scriptId)
+          return true
+        })
+      if (!tabs.length) return
+      storyboards.value = tabs
+      const act = localStorage.getItem(STORYBOARDS_LS_ACTIVE)
+      activeStoryboardId.value = act && tabs.some((t) => t.id === act) ? act : tabs[0].id
+    } catch (_) { /* 缓存损坏忽略，走空态 */ }
+  }
+  restoreStoryboards()
+  watch(storyboards, () => {
+    try {
+      localStorage.setItem(STORYBOARDS_LS_KEY, JSON.stringify(storyboards.value))
+      localStorage.setItem(STORYBOARDS_LS_ACTIVE, activeStoryboardId.value)
+    } catch (_) { /* 存储满/不可写静默 */ }
+  }, { deep: true })
+  watch(activeStoryboardId, (v) => {
+    try { localStorage.setItem(STORYBOARDS_LS_ACTIVE, v) } catch (_) {}
+  })
+
   const activeStoryboard = computed(() =>
     storyboards.value.find((s) => s.id === activeStoryboardId.value) || null)
   function nextStoryboardName(): string {
@@ -650,8 +728,12 @@ function clearVoiceProgressListener(): void {
     }
     return `脚本${max + 1}`
   }
+  /** 产品快照摘要（品牌/产品(品类)/型号 非空拼接；detail.product 与 sharedProductInfo 两形态通用） */
+  function productBriefOf(p: { brand?: string; product?: string; category?: string; model?: string }): string {
+    return [p.brand, p.product || p.category, p.model].map((x) => String(x || '').trim()).filter(Boolean).join(' / ')
+  }
   /** 新增分镜 tab（AI 生成分镜/选择脚本/手动新建都走这里）；超上限返回 null */
-  function addStoryboardTab(init: { name?: string; scriptId?: string; topic?: string; narrative: string; shots: StoryboardShot[] }): StoryboardTab | null {
+  function addStoryboardTab(init: { name?: string; scriptId?: string; topic?: string; narrative: string; shots: StoryboardShot[]; productBrief?: string }): StoryboardTab | null {
     if (storyboards.value.length >= COPY_STORYBOARD_MAX) return null
     const tab: StoryboardTab = {
       id: `sb_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
@@ -664,6 +746,10 @@ function clearVoiceProgressListener(): void {
       sourceNarrative: init.narrative,
       voiceWav: '',
       voiceDurSec: 0,
+      layout: 'vertical',
+      transition: 'random',
+      fps: 'source',
+      productBrief: (init.productBrief || '').trim(),
     }
     storyboards.value.push(tab)
     activeStoryboardId.value = tab.id
@@ -745,29 +831,40 @@ function clearVoiceProgressListener(): void {
   }
 
   /** 每步完成后同步分镜到服务端脚本库（2026-09-21 用户裁决：分镜数据以服务端为持久化层，
-   *  每步完成即同步；同 topic 覆盖更新，best-effort——失败仅提示不阻断流程） */
+   *  每步完成即同步；同 topic 覆盖更新，best-effort——失败仅提示不阻断流程）。
+   *  2026-09-23 用户裁决：防重入改「尾随合并」——同步进行中收到的新请求不再静默丢弃，
+   *  当前轮结束后补跑一轮（智能匹配→生成剪辑方案接连触发时，最新绑定状态保证落库） */
   const scriptSyncing = ref(false)
+  let scriptSyncQueued = false
   async function syncStoryboardsToServer(): Promise<void> {
-    if (scriptSyncing.value || !storyboards.value.length) return
+    if (!storyboards.value.length) return
+    if (scriptSyncing.value) { scriptSyncQueued = true; return }
     scriptSyncing.value = true
     try {
-      const info = sharedProductInfo.value
-      for (const tab of storyboards.value) {
-        if (!tab.shots.length) continue
-        if (!tab.topic) tab.topic = defaultStoryboardTopic()
-        const payload = buildScriptPayload({
-          topic: tab.topic,
-          ratio: 'vertical',
-          shots: tab.shots,
-          product: { brand: info.brand || '', model: info.model || '', category: info.product || '', name: '' },
-        })
-        // 与 saveStoryboard 同接口同忙场景（分割/合成排队时实测 68s 才返回）：2026-09-21
-        // 用户裁决同步一并放宽 120s（30s 默认超时被掐即弹「分镜同步失败」）
-        const res = await window.tintin.server.post('/api/storyboard/scripts', payload, undefined, 120000)
-        if (res && typeof res === 'object' && 'error' in res) throw new Error(String(res.error || '同步失败'))
-      }
+      do {
+        scriptSyncQueued = false
+        const info = sharedProductInfo.value
+        for (const tab of storyboards.value) {
+          if (!tab.shots.length) continue
+          if (!tab.topic) tab.topic = defaultStoryboardTopic()
+          const payload = buildScriptPayload({
+            topic: tab.topic,
+            ratio: 'vertical',
+            shots: tab.shots,
+            product: { brand: info.brand || '', model: info.model || '', category: info.product || '', name: '' },
+          })
+          // 与 saveStoryboard 同接口同忙场景（分割/合成排队时实测 68s 才返回）：2026-09-21
+          // 用户裁决同步一并放宽 120s（30s 默认超时被掐即弹「分镜同步失败」）
+          const res = await window.tintin.server.post('/api/storyboard/scripts', payload, undefined, 120000)
+          if (res && typeof res === 'object' && 'error' in res) throw new Error(String(res.error || '同步失败'))
+          // 2026-09-22 用户裁决：脚本身份统一——tab 回学服务端脚本 id（原不回学，
+          // 「选择脚本」再次选到同一份即成重复 tab）
+          const sid = (res as { id?: unknown } | null)?.id
+          if (sid && !tab.scriptId) tab.scriptId = String(sid)
+        }
+      } while (scriptSyncQueued)
     } catch (e) {
-      clientError('copy-montage', '分镜同步失败', errText(e))
+      clientError('plan-montage', '分镜同步失败', errText(e))
       notify('分镜同步失败', errText(e))
     } finally {
       scriptSyncing.value = false
@@ -797,7 +894,7 @@ function clearVoiceProgressListener(): void {
       const content = String(res?.choices?.[0]?.message?.content ?? '')
       const parsed = parseStoryboardShots(content)
       if (parsed.fallback || !parsed.shots.length) throw new Error('分镜解析失败（模型未返回 JSON 数组），请重试')
-      const tab = addStoryboardTab({ narrative: copy, shots: parsed.shots })
+      const tab = addStoryboardTab({ narrative: copy, shots: parsed.shots, productBrief: productBriefOf(sharedProductInfo.value) })
       if (!tab) {
         notify('分镜数量已达上限', `最多支持 ${COPY_STORYBOARD_MAX} 个分镜脚本，请先删除部分分镜。`)
         return
@@ -843,6 +940,9 @@ function clearVoiceProgressListener(): void {
       const res = await window.tintin.server.post('/api/storyboard/scripts', payload, undefined, 120000)
       if (res === null || res === undefined) throw new Error('无法连接服务端。')
       if (typeof res === 'object' && 'error' in res) throw new Error(String(res.error || '保存失败'))
+      // 2026-09-22 用户裁决：脚本身份统一——tab 回学服务端脚本 id（同 sync 口径）
+      const sid = (res as { id?: unknown }).id
+      if (sid && tab && !tab.scriptId) tab.scriptId = String(sid)
       const total = Math.round(Number(payload.total_duration) || 0)
       statusText.value = `完成： 分镜脚本已保存（${payload.shot_count} 镜 · ${total}s · 选题：${payload.topic}）`
       notify('保存成功', `分镜脚本已保存到脚本库（${payload.shot_count} 镜 · ${total}s · 选题：${payload.topic}），工作台「选择脚本」刷新后可选。`)
@@ -882,11 +982,12 @@ function clearVoiceProgressListener(): void {
       scriptPickDlg.value.loading = false
     }
   }
-  /** 弹窗内点选脚本：拉取详情供右侧基本信息展示（选题/镜数/总时长/逐镜列表） */
+  /** 弹窗内点选脚本：拉取详情供右侧基本信息展示（选题/镜数/总时长/逐镜列表）；
+   *  2026-09-23 增 product 保留（应用脚本时写 tab.productBrief 展示脚本基本信息） */
   const pickDetail = ref<{
     loading: boolean
     error: string
-    detail: { topic: string; ratio: string; shots: StoryboardShot[] } | null
+    detail: { topic: string; ratio: string; product: { brand: string; model: string; category: string; name: string }; shots: StoryboardShot[] } | null
   }>({ loading: false, detail: null, error: '' })
   async function selectScriptOption(id: string): Promise<void> {
     if (!id) return
@@ -900,7 +1001,17 @@ function clearVoiceProgressListener(): void {
       if (!script) throw new Error('脚本响应为空或格式不符。')
       pickDetail.value = {
         loading: false,
-        detail: { topic: script.topic, ratio: script.ratio, shots: script.shots.map((s, i) => normalizeShot(s, i + 1)) },
+        detail: {
+          topic: script.topic,
+          ratio: script.ratio,
+          product: {
+            brand: String(script.product.brand || ''),
+            model: String(script.product.model || ''),
+            category: String(script.product.category || ''),
+            name: String(script.product.name || ''),
+          },
+          shots: script.shots.map((s, i) => normalizeShot(s, i + 1)),
+        },
         error: '',
       }
     } catch (e) {
@@ -922,7 +1033,7 @@ function clearVoiceProgressListener(): void {
       notify('已切换分镜', `脚本已在分镜列表中，已切换到「${existing.name}」。`)
       return
     }
-    const tab = addStoryboardTab({ name: detail.topic || '', scriptId: id, narrative: shotsNarrationText(detail.shots), shots: detail.shots })
+    const tab = addStoryboardTab({ name: detail.topic || '', scriptId: id, topic: detail.topic || '', narrative: shotsNarrationText(detail.shots), shots: detail.shots, productBrief: productBriefOf(detail.product) })
     if (!tab) {
       notify('分镜数量已达上限', `最多支持 ${COPY_STORYBOARD_MAX} 个分镜脚本，请先删除部分分镜。`)
       return
@@ -981,11 +1092,14 @@ function clearVoiceProgressListener(): void {
       if (ok) {
         statusText.value = `完成： ${ok}/${tabs.length} 个分镜声音已生成`
         notify('批量克隆完成', ok === tabs.length ? `${ok} 个分镜声音全部生成。` : `${ok}/${tabs.length} 个成功：${fails.join('；')}`)
+        // 2026-09-22 用户裁决：声音克隆完成后自动触发服务端同步——让脚本库及时
+        // 感知声音状态（120s 超时、best-effort 不阻断）
+        void syncStoryboardsToServer()
       } else {
         notify('批量克隆失败', fails.join('\n') || '未知原因')
       }
     } catch (e) {
-      clientError('copy-montage', '批量克隆分镜声音失败', errText(e))
+      clientError('plan-montage', '批量克隆分镜声音失败', errText(e))
       notify('批量克隆失败', errText(e))
     } finally {
       voiceBusy.value = false
@@ -1363,4 +1477,4 @@ export type FancyTemplateItem = Record<string, unknown> & {
   category?: string
 }
 
-// TSelect 选项最小结构已随 Step2（TRANSITIONS）迁 montage/useCopyMontageStep2Concat.ts
+// TSelect 选项最小结构已随 Step2（TRANSITIONS）迁 montage/usePlanMontageStep2Concat.ts

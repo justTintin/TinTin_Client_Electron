@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// useCopyMontageStep1Split.ts — 智能混剪 Step1 素材解析编排（铁律 10 拆分，2026-09-18）
-// 自 useCopyMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// usePlanMontageStep1Split.ts — 智能混剪 Step1 素材解析编排（铁律 10 拆分，2026-09-18）
+// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step1）。
 // 跨步依赖仅三项，经 ctx 注入：statusText / ensureServerUrl / toAbsolute。
 // ═══════════════════════════════════════════════════════════════
@@ -18,7 +18,7 @@ import {
   VIDEO_EXTS,
   MAX_SOURCE_VIDEOS,
   type SplitSceneRow,
-} from '../copyMontageLogic'
+} from '../planMontageLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
 
 /** Step1 编排上下文（共享轮询文案与服务端地址设施，见映射文档 §四） */
@@ -28,7 +28,7 @@ export interface MontageStep1Context {
   toAbsolute: (url: string) => string
 }
 
-export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
+export function usePlanMontageStep1Split(ctx: MontageStep1Context) {
   const { statusText, ensureServerUrl, toAbsolute } = ctx
 
   // ══ Step1 素材解析（/montage/split，同步）═══════════════════
@@ -125,6 +125,8 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
   }
 
   function removeVideo(i: number): void {
+    const v = srcVideos.value[i]
+    if (v) delete splitStatusByVideo.value[v] // 状态随素材移除清理
     srcVideos.value.splice(i, 1)
   }
 
@@ -133,6 +135,19 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
   const splitsDownloading = ref(false)
   /** 解析进度 0-100（对照原版 step1_split_controller _progress：按素材数推进，每素材开始前更新） */
   const splitProgress = ref(0)
+  // ── 停止分割 + 逐素材状态（2026-09-22 用户裁决：一次上传太多素材任务过长——
+  //  ①「停止分割」在当前素材完成后停止；②列表行按状态标识（done=淡绿/splitting=淡黄/
+  //  failed=淡红/无=未分割）；③停止后再按开始=断点续分（已完成素材跳过））──
+  const splitStatusByVideo = ref<Record<string, 'splitting' | 'done' | 'failed'>>({})
+  const splitStopRequested = ref(false)
+  function splitStatusOf(v: string): '' | 'splitting' | 'done' | 'failed' {
+    return splitStatusByVideo.value[v] || ''
+  }
+  function requestStopSplit(): void {
+    if (!splitBusy.value) return
+    splitStopRequested.value = true
+    splitMsg.value = '正在停止分割（当前素材完成后停止）…'
+  }
 
   /** 逐个素材调 /montage/split（同步返回 shots[]）；ECONNRESET/ETIMEDOUT 等瞬时断线自动重试 1 次 */
   async function runSplit(): Promise<void> {
@@ -145,8 +160,18 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
     // （后续步骤按新 jobId 找成片 =「合成丢失」）。jobId 改在分割启动时即生成，
     // 合成中途产物始终落当前任务目录
     splitsJobId.value = (crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')
+    // 断点续分：上一轮「停止分割」已完成的素材跳过（其镜头行已保留在 scenes 中，
+    // rows 从已完成素材的镜头行起步，避免重复分割/丢行）
+    splitStopRequested.value = false
+    const doneNames = new Set(srcVideos.value
+      .filter((v) => splitStatusOf(v) === 'done')
+      .map((v) => v.split(/[\\/]/).pop() || v))
+    for (const v of srcVideos.value) {
+      if (splitStatusOf(v) !== 'done') delete splitStatusByVideo.value[v]
+    }
+    let stoppedCount = 0
     try {
-      const rows: SplitSceneRow[] = []
+      const rows: SplitSceneRow[] = scenes.value.filter((s) => doneNames.has(s.sourceName))
       // 最后一次素材的 source_resolution（供分割后画幅兜底链 ③ 使用；帧率取 fps 字段）
       let lastSrcRes: unknown = null
       // 逐素材阶段文案 + 进度（对照原版 _process_next_merged_video L202-203：
@@ -156,6 +181,10 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
       for (let vi = 0; vi < total; vi++) {
         const v = srcVideos.value[vi]
         const name = v.split(/[\\/]/).pop() || v
+        // 停止分割（2026-09-22 用户裁决）：当前素材完成后停止；已完成素材跳过（断点续分）
+        if (splitStopRequested.value) break
+        if (doneNames.has(name)) continue
+        splitStatusByVideo.value[v] = 'splitting'
         splitMsg.value = `智能镜头分割 (${vi + 1}/${total})：${name}`
         splitProgress.value = Math.round((vi * 100) / total)
         // 瞬时断线（ECONNRESET/ETIMEDOUT）自动重试 1 次，避免误报 OFFLINE
@@ -180,15 +209,23 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
           if (raw !== null && raw !== undefined) break
           if (attempt === 0) console.warn(`[split] ${name}: 首次请求失败（null），自动重试…`)
         }
-        // 重试后仍为 null 或 catch 到异常 → 抛错
+        // 重试后仍为 null 或 catch 到异常 → 标记该素材失败并中止（修正后重按）
         if (raw === null || raw === undefined) {
+          splitStatusByVideo.value[v] = 'failed'
           throw lastErr || new Error('服务端不可达（OFFLINE）')
         }
-        const res = unwrapIpc(raw as any, '素材解析')
+        let res: any
+        try {
+          res = unwrapIpc(raw as any, '素材解析')
+        } catch (e) {
+          splitStatusByVideo.value[v] = 'failed'
+          throw e
+        }
         // 传递 sourcePath 用于「位置」兑底推断（对齐 PR#3 classify_shot_type；景别仅服务端返回）
         const shots = parseSplitResponse(res)
         console.log(`[split] ${name}: ${shots.length} shots, 首个 clipUrl=${shots[0]?.downloadUrl || '(空)'}`)
         rows.push(...shotsToRows(shots, name, v))
+        splitStatusByVideo.value[v] = 'done'
         // 逐素材增量上表（对照原版 _on_split_analysis_ready L309-316：每素材分割完成
         // 即刷新 split_result_table；行号连续重编号，未落盘行预览回退服务端 clipUrl 内嵌）
         scenes.value = rows.slice()
@@ -207,9 +244,14 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
         if (Number.isFinite(remoteFps) && remoteFps > 0) splitFps.value = remoteFps
       }
       // 行已随各素材完成逐批增量上表（scenes 与 rows 同引用集），此处仅收尾文案
-      splitMsg.value = rows.length
-        ? `解析完成：共 ${rows.length} 个镜头片段`
-        : '未解析出镜头片段（可调低分割阈值后重试）'
+      if (splitStopRequested.value) {
+        const doneN = srcVideos.value.filter((v) => splitStatusOf(v) === 'done').length
+        splitMsg.value = `已停止分割：${doneN}/${total} 个素材完成（列表淡绿=已完成）；再次「开始分割」将从未完成素材继续`
+      } else {
+        splitMsg.value = rows.length
+          ? `解析完成：共 ${rows.length} 个镜头片段`
+          : '未解析出镜头片段（可调低分割阈值后重试）'
+      }
       // 片段落盘本地 splits 目录（原版分割产物在 .runtime/montage_cache/<job_id>/splits/<短视频名>/；
       // 本端片段在服务端，分割完成后批量下载补齐同一目录结构，供「打开已分割镜头目录」与双击预览；
       // jobId 已在 runSplit 启动时生成，见函数头注释）
@@ -433,7 +475,7 @@ export function useCopyMontageStep1Split(ctx: MontageStep1Context) {
     splitsJobId, splitsDownloading,
     previewUrl, previewTranscoding,
     // fns
-    addVideos, selectFolder, onDrop, removeVideo, runSplit,
+    addVideos, selectFolder, onDrop, removeVideo, runSplit, requestStopSplit, splitStatusOf,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview,
     clearSplitCache, openSplitsDir,
   }

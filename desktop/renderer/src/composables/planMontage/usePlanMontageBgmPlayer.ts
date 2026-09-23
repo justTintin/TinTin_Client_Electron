@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════
-// useCopyMontageBgmPlayer.ts — 智能混剪 Step4·BGM 试听播放器子编排（铁律 10 E4 收口，2026-09-19）
-// 自 useCopyMontageStep4Final.ts 纯搬迁（IRON-02 五项 checklist）。
+// usePlanMontageBgmPlayer.ts — 智能混剪 Step4·BGM 试听播放器子编排（铁律 10 E4 收口，2026-09-19）
+// 自 usePlanMontageStep4Final.ts 纯搬迁（IRON-02 五项 checklist）。
 // 原口径：_toggle_bgm_play/_stop_bgm_play/_on_bgm_position_changed；
 // QMediaPlayer → HTMLAudioElement，进度条 range=duration、拖动 seek、增益实时生效。
 // ─────────────────────────────────────────────────═
@@ -14,7 +14,7 @@ export interface MontageBgmPlayerContext {
   bgmVolume: Ref<number>
 }
 
-export function useCopyMontageBgmPlayer(ctx: MontageBgmPlayerContext) {
+export function usePlanMontageBgmPlayer(ctx: MontageBgmPlayerContext) {
   const { bgmPath, bgmVolume } = ctx
 
   // ── BGM 试听播放器（_toggle_bgm_play/_stop_bgm_play/_on_bgm_position_changed 等；

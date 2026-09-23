@@ -64,6 +64,9 @@ export interface StoryboardShot {
    *  与时长；客户端态字段——toServerShot 不上传，服务端 Shot 契约无此字段） */
   sfxWavUrl?: string
   sfxDurSec?: number
+  /** 生成的音效本地落盘路径（音效包装时经 downloadResult 落 copy-montage/sfx/；
+   *  导出器只吃本地文件，音效轨按此路径落段；落盘失败为空=导出时该镜跳过音效轨） */
+  sfxWavLocal?: string
 }
 
 /** 镜头默认值归一（对齐 _render_shots L2130-2142） */
@@ -150,6 +153,8 @@ export interface ScriptSummary {
   ratio: string
   shotCount: number
   savedAt: string
+  /** 服务端组装的产品展示名（2026-09-22 契约更新：brand · model，可空） */
+  displayName: string
 }
 
 /** {items}|{data}|{results}|裸数组 容错展开（同产品库域口径） */
@@ -164,7 +169,8 @@ export function extractScriptItems(data: unknown): Record<string, unknown>[] {
   return []
 }
 
-/** 列表摘要项 → 下拉选项（label 对齐原版 L1769-1771：[选题] N镜 · 保存时间） */
+/** 列表摘要项 → 下拉选项（label 对齐原版 L1769-1771：[选题] N镜 · 保存时间）；
+ *  2026-09-22 契约更新：服务端新增 display_name（品牌 · 型号组装，原值透传） */
 export function toScriptOption(it: Record<string, unknown>): ScriptSummary | null {
   const id = String(it.id ?? '').trim()
   if (!id) return null
@@ -175,6 +181,7 @@ export function toScriptOption(it: Record<string, unknown>): ScriptSummary | nul
     ratio: String(it.ratio ?? '').trim(),
     shotCount: Number(it.shot_count) || 0,
     savedAt: saved,
+    displayName: String(it.display_name ?? '').trim(),
   }
 }
 
@@ -287,6 +294,9 @@ export function buildScriptPayload(input: ScriptSaveInput): Record<string, unkno
     shots,
     saved_at: savedAt,
     product: { brand, model, category, name },
+    // 2026-09-22 契约更新：多产品绑定（ProductRef[]，字段与单 product 同构）——
+    // 客户端当前单产品流程绑定一条；任一字段非空才带上
+    products: [brand, model, category, name].some(Boolean) ? [{ brand, model, category, name }] : [],
     brand,
     model,
     category,

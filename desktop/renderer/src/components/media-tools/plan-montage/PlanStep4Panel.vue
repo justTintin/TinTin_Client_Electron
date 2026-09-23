@@ -12,16 +12,17 @@ import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import CopyBgmPickDialog from './CopyBgmPickDialog.vue'
 import CopyStoryboard from './CopyStoryboard.vue'
-import { copyMontageShellKey } from './copyMontageUiContext'
-import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/copyMontageLogic'
-import { errText, notify } from '@/composables/copyMontage/context'
+import { planMontageShellKey } from './planMontageUiContext'
+import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/planMontageLogic'
+import { errText, notify, joinPath } from '@/composables/planMontage/context'
 import { clientError } from '@/utils/clientLog'
+import { readCacheDir } from '@/composables/useSettingsConfig'
+import type { StoryboardShot } from '@/composables/opsStoryboardLogic'
 
-const shell = inject(copyMontageShellKey)!
+const shell = inject(planMontageShellKey)!
 const { step, go, steps } = shell
 const {
   splitResolution,
-  storyboards,
   previewUrl,
   concatLayout,
   assemblePlans,
@@ -104,7 +105,141 @@ const {
   step4Candidates,
   toAbsolute: vdToAbsolute,
   fmtBgmTime,
+  storyboards,
 } = shell.s
+
+// ── 智能音效匹配（2026-09-23 实测修正：/audio/library 的 keyword 只匹配文件名、
+//  query 参数根本不被识别（此前传 query 等于无过滤随机取第 1 条！）；真正的语义
+//  数据在专用音效库 GET /sfx/library（306 条，全部带中文名 + analyze 语义标签/情绪）——
+//  一次拉全量缓存，逐镜把「音效建议」与 条目名+labels+emotions 打分（子串+bigram 重合度）
+//  取最优，GET /sfx/{id}/file 下载落盘绑定）──
+const sfxMatchBusy = ref(false)
+const sfxMatchStage = ref('')
+const sfxMatchDone = ref(false)
+
+/** 音效库条目（GET /sfx/library 返回；analysis=服务端 /sfx/analyze 语义结果） */
+interface SfxLibItem {
+  id: string
+  name?: string
+  tags?: string[]
+  filename?: string
+  duration_s?: number
+  analysis?: { ok?: boolean; labels?: string[]; styles?: string[]; emotions?: string[] }
+}
+let sfxLibCache: SfxLibItem[] | null = null
+async function loadSfxLibrary(): Promise<SfxLibItem[]> {
+  if (sfxLibCache) return sfxLibCache
+  const res = (await window.tintin.server.get('/sfx/library', {})) as unknown
+  const items = res && typeof res === 'object' && Array.isArray((res as { items?: unknown }).items)
+    ? ((res as { items: SfxLibItem[] }).items)
+    : []
+  sfxLibCache = items
+  return items
+}
+/** 字符 bigram Dice 重合度（0~1；中英文短语相似度通用兜底） */
+function diceBigram(a: string, b: string): number {
+  const s = a.replace(/\s+/g, '')
+  const t = b.replace(/\s+/g, '')
+  if (s.length < 2 || t.length < 2) return s === t ? 1 : 0
+  const grams = new Map<string, number>()
+  for (let i = 0; i < s.length - 1; i++) {
+    const g = s.slice(i, i + 2)
+    grams.set(g, (grams.get(g) || 0) + 1)
+  }
+  let hit = 0
+  for (let i = 0; i < t.length - 1; i++) {
+    const g = t.slice(i, i + 2)
+    const n = grams.get(g) || 0
+    if (n > 0) { hit++; grams.set(g, n - 1) }
+  }
+  return (2 * hit) / (s.length - 1 + t.length - 1)
+}
+/** 短串字符被长串覆盖的比例（0~1；中文短语的宽容兜底，防 bigram 稀释） */
+function unigramOverlap(a: string, b: string): number {
+  const [s, long] = a.length <= b.length ? [a, b] : [b, a]
+  const chars = new Set(s.split('').filter((c) => !/\s/.test(c)))
+  if (!chars.size) return 0
+  let hit = 0
+  for (const c of chars) if (b.includes(c)) hit++
+  return hit / chars.size
+}
+/** 提示词 × 音效条目打分：名称单独主评（完整包含强加分 + bigram/字符覆盖取大），
+ *  语义标签/情绪逐个比对取最优两个（避免拼长串把相似度稀释） */
+function sfxMatchScore(text: string, item: SfxLibItem): number {
+  const t = text.replace(/\s+/g, '')
+  if (!t) return 0
+  const name = String(item.name || '').replace(/\s+/g, '')
+  let score = 0
+  if (name) {
+    if (t.includes(name)) score += 100 // 提示词包含完整音效名（最强信号）
+    else if (name.includes(t)) score += 80 // 音效名包含整条提示词
+    else score += Math.max(diceBigram(t, name), unigramOverlap(t, name)) * 50
+  }
+  const labels = [
+    ...(item.analysis?.labels || []),
+    ...(item.analysis?.emotions || []),
+    ...(item.tags || []),
+  ].map((x) => String(x || '').replace(/\s+/g, '')).filter(Boolean)
+  const labelScores = labels
+    .map((l) => (t.includes(l) ? 1 : l.includes(t) ? 0.8 : Math.max(diceBigram(t, l), unigramOverlap(t, l))))
+    .sort((a, b) => b - a)
+  score += (labelScores[0] || 0) * 30 + (labelScores[1] || 0) * 10
+  return score
+}
+// 匹配阈值（实测校准：同名/近义 50-100 分、形近 30-65 分、弱相关 ≤25——库内没有的
+// 音效宁可不配，低于 30 分视为无语义相近条目）
+const SFX_MATCH_MIN_SCORE = 30
+
+async function matchSfxFromLibrary(): Promise<void> {
+  if (sfxMatchBusy.value) return
+  const tabs = storyboards.value.filter((t) => t.shots.some((s) => String(s.sfx || '').trim()))
+  if (!tabs.length) { notify('没有音效提示词', '分镜脚本的「音效建议」为空，请先在分镜卡上填写。'); return }
+  sfxMatchBusy.value = true
+  sfxMatchDone.value = false
+  let okCount = 0
+  const total = tabs.reduce((n, t) => n + t.shots.filter((s) => String(s.sfx || '').trim()).length, 0)
+  try {
+    sfxMatchStage.value = '正在拉取服务端音效库…'
+    const lib = await loadSfxLibrary()
+    if (!lib.length) { notify('音效库为空', '服务端 /sfx/library 未返回任何音效，请先在服务端建库。'); return }
+    let shotIdx = 0
+    for (const tab of tabs) {
+      for (const shot of tab.shots) {
+        const sfxText = String(shot.sfx || '').trim()
+        if (!sfxText) continue
+        shotIdx++
+        sfxMatchStage.value = `智能音效匹配 (${shotIdx}/${total})：${sfxText}`
+        // 全库打分取最优（306 条 × 纯内存打分，毫秒级）
+        let best: SfxLibItem | null = null
+        let bestScore = 0
+        for (const item of lib) {
+          const score = sfxMatchScore(sfxText, item)
+          if (score > bestScore) { bestScore = score; best = item }
+        }
+        if (!best || bestScore < SFX_MATCH_MIN_SCORE) continue // 低于阈值=没找到语义相近的
+        try {
+          const fileUrl = `/sfx/${encodeURIComponent(best.id)}/file`
+          const localDir = joinPath(await readCacheDir(), 'copy-montage', 'sfx')
+          const ext = (String(best.filename || '').match(/\.\w+$/) || ['.wav'])[0]
+          const localPath = joinPath(localDir, `sfx_${best.id}${ext}`)
+          await window.tintin.server.downloadResult(vdToAbsolute(fileUrl), localPath)
+          shot.sfxWavUrl = vdToAbsolute(fileUrl)
+          shot.sfxWavLocal = localPath
+          shot.sfxDurSec = Number(best.duration_s) || 0
+          okCount++
+        } catch (_) { /* 单镜下载失败跳过 */ }
+      }
+    }
+    sfxMatchDone.value = okCount > 0
+    sfxMatchStage.value = `智能音效匹配完成：${okCount}/${total} 镜已绑定音效`
+    if (okCount < total) notify('部分音效未匹配', `${total - okCount} 个镜头在音效库中未找到语义相近的音效（可改写音效建议后重试，或用单镜 AI 生成）。`)
+  } catch (e) {
+    sfxMatchStage.value = `失败：${errText(e)}`
+    notify('智能音效匹配失败', errText(e))
+  } finally {
+    sfxMatchBusy.value = false
+  }
+}
 
 /** 本地路径 → file URL（previewFinalVideo 同口径） */
 function toFileUrl(p: string): string {
@@ -121,6 +256,44 @@ const sfxPromptShots = computed(() =>
   storyboards.value.flatMap((t) => t.shots.filter((s) => String(s.sfx || '').trim())))
 const sfxAllDone = computed(() =>
   sfxPromptShots.value.length > 0 && sfxPromptShots.value.every((s) => !!s.sfxWavUrl))
+/** 单镜生成内核：调 /audio/gen/sfx（prompt=音效提示词，duration=镜标时长）+ 下载落盘
+ *  （copy-montage/sfx/，导出音效轨用本地路径）；写回 shot 对象（响应式） */
+async function genOneSfx(s: StoryboardShot): Promise<void> {
+  const res = await window.tintin.server.audioGenSfx({
+    prompt: s.sfx.trim(),
+    duration: Math.max(1, Math.round(Number(s.duration) || 3)),
+  })
+  if (!res || typeof res !== 'object' || 'error' in res || !res.url) {
+    throw new Error('error' in (res ?? {}) ? String((res as { error: string }).error) : '服务端未返回音效地址')
+  }
+  s.sfxWavUrl = String(res.url)
+  s.sfxDurSec = Number(res.duration) || 0
+  try {
+    const cacheDir = await readCacheDir()
+    if (cacheDir) {
+      const localPath = joinPath(cacheDir, 'copy-montage', 'sfx', `sfx_${Date.now() % 1e8}_${Math.floor(Math.random() * 1e4)}.wav`)
+      await window.tintin.server.downloadResult(vdToAbsolute(s.sfxWavUrl), localPath)
+      s.sfxWavLocal = localPath
+    }
+  } catch (_) { /* 落盘失败：保留 URL 预览；导出音效轨跳过该片 */ }
+}
+/** 单镜重新生成（2026-09-22 用户裁决：分镜卡音效行右对齐按钮）——与批量共享忙态 */
+async function regenSfx(s: StoryboardShot): Promise<void> {
+  if (sfxBusy.value) { notify('音效生成进行中', '请等当前生成完成后再试。'); return }
+  if (!String(s.sfx || '').trim()) { notify('没有音效提示词', '请先在分镜卡填写该镜音效提示词。'); return }
+  sfxBusy.value = true
+  try {
+    sfxStage.value = `重新生成音效：${s.sfx.trim()}`
+    await genOneSfx(s)
+    sfxStage.value = '完成：音效已重新生成，分镜卡可试听'
+  } catch (e) {
+    clientError('plan-montage', '重新生成音效失败', errText(e))
+    sfxStage.value = `失败：${errText(e)}`
+    notify('重新生成音效失败', errText(e))
+  } finally {
+    sfxBusy.value = false
+  }
+}
 async function runSfxPack(): Promise<void> {
   if (sfxBusy.value) return
   const jobs = sfxPromptShots.value.filter((s) => !s.sfxWavUrl)
@@ -137,20 +310,12 @@ async function runSfxPack(): Promise<void> {
     let done = 0
     for (const s of jobs) {
       sfxStage.value = `AI 生成音效 (${done + 1}/${jobs.length})：${s.sfx.trim()}`
-      const res = await window.tintin.server.audioGenSfx({
-        prompt: s.sfx.trim(),
-        duration: Math.max(1, Math.round(Number(s.duration) || 3)),
-      })
-      if (!res || typeof res !== 'object' || 'error' in res || !res.url) {
-        throw new Error('error' in (res ?? {}) ? String((res as { error: string }).error) : '服务端未返回音效地址')
-      }
-      s.sfxWavUrl = String(res.url)
-      s.sfxDurSec = Number(res.duration) || 0
+      await genOneSfx(s)
       done++
     }
     sfxStage.value = `完成：已生成 ${done} 个音效，分镜卡「音效」行可试听`
   } catch (e) {
-    clientError('copy-montage', '音效包装失败', errText(e))
+    clientError('plan-montage', '音效包装失败', errText(e))
     sfxStage.value = `失败：${errText(e)}（已生成的保留，重按从缺失处继续）`
     notify('音效包装失败', errText(e))
   } finally {
@@ -246,7 +411,7 @@ const SUBTITLE_ANIM_OPTIONS = [
   { label: '无动画', value: 'none' },
 ]
 const subtitleAnimOptions = SUBTITLE_ANIM_OPTIONS
-/** 字幕字号下拉（2026-09-18 用户裁决：默认 10 号，置于「动画」后；
+/** 字幕字号下拉（2026-09-22 用户裁决：默认改 12 号，置于「动画」后；
  *  值=剪映草稿 texts content styles[].size，预览同比例缩放） */
 const subtitleFontSizeOptions = [6, 8, 10, 12, 15, 20, 25, 30].map((v) => ({ label: String(v), value: v }))
 /** 花字模板下拉（原版 fancy_template_combo：首项「自定义 (下方样式)」value=''，L269-274；
@@ -294,7 +459,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
       <section class="card">
         <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 分镜脚本（2026-09-21 用户裁决：四步公共显示组件，本步 fx 态只读） -->
-        <CopyStoryboard mode="fx" />
+        <CopyStoryboard mode="fx" :sfx-busy="sfxBusy" @sfx-regen="regenSfx" />
         <!-- 特效包装分组（2026-09-13 用户裁决：字幕拆出单独成组、置于背景音乐上方）：花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
           <div class="fx-pack-title">花字</div>
@@ -433,7 +598,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
               title="字幕入场动画（烧制与预览同用此选择）。&#10;注意背景框不参与淡入（drawtext alpha 只作用于文字）。" />
             <label class="param-label">字号:</label>
             <TSelect v-model="subtitleFontSize" :options="subtitleFontSizeOptions" class="w90"
-              title="字幕字号（剪映草稿文本 size，默认 10 号）。&#10;值越大字幕越大，效果预览同比例缩放。" />
+              title="字幕字号（剪映草稿文本 size，默认 12 号）。&#10;值越大字幕越大，效果预览同比例缩放。" />
             <label class="param-label">样式:</label>
             <div class="sub-style-grid" title="字幕样式来自服务端 /subtitle_styles 库（烧制时以 ffmpeg drawtext 或服务端引擎实现，效果以成品为准）">
               <button v-for="p in subtitleStylePresets" :key="p.key" type="button" class="sub-style-tile"
@@ -490,14 +655,20 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
           </div>
         </div>
 
-        <!-- 音效包装（2026-09-22 用户裁决：按分镜脚本逐镜「音效建议」提示词 AI 生成音效，
-             挂回对应镜头——分镜卡音效信息行内嵌播放条；进度逐镜推进，全部完成按钮对号标识） -->
+        <!-- 音效包装（2026-09-23 用户裁决：智能匹配音效上线——服务端 /sfx/library
+             306 条全带中文名+语义标签，逐镜按「音效建议」打分匹配并下载绑定；
+             AI音效包装（/audio/gen/sfx 生成）维持 2026-09-22 停用裁决。
+             单镜重生成按钮仅在已有产物的镜头出现，保持可用） -->
         <div class="row">
-          <TButton label="音效包装" :loading="sfxBusy" :icon="sfxAllDone ? 'check' : ''"
-            :title="sfxAllDone ? '音效包装已完成；在分镜脚本补充/修改音效提示词后重按可增量生成' : '按分镜脚本各镜的音效提示词，AI 生成音效并挂回对应镜头（时长=镜标时长）'"
+          <TButton label="智能匹配音效" :loading="sfxMatchBusy" :icon="sfxMatchDone ? 'check' : ''"
+            title="从服务端音效库为每个带「音效建议」的镜头匹配语义最佳音效并绑定（可重按覆盖）"
+            @click="matchSfxFromLibrary" />
+          <TButton label="AI音效包装" :loading="sfxBusy" :icon="sfxAllDone ? 'check' : ''"
+            :disabled="true" title="该功能暂时停用"
             @click="runSfxPack" />
           <span v-if="sfxAllDone" class="muted">音效包装完成（{{ sfxPromptShots.length }} 镜），分镜卡音效行可试听</span>
         </div>
+        <div v-if="sfxMatchStage" class="concat-status-line" :class="{ 'sfx-fail': sfxMatchStage.startsWith('失败') }">{{ sfxMatchStage }}</div>
         <div v-if="sfxStage" class="concat-status-line" :class="{ 'sfx-fail': sfxStage.startsWith('失败') }">{{ sfxStage }}</div>
 
         <!-- 2026-09-14 服务端 /montage/concat 新增 lut_restore（默认 false=不还原 LUT）：
@@ -535,7 +706,9 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
           <div class="row" style="gap: var(--space-2)">
             <!-- 2026-09-15 用户裁决：本地合成删除（统一走服务端合成）；
                  导出到剪映时间轴紧随服务端合成之后 -->
-            <TButton label="导出到剪映时间轴(带转场)" variant="secondary" class="vd4-run vd4-grow"
+            <!-- 2026-09-22 用户裁决：导出按钮主色（淡蓝）、服务端合成禁用灰——与智能混剪
+                 0920「主按钮色」口径一致；次按钮灰示停用 -->
+            <TButton label="导出到剪映时间轴(带转场)" class="vd4-run vd4-grow"
               :disabled="finalBusy || exportBusy"
               :title="exportBusy ? exportStage : '将合成候选按顺序导出为一条剪映时间轴草稿（口播/字幕/关键词/BGM 各轨独立，片段间自动转场）'"
               @click="exportAllToJianyingDraft" />
@@ -563,8 +736,9 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
           <div class="vd4-scheme-line">方案二，服务端合成视频，时间较长</div>
           <!-- 2026-09-22 用户裁决：文案混剪流程「服务端合成」暂不可用（服务端无本流程的
                脚本匹配链路），恒禁用——对齐智能混剪 MontageStep4Panel 2026-09-20 同款处理；
-               恢复时把 :disabled="true" 改回 "finalBusy"、title 改回原文案即可 -->
-          <TButton label="服务端合成" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
+               恢复时把 :disabled="true" 改回 "finalBusy"、title 改回原文案即可。
+               2026-09-22 二次裁决：禁用态显灰（secondary），不再用主色紫 -->
+          <TButton label="服务端合成" variant="secondary" class="vd4-run" :loading="finalBusy && finalMode === 'server'"
             :disabled="true" title="该功能暂时停用" @click="startFinalMix()" />
         </div>
         <!-- 服务端合成进度条（独立于导出进度；导出进度/完成提示已移至方案一按钮下方） -->

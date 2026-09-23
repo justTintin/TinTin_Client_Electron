@@ -138,13 +138,28 @@
             <select v-model="syncDlg.lane" class="jytpl-dlg-select">
               <option value="花字库">文本 / 花字库</option>
               <option value="文字模板">文本 / 文字模板</option>
+              <!-- 2026-09-22 用户裁决：同步类目增加音频——音效+音乐（本机剪映缓存） -->
+              <option value="音频">音频（音效 / 音乐）</option>
+              <option value="转场">转场（客户端内置）</option>
             </select>
           </div>
           <div class="jytpl-dlg-list">
             <div v-if="syncLocalItems.length === 0" class="jytpl-empty">本机剪映未发现该类目素材</div>
-            <label v-for="it in syncLocalItems" :key="String(it.effectId || it.id)" class="jytpl-dlg-item">
+            <!-- 2026-09-22 用户裁决：音频由剪映按需下载——同步只覆盖已下载到本机缓存的条目 -->
+            <div v-if="syncDlg.lane === '音频' && syncLocalItems.length === 0" class="jytpl-empty" style="font-size: 12px">音频由剪映按需下载到本机缓存：先在剪映「音频」面板试听/使用过的音乐与音效才会出现在这里</div>            <label v-for="it in syncLocalItems" :key="String(it.effectId || it.id)" class="jytpl-dlg-item">
               <input type="checkbox" v-model="it.picked" :disabled="it.syncedToServer && !syncDlg.force" />
               <span class="jytpl-dlg-item-name">{{ it.name }}</span>
+              <!-- 音频类目（2026-09-22 用户裁决：按剪映音乐库/音效库分类，行内可选；入库即按所选分类） -->
+              <select
+                v-if="syncDlg.lane === '音频'"
+                v-model="it.category"
+                class="jytpl-dlg-select jytpl-cat"
+                title="入库分类（剪映缓存中音效与音乐混存，默认按时长 <2s 归音效）"
+                @click.stop
+              >
+                <option value="音乐">音乐</option>
+                <option value="音效">音效</option>
+              </select>
               <span class="tag" :class="it.syncedToServer ? 'ok' : ''">{{ it.syncedToServer ? '已在服务端' : '未同步' }}</span>
             </label>
           </div>
@@ -163,6 +178,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onActivated } from 'vue'
+import { notify } from '@/composables/planMontage/context'
 
 interface Lane {
   lane: string
@@ -248,6 +264,10 @@ const syncDlg = reactive({
 const syncLocalItems = computed(() => {
   if (syncDlg.lane === '花字库') return syncDlg.localItems.filter((i) => i.group === '花字库')
   if (syncDlg.lane === '文字模板') return syncDlg.localItems.filter((i) => i.group === '文字模板')
+  // 2026-09-22 用户裁决：音频类目（音效+音乐，本机剪映缓存）
+  if (syncDlg.lane === '音频') return syncDlg.localItems.filter((i) => i.group === '音频')
+  // 2026-09-22 用户裁决：转场类目（客户端内置 8 项标准转场，随导出自动生效）
+  if (syncDlg.lane === '转场') return syncDlg.localItems.filter((i) => i.group === '转场')
   return []
 })
 const pickedCount = computed(() => syncLocalItems.value.filter((i) => i.picked).length)
@@ -265,12 +285,21 @@ async function openSyncDlg() {
 }
 
 async function doSyncFromJianying() {
-  const ids = syncLocalItems.value.filter((i) => i.picked).map((i) => String(i.effectId))
-  if (!ids.length) return
+  const picked = syncLocalItems.value.filter((i) => i.picked)
+  // 转场为客户端内置资产（随导出自动生效），不参与上传
+  const transPicked = picked.filter((i) => i.group === '转场')
+  const ids = picked.filter((i) => i.group !== '音频' && i.group !== '转场').map((i) => String(i.effectId))
+  const audios = picked
+    .filter((i) => i.group === '音频')
+    .map((i) => ({ id: String(i.effectId).replace(/^jyaudio_/, ''), category: String(i.category || '音乐') }))
+  if (!ids.length && !audios.length) {
+    if (transPicked.length) notify('转场无需同步', '转场为客户端内置资产，随导出自动生效（剪映官方 resource_id）。')
+    return
+  }
   syncDlg.busy = true
-  syncDlg.progress = `正在同步 ${ids.length} 个素材…`
+  syncDlg.progress = `正在同步 ${ids.length + audios.length} 个素材…`
   try {
-    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids })
+    const res = await window.tintin?.server?.jyTemplatesSync?.({ ids, audios })
     if (res && 'ok' in res && res.ok) {
       const okN = (res.results || []).filter((r) => r.ok).length
       const fails = (res.results || []).filter((r) => !r.ok)
@@ -482,26 +511,30 @@ async function deleteSelected() {
 .jytpl-card-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jytpl-card-meta { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
 .jytpl-play-btn { background: #409eff; border: none; color: #fff; border-radius: 50%; width: 20px; height: 20px; font-size: 10px; cursor: pointer; margin-left: 6px; line-height: 1; }
-.tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: rgba(255,255,255,.08); color: #999; }
-.anim-tag { color: #8ab4f8; }
-.muted { color: #666; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 3px; background: var(--surface-container); color: var(--muted-foreground); }
+.anim-tag { color: var(--primary); }
+.muted { color: var(--muted-foreground); }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #409eff; border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; margin-right: 8px; vertical-align: middle; }
 @keyframes spin { to { transform: rotate(360deg) } }
 /* 弹窗 */
+/* 2026-09-22 用户报障：写死暗色（#1e1e1e/#2a2a2a）在浅色主题下深底深字不可读——
+   全部改设计令牌跟随应用主题（「从剪映同步」「字体（剪映）」两个弹窗共用此类） */
 .jytpl-dlg-mask { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100; display: flex; align-items: center; justify-content: center; }
-.jytpl-dlg { width: 480px; max-height: 80vh; background: #1e1e1e; border: 1px solid #333; border-radius: 10px; display: flex; flex-direction: column; }
-.jytpl-dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #333; font-size: 14px; font-weight: 600; }
-.jytpl-dlg-close { background: none; border: none; color: #999; font-size: 18px; cursor: pointer; }
+.jytpl-dlg { width: 480px; max-height: 80vh; background: var(--card); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; }
+.jytpl-dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600; color: var(--foreground); }
+.jytpl-dlg-close { background: none; border: none; color: var(--muted-foreground); font-size: 18px; cursor: pointer; }
 .jytpl-dlg-body { padding: 14px 16px; overflow-y: auto; }
 .jytpl-dlg-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.jytpl-dlg-label { font-size: 13px; color: #ccc; }
-.jytpl-dlg-select { flex: 0 0 220px; padding: 5px 8px; background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 6px; }
-.jytpl-dlg-list { max-height: 300px; overflow-y: auto; border: 1px solid #333; border-radius: 6px; }
-.jytpl-dlg-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid #2a2a2a; }
-.jytpl-dlg-item:hover { background: rgba(255,255,255,.04); }
-.jytpl-dlg-item-name { flex: 1; font-size: 13px; }
-.jytpl-dlg-progress { margin-top: 10px; font-size: 12px; color: #8ab4f8; min-height: 16px; }
-.jytpl-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid #333; }
+.jytpl-dlg-label { font-size: 13px; color: var(--foreground); }
+.jytpl-dlg-select { flex: 0 0 220px; padding: 5px 8px; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: 6px; }
+/* 音频行内分类小下拉（2026-09-22：音乐/音效，剪映缓存混存默认按时长） */
+.jytpl-dlg-select.jytpl-cat { flex: 0 0 76px; padding: 3px 6px; font-size: 12px; }
+.jytpl-dlg-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+.jytpl-dlg-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; border-bottom: 1px solid var(--border); color: var(--foreground); }
+.jytpl-dlg-item:hover { background: color-mix(in srgb, var(--primary) 6%, transparent); }
+.jytpl-dlg-item-name { flex: 1; font-size: 13px; color: var(--foreground); }
+.jytpl-dlg-progress { margin-top: 10px; font-size: 12px; color: var(--primary); min-height: 16px; }
+.jytpl-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 
 /* 字体（剪映）分类（2026-09-13：与原服务端字体管理分开；来源标记=剪映） */
 .jytpl-fonts { display: flex; flex-direction: column; gap: 10px; }

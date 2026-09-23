@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// useCopyMontageStep4Final.ts — 智能混剪 Step4 特效包装/BGM/剪映导出编排（铁律 10 拆分，2026-09-19）
-// 自 useCopyMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// usePlanMontageStep4Final.ts — 智能混剪 Step4 特效包装/BGM/剪映导出编排（铁律 10 拆分，2026-09-19）
+// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step4）。
 // 跨步依赖经 ctx 注入：共享运行时 + Step2（assemblePlans/concatTransition/
 //   sharedProductInfo）+ Step1 splitResolution + Step3 全套消费（voiceRows/
@@ -19,13 +19,14 @@ import {
   pathBasename,
   resolveOutMontageDir, textFxStyleOf,
   type BgmGenPayload, type PrecomposePlan, type VoiceRow,
-} from '../copyMontageLogic'
+} from '../planMontageLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
-import { useCopyMontageStep3Voice } from './useCopyMontageStep3Voice'
-import { useCopyMontageBgmGen } from './useCopyMontageBgmGen'
-import { useCopyMontageBgmPlayer } from './useCopyMontageBgmPlayer'
+import { buildBoundaryTransitions } from '../planMontageStep2ConcatLogic.ts'
+import { usePlanMontageStep3Voice } from './usePlanMontageStep3Voice'
+import { usePlanMontageBgmGen } from './usePlanMontageBgmGen'
+import { usePlanMontageBgmPlayer } from './usePlanMontageBgmPlayer'
 
-type CopyStep3Api = ReturnType<typeof useCopyMontageStep3Voice>
+type CopyStep3Api = ReturnType<typeof usePlanMontageStep3Voice>
 
 export interface MontageStep4Context {
   statusText: Ref<string>
@@ -69,15 +70,17 @@ export interface MontageStep4Context {
   finalVideoList: Ref<Array<{ name: string; path: string }>>
   finalVideoPath: Ref<string>
   step4Candidates: Ref<string[]>
-  getTabVoiceWavs: () => string[]
-  /** 逐分镜脚本的旁白（与 getTabVoiceWavs 同序） */
-  getTabNarratives: () => string[]
+  /** 2026-09-22 用户裁决：候选↔分镜按 tabId 精确解析（方案携带 tabId）——原
+   *  getTabVoiceWavs 过滤未生成 tab 与 getTabNarratives 不过滤口径不一致，
+   *  候选按下标错位会拿错声音/旁白。返回结构化 tab（或 null）；
+   *  2026-09-23 用户裁决：增每脚本视频设置（transition 供逐边界转场按 tab 消费） */
+  getTabById: (id: string) => { voiceWav: string; narrative: string; transition?: string; shots: Array<{ sfxWavLocal?: string; sfxDurSec?: number }> } | null
 }
 
-export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
+export function usePlanMontageStep4Final(ctx: MontageStep4Context) {
   const {
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
-    sharedProductInfo, splitResolution, voiceRows, voiceDirInput, getTabVoiceWavs, getTabNarratives,
+    sharedProductInfo, splitResolution, voiceRows, voiceDirInput, getTabById,
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
     currentMatchTemplateIds, resolveKeywordHits,
     scanVoiceDir, activeTextPool,
@@ -91,18 +94,18 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
   // ══ Step4 特效包装（对照 step4_final_view.py 逐控件 + _start_final_mix/FinalMixWorker 一比一）══
   // BGM 选择持久化（2026-09-15 用户报障：会话级 ref 重启清空 → 导出时间轴缺 BGM 轨。
   // localStorage 跨会话记忆 bgmPath/bgmVolume，文件被删时导出侧 fs.existsSync 兜底跳过）
-  const bgmPath = ref(localStorage.getItem('copy-montage.bgmPath') || '')
+  const bgmPath = ref(localStorage.getItem('plan-montage.bgmPath') || '')
   const bgmName = ref('')
   // BGM 增益默认 35%（2026-09-15 用户裁决，原 100；localStorage 记忆用户调整，0=静音为合法值不回退）
   // 2026-09-20 修复（用户报障：全新安装增益为 0）——Number(null)=0 且 isFinite(0)=true，
   // 未存过键时被当成「用户设置过 0%」；改显式判 null/空串为未设置 → 回退默认 35
-  const storedBgmVolumeRaw = localStorage.getItem('copy-montage.bgmVolume')
+  const storedBgmVolumeRaw = localStorage.getItem('plan-montage.bgmVolume')
   const storedBgmVolume = storedBgmVolumeRaw === null || storedBgmVolumeRaw === '' ? NaN : Number(storedBgmVolumeRaw)
   const bgmVolume = ref(Number.isFinite(storedBgmVolume) ? storedBgmVolume : 35)
   watch([bgmPath, bgmVolume], () => {
     try {
-      localStorage.setItem('copy-montage.bgmPath', bgmPath.value)
-      localStorage.setItem('copy-montage.bgmVolume', String(bgmVolume.value))
+      localStorage.setItem('plan-montage.bgmPath', bgmPath.value)
+      localStorage.setItem('plan-montage.bgmVolume', String(bgmVolume.value))
     } catch (_) { /* 隐私模式等写失败忽略 */ }
   })
   // 2026-09-18 用户裁决：逐视频 BGM 指派（Step4 视频列表每行可单独选 BGM）。
@@ -123,8 +126,8 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
   const finalPreviewUrl = ref('')  // 右侧内嵌预览（打包后 file:// 源直读本地文件）
   const finalPreviewTitle = ref(' 视频预览')
 
-  // ── AI 生成 BGM（已迁 montage/useCopyMontageBgmGen.ts，铁律 10 纯搬迁）──
-  const bgmGen = useCopyMontageBgmGen({ ensureServerUrl, toAbsolute, voiceDirInput, bgmPath, bgmName })
+  // ── AI 生成 BGM（已迁 montage/usePlanMontageBgmGen.ts，铁律 10 纯搬迁）──
+  const bgmGen = usePlanMontageBgmGen({ ensureServerUrl, toAbsolute, voiceDirInput, bgmPath, bgmName })
   const {
     bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration, bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl, generateBgm, downloadLibraryBgm, applyLibraryBgm,
   } = bgmGen
@@ -187,8 +190,8 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
     return rowBgmOverride(videoPath) || bgmPath.value || ''
   }
 
-  // ── BGM 试听播放器（已迁 montage/useCopyMontageBgmPlayer.ts，铁律 10 纯搬迁）──
-  const bgmPlayer = useCopyMontageBgmPlayer({ bgmPath, bgmVolume })
+  // ── BGM 试听播放器（已迁 montage/usePlanMontageBgmPlayer.ts，铁律 10 纯搬迁）──
+  const bgmPlayer = usePlanMontageBgmPlayer({ bgmPath, bgmVolume })
   const { bgmPlaying, bgmPosMs, bgmDurMs, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm } = bgmPlayer
 
 
@@ -200,19 +203,22 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
    *  2026-09-11 voice 接线（统一合成契约提案③）：useSource=true（服务端链路）取
    *  源视频路径（有配音 wav 的行）——配音随 concat voice 轨上传，不再本地替换
    *  原声（无「先声音合成」中间态）；本地链路维持 dubbed 产物口径。 */
-  /** 整体克隆旁白资产：第 i 个候选用第 i 个分镜脚本克隆的整段声音（wav + timing
-   *  时间轴 + 对齐字幕 SRT 三个旁车齐全）；该分镜未克隆 → null。
-   *  （2026-09-21 用户裁决：拔除旧「纯文案克隆」copyVoiceWav 回退层——该产物自
-   *  批量按分镜克隆上线后无写入点，回退恒空转） */
-  function scriptVoiceAsset(candidateIndex: number): { path: string; timingPath: string; srtPath: string; text: string } | null {
-    // 候选顺序=分镜顺序——第 i 个候选用第 i 个分镜的整体克隆声音
-    const tabWav = getTabVoiceWavs()[candidateIndex]
-    if (!tabWav) return null
+  /** 候选成片 → 所属分镜 tab（2026-09-22 用户裁决：按方案 tabId 精确解析；
+   *  非确认产物/未知 tabId → null） */
+  function tabForVideo(videoPath: string) {
+    const plan = assemblePlans.value.find((p2) => p2.confirmed && p2.outputPath === videoPath)
+    return plan?.tabId ? getTabById(plan.tabId) : null
+  }
+  /** 整体克隆旁白资产：候选所属分镜的整段克隆声音（wav + timing 时间轴 + 对齐字幕
+   *  SRT 三件套齐全）；该分镜未克隆 → null */
+  function scriptVoiceAsset(videoPath: string): { path: string; timingPath: string; srtPath: string; text: string } | null {
+    const tab = tabForVideo(videoPath)
+    if (!tab || !tab.voiceWav) return null
     return {
-      path: tabWav,
-      timingPath: tabWav + '.timing.json',
-      srtPath: tabWav + '.aligned.srt',
-      text: getTabNarratives()[candidateIndex] || '',
+      path: tab.voiceWav,
+      timingPath: tab.voiceWav + '.timing.json',
+      srtPath: tab.voiceWav + '.aligned.srt',
+      text: tab.narrative,
     }
   }
 
@@ -328,7 +334,7 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
       // 文案/口播轨/时间轴/对齐字幕全部来自纯文案克隆产物（scriptVoiceAsset）
       const subtitleTexts = candidates
         .map((c, ci) => {
-          const sv = scriptVoiceAsset(ci)
+          const sv = scriptVoiceAsset(c)
           // 服务端链路候选=源视频（r.path）；本地链路=配音产物（r.dubbedPath）
           const row = voiceRows.value.find((r) => (mode === 'server' ? r.path : r.dubbedPath) === c)
           const rowText = row?.text.trim() || ''
@@ -434,7 +440,7 @@ export function useCopyMontageStep4Final(ctx: MontageStep4Context) {
         lastComposeTasks.value = res.taskIds
           .map((tid, idx) => ({ taskId: String(tid), outputPath: String(res.results[idx] || ''), inputPath: String(candidates[idx] || '') }))
           .filter((p2) => p2.taskId && p2.outputPath)
-        try { localStorage.setItem('copy-montage.lastComposeTasks', JSON.stringify(lastComposeTasks.value)) } catch (_) { /* 忽略 */ }
+        try { localStorage.setItem('plan-montage.lastComposeTasks', JSON.stringify(lastComposeTasks.value)) } catch (_) { /* 忽略 */ }
       }
       onMixFinished(res.results)
     } catch (e) {
@@ -502,7 +508,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
     videoPaths?: string[]
     srtPath?: string
     srtPaths?: Array<string | null>
-    transitions?: string
+    /** 逐边界转场（2026-09-22 虚拟时间轴：镜间=转场设置、镜内=none 硬切） */
+    transitions?: string | string[]
     bgmPath?: string
     /** 2026-09-18 用户裁决：逐视频 BGM（与 videoPaths 平行；空串=该窗回退全局 bgmPath） */
     bgmPaths?: Array<string | null>
@@ -525,6 +532,13 @@ async function exportAllToJianyingDraft(): Promise<void> {
     fancyTemplate?: Record<string, unknown> | null
     /** 2026-09-18：音效池下载落盘目录（工程资产目录 sfx/；缺省回落临时目录） */
     sfxDestDir?: string
+    /** 2026-09-22 虚拟时间轴：逐段源裁剪时长（微秒，与 videoPaths 对齐；缺省=ffprobe 全长） */
+    videoDurations?: Array<number>
+    /** 2026-09-22 虚拟时间轴：视频段静音标记（true=全片静音走旁白轨；数组=逐段） */
+    muteVideoAudio?: boolean | Array<boolean>
+    /** 2026-09-22 用户裁决「音效包装对齐导出」：镜级 AI 音效显式指派（逐视频、与
+     *  videoPaths 平行；有显式指派的视频音效池事件轨让位——导出器口径） */
+    sfxClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
     /** 2026-09-17 用户报障①：第四步选中的服务端字幕样式对象（/subtitle_styles 成员）
      *  + UI 背景不透明度百分比 → 主进程映射为草稿字幕轨文本样式 */
     subtitleStyle?: Record<string, unknown> | null
@@ -629,7 +643,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
    *  inputPath 为 2026-09-17 修复新增：合成输入源（旧持久化数据无此字段→undefined）。 */
   const lastComposeTasks = ref<Array<{ taskId: string; outputPath: string; inputPath?: string }>>((
     () => {
-      try { return JSON.parse(localStorage.getItem('copy-montage.lastComposeTasks') || '[]') } catch (_) { return [] }
+      try { return JSON.parse(localStorage.getItem('plan-montage.lastComposeTasks') || '[]') } catch (_) { return [] }
     }
   )())
 
@@ -742,101 +756,160 @@ async function exportAllToJianyingDraft(): Promise<void> {
     //  即「预合成、无烧制字幕、无混音」的视频），不再优先 lastComposeTasks 合成产物——
     //  合成产物自带混音（与口播轨/BGM 轨双重发声）且烧制字幕/花字与轨道双重绘制；
     //  跨会话持久化的合成记录与当前 voiceRows 失配时还会致全轨落空（草稿只剩视频+BGM）。
-    await ensureVoiceRows()
-    const cands = await collectCandidates()
-    if (!cands.length) {
-      notify('无候选素材', '请先完成镜头重组与口播配音再导出')
+    // 2026-09-22 用户裁决（架构·虚拟时间轴）：导出直接消费「剪辑方案」——
+    //  视频轨=方案逐镜逐片段（本机文件 + useDurs 源裁剪），预合成 mp4 不再是中间产物。
+    //  候选键=plan:{tabId}（BGM 指派/字幕/花字/音效按分镜对齐）
+    const vPlans = assemblePlans.value.filter(
+      (p): p is typeof p & { groups: NonNullable<typeof p.groups>; tabId: string } =>
+        !!(p.confirmed && p.virtual && p.groups?.length && p.tabId),
+    )
+    if (!vPlans.length) {
+      notify('没有剪辑方案', '请先在「视频素材」页完成智能匹配并点「生成剪辑方案」。')
       return
     }
+    exportProgress.value = 5
+    exportStage.value = '正在准备剪辑方案素材...'
+    // 片段本机文件保障：未落盘（素材库条目）按 clipUrl 下载到 groups 目录
+    for (const p of vPlans) {
+      for (const g of p.groups) {
+        for (const s of g.scenes) {
+          if (!s.clipLocalPath && s.clipUrl) {
+            try {
+              const dir = joinPath(await readCacheDir(), 'montage_cache', 'groups')
+              const local = joinPath(dir, `${s.idx}_${pathBasename(s.name)}`)
+              await window.tintin.server.downloadResult(toAbsolute(s.clipUrl), local)
+              s.clipLocalPath = local
+            } catch (_) { /* 缺失片段在下方显式报错 */ }
+          }
+        }
+      }
+    }
+    interface SegMeta {
+      path: string; durSec: number; c0: number; c1: number
+      planIdx: number; planFirst: boolean; shotFirst: boolean; planKey: string
+      text: string; timingPath: string; voicePath: string; srtKey: string
+      sfxWavLocal?: string; sfxDurSec?: number; shotLen: number
+    }
+    const segs: SegMeta[] = []
+    const planHits: Array<Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }>> = []
+    vPlans.forEach((p, planIdx) => {
+      const tab = getTabById(p.tabId)
+      if (!tab) return
+      let c0 = 0
+      p.groups.forEach((g, gi) => {
+        const shotLen = g.useDurs.reduce((a, b) => a + (Number(b) || 0), 0)
+        g.scenes.forEach((s, si) => {
+          const durSec = Math.max(0.1, Number(g.useDurs[si]) || Math.max(0.1, Number(s.duration) || 0.1))
+          segs.push({
+            path: s.clipLocalPath || '',
+            durSec,
+            c0, c1: c0 + durSec,
+            planIdx, planFirst: gi === 0 && si === 0, shotFirst: si === 0,
+            planKey: `plan:${p.tabId}`,
+            text: tab.narrative,
+            timingPath: tab.voiceWav ? tab.voiceWav + '.timing.json' : '',
+            voicePath: tab.voiceWav,
+            srtKey: `plan${planIdx}`,
+            sfxWavLocal: tab.shots[gi]?.sfxWavLocal,
+            sfxDurSec: tab.shots[gi]?.sfxDurSec,
+            shotLen,
+          })
+          c0 += durSec
+        })
+      })
+    })
+    // 逐分镜关键词命中（与剪映导出同一取数函数；串行——2026-09-12 并发 500 教训）
+    for (let pi = 0; pi < vPlans.length; pi++) {
+      const tab = getTabById(vPlans[pi].tabId)
+      if (!tab) continue
+      if (textFxEnabled.value || fancyEnabled.value) {
+        exportStage.value = `关键词命中判定（分镜 ${pi + 1}/${vPlans.length}）...`
+        planHits.push(...[await resolveKeywordHits(tab.narrative, tab.voiceWav ? tab.voiceWav + '.timing.json' : '')])
+      } else {
+        planHits.push([])
+      }
+    }
+    const segsReady = segs.filter((s) => !!s.path)
+    if (!segsReady.length) {
+      notify('没有剪辑方案', '方案内没有可用片段：请重新智能匹配。')
+      return
+    }
+    const cands = segsReady.map((s) => s.path)
+    const videoDurations = segsReady.map((s) => Math.round(s.durSec * 1e6))
+    // 逐边界转场（2026-09-22 用户裁决：转场随机——镜间从三种转场随机、镜内硬切；
+    //  mode=固定值时镜间用该固定转场。2026-09-23 用户裁决：视频设置按 tab 绑定——
+    //  镜间转场逐段取该段所属分镜自己的 transition（回退全局 concatTransition））
+    const transitionsArr = buildBoundaryTransitions(segsReady, concatTransition.value, Math.random, (seg) => {
+      const tabId = String(seg.planKey || '').replace(/^plan:/, '')
+      return getTabById(tabId)?.transition || ''
+    })
+    // 逐分镜声音时长（口播轨段长；探测失败回退镜标累计）
+    const voiceDurByPlan = new Map<number, number>()
+    for (let pi = 0; pi < vPlans.length; pi++) {
+      const vw = getTabById(vPlans[pi].tabId)?.voiceWav || ''
+      const d = vw ? Number(await window.tintin.ffmpeg.probeDuration(vw).catch(() => 0)) || 0 : 0
+      voiceDurByPlan.set(pi, d)
+    }
     exportProgress.value = 10
-    exportStage.value = `候选素材共 ${cands.length} 段，生成字幕资产...`
+    exportStage.value = `剪辑方案共 ${vPlans.length} 条虚拟时间轴 / ${segsReady.length} 个片段，生成字幕资产...`
     const srtPaths: Array<string | null> = []
     const textTemplateClips: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>> = []
     const voiceClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     const fancyEvents: Array<Array<{ word: string; startUs: number; durUs: number }>> = []
+    const sfxClips: Array<Array<{ path: string; startUs: number; durUs: number }>> = []
     let noSubClips = 0
-    for (let i = 0; i < cands.length; i++) {
-      const c = cands[i]
-      // 2026-09-18 用户裁决：导出进度条分段驱动（独立于服务端合成进度条）
-      exportStage.value = `生成字幕资产（${i + 1}/${cands.length}）...`
-      exportProgress.value = 10 + Math.round((70 * i) / cands.length)
-      // 2026-09-17 用户报障③④二次修正：候选恒为当前口播行路径（配音产物/确认合成
-      //  产物），按 dubbedPath/path 直配 voiceRows；basename 兜底仅跨会话重扫目录
-      //  漂移（同名产物不同目录）时用，含 dubbed_ 前缀与合成产物命名约定反推。
-      let row = voiceRows.value.find((r) => r.dubbedPath === c || r.path === c)
-      if (!row) {
-        const nm = pathBasename(c)
-        const nmIn = inputNameFromFinalPath(c)
-        row = voiceRows.value.find((r) => [r.path, r.dubbedPath].some((q) => {
-          if (!q) return false
-          const qb = pathBasename(q)
-          return qb === nm || qb === 'dubbed_' + nm
-            || (nmIn !== '' && (qb === nmIn || qb === 'dubbed_' + nmIn))
-        }))
-      }
-      // 2026-09-21 用户裁决：行级口播缺失时回退该分镜的整体克隆声音
-      // （tab.voiceWav + timing + aligned.srt 三件套齐全）
-      const sv = scriptVoiceAsset(i)
-      const text = String(row?.text || '').trim() || (sv ? sv.text : '')
-      const timingPath = row?.wavPath ? row.wavPath + '.timing.json' : (sv ? sv.timingPath : '')
-      // 字幕 SRT：消费声音克隆完成后即生成的后处理资产（2026-09-18 用户裁决：
-      //   后处理时点前移至克隆完成，导出与服务端合成均为纯消费者）。资产命中→
-      //   直接用；缺失（旧会话/未跑克隆）→ 现场重切段回写；文案空/写失败 → 该段
-      //   不出字幕轨（导出器 srtPaths null 容忍，2026-09-17 修复：合成产物候选曾在此整单中断）
+    for (let i = 0; i < segsReady.length; i++) {
+      const m = segsReady[i]
+      exportStage.value = `生成字幕资产（${i + 1}/${segsReady.length}）...`
+      exportProgress.value = 10 + Math.round((70 * i) / segsReady.length)
+      // 字幕 SRT：仅每分镜首片段携带（SRT=该分镜旁白整段时间轴，2026-09-18 后处理资产口径）
       {
-        const srtFile = text ? await ensureProcessedSrt(text, row?.wavPath || (sv ? sv.path : ''), c) : ''
-        if (srtFile) {
-          srtPaths.push(srtFile)
-        } else {
-          noSubClips++
-          srtPaths.push(null)
-        }
+        const srtFile = m.planFirst && m.text ? await ensureProcessedSrt(m.text, m.voicePath, m.srtKey) : ''
+        if (srtFile) srtPaths.push(srtFile)
+        else { noSubClips++; srtPaths.push(null) }
       }
-      // 关键词命中取数（2026-09-19 架构：/text_templates/match 删除，客户端不再调用）：
-      // 词源=产品资料关联关键词（产品库选择带回 sharedProductInfo.keywords），客户端
-      // 对字幕行窗口命中；产品未关联词 → LLM 兜底提词（/llm/chat/completions）。
-      // resolveKeywordHits 内部：timing 读取+行组装+LLM 文案级缓存；串行取数
-      //（2026-09-12：并发连击曾致服务端 500 的教训）
-      const hits: Array<{ text: string; start: number; end: number; keywords: string[]; templateId?: string }> = []
-      if (textFxEnabled.value || fancyEnabled.value) {
-        exportStage.value = `关键词命中判定（${i + 1}/${cands.length}）...`
-        hits.push(...await resolveKeywordHits(text, timingPath))
-      }
+      const hits = planHits[m.planIdx] || []
+      // 命中按本片段时间窗重定位（片段=镜时间轴的 [c0,c1) 区间）
+      const rebased = hits
+        .filter((h) => h.end > m.c0 && h.start < m.c1)
+        .map((h) => ({ ...h, start: Math.max(h.start, m.c0), end: Math.min(h.end, m.c1) }))
       if (textFxEnabled.value) {
-        textTemplateClips.push(hits
+        textTemplateClips.push(rebased
           .filter((h) => h.templateId && h.end > h.start)
           .map((h) => ({
             phrase: h.text,
-            startUs: Math.round(h.start * 1e6),
+            startUs: Math.round((h.start - m.c0) * 1e6),
             durUs: Math.round((h.end - h.start) * 1e6),
             resourceId: String(h.templateId),
           })))
       } else {
         textTemplateClips.push([])
       }
-      // 口播 wav（独立口播轨；候选即配音产物时其声已内嵌，此轨仍保留便于独立调整）。
-      // 2026-09-21 用户裁决（方案A）：行级 wav 缺失 → 回退第二步整体克隆旁白
-      if (row?.wavPath) {
-        voiceClips.push([{ path: row.wavPath, startUs: 0, durUs: Math.max(1, Math.round((row.voiceDurSec || 0) * 1e6)) }])
-      } else if (sv) {
-        const svDur = Number(await window.tintin.ffmpeg.probeDuration(sv.path)) || 0
-        voiceClips.push([{ path: sv.path, startUs: 0, durUs: Math.max(1, Math.round(svDur * 1e6)) }])
+      // 口播轨（每分镜一段整条克隆声音，挂在该分镜首片段上）
+      const voiceDurUs = Math.round((voiceDurByPlan.get(m.planIdx) || 0) * 1e6)
+      if (m.planFirst && m.voicePath && voiceDurUs > 0) {
+        voiceClips.push([{ path: m.voicePath, startUs: 0, durUs: voiceDurUs }])
       } else {
         voiceClips.push([])
       }
-      // 花字事件=同一命中（词+时间点）原样落段（2026-09-19 用户裁决「统一」）。
-      // 原实现：fxWords×行 重匹配且 fancyEvents 组装后从未传给导出器（死变量）——
-      // 草稿花字轨此前实际只吃过本地词典，服务端命中从未参与
       if (fancyEnabled.value) {
-        fancyEvents.push(hits
+        fancyEvents.push(rebased
           .filter((h) => h.end > h.start)
           .map((h) => ({
             word: h.text,
-            startUs: Math.round(h.start * 1e6),
+            startUs: Math.round((h.start - m.c0) * 1e6),
             durUs: Math.round((h.end - h.start) * 1e6),
           })))
       } else {
         fancyEvents.push([])
+      }
+      // 音效包装产物：挂在该镜首片段（音效轨独立，可跨入镜内后续片段——导出器按
+      //  音效素材时长落段，limitEnd 只封全片末尾）
+      if (m.shotFirst && m.sfxWavLocal) {
+        const sfxDur = Number(m.sfxDurSec) || 0
+        sfxClips.push([{ path: m.sfxWavLocal, startUs: 0, durUs: Math.round(Math.max(0.05, Math.min(sfxDur || m.shotLen, m.shotLen)) * 1e6) }])
+      } else {
+        sfxClips.push([])
       }
     }
     // 防御性提示（2026-09-19 用户报障「关键词轨静默变空」）：花字/关键词词源统一=
@@ -856,13 +929,19 @@ async function exportAllToJianyingDraft(): Promise<void> {
     const finalName = timelineDraftName()
     exportStage.value = '组装剪映时间轴草稿（转场/口播/字幕/BGM 各轨）...'
     exportProgress.value = 85
-    // 本地组装（2026-09-18 用户裁决：音效=主进程从服务端音频库剪映音效库 <2s 条目
-    // 下载到资产目录 sfx/ 后按命中循环指派；空池回落花字模板本地 sound 声明）
+    exportStage.value = '组装剪映时间轴草稿（转场/口播/字幕/BGM 各轨）...'
+    exportProgress.value = 85
+    // 镜级 AI 音效（2026-09-22 用户裁决「音效包装对齐导出」）：按片段所属分镜挂显式
+    // 音效段（sfxClips 已在虚拟时间轴展平时构建，见上方循环）
     const ok = await doJianyingExport({
       mode: 'multi',
       videoPaths: cands,
+      // 2026-09-22 虚拟时间轴：逐段源裁剪时长（微秒）+ 视频段静音（旁白轨覆盖）
+      videoDurations,
+      muteVideoAudio: true,
       srtPaths,
-      transitions: transition,
+      // 逐边界转场：镜间=转场设置、镜内=硬切（导出器 normalizeTransitions 数组口径）
+      transitions: transitionsArr,
       ...jianyingFxParams(),
       fancyTemplate: selectedFancyTemplate.value ? ({ ...selectedFancyTemplate.value } as Record<string, unknown>) : null,
       subtitleStyle: plainJson(selectedSubtitlePreset.value?.serverStyle || null) as Record<string, unknown> | null,
@@ -873,9 +952,12 @@ async function exportAllToJianyingDraft(): Promise<void> {
       // 事件（词+时间点）随导出下发——导出器按事件落段，不再 fxWords×SRT 重匹配
       fancyEvents,
       voiceClips,
+      // 2026-09-22 用户裁决「音效包装对齐导出」：镜级 AI 音效显式指派（逐视频，与 cands 平行）
+      sfxClips,
       bgmPath: bgmPath.value,
       // 2026-09-18 用户裁决：逐视频 BGM（与 cands 平行；未指派的行=空串→导出器回退全局 bgmPath）
-      bgmPaths: cands.map((c) => rowBgmForCandidate(c)),
+      // 逐视频 BGM：虚拟时间轴下候选=分镜方案键（plan:{tabId}，与 BGM 指派 UI 同键）
+      bgmPaths: cands.map((c, ci) => rowBgmForCandidate(segsReady[ci]?.planKey || c)),
       bgmVolume: bgmVolume.value,
       // 音效下载落盘目录：工程资产目录 sfx/（与 srt//jy_pkg/ 同级；无输入目录
       // 回落 cacheDir/montage_cache/sfx，同 SRT 口径）
@@ -888,9 +970,29 @@ async function exportAllToJianyingDraft(): Promise<void> {
     if (ok) {
       exportProgress.value = 100
       exportStage.value = '导出完成'
+      // 2026-09-22 用户裁决：导出完成后逐轨完整性校验——让用户一眼确认哪些轨有了
+      const trackReport: string[] = []
+      const voicedN = voiceClips.filter((v) => v.length > 0).length
+      const srtN = srtPaths.filter(Boolean).length
+      const tplN = textTemplateClips.filter((t) => t.length > 0).length
+      const fancyN = fancyEvents.filter((f) => f.length > 0).length
+      const sfxN = sfxClips.filter((s) => s.length > 0).length
+      trackReport.push(`视频轨 ${cands.length} 段`)
+      if (voicedN) trackReport.push(`口播轨 ${voicedN} 段`)
+      if (srtN) trackReport.push(`字幕轨 ${srtN} 条`)
+      if (tplN) trackReport.push(`文字模板轨 ${tplN} 段`)
+      if (fancyN) trackReport.push(`花字轨 ${fancyN} 词条`)
+      if (bgmPath.value) trackReport.push(`BGM ✓`)
+      // 缺失轨警告
+      const missing: string[] = []
+      if (!voicedN && !srtN) missing.push('口播')
+      if (!srtN) missing.push('字幕')
+      if (missing.length) trackReport.push(`⚠ 缺少：${missing.join('、')}`)
       // 2026-09-18 用户裁决：完成提示仿声音克隆生成完成提示形态（状态行「完成：…」+ OS 弹窗）；
       // 「打开草稿目录」按钮内嵌该提示行（自底部结果区移入）；2026-09-20（用户反馈）：带草稿名
       exportDoneMsg.value = '完成： 剪映时间轴草稿导出完成！项目名称：' + finalName
+        + '\n轨道校验：' + trackReport.join(' / ')
+        + (noSubClips ? '\n（注：' + noSubClips + ' 段无口播文案，未出字幕/关键词轨）' : '')
       statusText.value = exportDoneMsg.value
     } else {
       statusText.value = '注意： 剪映时间轴导出失败（详见弹窗通知）'

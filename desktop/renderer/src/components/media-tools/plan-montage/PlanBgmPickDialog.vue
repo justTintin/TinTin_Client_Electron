@@ -10,10 +10,10 @@ import { ref, computed, watch, inject } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import { useAudioGen } from '@/composables/useAudioGen'
-import { copyMontageShellKey } from './copyMontageUiContext'
-import { pathBasename } from '@/composables/copyMontageLogic'
+import { planMontageShellKey } from './planMontageUiContext'
+import { pathBasename } from '@/composables/planMontageLogic'
 
-const shell = inject(copyMontageShellKey)!
+const shell = inject(planMontageShellKey)!
 const { setRowBgm, bgmPath, bgmName, downloadLibraryBgm, applyLibraryBgm } = shell.s
 
 /** 本地路径 → file URL（面板内私有拷贝） */

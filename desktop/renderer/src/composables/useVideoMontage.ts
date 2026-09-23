@@ -108,7 +108,7 @@ export function useVideoMontage() {
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, splitFps,
     splitsJobId, splitsDownloading,
     previewUrl, previewTranscoding,
-    addVideos, selectFolder, onDrop, removeVideo, runSplit,
+    addVideos, selectFolder, onDrop, removeVideo, runSplit, requestStopSplit, splitStatusOf,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview,
     clearSplitCache, openSplitsDir,
   } = step1
@@ -223,7 +223,7 @@ export function useVideoMontage() {
     srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
-    addVideos, selectFolder, onDrop, removeVideo, runSplit,
+    addVideos, selectFolder, onDrop, removeVideo, runSplit, requestStopSplit, splitStatusOf,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview, clearSplitCache,
     previewUrl, previewTranscoding, openSplitsDir, splitsDownloading,
     // Step2 镜头重组

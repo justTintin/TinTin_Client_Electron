@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// copyMontageStep4FxBgmLogic.ts — 智能混剪 Step4 特效包装/BGM/字幕纯逻辑
-// 自 copyMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
+// planMontageStep4FxBgmLogic.ts — 智能混剪 Step4 特效包装/BGM/字幕纯逻辑
+// 自 planMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
 // 拆分过程过 SKILL.md IRON-02 五项 checklist）。
 // 对照原客户端 studio/gui：
 //   · FinalMixWorker（/montage/bgm 混音口径服务端化）
@@ -11,7 +11,7 @@
 // 本文件不做任何 IPC / DOM 操作（IRON-06/07 分层）
 // ═══════════════════════════════════════════════════════════════
 
-import { pathBasename } from './copyMontageCommonLogic.ts'
+import { pathBasename } from './planMontageCommonLogic.ts'
 import {
   countChars,
   splitTextIntoSentences,

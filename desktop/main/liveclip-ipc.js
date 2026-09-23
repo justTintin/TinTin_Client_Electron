@@ -18,6 +18,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
+const crypto = require('node:crypto')
 
 function _err(message) {
   return { error: message || '未知错误' }
@@ -79,6 +80,25 @@ function createLiveclipIpc(ipcMain) {
       const p = String((payload || {}).path || '')
       if (!p) return _err('缺少 path')
       return { ok: true, exists: fs.existsSync(p) && fs.statSync(p).size > 0 }
+    } catch (e) {
+      return _err((e && e.message) || String(e))
+    }
+  })
+
+  // ── 文件内容 hash（2026-09-23 文案混剪选择池判重：MD5 流式读取，大文件不占内存；
+  //     内容身份用途非安全场景，MD5 足够且最快）──
+  ipcMain.handle('liveclip:hashFile', async (_event, payload) => {
+    try {
+      const p = String((payload || {}).path || '')
+      if (!p) return _err('缺少 path')
+      if (!fs.existsSync(p)) return _err('文件不存在')
+      return await new Promise((resolve, reject) => {
+        const hash = crypto.createHash('md5')
+        const stream = fs.createReadStream(p)
+        stream.on('data', (chunk) => hash.update(chunk))
+        stream.on('end', () => resolve({ ok: true, path: p, hash: hash.digest('hex') }))
+        stream.on('error', (err) => reject(err))
+      })
     } catch (e) {
       return _err((e && e.message) || String(e))
     }

@@ -10,16 +10,16 @@ import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
-import { copyMontageShellKey } from './copyMontageUiContext'
+import { planMontageShellKey } from './planMontageUiContext'
 import CopyStoryboard from './CopyStoryboard.vue'
 
-const shell = inject(copyMontageShellKey)!
+const shell = inject(planMontageShellKey)!
 // 2026-09-21 用户裁决：本步只有声音 → 右侧配音预览栏删除（vd-unified 两栏壳一并拆除）
 const { step, go, steps } = shell
 const {
   statusText,
   activeNarrative,
-  storyboards,
+  activeStoryboard,
   refSamples,
   selectedRefSample,
   refText,
@@ -107,11 +107,15 @@ const refAudioOptions = computed(() => [
 ])
 function onRefAudioChange(v: string | number): void { selectRefAudio(String(v)) }
 
-/** 批量克隆产物（2026-09-21 用户裁决：每分镜脚本一条整段声音） */
-const tabVoices = computed(() =>
-  storyboards.value
-    .filter((s) => s.voiceWav)
-    .map((s) => ({ tabId: s.id, name: s.name, wav: s.voiceWav, dur: s.voiceDurSec })))
+/** 激活分镜自己的整段克隆声音（2026-09-23 用户裁决：声音与脚本对齐——播放条只显示
+ *  激活分镜的 voiceWav，随 tab 切换；此前平铺全部 tab 的声音，切换分镜不变，
+ *  被误读为「声音没绑脚本」。旁白同源：文案内容一致时两条声音听感相同属预期，
+ *  各分镜要不同声音请在「文案编写」页改各自旁白后再批量克隆） */
+const tabVoices = computed(() => {
+  const tab = activeStoryboard.value
+  if (!tab || !tab.voiceWav) return []
+  return [{ tabId: tab.id, name: tab.name, wav: tab.voiceWav, dur: tab.voiceDurSec }]
+})
 </script>
 
 <template>
@@ -150,9 +154,10 @@ const tabVoices = computed(() =>
                 <span class="vd-dur-voice" :class="{ none: !v.dur }">{{ v.dur > 0 ? fmtDur(v.dur) : '--:--' }}</span>
               </div>
             </div>
-            <span class="muted">分镜声音已生成（{{ tabVoices.length }} 条），可就地试听；点「开始批量克隆人声合成」可重新生成</span>
+            <!-- 2026-09-23 用户裁决：列表只含激活分镜自己的一条声音（绑定随 tab 切换） -->
+            <span class="muted">当前分镜「{{ tabVoices[0].name }}」的声音已生成，可就地试听；点「开始批量克隆人声合成」可重新生成（会重克全部分镜）</span>
           </template>
-          <span v-else class="muted">暂无分镜声音：点击下方「开始批量克隆人声合成」，即为各分镜旁白生成声音</span>
+          <span v-else class="muted">当前分镜暂无声音：点击下方「开始批量克隆人声合成」，即为各分镜旁白生成声音</span>
         </div>
         <div v-else class="muted">先在「文案编写」页生成文案与分镜脚本，再点击「开始批量克隆人声合成」生成声音</div>
 

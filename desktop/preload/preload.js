@@ -255,6 +255,10 @@ const server = {
   clearMontageCache: (dir) => ipcRenderer.invoke('montage:clearCache', { dir }),
   // 出入场超长片段裁剪（PR#4 条目10：本地 ffmpeg 取中间段替换+改名，对照 EdgeClipTrimWorker）
   trimEdgeClips: (payload) => ipcRenderer.invoke('montage:trimEdgeClips', payload),
+  // 剪映音频素材自动同步（2026-09-22 内置定时任务：手动触发/查状态/开关）
+  jyAudioSyncNow: () => ipcRenderer.invoke('jyaudio:syncNow'),
+  jyAudioSyncStatus: () => ipcRenderer.invoke('jyaudio:status'),
+  jyAudioSetEnabled: (enabled) => ipcRenderer.invoke('jyaudio:setEnabled', { enabled: !!enabled }),
   // 镜内硬切拼接（2026-09-22 用户裁决：一镜多片——组内片段 concat demuxer 拼接为一镜一文件）
   montageConcatClips: (payload) => ipcRenderer.invoke('montage:concatClips', payload),
   // 成片完整性校验（PR#4 条目12：>1KB 且 ffprobe 可读，对照 _probe_video_ok）
@@ -328,6 +332,7 @@ const liveclip = {
   writeTextFile:  (payload) => ipcRenderer.invoke('liveclip:writeTextFile', payload),
   writeTempText:  (payload) => ipcRenderer.invoke('liveclip:writeTempText', payload),
   fileExists:     (payload) => ipcRenderer.invoke('liveclip:fileExists', payload),
+  hashFile:       (payload) => ipcRenderer.invoke('liveclip:hashFile', payload),
 }
 
 // ── 视频评价预测记录库（prediction:*，对照 video_prediction_manager.py）──

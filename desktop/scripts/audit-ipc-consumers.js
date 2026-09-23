@@ -68,6 +68,10 @@ const BASELINE_UNWIRED = {
   // ── 任务下发 / 制品登记（W11）：依赖素材库闭环，按裁决后置 ──
   'agent:submitTask':              'W11 客户端任务下发闭环后置（依赖素材库接口）',
   'agent:registerArtifact':        'W11 同上',
+  // ── 剪映音频自动同步（0922 晚间批次）：自治定时任务已运行，状态/开关 UI 未接 ──
+  'jyaudio:syncNow':               '剪映音频同步定时任务自治运行，syncNow/状态卡 UI 待接（0922 晚间批次已知缺口）',
+  'jyaudio:status':                '同上',
+  'jyaudio:setEnabled':            '同上',
   // ── 授权校验：服务端能力就绪，客户端无入口 ──
   'system:licenseVerify':          '授权校验 UI 未落地（等产品决策是否启用）',
   // ── 视频合成：成片/候选配套字幕查找（2026-09-14 导出改轨道结构——SRT 由文案

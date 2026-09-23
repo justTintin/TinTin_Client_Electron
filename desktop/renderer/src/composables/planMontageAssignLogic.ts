@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// copyMontageAssignLogic.ts — 分镜×素材智能匹配纯逻辑（2026-09-21 用户裁决方案 C：
+// planMontageAssignLogic.ts — 分镜×素材智能匹配纯逻辑（2026-09-21 用户裁决方案 C：
 // 「自动分配到分镜脚本」直接升级为智能匹配——本地硬约束预筛 + LLM 候选内语义精选 +
 // 循环轮转兜底；原 assignClipsCyclically 全量轮转降级为兜底算法）
 // 分层：本文件纯函数零 IPC/DOM（IRON-06/07）；LLM 调用编排在 CopyStep2Panel。
@@ -7,9 +7,9 @@
 // 时长窗+评分序）→ buildAssignMatchPrompt 单脚本一次 llm:chat → parseAssignMatchResponse
 // 校验解析 → mergeTabAssignment 命中写回+缺口循环兜底 → planShotGroup 装填写 tab.clipGroups。
 // ═══════════════════════════════════════════════════════════════
-import { SHOT_TYPE_LABELS } from './copyMontageStep1SplitLogic.ts'
+import { SHOT_TYPE_LABELS } from './planMontageStep1SplitLogic.ts'
 import type { StoryboardShot } from './opsStoryboardLogic.ts'
-import type { AssignPoolItem } from './copyMontageStep2ConcatLogic.ts'
+import type { AssignPoolItem } from './planMontageStep2ConcatLogic.ts'
 
 /** 单脚本进 prompt 的候选素材总量帽（控制 token；超出按逐镜轮转保序截断） */
 export const ASSIGN_MATCH_CANDIDATE_CAP = 40

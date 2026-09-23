@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// copyMontageStep3VoiceLogic.ts — 智能混剪 Step3 口播配音纯逻辑
-// 自 copyMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
+// planMontageStep3VoiceLogic.ts — 智能混剪 Step3 口播配音纯逻辑
+// 自 planMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
 // 拆分过程过 SKILL.md IRON-02 五项 checklist）。
 // 对照原客户端 studio/gui：
 //   · step3_voice_view.py 逐控件（花字样式/位置、行状态展示、时长模式）

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// useCopyMontage — 智能混剪·服务端四步链路编排（M8 条目⑥ runner 层）
+// usePlanMontage — 智能混剪·服务端四步链路编排（M8 条目⑥ runner 层）
 // 四步（对照原客户端 gui/video_montage_page.py steps_text L257，严格一致）：
 //   1. 素材解析   POST /montage/split（同步返回 shots[]，ServerSplitWorker L121-171）
 //   2. AI 编排    POST /montage/concat → 任务 → 轮询 GET /scheduled/tasks/{id} →
@@ -11,7 +11,7 @@
 // 注：原客户端「卡点成片」属独立「一键成片」页（compile_video_page.py tab3，
 //     BeatMontageController），不在智能混剪向导内，本端亦不纳入。
 // 闭环口径：提交 → 轮询 → 结果下载/打开目录 → 失败重试（复用 useVideoRepair 模式）。
-// 纯函数在 copyMontageLogic.ts（parser/builder 层），本文件仅编排（IRON-06/07）。
+// 纯函数在 planMontageLogic.ts（parser/builder 层），本文件仅编排（IRON-06/07）。
 // ═══════════════════════════════════════════════════════════════
 
 import { ref, computed, watch, onUnmounted } from 'vue'
@@ -62,7 +62,7 @@ import {
   pathBasename,
   inputNameFromFinalPath,
   // 字幕重切段后处理（2026-09-18 用户裁决：声音克隆完成后即处理）
-} from './copyMontageLogic'
+} from './planMontageLogic'
 // 原客户端 SentenceSplitterLLMWorker 机器（LLM 拆句 + 漏字校验回退本地）
 import {
   SENTENCE_SPLIT_SYSTEM_PROMPT,
@@ -73,24 +73,38 @@ import { readCacheDir } from './useSettingsConfig'
 import { joinDefaultPath } from './settingsIntegrationLogic'
 // 模块级工具/轮询常量与 Step1/Step2 编排已迁 montage/（铁律 10 拆分，纯搬迁，
 // 蓝图见 docs/智能混剪拆分迁移映射_2026-09-18.md）
-import { notify, errText, createMontageSharedRuntime } from './copyMontage/context'
+import { notify, errText, createMontageSharedRuntime } from './planMontage/context'
 import {
   SCRIPT_SYSTEM_PROMPT_DEFAULT,
   SCRIPT_SYSTEM_PROMPT_LEGACY_DEFAULT,
   SCRIPT_SCENE_OPTIONS,
   buildScriptSystemPrompt,
   buildScriptUserPrompt,
-} from './copyMontageStep2ConcatLogic'
+} from './planMontageStep2ConcatLogic'
 // 文案编写页选择产品（公共弹窗 WbPickProductDialog）：PickerItem → sharedProductInfo 同
 // 镜头重组页弹窗 onPickProduct 口径（stripProductCodeFromModel 型号剥编码 / 关联关键词带回）
 import type { PickerItem } from './useWorkbenchPickers'
 import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from './opsProductLibraryLogic'
-import { useCopyMontageStep1Split } from './copyMontage/useCopyMontageStep1Split'
-import { useCopyMontageStep2Concat } from './copyMontage/useCopyMontageStep2Concat'
-import { useCopyMontageStep3Voice } from './copyMontage/useCopyMontageStep3Voice'
-import { useCopyMontageStep4Final } from './copyMontage/useCopyMontageStep4Final'
+import { usePlanMontageStep1Split } from './planMontage/usePlanMontageStep1Split'
+import { usePlanMontageStep2Concat } from './planMontage/usePlanMontageStep2Concat'
+import { usePlanMontageStep3Voice } from './planMontage/usePlanMontageStep3Voice'
+import { usePlanMontageStep4Final } from './planMontage/usePlanMontageStep4Final'
 
-export function useCopyMontage() {
+export function usePlanMontage() {
+  // 2026-09-23 模块重命名（文案混剪→方案混剪，copy-montage → plan-montage）：
+  // localStorage 旧键一次性迁移——新键不存在时整串复制（旧键保留作回滚保险）。
+  // 必须先于各 step 组合函数的 revive/恢复逻辑执行，故置于本函数首行。
+  try {
+    const staleKeys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith('copy-montage.')) staleKeys.push(k)
+    }
+    for (const k of staleKeys) {
+      const nk = 'plan-montage.' + k.slice('copy-montage.'.length)
+      if (localStorage.getItem(nk) === null) localStorage.setItem(nk, localStorage.getItem(k) as string)
+    }
+  } catch (_) { /* 存储不可写静默 */ }
   // ── 共享运行时（已迁 montage/context.ts，铁律 10 纯搬迁；
   //    clearBusy 槽经 setClearBusy 存取，槽语义不变）──
   const {
@@ -111,21 +125,21 @@ export function useCopyMontage() {
   // finalProgress 同属跨步共享：nextVoiceChannel（Step3）写、Step4 混音读写
   const finalProgress = ref(-1)    // 混音进度 0-100（-1=隐藏；原版共享 progress_bar 口径）
 
-  // ══ Step1 素材解析（已迁 montage/useCopyMontageStep1Split.ts，铁律 10 纯搬迁；
+  // ══ Step1 素材解析（已迁 montage/usePlanMontageStep1Split.ts，铁律 10 纯搬迁；
   //    解构回原名 → 下文与 return 键集合零改动）═════════════════
-  const step1 = useCopyMontageStep1Split({ statusText, ensureServerUrl, toAbsolute })
+  const step1 = usePlanMontageStep1Split({ statusText, ensureServerUrl, toAbsolute })
   const {
     srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes,
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, splitFps,
     splitsJobId, splitsDownloading,
     previewUrl, previewTranscoding,
-    addVideos, selectFolder, onDrop, removeVideo, runSplit,
+    addVideos, selectFolder, onDrop, removeVideo, runSplit, requestStopSplit, splitStatusOf,
     updateSceneDesc, previewSourceVideo, previewScene, closePreview,
     clearSplitCache, openSplitsDir,
   } = step1
 
-  // ── 出入场超长片段自动裁剪（已迁 useCopyMontageStep1Split.ts，铁律 10 纯搬迁）──
+  // ── 出入场超长片段自动裁剪（已迁 usePlanMontageStep1Split.ts，铁律 10 纯搬迁）──
 
   /** 取消/复位统一清 busy（方案生成 / 确认合成 / 口播文案 / 混音四个异步步） */
   function clearAllBusy(): void {
@@ -135,9 +149,9 @@ export function useCopyMontage() {
     finalBusy.value = false
   }
 
-  // ══ Step2 镜头重组（已迁 montage/useCopyMontageStep2Concat.ts，铁律 10 纯搬迁；
+  // ══ Step2 镜头重组（已迁 montage/usePlanMontageStep2Concat.ts，铁律 10 纯搬迁；
   //    clearBusy 槽赋值改走 setClearBusy，语义不变；解构回原名→ return 键零改动）══
-  const step2 = useCopyMontageStep2Concat({
+  const step2 = usePlanMontageStep2Concat({
     statusText, ensureServerUrl, toAbsolute, startPolling, setClearBusy,
     clearAllBusy, scenes, splitFps, splitResolution, srcVideos, splitsJobId,
   })
@@ -162,9 +176,9 @@ export function useCopyMontage() {
   //    分割编排原样保留供「镜头重组」页。生成走 llm:chat（区别于产品弹窗的
   //    /copywriting/voiceover）：系统提示=页面可编辑系统提示（默认 Constraints 七条），
   //    模型随「文案生成方式」（空=当前大模型 Provider，即服务端默认）。
-  //    文案/关键词仍为页面级草稿（localStorage copy-montage.script.* 持久化），
+  //    文案/关键词仍为页面级草稿（localStorage plan-montage.script.* 持久化；2026-09-23 自 copy-montage.* 迁移），
   //    不回写预合成方案旁车 .txt——接管关系待裁决）══
-  const scriptLsKey = (k: string): string => `copy-montage.script.${k}`
+  const scriptLsKey = (k: string): string => `plan-montage.script.${k}`
   const scriptProvider = ref('')        // ''=当前大模型 Provider（服务端默认模型）
   const scriptModelOptions = ref<Array<{ label: string; value: string }>>([])
   const paragraphCount = ref(3)
@@ -318,7 +332,7 @@ export function useCopyMontage() {
       statusText.value = '完成： 视频文案已生成，可在下方编辑'
       notify('生成完成', '视频文案已生成，可在下方编辑。')
     } catch (e) {
-      clientError('copy-montage', '生成视频文案失败', errText(e))
+      clientError('plan-montage', '生成视频文案失败', errText(e))
       notify('生成失败', errText(e))
     } finally {
       manualCopyBusy.value = false
@@ -327,10 +341,10 @@ export function useCopyMontage() {
 
 
 
-  // ══ Step3 口播配音（已迁 montage/useCopyMontageStep3Voice.ts，铁律 10 纯搬迁；
+  // ══ Step3 口播配音（已迁 montage/usePlanMontageStep3Voice.ts，铁律 10 纯搬迁；
   //    S3↔S4 双向点经 ctx：collectCandidates/ensureProcessedSrt 惰性 lambda、
   //    finalBusy/step4Candidates 上提主文件，见映射文档 §四）══
-  const step3 = useCopyMontageStep3Voice({
+  const step3 = usePlanMontageStep3Voice({
     statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
     step4Candidates, sharedProductInfo,
@@ -374,13 +388,17 @@ export function useCopyMontage() {
     openCloneParams, closeCloneParams, saveCloneParams,
   } = step3
 
-  // ══ Step4 特效包装（已迁 montage/useCopyMontageStep4Final.ts，铁律 10 纯搬迁；
+  // ══ Step4 特效包装（已迁 montage/usePlanMontageStep4Final.ts，铁律 10 纯搬迁；
   //    ctx 消费 step2/step3 产物与上提 ref，见映射文档 §四）══
-  const step4 = useCopyMontageStep4Final({
+  const step4 = usePlanMontageStep4Final({
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
     sharedProductInfo, splitResolution, voiceRows, voiceDirInput,
-    getTabVoiceWavs: () => storyboards.value.filter((s) => s.voiceWav).map((s) => s.voiceWav),
-    getTabNarratives: () => storyboards.value.map((s) => s.narrative.trim()),
+    // 2026-09-22 用户裁决：候选↔分镜按方案 tabId 精确解析（原 getTabVoiceWavs 过滤
+    // 未生成 tab 与 getTabNarratives 不过滤口径不一致，候选按下标错位拿错声音/旁白）
+    getTabById: (id: string) =>
+      storyboards.value
+        .filter((t) => t.id === id)
+        .map((t) => ({ voiceWav: t.voiceWav, narrative: t.narrative, transition: t.transition, shots: t.shots.map((s) => ({ sfxWavLocal: s.sfxWavLocal, sfxDurSec: s.sfxDurSec })) }))[0] ?? null,
     runDubBatch, nextVoiceChannel, loadTextTemplates, refreshTextFxTracks,
     currentMatchTemplateIds, resolveKeywordHits,
     scanVoiceDir, activeTextPool,
@@ -407,6 +425,26 @@ export function useCopyMontage() {
     clearVoiceProgressListener()
   })
 
+  // ── 每脚本视频设置（2026-09-23 用户裁决：输出画幅/转场/帧率按 tab 绑定）──
+  // 读写都落在激活 tab 上（切 tab 即切设置）；无 tab 回退全局 ref（legacy 口径）。
+  // 时长限制=派生只读值：跟随本 tab 克隆声音时长，未生成回退全局（30 缺省）。
+  const activeTabLayout = computed<string>({
+    get: () => activeStoryboard.value?.layout ?? concatLayout.value,
+    set: (v) => { const t = activeStoryboard.value; if (t) t.layout = v; else concatLayout.value = v },
+  })
+  const activeTabTransition = computed<string>({
+    get: () => activeStoryboard.value?.transition ?? concatTransition.value,
+    set: (v) => { const t = activeStoryboard.value; if (t) t.transition = v; else concatTransition.value = v },
+  })
+  const activeTabFps = computed<number | 'source'>({
+    get: () => activeStoryboard.value?.fps ?? concatFps.value,
+    set: (v) => { const t = activeStoryboard.value; if (t) t.fps = v; else concatFps.value = v },
+  })
+  const activeTabDurationLimit = computed(() => {
+    const t = activeStoryboard.value
+    return t && t.voiceDurSec > 0 ? Math.max(1, Math.round(t.voiceDurSec)) : Number(durationLimit.value)
+  })
+
   return {
     // 共享
     serverUrl, polling, activeTaskId, statusText, cancelPolling, stopPolling,
@@ -414,11 +452,11 @@ export function useCopyMontage() {
     srcVideos, srcDurations, threshold, minSceneLen, imageDuration,
     scenes, scoreFilter, filteredScenes, checkedCount,
     splitBusy, splitError, splitMsg, splitProgress, splitResolution, concatProgress,
-    addVideos, selectFolder, onDrop, removeVideo, runSplit,
+    addVideos, selectFolder, onDrop, removeVideo, runSplit, requestStopSplit, splitStatusOf,
     // 文案编写（2026-09-21 用户裁决：高级脚本设置 + AI 生成视频文案与关键词）
     sharedProductInfo, applyScriptProduct, clearScriptProduct,
     manualCopy, manualCopyBusy, activeNarrative, suggestDuration, syncStoryboardsToServer,
-    storyboards, activeStoryboardId, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, COPY_STORYBOARD_MAX,
+    storyboards, activeStoryboardId, activeStoryboard, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, COPY_STORYBOARD_MAX,
     scriptProvider, scriptProviderOptions, paragraphCount, customRequirement, systemPrompt,
     scriptScene, SCRIPT_SCENE_OPTIONS,
     resetSystemPrompt, promptPreviewDlg, openPromptPreview, closePromptPreview,
@@ -429,6 +467,8 @@ export function useCopyMontage() {
     assembleLogic, concatLayout, durationLimit, DURATION_LIMITS, batchCount, recBatchCount,
     concatFps, FPS_OPTIONS, splitFps,
     concatTransition, edgeSpeedup, EDGE_SPEEDUP_OPTIONS, TRANSITIONS,
+    // 每脚本视频设置（2026-09-23 用户裁决：按激活 tab 读写的绑定视图）
+    activeTabLayout, activeTabTransition, activeTabFps, activeTabDurationLimit,
     concatBusy, confirmBusy, copyBusy, concatError,
     assemblePlans, currentPlanIdx, currentPlan, hasUnconfirmed, confirmedPaths,
     runConcat, planRowText, selectPlan, startSeqPreview,

@@ -2,11 +2,11 @@
 // montage/context.ts — 智能混剪四步编排共享设施（铁律 10 拆分，2026-09-18）
 // 拆分蓝图见 docs/智能混剪拆分迁移映射_2026-09-18.md。
 // 持有：模块级纯工具 + 共享运行时（服务端地址/轮询状态机/clearBusy 槽）。
-// 纯搬迁约定：符号名与行为与原 useCopyMontage.ts 逐字一致（IRON-02）；
+// 纯搬迁约定：符号名与行为与原 usePlanMontage.ts 逐字一致（IRON-02）；
 // 唯一机械适配：clearBusy 闭包槽改经 setClearBusy 存取（槽语义不变）。
 // ═══════════════════════════════════════════════════════════════
 import { ref } from 'vue'
-import { extractTaskObj, mapTaskStatus, pollPhaseText } from '../copyMontageCommonLogic'
+import { extractTaskObj, mapTaskStatus, pollPhaseText } from '../planMontageCommonLogic'
 
 export const POLL_INTERVAL_MS = 3000   // 对照原版轮询周期（_query_single_rh_task L656 同口径）
 export const POLL_TIMEOUT_MS = 600_000 // 10 分钟上限
@@ -42,7 +42,7 @@ export function joinPath(...parts: string[]): string {
 export type PollChannel = 'unified' | 'scheduled'
 
 // ── 共享运行时（服务端地址 + 轮询状态机 + clearBusy 槽）────────
-// 自 useCopyMontage.ts 纯搬迁；四步 composable 经 ctx 注入消费（映射文档 §四）。
+// 自 usePlanMontage.ts 纯搬迁；四步 composable 经 ctx 注入消费（映射文档 §四）。
 
 export interface MontageSharedRuntime {
   serverUrl: import('vue').Ref<string>
@@ -167,6 +167,12 @@ export function createMontageSharedRuntime(): MontageSharedRuntime {
   function setClearBusy(fn: (() => void) | null): void {
     clearBusy = fn
   }
+
+  // 2026-09-23 用户报障（选择池/分镜卡缩略图黑屏）根因：toAbsolute 依赖 serverUrl，
+  // 而它只在分割/下载/合成等动作里被惰性初始化——重启后直接进素材库/预览时 serverUrl
+  // 仍为空串，toAbsolute 产出相对路径，<video>/<img> 落在 dev origin 上 404 → 黑屏。
+  // 运行时创建即预热 ping（fire-and-forget），reactive 消费方随后自动获得绝对 URL。
+  void ensureServerUrl()
 
   return {
     serverUrl, ensureServerUrl, toAbsolute,

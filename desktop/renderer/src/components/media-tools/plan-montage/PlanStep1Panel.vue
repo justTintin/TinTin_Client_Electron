@@ -3,8 +3,8 @@
 // CopyStep1Panel.vue — 文案混剪 Step1 文案编写面板
 // 2026-09-21 用户裁决：按参考界面重排——高级脚本设置（生成方式/段落数量/自定义要求/
 // 系统提示）+ AI 生成视频文案与关键词；原「选择素材 + 智能镜头分割」自本页删除
-// （分割/素材编排仍保留在 useCopyMontageStep1Split，供「镜头重组」页链路使用）。
-// 状态经 inject 解构回原名（零改动）；本页提示词组装与生成在 useCopyMontage。
+// （分割/素材编排仍保留在 usePlanMontageStep1Split，供「镜头重组」页链路使用）。
+// 状态经 inject 解构回原名（零改动）；本页提示词组装与生成在 usePlanMontage。
 // ═════════════════════════════════════════════════════════════
 import { ref, computed, onMounted, inject } from 'vue'
 import TButton from '@/components/common/TButton.vue'
@@ -12,9 +12,9 @@ import CopyStoryboard from './CopyStoryboard.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import WbPickProductDialog from '@/components/workbench/WbPickProductDialog.vue'
-import { copyMontageShellKey } from './copyMontageUiContext'
+import { planMontageShellKey } from './planMontageUiContext'
 
-const shell = inject(copyMontageShellKey)!
+const shell = inject(planMontageShellKey)!
 const { step, go, steps } = shell
 const {
   // 文案编写（2026-09-21 用户裁决：高级脚本设置 + AI 生成视频文案与关键词）

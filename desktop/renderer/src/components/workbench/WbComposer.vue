@@ -78,6 +78,11 @@ const emit = defineEmits<{
   (e: 'select-agent', agentId: string): void
 }>()
 
+/** 2026-09-23 用户裁决：工作台会话输入框整体禁用——输入/发送/上传/产品·素材·脚本
+ *  上下文入口/智能体快捷条/任务选择器全部置灰，占位与提示行写「暂时不提供，等待更新」；
+ *  恢复时改回 false 即可，业务链路（useWorkbenchChat/容器编排）零改动。 */
+const INPUT_DISABLED = true
+
 const innerText = computed({
   get: () => props.modelValue,
   set: (v) => emit('update:modelValue', v)
@@ -151,21 +156,25 @@ const dragActive = ref(false)
 let dragDepth = 0
 
 function onDragEnter() {
+  if (INPUT_DISABLED) return
   dragDepth += 1
   dragActive.value = true
 }
 
 function onDragLeave() {
+  if (INPUT_DISABLED) return
   dragDepth = Math.max(0, dragDepth - 1)
   if (!dragDepth) dragActive.value = false
 }
 
 function onDragOver(e: DragEvent) {
+  if (INPUT_DISABLED) return // 输入禁用：不 preventDefault，落放走浏览器默认（不进附件链）
   e.preventDefault() // 允许 drop 触发
   dragActive.value = true
 }
 
 function onDrop(e: DragEvent) {
+  if (INPUT_DISABLED) { dragDepth = 0; dragActive.value = false; return }
   dragDepth = 0
   dragActive.value = false
   const files = e.dataTransfer?.files
@@ -385,7 +394,8 @@ defineExpose({ focus, focusEnd })
         v-model="innerText"
         class="chat-input"
         rows="3"
-        placeholder="输入消息，/ 唤起智能体…"
+        :disabled="INPUT_DISABLED"
+        :placeholder="INPUT_DISABLED ? '会话输入暂时不提供，等待更新' : '输入消息，/ 唤起智能体…'"
         @keydown="onKeydown"
         @paste="onPaste"
         @input="updateSlash"
@@ -394,21 +404,21 @@ defineExpose({ focus, focusEnd })
       ></textarea>
       <!-- 容器内底部工具行：上传 → 产品/素材/脚本 → 智能体快捷条（更多折叠） → 右侧发送 -->
       <div class="input-tools">
-      <button class="tool-ic" title="上传本地文件加入会话素材池" @click="fileInputRef?.click()">
+      <button class="tool-ic" title="暂时不提供，等待更新" :disabled="INPUT_DISABLED" @click="fileInputRef?.click()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
           <polyline points="17 8 12 3 7 8" />
           <line x1="12" y1="3" x2="12" y2="15" />
         </svg>
       </button>
-      <button class="tool-chip" title="选择产品作为对话上下文（单选覆盖）" @click="emit('pick-product')">
+      <button class="tool-chip" title="暂时不提供，等待更新" :disabled="INPUT_DISABLED" @click="emit('pick-product')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <path d="M21 8l-9-5-9 5 9 5 9-5z" />
           <path d="M3 8v8l9 5 9-5V8" />
         </svg>
         产品
       </button>
-      <button class="tool-chip" title="选择素材加入会话素材池" @click="emit('pick-material')">
+      <button class="tool-chip" title="暂时不提供，等待更新" :disabled="INPUT_DISABLED" @click="emit('pick-material')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <rect x="3" y="3" width="18" height="18" rx="2" />
           <circle cx="8.5" cy="8.5" r="1.5" />
@@ -416,7 +426,7 @@ defineExpose({ focus, focusEnd })
         </svg>
         素材
       </button>
-      <button class="tool-chip" title="选择分镜脚本作为对话上下文（可多选）" @click="emit('pick-script')">
+      <button class="tool-chip" title="暂时不提供，等待更新" :disabled="INPUT_DISABLED" @click="emit('pick-script')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
           <path d="M14 2v6h6" />
@@ -427,7 +437,12 @@ defineExpose({ focus, focusEnd })
 
       <!-- 发送键保留在最右侧（工具行行尾） -->
       <div class="input-actions">
-        <button class="action-send" title="发送" :disabled="sending" @click="emit('send')">
+        <button
+          class="action-send"
+          :title="INPUT_DISABLED ? '暂时不提供，等待更新' : '发送'"
+          :disabled="sending || INPUT_DISABLED"
+          @click="emit('send')"
+        >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="m22 2-7 20-4-9-9-4 20-7z" />
             <path d="M22 2 11 13" />
@@ -446,7 +461,8 @@ defineExpose({ focus, focusEnd })
           :key="e.key"
           class="quick-pill"
           type="button"
-          :title="e.desc"
+          :title="INPUT_DISABLED ? '暂时不提供，等待更新' : e.desc"
+          :disabled="INPUT_DISABLED"
           @click="emit('select-entry', e.key)"
         >
           {{ e.name }}
@@ -455,7 +471,8 @@ defineExpose({ focus, focusEnd })
           v-if="quickFit.more && !moreOpen"
           class="quick-pill quick-more"
           type="button"
-          title="展开全部智能体"
+          title="暂时不提供，等待更新"
+          :disabled="INPUT_DISABLED"
           @click="moreOpen = true"
         >
           更多
@@ -476,15 +493,16 @@ defineExpose({ focus, focusEnd })
         </div>
       </div>
 
-      <span class="foot-hint">Enter 发送，Shift + Enter 换行，输入 / 唤起智能体</span>
+      <!-- 2026-09-23 用户裁决：输入禁用期提示行换为「暂时不提供，等待更新」 -->
+      <span class="foot-hint">{{ INPUT_DISABLED ? '会话输入暂时不提供，等待更新' : 'Enter 发送，Shift + Enter 换行，输入 / 唤起智能体' }}</span>
       <!-- 任务选择器（2026-08-31 用户裁决：替换「转编排任务」勾选）：
            对话 / 智能体（拆解执行）/ 计划任务（先出计划待确认） -->
       <label
         v-if="mode === 'agent'"
         class="plan-check"
-        title="智能体：对话转编排任务拆解执行；计划任务：先出计划草稿，点「确认执行」后才提交"
+        title="暂时不提供，等待更新"
       >
-        <select class="plan-select" :value="planMode ?? 'agent'" @change="onPlanToggle">
+        <select class="plan-select" :value="planMode ?? 'agent'" :disabled="INPUT_DISABLED" @change="onPlanToggle">
           <option value="off">对话</option>
           <option value="agent">智能体</option>
           <option value="plan-confirm">计划任务</option>
@@ -574,6 +592,19 @@ defineExpose({ focus, focusEnd })
   opacity: 0.5;
   cursor: not-allowed;
   filter: none;
+}
+
+/* 2026-09-23 用户裁决：会话输入框整体禁用态（输入区置灰 + 不可点光标） */
+.chat-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.tool-ic:disabled,
+.tool-chip:disabled,
+.quick-pill:disabled,
+.plan-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* 隐藏的原生文件选择（上传按钮经 ref 触发） */

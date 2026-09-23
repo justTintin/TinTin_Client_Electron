@@ -416,6 +416,10 @@ declare interface TintinBridgeServer {
     mode: 'single' | 'multi'
     videoPath?: string
     videoPaths?: string[]
+    /** 2026-09-22 虚拟时间轴：逐段源裁剪时长（微秒，与 videoPaths 对齐；缺省=ffprobe 全长） */
+    videoDurations?: Array<number>
+    /** 2026-09-22 虚拟时间轴：视频段静音标记（true=全片静音走旁白轨；数组=逐段） */
+    muteVideoAudio?: boolean | Array<boolean>
     transitions?: string | string[] | null
     bgmPath?: string
     bgmVolume?: number
@@ -434,6 +438,9 @@ declare interface TintinBridgeServer {
     textTemplateClips?: Array<Array<{ phrase: string; startUs: number; durUs: number; resourceId: string }>>
     /** 2026-09-15：逐视频口播 wav（音频三轨体系：口播轨独立，对应素材段静音） */
     voiceClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
+    /** 2026-09-22 用户裁决「音效包装对齐导出」：镜级 AI 音效显式指派（音效包装产物落
+     *  本地后的 {本地路径, 镜起点us, 镜长us}，逐视频；有显式指派时音效池事件轨让位） */
+    sfxClips?: Array<Array<{ path: string; startUs: number; durUs: number }>>
     /** 2026-09-17：音效兜底来源（所选花字模板的本地 sound 声明；音效轨跟随文字模板命中位置） */
     fancyTemplate?: Record<string, unknown> | null
     /** 2026-09-18 用户裁决：音效池=服务端音频库剪映音效库 <2s 条目，主进程下载
@@ -458,7 +465,7 @@ declare interface TintinBridgeServer {
   /** 剪映模板卡片数据源（§0.0 单一数据源：groups=服务端 /templates/catalog 结构+各 lane 数据；localAvailable=本机可同步清单） */
   jyTemplatesList(): Promise<{ ok: boolean; serverUrl?: string; groups: Array<{ group: string; lanes: Array<{ lane: string; total: number; endpoint: string; tags: Array<{ name: string; count: number }>; items: Array<Record<string, unknown>> }> }>; localAvailable?: Array<Record<string, unknown>> } | { error: string }>
   /** 批量同步选中模板到服务端（§0.0 同步目标即服务端） */
-  jyTemplatesSync(payload: { ids: string[] }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; name?: string; error?: string }> } | { error: string }>
+  jyTemplatesSync(payload: { ids: string[]; /** 音频（音效/音乐）逐条带行内所选入库分类 */ audios?: Array<{ id: string; category: string }> }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; name?: string; error?: string }> } | { error: string }>
   /** 从服务端模板库删除 */
   jyTemplatesDeleteServer(payload: { ids: string[] }): Promise<{ ok: boolean; results: Array<{ id: string; ok: boolean; error?: string }> } | { error: string }>
   /** AI 生成 BGM 服务端 URL 下载落盘（本端扩展：本地混音需本地文件） */
@@ -639,6 +646,8 @@ declare interface TintinBridgeLiveclip {
   writeTempText(payload: { basename: string; content: string }): Promise<{ path?: string; error?: string }>
   /** 文件存在性探测（2026-09-18：字幕后处理资产复用判定；exists=存在且非空） */
   fileExists(payload: { path: string }): Promise<{ ok?: boolean; exists?: boolean; error?: string }>
+  /** 文件内容 MD5（2026-09-23 选择池判重；流式读取，hash=32 位 hex） */
+  hashFile(payload: { path: string }): Promise<{ ok?: boolean; path?: string; hash?: string; error?: string }>
 }
 declare interface TintinBridgeShell {
   openExternal(url: string): void

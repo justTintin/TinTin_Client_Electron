@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// copyMontageStep2ConcatLogic.ts — 智能混剪 Step2 镜头重组纯逻辑
-// 自 copyMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
+// planMontageStep2ConcatLogic.ts — 智能混剪 Step2 镜头重组纯逻辑
+// 自 planMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
 // 拆分过程过 SKILL.md IRON-02 五项 checklist）。
 // 对照原客户端 studio/gui：
 //   · gui/video_montage_page.py _submit_concat_to_server L2663-2725
@@ -11,8 +11,8 @@
 // 本文件不做任何 IPC / DOM 操作（IRON-06/07 分层）
 // ═══════════════════════════════════════════════════════════════
 
-import type { SplitSceneRow } from './copyMontageStep1SplitLogic.ts'
-import { applyShotLayoutOrder } from './copyMontageStep1SplitLogic.ts'
+import type { SplitSceneRow } from './planMontageStep1SplitLogic.ts'
+import { applyShotLayoutOrder } from './planMontageStep1SplitLogic.ts'
 import type { StoryboardShot } from './opsStoryboardLogic.ts'
 
 // ── Step2 镜头重组（/montage/concat）──────────────────────────
@@ -158,12 +158,45 @@ export interface PrecomposePlan {
   /** 镜分组（2026-09-22 用户裁决：一镜多片·按时长装填）——每镜一组片段与各自
    *  使用时长（useDur < 片段全长 → 本地裁剪到该值）；预合成提交按组渲染/拼接 */
   groups?: PlanShotGroup[]
+  /** 来源分镜 tab id（2026-09-22 用户裁决：候选↔分镜按 tabId 精确解析——原
+   *  getTabVoiceWavs 过滤未生成 tab 而 getTabNarratives 不过滤，口径不一致时
+   *  候选按下标错位拿错声音/旁白） */
+  tabId?: string
+  /** 虚拟时间轴方案（2026-09-22 用户裁决：预合成 mp4 移除——方案=clipGroups+useDurs
+   *  本身，导出直接消费；不再产出中间 mp4） */
+  virtual?: boolean
 }
 
 /** 镜分组：一镜的有序片段 + 每片使用时长（秒，与 scenes 平行对齐） */
 export interface PlanShotGroup {
   scenes: SplitSceneRow[]
   useDurs: number[]
+}
+
+/** 转场随机池（2026-09-22 用户裁决：转场动画=随机——每个视频内的镜间转场
+ *  从这三种里随机：模糊 / 叠化 / 向左擦除；镜内片间硬切不在此列） */
+export const RANDOM_TRANSITION_POOL = ['fade', 'dissolve', 'slideleft'] as const
+
+/** 逐边界转场数组（虚拟时间轴导出用，段序与源裁剪段对齐）：
+ *  planFirst 且非首段 = 镜间 → mode（'random' 时从池随机）；镜内片间 = 'none' 硬切。
+ *  modeOf（2026-09-23 用户裁决：视频设置按 tab 绑定）——传入时镜间转场逐段取该段
+ *  所属分镜自己的 mode（缺省回退统一 mode），多分镜脚本各用各的转场。 */
+export function buildBoundaryTransitions(
+  segs: Array<{ planFirst: boolean; planKey?: string }>,
+  mode: string,
+  rnd: () => number = Math.random,
+  modeOf?: (seg: { planFirst: boolean; planKey?: string }) => string,
+): string[] {
+  const pool = RANDOM_TRANSITION_POOL
+  const out: string[] = []
+  for (let j = 1; j < segs.length; j++) {
+    if (!segs[j].planFirst) { out.push('none'); continue }
+    const m = modeOf ? (modeOf(segs[j]) || mode) : mode
+    out.push(m === 'random'
+      ? pool[Math.floor(rnd() * pool.length) % pool.length]
+      : m)
+  }
+  return out
 }
 
 /** 组内每片使用时长分配（装填口径复算）：顺序消耗镜标时长，末端片段裁到剩余量；

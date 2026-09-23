@@ -22,6 +22,9 @@ const path = require('node:path')
 const os = require('node:os')
 const crypto = require('node:crypto')
 const JY = require('./jianying-exporter')
+// 剪映音频素材自动同步（内置定时任务，2026-09-22 用户裁决：自动把本机剪映音频
+// 素材同步到服务端音频库，不再依赖手动「从剪映同步」）
+const { initJianyingAudioSync, startJianyingAudioSyncTimer } = require('./jianying-audio-sync')
 // 特效烧制（2026-09-09 裁决：字幕/花字特效自配音链迁 Step4 统一烧制，
 // 与配音链同一构建器 voice-tts-logic.buildEffectBurnArgs 保证样式/时机一致）
 const L = require('./voice-tts-logic')
@@ -667,6 +670,12 @@ function subtitleStyleCard(t) {
 
 function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, getServerUrl }) {
 
+  // ── 剪映音频自动同步（2026-09-22 用户裁决：内置定时任务——自动把本机剪映
+  //  音频素材（音效+音乐）同步到服务端音频库；默认 30 分钟一次、启动后 90s 首跑，
+  //  可 jyaudio:setEnabled 关闭 / jyaudio:syncNow 手动触发）──
+  const jyAudioSyncCtrl = initJianyingAudioSync({ ipcMain, httpRequest, getServerUrl, probeMedia })
+  startJianyingAudioSyncTimer(jyAudioSyncCtrl)
+
   // ── final:mix — 最终合成（特效烧制 + BGM 混音）──
   // tasks: [{videoPath, outPath}]；bgmPath/bgmVolume(0-200)；进度经 progressChannel 推送。
   // 2026-09-09 裁决扩展：payload 可带 effects（字幕/花字配置）+ subtitleTexts
@@ -1142,9 +1151,12 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
           }
         } catch (_) { /* 花字兜底失败 → 无音效（不造假） */ }
       }
-      const res = p.mode === 'multi'
+          const res = p.mode === 'multi'
         ? JY.exportMultiToDraft({
             videoPaths: p.videoPaths,
+            // 2026-09-22 用户裁决（虚拟时间轴）：逐段源裁剪时长（微秒）覆盖 + 视频段静音标记
+            videoDurations: Array.isArray(p.videoDurations) ? p.videoDurations : null,
+            muteVideoAudio: p.muteVideoAudio ?? false,
             transitions: p.transitions,
             bgmPath: p.bgmPath,
             // 2026-09-18 用户裁决：逐视频 BGM（与 videoPaths 平行；空串=该窗回退全局 bgmPath）
@@ -1168,6 +1180,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
             fancyEvents: p.fancyEvents,
             // 2026-09-15：逐视频口播 wav → 独立口播轨（对应素材段自动静音）
             voiceClips: p.voiceClips,
+            // 2026-09-22 用户裁决「音效包装对齐导出」：镜级 AI 音效显式指派
+            // （[{path,startUs,durUs}] 逐视频；有显式指派时音效池事件轨让位）
+            sfxClips: Array.isArray(p.sfxClips) ? p.sfxClips : null,
             // 2026-09-17 用户裁决·定义修正：音效轨跟随「文字模板命中位置」（与花字轨无关）。
             // 2026-09-18 用户裁决：音效池=服务端音频库剪映音效库 <2s 条目（见上方
             // resolveJianyingSfxPool）；空池回落花字模板本地 sound 声明
@@ -1342,12 +1357,54 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         }
         groups.push({ group: g.group, lanes })
       }
+      // 转场 lane 无服务端端点（catalog endpoint=''）：回填客户端内置 8 项标准转场
+      // （TRANSITION_MAP，resource_id 为剪映官方资源；2026-09-22 用户裁决）
+      for (const g of groups) {
+        for (const lane of g.lanes || []) {
+          if (lane.lane === '转场' && !(lane.items || []).length) {
+            lane.items = JT.getTransitions().map((t) => ({
+              id: t.id, name: t.name, duration_us: t.durationUs, is_overlap: t.isOverlap, builtin: true,
+            }))
+            lane.total = lane.items.length
+          }
+        }
+      }
       // 4) 本机可同步清单（同步弹窗用）
       const jyRoot = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data')
-      const local = JT.scanTextPresets(path.join(jyRoot, 'Presets', 'Text_V2'))
-      const textLane = (catalog.find((g) => g.group === '文本')?.lanes || []).find((l) => l.lane === '文字模板')
-      void textLane
-      const localItems = [...local.textItems, ...local.tplItems].map((it) => ({ ...it }))
+      // 2026-09-22 用户裁决修复：改用 scanAllAsync 全量扫描——原 scanTextPresets
+      // 不含音频，致「音频（音效 / 音乐）」类目恒空。音频分类默认按时长（<2s 音效 /
+      // ≥2s 音乐，同导出音效池口径），行内可改
+      const local = await JT.scanAllAsync({ jianyingRoot: jyRoot, httpRequest })
+      // 音频（2026-09-22 用户裁决：同步类目增加音频——音效+音乐，Cache/music 缓存扫描；
+      //  已同步判定=服务端音频库 filename 命中 <id>.<ext>，best-effort 离线跳过）
+      const audioItems = (local['音频'] || []).map((a) => ({
+        group: '音频',
+        effectId: 'jyaudio_' + a.id,
+        name: a.name + (a.duration > 0 ? `（${Math.round(a.duration)}s）` : ''),
+        file: a.file,
+        category: a.duration > 0 && a.duration < 2 ? '音效' : '音乐',
+        syncedToServer: false,
+      }))
+      try {
+        const libRes = await httpRequest('GET', '/audio/library?page=1&page_size=1000', { timeout: 10000 })
+        const libItems = (libRes && libRes.data && Array.isArray(libRes.data.items)) ? libRes.data.items : []
+        const serverNames = new Set(libItems.map((x) => String(x.filename || '').toLowerCase()))
+        for (const a of audioItems) {
+          a.syncedToServer = serverNames.has(path.basename(String(a.file)).toLowerCase())
+        }
+      } catch (_) { /* 离线：全部按未同步显示 */ }
+      // 转场（2026-09-22 用户裁决：同步类目增加转场——客户端内置 8 项标准转场
+      // （TRANSITION_MAP，剪映官方 resource_id），随导出自动生效；服务端转场库
+      // 端点就绪前标记内置、无需上传）
+      const transItems = JT.getTransitions().map((t) => ({
+        group: '转场',
+        effectId: 'jytrans_' + t.id,
+        name: t.name,
+        builtin: true,
+        syncedToServer: true,
+      }))
+      // scanAllAsync 类目键=花字库/文字模板（原 textItems/tplItems）
+      const localItems = [...(local['花字库'] || []), ...(local['文字模板'] || [])].map((it) => ({ ...it })).concat(audioItems).concat(transItems)
       return { ok: true, serverUrl: getServerUrl(), groups, localAvailable: localItems }
     } catch (err) {
       return { error: err.message }
@@ -1357,7 +1414,9 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
   // ── jytpl:sync — 批量同步选中模板到服务端（打包+上传；§0.0 同步目标即服务端）──
   ipcMain.handle('jytpl:sync', async (_e, payload) => {
     const ids = Array.isArray((payload || {}).ids) ? payload.ids : []
-    if (!ids.length) return { error: '未选择模板' }
+    // 音频（2026-09-22 用户裁决：同步类目增加音频——音效+音乐；<2s 归音效、≥2s 归音乐）
+    const audios = Array.isArray((payload || {}).audios) ? payload.audios : []
+    if (!ids.length && !audios.length) return { error: '未选择素材' }
     const presetDir = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Presets', 'Text_V2')
     const outDir = path.join(process.env.TEMP || process.env.LOCALAPPDATA, 'tintin-jytpl-sync')
     fs.mkdirSync(outDir, { recursive: true })
@@ -1424,6 +1483,42 @@ function createMontageFinalIpc(ipcMain, { httpRequest, isExpectedOfflineError, g
         results.push({ id, ok: true, name: built.meta.name })
       } catch (e) {
         results.push({ id, ok: false, error: String(e.message).slice(0, 80) })
+      }
+    }
+    // 音频分支（2026-09-22 用户裁决：同步类目增加音频——音效+音乐）：Cache/music
+    //  缓存直传 /audio/library/upload；分类=行内所选（默认按时长 <2s 音效/≥2s 音乐）
+    for (const au of audios) {
+      try {
+        const aid = String((au || {}).id || '')
+        const safe = aid.replace(/[^\w-]/g, '')
+        if (!safe || safe !== aid) throw new Error('非法音频 id')
+        const category = au.category === '音效' ? '音效' : '音乐'
+        const musicCache = path.join(process.env.LOCALAPPDATA || '', 'JianyingPro', 'User Data', 'Cache', 'music')
+        let fp = ''
+        for (const ext of ['.mp3', '.wav', '.m4a']) {
+          const cand = path.join(musicCache, safe + ext)
+          if (fs.existsSync(cand)) { fp = cand; break }
+        }
+        if (!fp) throw new Error('本地缓存不存在（剪映按需下载：先在剪映里使用/下载该音频）')
+        const durSec = Number(probeMedia(fp).durationSec) || 0
+        const boundary = '----TinTinAudioSync' + Date.now()
+        const abuf = fs.readFileSync(fp)
+        const body = Buffer.concat([
+          Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safe}${path.extname(fp)}"\r\nContent-Type: audio/mpeg\r\n\r\n`),
+          abuf,
+          Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="category"\r\n\r\n${encodeURIComponent(category)}`),
+          Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="tags"\r\n\r\n${encodeURIComponent('剪映')}`),
+          Buffer.from(`\r\n--${boundary}--\r\n`),
+        ])
+        const up = await httpRequest('POST', '/audio/library/upload', {
+          body,
+          headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
+          timeout: 120000,
+        }).catch((e) => ({ error: e.message }))
+        if (up && up.error) throw new Error(up.error)
+        results.push({ id: aid, ok: true, name: '剪映音频_' + safe.slice(0, 8) + (durSec ? `（${Math.round(durSec)}s·${category}）` : '') })
+      } catch (e) {
+        results.push({ id: aid, ok: false, error: String(e.message).slice(0, 80) })
       }
     }
     return { ok: true, results }

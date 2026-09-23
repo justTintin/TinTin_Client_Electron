@@ -122,27 +122,35 @@ function scanEffectCache(cacheDir) {
 }
 
 /** 扫描音频缓存（music → 音频类目） */
+/** 扫描音频缓存（music → 音频类目；2026-09-22 用户裁决：音频类目含音效+音乐——
+ *  剪映把音效/音乐都缓存到 Cache/music，时长经 ffprobe 探测，同步时 <2s 归音效） */
 function scanAudioCache(musicDir) {
   const items = []
   if (!fs.existsSync(musicDir)) return items
   for (const f of safeReaddir(musicDir)) {
-    if (!f.toLowerCase().endsWith('.mp3')) continue
+    const low = f.toLowerCase()
+    if (!low.endsWith('.mp3') && !low.endsWith('.wav') && !low.endsWith('.m4a')) continue
     const fp = path.join(musicDir, f)
     const st = safeStat(fp)
     if (!st || st.size < 1024) continue
+    const base = f.replace(/\.(mp3|wav|m4a)$/i, '')
     items.push({
-      id: f.replace('.mp3', ''),
-      name: '剪映音频_' + f.replace('.mp3', '').slice(0, 8),
+      id: base,
+      name: '剪映音频_' + base.slice(0, 8),
       file: fp,
       bytes: st.size,
+      duration: audioDuration(fp),
     })
   }
   return items
 }
 
-/** 转场列表（从 TRANSITION_MAP 导出） */
+/** 转场列表（从 TRANSITION_MAP 导出）。transitionMap 缺省时自动取内置映射——
+ *  montage-final-ipc jytpl:list 转场 lane 回填曾裸调 getTransitions() 致
+ *  Object.entries(undefined) 抛「Cannot convert undefined or null to object」
+ *  （2026-09-23：服务端 /templates/catalog 新增转场 lane 后该路径首次被触发）。 */
 function getTransitions(transitionMap) {
-  return Object.entries(transitionMap).map(([key, val]) => ({
+  return Object.entries(transitionMap || getTransitionMap()).map(([key, val]) => ({
     id: key,
     name: val.name,
     durationUs: val.duration,

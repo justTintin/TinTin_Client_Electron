@@ -1,9 +1,9 @@
 // 文案编写页提示词构建器单测（2026-09-21 用户裁决：文案混剪 Step1 按参考界面重排——
-// 高级脚本设置 + AI 生成视频文案与关键词；纯函数在 copyMontageStep2ConcatLogic.ts）
+// 高级脚本设置 + AI 生成视频文案与关键词；纯函数在 planMontageStep2ConcatLogic.ts）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const M = await import('../renderer/src/composables/copyMontageStep2ConcatLogic.ts')
+const M = await import('../renderer/src/composables/planMontageStep2ConcatLogic.ts')
 
 test('buildScriptSystemPrompt：基底+场景+产品信息+自定义要求合并', () => {
   const sys = M.buildScriptSystemPrompt('BASE', {

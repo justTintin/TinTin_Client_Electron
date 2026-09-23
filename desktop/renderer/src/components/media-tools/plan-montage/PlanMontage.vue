@@ -2,9 +2,9 @@
 // ═══════════════════════════════════════════════════════════════
 // VideoMontage.vue — 智能混剪·服务端四步向导 Shell（M8 条目⑥ UI 层）
 // 四步：1.素材解析 → 2.AI 编排 → 3.口播配音 → 4.特效包装（对照 steps_text L257）。
-// 铁律 10 拆分（2026-09-19）：编排状态在 useCopyMontage（纯逻辑在
-//   copyMontageLogic 桶 + montage/* 子模块），四步 UI 在 MontageStep1-4Panel.vue
-//   （经 copyMontageShellKey inject，模板/样式逐字搬迁）；本组件仅保留向导步序、
+// 铁律 10 拆分（2026-09-19）：编排状态在 usePlanMontage（纯逻辑在
+//   planMontageLogic 桶 + montage/* 子模块），四步 UI 在 MontageStep1-4Panel.vue
+//   （经 planMontageShellKey inject，模板/样式逐字搬迁）；本组件仅保留向导步序、
 //   分栏拖拽、右栏画幅与页尾状态条，只绘制 + 事件转发（IRON-06/07 分层）。
 // ═══════════════════════════════════════════════════════════════
 import { ref, reactive, computed, provide, onMounted, onActivated, onUnmounted, watch, nextTick } from 'vue'
@@ -12,7 +12,7 @@ import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VideoPreview from '@/components/common/VideoPreview.vue'
 // import VideoPlayer 已移除：Step4 成片预览由统一右栏 StepPreviewPane 接管（2026-09-10 界面统一）
-import { useCopyMontage } from '@/composables/useCopyMontage'
+import { usePlanMontage } from '@/composables/usePlanMontage'
 import { useAudioGen } from '@/composables/useAudioGen'
 import { useFilePicker } from '@/composables/useFilePicker'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
@@ -22,9 +22,9 @@ import CopyStep4Panel from './CopyStep4Panel.vue'
 import CopyStep2Panel from './CopyStep2Panel.vue'
 import CopyStep3Panel from './CopyStep3Panel.vue'
 import CopyStep1Panel from './CopyStep1Panel.vue'
-import { copyMontageShellKey } from './copyMontageUiContext'
+import { planMontageShellKey } from './planMontageUiContext'
 import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
-import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/copyMontageLogic'
+import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/planMontageLogic'
 import type { PickerItem } from '@/composables/useWorkbenchPickers'
 
 // 2026-09-17 用户裁决：步骤序定案 1.文案编写 → 2.口播配音 → 3.镜头重组 → 4.特效包装
@@ -41,7 +41,7 @@ function go(i: number) {
   if (i === 3) void enterStep4()
 }
 
-const s = useCopyMontage()
+const s = usePlanMontage()
 const {
   // 共享
   polling, activeTaskId, statusText, cancelPolling,
@@ -119,7 +119,7 @@ function onSplitDown(e: MouseEvent): void {
 }
 
 // ── 面板注入（须晚于 vdLeftStyle/previewAspect 声明；setup 期一次性绑定）──
-provide(copyMontageShellKey, { s, step, go, steps: STEPS, vdLeftStyle, onSplitDown, previewAspect })
+provide(planMontageShellKey, { s, step, go, steps: STEPS, vdLeftStyle, onSplitDown, previewAspect })
 
 /** 花字样式下拉（原版 fancy_style_combo 7 项） */
 const fancyStyleOptions = FANCY_STYLE_OPTIONS

@@ -1,8 +1,8 @@
 // ══════════════════════════════════════════════════════════
-// useCopyMontageTextFx.ts — 智能混剪 Step3·文字模板（textfx）子编排（铁律 10 E3b，2026-09-19）
-// 自 useCopyMontageStep3Voice.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// usePlanMontageTextFx.ts — 智能混剪 Step3·文字模板（textfx）子编排（铁律 10 E3b，2026-09-19）
+// 自 usePlanMontageStep3Voice.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step3 E3b）。
-// 消费方：本文件内部（useCopyMontageStep3Voice）与主文件 Step4 段（startFinalMix/
+// 消费方：本文件内部（usePlanMontageStep3Voice）与主文件 Step4 段（startFinalMix/
 //   剪映导出经 step3 解构透传）。
 // ─────────────────────────────────────────────────═
 import { ref, computed, watch } from 'vue'
@@ -11,12 +11,12 @@ import {
   TEXT_KEYWORD_DENSITY_MAX, pickRandomItems,
   buildSubtitleRows, buildTextFxTracks, pathBasename,
   type TextFxTrack, type PrecomposePlan, type VoiceRow,
-} from '../copyMontageLogic'
+} from '../planMontageLogic'
 import {
   LLM_KEYWORDS_SYSTEM_PROMPT, matchKeywordHits, parseLlmKeywords,
-} from '../copyMontageStep4FxBgmLogic'
+} from '../planMontageStep4FxBgmLogic'
 
-export interface CopyMontageTextFxContext {
+export interface PlanMontageTextFxContext {
   voiceRows: Ref<VoiceRow[]>
   assemblePlans: Ref<PrecomposePlan[]>
   finalBusy: Ref<boolean>
@@ -26,7 +26,7 @@ export interface CopyMontageTextFxContext {
   sharedProductInfo: Ref<{ brand: string; product: string; model: string; extra: string; keywords: string[] }>
 }
 
-export function useCopyMontageTextFx(ctx: CopyMontageTextFxContext) {
+export function usePlanMontageTextFx(ctx: PlanMontageTextFxContext) {
   const { voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo } = ctx
 
   // ── 文字模板（2026-09-09 用户裁决：服务端 textfx 体系，与花字独立概念）──
@@ -122,7 +122,7 @@ export function useCopyMontageTextFx(ctx: CopyMontageTextFxContext) {
   }
   // extractTextFxWords（本地词典卖点提取）已删除（2026-09-19 架构：/text_templates/match
   // 下线，词源=产品资料关联关键词，产品未关联词 → LLM 兜底提词；本地词典退出导出链。
-  // extractFancyWordsInLine/FromText 纯函数保留于 copyMontageStep4FxBgmLogic.ts，仅供测试
+  // extractFancyWordsInLine/FromText 纯函数保留于 planMontageStep4FxBgmLogic.ts，仅供测试
   // 与未来潜在消费）
   /** 效果预览：按视频分行时间轴（2026-09-10 用户裁决终态：轨数=上一步确认成片条数
    *  （assemblePlans confirmed 产物，不走 collectCandidates 配音优先口径——

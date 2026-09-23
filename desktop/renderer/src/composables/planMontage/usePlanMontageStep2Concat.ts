@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// useCopyMontageStep2Concat.ts — 智能混剪 Step2 镜头重组编排（铁律 10 拆分，2026-09-18）
-// 自 useCopyMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// usePlanMontageStep2Concat.ts — 智能混剪 Step2 镜头重组编排（铁律 10 拆分，2026-09-18）
+// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step2）。
 // 跨步依赖经 ctx 注入：共享运行时（statusText/ensureServerUrl/toAbsolute/
 // startPolling/setClearBusy）+ clearAllBusy（组装层，联动 Step4 finalBusy）+
@@ -31,9 +31,9 @@ import {
   fmtDur,
   type PrecomposePlan,
   type SplitSceneRow,
-} from '../copyMontageLogic'
+} from '../planMontageLogic'
 import { notify, unwrapIpc, errText, joinPath, POLL_INTERVAL_MS, type MontageSharedRuntime } from './context'
-import { pathBasename } from '../copyMontageCommonLogic.ts'
+import { pathBasename } from '../planMontageCommonLogic.ts'
 
 /** TSelect 选项最小结构（避免组件层依赖方向反转） */
 export interface SelectOptionLite {
@@ -56,7 +56,7 @@ export interface MontageStep2Context {
   splitsJobId: Ref<string>
 }
 
-export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
+export function usePlanMontageStep2Concat(ctx: MontageStep2Context) {
   const { statusText, ensureServerUrl, toAbsolute, startPolling, setClearBusy, clearAllBusy,
     scenes, splitFps, splitResolution, srcVideos, splitsJobId } = ctx
 
@@ -72,7 +72,8 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
   // 生成视频数量（2026-09-21 用户裁决：默认 1；推荐值回写 watch 同步移除——用户设定不被勾选变化覆盖）
   const batchCount = ref(1)
   const randomness = ref('medium')         // 混编随机度（原版默认「中 (保留同场景)」，控件隐藏）
-  const concatTransition = ref('fade')     // 转场动画（原版默认「模糊」）
+  // 2026-09-22 用户裁决：转场默认「随机」——每个视频内的镜间转场从三种转场里随机
+  const concatTransition = ref('random')   // 转场动画（random=三转场随机池）
   const concatBusy = ref(false)            // 预合成方案生成中
   const confirmBusy = ref(false)           // 确认合成队列执行中
   const copyBusy = ref(false)              // 口播文案生成中
@@ -91,6 +92,8 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
   ]
 
   const TRANSITIONS: Array<SelectOptionLite> = [
+    // 2026-09-22 用户裁决：默认「随机」——镜间转场从三种转场随机（池见 RANDOM_TRANSITION_POOL）
+    { label: '随机', value: 'random' },
     { label: '模糊', value: 'fade' }, { label: '淡入淡出', value: 'dissolve' },
     { label: '左移', value: 'slideleft' }, { label: '右移', value: 'slideright' },
     { label: '上移', value: 'slideup' }, { label: '下移', value: 'slidedown' },
@@ -202,6 +205,8 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
     let failed = ''
     await Promise.resolve().then(() => {
       for (const tab of tabs) {
+        // 空 tab（无镜头）不出方案——否则产出零片段方案卡死确认队列（2026-09-22 修复）
+        if (!tab.shots.length || !tab.clipGroups.length) continue
         const sceneGroups: SplitSceneRow[][] = []
         let stale = false
         for (const g of tab.clipGroups) {
@@ -222,18 +227,49 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
           tab.shots.map((s) => Number(s.duration) || 0),
         )
         plan.copy = tab.narrative
+        plan.tabId = tab.id
+        // 2026-09-22 用户裁决（架构）：方案=虚拟时间轴，出方案即就绪——不再渲染
+        // 预合成 mp4（转场/时长进剪映后可编辑，导出器按 useDurs 逐段源裁剪）
+        plan.virtual = true
+        plan.confirmed = true
+        plan.outputName = `剪辑方案_${tab.name}`
         plans.push(plan)
       }
     })
     if (failed || !plans.length) {
-      concatError.value = failed || '未能生成预合成方案（绑定的素材缺失或已变化）。'
-      notify('不能合成', concatError.value)
+      concatError.value = failed || '未能生成剪辑方案（绑定的素材缺失或已变化）。'
+      notify('不能生成剪辑方案', concatError.value)
       concatBusy.value = false
       return false
     }
     assemblePlans.value = plans
     currentPlanIdx.value = 0
-    statusText.value = `完成： 预合成方案已生成：${plans.length} 条（每个分镜脚本一条），请确认合成`
+    // 素材落盘保障（2026-09-22 虚拟时间轴）：导出草稿引用本机文件——未落盘的素材库
+    // 片段按 clipUrl 下载（并发 4，单失败不阻断；导出时缺失再显式报错）
+    const missing: SplitSceneRow[] = []
+    for (const p of plans) {
+      for (const g of p.groups || []) {
+        for (const s of g.scenes) if (!s.clipLocalPath && s.clipUrl) missing.push(s)
+      }
+    }
+    if (missing.length) {
+      statusText.value = `正在下载 ${missing.length} 条素材库片段到本地...`
+      const queue = [...missing]
+      const worker = async (): Promise<void> => {
+        while (queue.length) {
+          const s = queue.shift()
+          if (!s) break
+          try {
+            const dir = joinPath(await readCacheDir(), 'montage_cache', splitsJobId.value || 'session', 'lib')
+            const local = joinPath(dir, `${s.idx}_${pathBasename(s.name)}`)
+            await window.tintin.server.downloadResult(toAbsolute(s.clipUrl), local)
+            s.clipLocalPath = local
+          } catch (_) { /* 失败：导出时该片段显式报错 */ }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(4, missing.length) }, worker))
+    }
+    statusText.value = `完成： 剪辑方案已生成（${plans.length} 条虚拟时间轴，秒级可导出）`
     concatBusy.value = false
     return true
   }
@@ -543,7 +579,13 @@ export function useCopyMontageStep2Concat(ctx: MontageStep2Context) {
         const s = g.scenes[i]
         const full = Math.max(0, Number(s.duration) || 0)
         const useDur = Number(g.useDurs[i]) || 0
-        const local = s.clipLocalPath
+        let local = s.clipLocalPath
+        if (!local && s.clipUrl) {
+          // 素材库条目未落盘（2026-09-22 用户裁决 A1）：按需下载后参与裁剪/拼接
+          const dlPath = joinPath(outDir, `lib_g${gi}_s${i + 1}.mp4`)
+          await window.tintin.server.downloadResult(toAbsolute(s.clipUrl), dlPath)
+          local = dlPath
+        }
         if (!local) throw new Error(`片段 ${s.name} 未落盘本地，请等待分割下载完成后重试`)
         if (full <= 0 || useDur >= full - 0.05) { segs.push(local); continue }
         const segPath = joinPath(outDir, `g${gi}_s${i + 1}.mp4`)

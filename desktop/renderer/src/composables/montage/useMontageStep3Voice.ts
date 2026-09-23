@@ -80,9 +80,9 @@ export function useMontageStep3Voice(ctx: MontageStep3Context) {
   // 字幕入场动画 key（2026-09-10 用户裁决：字幕可选动画，预览与烧制同用该选择；
   // key 与主进程 VALID_ANIMS 同表：fade/rise/slide/pop/none）
   const subtitleAnimKey = ref('fade')
-  // 2026-09-18 用户裁决：字幕字号（剪映草稿 texts content styles[].size），默认 10 号
-  // （原导出器缺省 8 实测偏小）；第四步「字号」下拉覆写，预览同比例缩放
-  const subtitleFontSize = ref(10)
+  // 2026-09-22 用户裁决：字幕字号默认 12 号（2026-09-18 曾定 10，实测仍偏小）；
+  // 第四步「字号」下拉覆写，预览同比例缩放
+  const subtitleFontSize = ref(12)
   // 花字位置/字幕背景/模板（L224-352；模板首项「自定义 (下方样式)」value=''）
   const fancyPosition = ref('upper_middle')
   // 字幕背景不透明度默认 20%（2026-09-15 用户裁决：背景里的透明默认设计为 20%，原 0.5）

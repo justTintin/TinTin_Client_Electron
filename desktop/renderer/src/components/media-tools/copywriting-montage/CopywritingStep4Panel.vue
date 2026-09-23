@@ -12,14 +12,14 @@ import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import CopyBgmPickDialog from './CopyBgmPickDialog.vue'
 import CopyStoryboard from './CopyStoryboard.vue'
-import { planMontageShellKey } from './planMontageUiContext'
-import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/planMontageLogic'
-import { errText, notify, joinPath } from '@/composables/planMontage/context'
+import { copywritingMontageShellKey } from './copywritingMontageUiContext'
+import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/copywritingMontageLogic'
+import { errText, notify, joinPath } from '@/composables/copywritingMontage/context'
 import { clientError } from '@/utils/clientLog'
 import { readCacheDir } from '@/composables/useSettingsConfig'
 import type { StoryboardShot } from '@/composables/opsStoryboardLogic'
 
-const shell = inject(planMontageShellKey)!
+const shell = inject(copywritingMontageShellKey)!
 const { step, go, steps } = shell
 const {
   splitResolution,
@@ -287,7 +287,7 @@ async function regenSfx(s: StoryboardShot): Promise<void> {
     await genOneSfx(s)
     sfxStage.value = '完成：音效已重新生成，分镜卡可试听'
   } catch (e) {
-    clientError('plan-montage', '重新生成音效失败', errText(e))
+    clientError('copywriting-montage', '重新生成音效失败', errText(e))
     sfxStage.value = `失败：${errText(e)}`
     notify('重新生成音效失败', errText(e))
   } finally {
@@ -315,7 +315,7 @@ async function runSfxPack(): Promise<void> {
     }
     sfxStage.value = `完成：已生成 ${done} 个音效，分镜卡「音效」行可试听`
   } catch (e) {
-    clientError('plan-montage', '音效包装失败', errText(e))
+    clientError('copywriting-montage', '音效包装失败', errText(e))
     sfxStage.value = `失败：${errText(e)}（已生成的保留，重按从缺失处继续）`
     notify('音效包装失败', errText(e))
   } finally {

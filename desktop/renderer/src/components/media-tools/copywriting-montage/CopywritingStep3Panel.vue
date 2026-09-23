@@ -10,10 +10,10 @@ import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
-import { planMontageShellKey } from './planMontageUiContext'
+import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 import CopyStoryboard from './CopyStoryboard.vue'
 
-const shell = inject(planMontageShellKey)!
+const shell = inject(copywritingMontageShellKey)!
 // 2026-09-21 用户裁决：本步只有声音 → 右侧配音预览栏删除（vd-unified 两栏壳一并拆除）
 const { step, go, steps } = shell
 const {

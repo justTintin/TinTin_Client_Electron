@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// usePlanMontageStep1Split.ts — 智能混剪 Step1 素材解析编排（铁律 10 拆分，2026-09-18）
-// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// useCopywritingMontageStep1Split.ts — 智能混剪 Step1 素材解析编排（铁律 10 拆分，2026-09-18）
+// 自 useCopywritingMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step1）。
 // 跨步依赖仅三项，经 ctx 注入：statusText / ensureServerUrl / toAbsolute。
 // ═══════════════════════════════════════════════════════════════
@@ -18,7 +18,7 @@ import {
   VIDEO_EXTS,
   MAX_SOURCE_VIDEOS,
   type SplitSceneRow,
-} from '../planMontageLogic'
+} from '../copywritingMontageLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
 
 /** Step1 编排上下文（共享轮询文案与服务端地址设施，见映射文档 §四） */
@@ -28,7 +28,7 @@ export interface MontageStep1Context {
   toAbsolute: (url: string) => string
 }
 
-export function usePlanMontageStep1Split(ctx: MontageStep1Context) {
+export function useCopywritingMontageStep1Split(ctx: MontageStep1Context) {
   const { statusText, ensureServerUrl, toAbsolute } = ctx
 
   // ══ Step1 素材解析（/montage/split，同步）═══════════════════

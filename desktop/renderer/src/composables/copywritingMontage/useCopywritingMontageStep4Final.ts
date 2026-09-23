@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// usePlanMontageStep4Final.ts — 智能混剪 Step4 特效包装/BGM/剪映导出编排（铁律 10 拆分，2026-09-19）
-// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// useCopywritingMontageStep4Final.ts — 智能混剪 Step4 特效包装/BGM/剪映导出编排（铁律 10 拆分，2026-09-19）
+// 自 useCopywritingMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step4）。
 // 跨步依赖经 ctx 注入：共享运行时 + Step2（assemblePlans/concatTransition/
 //   sharedProductInfo）+ Step1 splitResolution + Step3 全套消费（voiceRows/
@@ -19,14 +19,14 @@ import {
   pathBasename,
   resolveOutMontageDir, textFxStyleOf,
   type BgmGenPayload, type PrecomposePlan, type VoiceRow,
-} from '../planMontageLogic'
+} from '../copywritingMontageLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
-import { buildBoundaryTransitions } from '../planMontageStep2ConcatLogic.ts'
-import { usePlanMontageStep3Voice } from './usePlanMontageStep3Voice'
-import { usePlanMontageBgmGen } from './usePlanMontageBgmGen'
-import { usePlanMontageBgmPlayer } from './usePlanMontageBgmPlayer'
+import { buildBoundaryTransitions } from '../copywritingMontageStep2ConcatLogic.ts'
+import { useCopywritingMontageStep3Voice } from './useCopywritingMontageStep3Voice'
+import { useCopywritingMontageBgmGen } from './useCopywritingMontageBgmGen'
+import { useCopywritingMontageBgmPlayer } from './useCopywritingMontageBgmPlayer'
 
-type CopyStep3Api = ReturnType<typeof usePlanMontageStep3Voice>
+type CopyStep3Api = ReturnType<typeof useCopywritingMontageStep3Voice>
 
 export interface MontageStep4Context {
   statusText: Ref<string>
@@ -77,7 +77,7 @@ export interface MontageStep4Context {
   getTabById: (id: string) => { voiceWav: string; narrative: string; transition?: string; shots: Array<{ sfxWavLocal?: string; sfxDurSec?: number }> } | null
 }
 
-export function usePlanMontageStep4Final(ctx: MontageStep4Context) {
+export function useCopywritingMontageStep4Final(ctx: MontageStep4Context) {
   const {
     statusText, ensureServerUrl, toAbsolute, assemblePlans, concatTransition,
     sharedProductInfo, splitResolution, voiceRows, voiceDirInput, getTabById,
@@ -94,18 +94,18 @@ export function usePlanMontageStep4Final(ctx: MontageStep4Context) {
   // ══ Step4 特效包装（对照 step4_final_view.py 逐控件 + _start_final_mix/FinalMixWorker 一比一）══
   // BGM 选择持久化（2026-09-15 用户报障：会话级 ref 重启清空 → 导出时间轴缺 BGM 轨。
   // localStorage 跨会话记忆 bgmPath/bgmVolume，文件被删时导出侧 fs.existsSync 兜底跳过）
-  const bgmPath = ref(localStorage.getItem('plan-montage.bgmPath') || '')
+  const bgmPath = ref(localStorage.getItem('copywriting-montage.bgmPath') || '')
   const bgmName = ref('')
   // BGM 增益默认 35%（2026-09-15 用户裁决，原 100；localStorage 记忆用户调整，0=静音为合法值不回退）
   // 2026-09-20 修复（用户报障：全新安装增益为 0）——Number(null)=0 且 isFinite(0)=true，
   // 未存过键时被当成「用户设置过 0%」；改显式判 null/空串为未设置 → 回退默认 35
-  const storedBgmVolumeRaw = localStorage.getItem('plan-montage.bgmVolume')
+  const storedBgmVolumeRaw = localStorage.getItem('copywriting-montage.bgmVolume')
   const storedBgmVolume = storedBgmVolumeRaw === null || storedBgmVolumeRaw === '' ? NaN : Number(storedBgmVolumeRaw)
   const bgmVolume = ref(Number.isFinite(storedBgmVolume) ? storedBgmVolume : 35)
   watch([bgmPath, bgmVolume], () => {
     try {
-      localStorage.setItem('plan-montage.bgmPath', bgmPath.value)
-      localStorage.setItem('plan-montage.bgmVolume', String(bgmVolume.value))
+      localStorage.setItem('copywriting-montage.bgmPath', bgmPath.value)
+      localStorage.setItem('copywriting-montage.bgmVolume', String(bgmVolume.value))
     } catch (_) { /* 隐私模式等写失败忽略 */ }
   })
   // 2026-09-18 用户裁决：逐视频 BGM 指派（Step4 视频列表每行可单独选 BGM）。
@@ -126,8 +126,8 @@ export function usePlanMontageStep4Final(ctx: MontageStep4Context) {
   const finalPreviewUrl = ref('')  // 右侧内嵌预览（打包后 file:// 源直读本地文件）
   const finalPreviewTitle = ref(' 视频预览')
 
-  // ── AI 生成 BGM（已迁 montage/usePlanMontageBgmGen.ts，铁律 10 纯搬迁）──
-  const bgmGen = usePlanMontageBgmGen({ ensureServerUrl, toAbsolute, voiceDirInput, bgmPath, bgmName })
+  // ── AI 生成 BGM（已迁 montage/useCopywritingMontageBgmGen.ts，铁律 10 纯搬迁）──
+  const bgmGen = useCopywritingMontageBgmGen({ ensureServerUrl, toAbsolute, voiceDirInput, bgmPath, bgmName })
   const {
     bgmSource, bgmGenPrompt, bgmGenStyle, bgmGenDuration, bgmGenBusy, bgmGenError, bgmGenUrl, bgmGenMeta, bgmPreviewUrl, generateBgm, downloadLibraryBgm, applyLibraryBgm,
   } = bgmGen
@@ -190,8 +190,8 @@ export function usePlanMontageStep4Final(ctx: MontageStep4Context) {
     return rowBgmOverride(videoPath) || bgmPath.value || ''
   }
 
-  // ── BGM 试听播放器（已迁 montage/usePlanMontageBgmPlayer.ts，铁律 10 纯搬迁）──
-  const bgmPlayer = usePlanMontageBgmPlayer({ bgmPath, bgmVolume })
+  // ── BGM 试听播放器（已迁 montage/useCopywritingMontageBgmPlayer.ts，铁律 10 纯搬迁）──
+  const bgmPlayer = useCopywritingMontageBgmPlayer({ bgmPath, bgmVolume })
   const { bgmPlaying, bgmPosMs, bgmDurMs, toggleBgmPlay, stopBgmPlay, onBgmVolumeInput, seekBgm } = bgmPlayer
 
 
@@ -440,7 +440,7 @@ export function usePlanMontageStep4Final(ctx: MontageStep4Context) {
         lastComposeTasks.value = res.taskIds
           .map((tid, idx) => ({ taskId: String(tid), outputPath: String(res.results[idx] || ''), inputPath: String(candidates[idx] || '') }))
           .filter((p2) => p2.taskId && p2.outputPath)
-        try { localStorage.setItem('plan-montage.lastComposeTasks', JSON.stringify(lastComposeTasks.value)) } catch (_) { /* 忽略 */ }
+        try { localStorage.setItem('copywriting-montage.lastComposeTasks', JSON.stringify(lastComposeTasks.value)) } catch (_) { /* 忽略 */ }
       }
       onMixFinished(res.results)
     } catch (e) {
@@ -643,7 +643,7 @@ async function exportAllToJianyingDraft(): Promise<void> {
    *  inputPath 为 2026-09-17 修复新增：合成输入源（旧持久化数据无此字段→undefined）。 */
   const lastComposeTasks = ref<Array<{ taskId: string; outputPath: string; inputPath?: string }>>((
     () => {
-      try { return JSON.parse(localStorage.getItem('plan-montage.lastComposeTasks') || '[]') } catch (_) { return [] }
+      try { return JSON.parse(localStorage.getItem('copywriting-montage.lastComposeTasks') || '[]') } catch (_) { return [] }
     }
   )())
 

@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════
-// usePlanMontageBgmGen.ts — 智能混剪 Step4·AI 生成 BGM 子编排（铁律 10 E4b 收口，2026-09-19）
-// 自 usePlanMontageStep4Final.ts 纯搬迁（IRON-02 五项 checklist）。
+// useCopywritingMontageBgmGen.ts — 智能混剪 Step4·AI 生成 BGM 子编排（铁律 10 E4b 收口，2026-09-19）
+// 自 useCopywritingMontageStep4Final.ts 纯搬迁（IRON-02 五项 checklist）。
 // 原口径：POST /audio/gen/bgm（原客户端 _GenBgmWorker L272-286 同口）；
 //   生成成功后主进程下载落盘并回填全局 bgmPath（本地混音/剪映草稿需本地文件）。
 // ─────────────────────────────────────────────────═
@@ -11,7 +11,7 @@ import { readCacheDir } from '../useSettingsConfig'
 import {
   buildBgmGenPayload, parseBgmGenResponse, pathBasename, resolveOutMontageDir,
   type BgmGenPayload,
-} from '../planMontageLogic'
+} from '../copywritingMontageLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
 
 export interface MontageBgmGenContext {
@@ -22,7 +22,7 @@ export interface MontageBgmGenContext {
   bgmName: Ref<string>
 }
 
-export function usePlanMontageBgmGen(ctx: MontageBgmGenContext) {
+export function useCopywritingMontageBgmGen(ctx: MontageBgmGenContext) {
   const { ensureServerUrl, toAbsolute, voiceDirInput, bgmPath, bgmName } = ctx
 
   // ── AI 生成 BGM（本端保留功能：POST /audio/gen/bgm，原客户端 _GenBgmWorker 同口径：

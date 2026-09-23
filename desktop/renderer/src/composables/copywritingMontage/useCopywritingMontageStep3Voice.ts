@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════
-// usePlanMontageStep3Voice.ts — 智能混剪 Step3 口播配音/字幕花字/文字模板编排（铁律 10 拆分，2026-09-18）
-// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// useCopywritingMontageStep3Voice.ts — 智能混剪 Step3 口播配音/字幕花字/文字模板编排（铁律 10 拆分，2026-09-18）
+// 自 useCopywritingMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step3）。
 // 跨步依赖经 ctx 注入：共享运行时（statusText/serverUrl/ensureServerUrl）+
 //   Step2 assemblePlans + Step1 previewUrl + 上提 ref（finalBusy/step4Candidates）+
@@ -18,7 +18,7 @@ import {
   buildRewriteSystemPrompt, cleanRewriteContent, resolveOutMontageDir, pathBasename,
   shotsNarrationText, buildCopyStoryboardPrompt,
   type TextFxTrack, type SubtitleStylePreset, type PrecomposePlan, type VoiceRow,
-} from '../planMontageLogic'
+} from '../copywritingMontageLogic'
 import { notify, errText, joinPath } from './context'
 import { readCacheDir } from '../useSettingsConfig'
 import {
@@ -33,9 +33,9 @@ import {
   type ScriptSummary,
   type StoryboardShot,
 } from '../opsStoryboardLogic'
-import { usePlanMontageTextFx } from './usePlanMontageTextFx'
+import { useCopywritingMontageTextFx } from './useCopywritingMontageTextFx'
 
-export interface PlanMontageStep3Context {
+export interface CopywritingMontageStep3Context {
   statusText: Ref<string>
   serverUrl: Ref<string>
   ensureServerUrl: () => Promise<string>
@@ -57,7 +57,7 @@ export interface PlanMontageStep3Context {
   setScriptCopy: (text: string) => void
 }
 
-export function usePlanMontageStep3Voice(ctx: PlanMontageStep3Context) {
+export function useCopywritingMontageStep3Voice(ctx: CopywritingMontageStep3Context) {
   const { statusText, serverUrl, ensureServerUrl, assemblePlans, previewUrl,
     finalBusy, finalProgress, finalDone, finalVideoList, finalVideoPath,
     step4Candidates, collectCandidates, ensureProcessedSrt, sharedProductInfo, getScriptCopy, setScriptCopy } = ctx
@@ -109,8 +109,8 @@ export function usePlanMontageStep3Voice(ctx: PlanMontageStep3Context) {
   const fancyTemplates = ref<FancyTemplateItem[]>([])
   const fancyPreviews = ref<Record<string, string>>({})
   const fancyTemplatesLoading = ref(false)
-  // ── 文字模板 textfx（已迁 montage/usePlanMontageTextFx.ts，铁律 10 E3b 纯搬迁）──
-  const tfx = usePlanMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo })
+  // ── 文字模板 textfx（已迁 montage/useCopywritingMontageTextFx.ts，铁律 10 E3b 纯搬迁）──
+  const tfx = useCopywritingMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo })
   const {
     textFxEnabled, lutRestore, lutId, lutList, lutListLoading, loadLuts,
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
@@ -154,7 +154,7 @@ export function usePlanMontageStep3Voice(ctx: PlanMontageStep3Context) {
 
   let offVoiceProgress: (() => void) | null = null
 
-/** 清理口播进度监听（原 usePlanMontage 闭包槽复位口径：有则调用并置空） */
+/** 清理口播进度监听（原 useCopywritingMontage 闭包槽复位口径：有则调用并置空） */
 function clearVoiceProgressListener(): void {
   offVoiceProgress?.()
   offVoiceProgress = null
@@ -654,8 +654,8 @@ function clearVoiceProgressListener(): void {
   //  本缓存只恢复本地态：绑定组/声音/音效路径，避免重跑智能匹配与音效包装。
   //  声音/音效为 cacheDir 下的稳定本地路径，重启后仍有效；缓存被清则路径失效，
   //  重按批量克隆/音效包装即可重建）──
-  const STORYBOARDS_LS_KEY = 'plan-montage.storyboards'
-  const STORYBOARDS_LS_ACTIVE = 'plan-montage.storyboards.active'
+  const STORYBOARDS_LS_KEY = 'copywriting-montage.storyboards'
+  const STORYBOARDS_LS_ACTIVE = 'copywriting-montage.storyboards.active'
   function reviveTab(raw: unknown): StoryboardTab | null {
     if (!raw || typeof raw !== 'object') return null
     const t = raw as Record<string, unknown>
@@ -864,7 +864,7 @@ function clearVoiceProgressListener(): void {
         }
       } while (scriptSyncQueued)
     } catch (e) {
-      clientError('plan-montage', '分镜同步失败', errText(e))
+      clientError('copywriting-montage', '分镜同步失败', errText(e))
       notify('分镜同步失败', errText(e))
     } finally {
       scriptSyncing.value = false
@@ -1099,7 +1099,7 @@ function clearVoiceProgressListener(): void {
         notify('批量克隆失败', fails.join('\n') || '未知原因')
       }
     } catch (e) {
-      clientError('plan-montage', '批量克隆分镜声音失败', errText(e))
+      clientError('copywriting-montage', '批量克隆分镜声音失败', errText(e))
       notify('批量克隆失败', errText(e))
     } finally {
       voiceBusy.value = false
@@ -1477,4 +1477,4 @@ export type FancyTemplateItem = Record<string, unknown> & {
   category?: string
 }
 
-// TSelect 选项最小结构已随 Step2（TRANSITIONS）迁 montage/usePlanMontageStep2Concat.ts
+// TSelect 选项最小结构已随 Step2（TRANSITIONS）迁 montage/useCopywritingMontageStep2Concat.ts

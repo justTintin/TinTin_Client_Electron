@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// planMontageCommonLogic.ts — 智能混剪四步共用纯逻辑（轮询状态机 + 路径工具）
-// 自 planMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
+// copywritingMontageCommonLogic.ts — 智能混剪四步共用纯逻辑（轮询状态机 + 路径工具）
+// 自 copywritingMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
 // 拆分过程过 SKILL.md IRON-02 五项 checklist）。
 // 轮询状态机与 reversePromptVideoLogic 同口径（原版 _poll_task_result 与 unified
 // 轮询一致：{data:{}} 解包 / status|state / 终态与失败态），为 node 类型剥离的

@@ -13,16 +13,16 @@ import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import VdStepBar from '../VdStepBar.vue'
 import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
 import { parseScriptDetail } from '@/composables/opsStoryboardLogic'
-import { copyPreviewText, SHOT_TYPE_COLORS, SHOT_TYPE_LABELS, buildAssignPool } from '@/composables/planMontageLogic'
-import { buildAssignCandidateSet, buildAssignMatchPrompt, parseAssignMatchResponse, mergeTabAssignment, planShotGroup } from '@/composables/planMontageAssignLogic'
+import { copyPreviewText, SHOT_TYPE_COLORS, SHOT_TYPE_LABELS, buildAssignPool } from '@/composables/copywritingMontageLogic'
+import { buildAssignCandidateSet, buildAssignMatchPrompt, parseAssignMatchResponse, mergeTabAssignment, planShotGroup } from '@/composables/copywritingMontageAssignLogic'
 import { fetchMaterialGrid, fetchMaterialDistinct, type PickerItem } from '@/composables/useWorkbenchPickers'
 import { buildMediaServeUrl, buildMediaThumbUrl } from '@/composables/workbenchChatContext'
-import { errText, notify } from '@/composables/planMontage/context'
+import { errText, notify } from '@/composables/copywritingMontage/context'
 import { clientError } from '@/utils/clientLog'
 import CopyStoryboard from './CopyStoryboard.vue'
-import { planMontageShellKey } from './planMontageUiContext'
+import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 
-const shell = inject(planMontageShellKey)!
+const shell = inject(copywritingMontageShellKey)!
 const { step, go, steps } = shell
 const {
   // 参数与方案（2026-09-23 用户裁决：输出画幅/时长限制/转场动画/输出帧率改用按
@@ -338,7 +338,7 @@ const assignMsg = ref('')
 const splitTableVisible: boolean = false
 
 /** 智能匹配到分镜脚本（2026-09-21 用户裁决方案 C：「自动分配到分镜脚本」按钮直接升级——
- *  逐脚本一次 llm:chat：本地硬约束预筛候选（景别桶>时长窗>评分，planMontageAssignLogic）
+ *  逐脚本一次 llm:chat：本地硬约束预筛候选（景别桶>时长窗>评分，copywritingMontageAssignLogic）
  *  → LLM 候选内语义精选 → 校验解析；失败/缺槽按原循环轮转兜底（全局镜头序跨脚本连续
  *  取模，各素材使用次数均衡）。素材来源将来含在线/AI 生成时同样进 buildAssignPool 池 */
 const smartAssignBusy = ref(false)
@@ -433,7 +433,7 @@ async function applyAssignment(matchIds?: string[]): Promise<void> {
         parsed = parseAssignMatchResponse(content, tab.shots.length, candidates.length)
         if (!parsed) throw new Error('匹配结果解析失败（未返回合法 matches JSON）')
       } catch (e) {
-        clientError('plan-montage', '智能匹配 LLM 失败（该脚本整组循环兜底）', errText(e))
+        clientError('copywriting-montage', '智能匹配 LLM 失败（该脚本整组循环兜底）', errText(e))
         failedTabs.push(tab.name)
         parsed = null
       }

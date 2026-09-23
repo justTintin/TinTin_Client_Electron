@@ -5,19 +5,19 @@
 // 作为四步公共组件，每一步都有、只是状态不同：
 //   edit（第一步）    = ✨AI 生成分镜 + 全字段可编辑（镜别/时长/画面/旁白/音效，增删镜）
 //   voice（第二步）   = 只读（旁白已整体克隆为声音，按分镜时间轴对齐）
-//   material（第三步）= 只读 + 智能匹配绑定的素材镜头列表（planMontageAssignLogic 方案C）
+//   material（第三步）= 只读 + 智能匹配绑定的素材镜头列表（copywritingMontageAssignLogic 方案C）
 //   fx（第四步）      = 只读（字幕/花字/文字模板挂接的旁白与画面依据）
 // 数据源 = shell.s.copyShots（四步共享同一份分镜数据）；组件自注入 shell。
 // ═════════════════════════════════════════════════════════════
 import { computed, reactive, ref, inject } from 'vue'
 import TButton from '@/components/common/TButton.vue'
 import type { StoryboardShot } from '@/composables/opsStoryboardLogic'
-import { planMontageShellKey } from './planMontageUiContext'
+import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 
 const props = defineProps<{ mode: 'edit' | 'voice' | 'material' | 'fx'; sfxBusy?: boolean }>()
 const emit = defineEmits<{ (e: 'sfx-regen', shot: StoryboardShot): void }>()
 
-const shell = inject(planMontageShellKey)!
+const shell = inject(copywritingMontageShellKey)!
 const {
   copyShots, copyShotsStale, genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
   scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript,

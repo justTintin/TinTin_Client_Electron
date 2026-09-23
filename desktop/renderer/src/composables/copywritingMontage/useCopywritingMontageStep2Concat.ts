@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// usePlanMontageStep2Concat.ts — 智能混剪 Step2 镜头重组编排（铁律 10 拆分，2026-09-18）
-// 自 usePlanMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
+// useCopywritingMontageStep2Concat.ts — 智能混剪 Step2 镜头重组编排（铁律 10 拆分，2026-09-18）
+// 自 useCopywritingMontage.ts 纯搬迁（IRON-02 五项 checklist；蓝图见
 // docs/智能混剪拆分迁移映射_2026-09-18.md §五 Step2）。
 // 跨步依赖经 ctx 注入：共享运行时（statusText/ensureServerUrl/toAbsolute/
 // startPolling/setClearBusy）+ clearAllBusy（组装层，联动 Step4 finalBusy）+
@@ -31,9 +31,9 @@ import {
   fmtDur,
   type PrecomposePlan,
   type SplitSceneRow,
-} from '../planMontageLogic'
+} from '../copywritingMontageLogic'
 import { notify, unwrapIpc, errText, joinPath, POLL_INTERVAL_MS, type MontageSharedRuntime } from './context'
-import { pathBasename } from '../planMontageCommonLogic.ts'
+import { pathBasename } from '../copywritingMontageCommonLogic.ts'
 
 /** TSelect 选项最小结构（避免组件层依赖方向反转） */
 export interface SelectOptionLite {
@@ -56,7 +56,7 @@ export interface MontageStep2Context {
   splitsJobId: Ref<string>
 }
 
-export function usePlanMontageStep2Concat(ctx: MontageStep2Context) {
+export function useCopywritingMontageStep2Concat(ctx: MontageStep2Context) {
   const { statusText, ensureServerUrl, toAbsolute, startPolling, setClearBusy, clearAllBusy,
     scenes, splitFps, splitResolution, srcVideos, splitsJobId } = ctx
 

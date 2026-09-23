@@ -178,7 +178,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onActivated } from 'vue'
-import { notify } from '@/composables/planMontage/context'
+import { notify } from '@/composables/copywritingMontage/context'
 
 interface Lane {
   lane: string

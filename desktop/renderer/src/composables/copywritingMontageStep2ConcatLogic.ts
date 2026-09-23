@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════
-// planMontageStep2ConcatLogic.ts — 智能混剪 Step2 镜头重组纯逻辑
-// 自 planMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
+// copywritingMontageStep2ConcatLogic.ts — 智能混剪 Step2 镜头重组纯逻辑
+// 自 copywritingMontageLogic.ts 拆分（铁律 10 / 2026-09-18，纯搬迁零行为改动，
 // 拆分过程过 SKILL.md IRON-02 五项 checklist）。
 // 对照原客户端 studio/gui：
 //   · gui/video_montage_page.py _submit_concat_to_server L2663-2725
@@ -11,8 +11,8 @@
 // 本文件不做任何 IPC / DOM 操作（IRON-06/07 分层）
 // ═══════════════════════════════════════════════════════════════
 
-import type { SplitSceneRow } from './planMontageStep1SplitLogic.ts'
-import { applyShotLayoutOrder } from './planMontageStep1SplitLogic.ts'
+import type { SplitSceneRow } from './copywritingMontageStep1SplitLogic.ts'
+import { applyShotLayoutOrder } from './copywritingMontageStep1SplitLogic.ts'
 import type { StoryboardShot } from './opsStoryboardLogic.ts'
 
 // ── Step2 镜头重组（/montage/concat）──────────────────────────

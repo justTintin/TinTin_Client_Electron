@@ -1,11 +1,11 @@
 // 分镜×素材智能匹配纯逻辑单测（2026-09-21 用户裁决方案 C：
-// 本地预筛 + LLM 精选 + 循环兜底，实现在 planMontageAssignLogic.ts；
+// 本地预筛 + LLM 精选 + 循环兜底，实现在 copywritingMontageAssignLogic.ts；
 // 2026-09-22 用户裁决开工：一镜多片·按时长装填——planShotGroup/groupUseDurs 等）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const M = await import('../renderer/src/composables/planMontageAssignLogic.ts')
-const S = await import('../renderer/src/composables/planMontageStep2ConcatLogic.ts')
+const M = await import('../renderer/src/composables/copywritingMontageAssignLogic.ts')
+const S = await import('../renderer/src/composables/copywritingMontageStep2ConcatLogic.ts')
 
 /** 造池项：key 按 源片|起|止 指纹（与 sceneHashKey 同口径即可，测试只要求唯一） */
 function item(idx, { type = '', dur = 3, score = 0, desc = '' } = {}) {

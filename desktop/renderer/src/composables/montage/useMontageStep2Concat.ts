@@ -14,6 +14,7 @@ import { readCacheDir } from '../useSettingsConfig'
 import {
   buildConcatPayload,
   resolveConcatFps,
+  resolveConcatTransition,
   extractConcatResultUrl,
   extractSubmitTaskId,
   extractTaskObj,
@@ -66,7 +67,8 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
   const DURATION_LIMITS = [10, 20, 30, 40, 50]
   const batchCount = ref(3)                // 生成视频数量（原版 spin 默认 3，随推荐值回写）
   const randomness = ref('medium')         // 混编随机度（原版默认「中 (保留同场景)」，控件隐藏）
-  const concatTransition = ref('fade')     // 转场动画（原版默认「模糊」）
+  // 2026-09-23 用户裁决：转场动画默认「随机」（random=从 fade/dissolve/slideleft 池取，与文案混剪同款）
+  const concatTransition = ref('random')
   const concatBusy = ref(false)            // 预合成方案生成中
   const confirmBusy = ref(false)           // 确认合成队列执行中
   const copyBusy = ref(false)              // 口播文案生成中
@@ -85,6 +87,7 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
   ]
 
   const TRANSITIONS: Array<SelectOptionLite> = [
+    { label: '随机', value: 'random' },
     { label: '模糊', value: 'fade' }, { label: '淡入淡出', value: 'dissolve' },
     { label: '左移', value: 'slideleft' }, { label: '右移', value: 'slideright' },
     { label: '上移', value: 'slideup' }, { label: '下移', value: 'slidedown' },
@@ -325,7 +328,8 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
     if (concatFps.value === 'source') await ensureSourceFps()
     const payload = buildConcatPayload({
       clipUrls,
-      transition: concatTransition.value,
+      // 'random' 提交时解析为池内随机一个具体转场（服务端契约收具体转场名）
+      transition: resolveConcatTransition(concatTransition.value),
       layout: concatLayout.value,
       probe: sourceProbe,
       transitionDuration: 0.5,   // 原版 options 固定 transition_duration: 0.5

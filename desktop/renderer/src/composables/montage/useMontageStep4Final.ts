@@ -16,7 +16,7 @@ import {
   buildBgmGenPayload, parseBgmGenResponse, resolveOutFinalDir, collectMixCandidates,
   srcDirName,
   buildFinalTasks, fmtBgmTime, inputNameFromFinalPath, pathBasename,
-  resolveOutMontageDir, textFxStyleOf,
+  resolveOutMontageDir, textFxStyleOf, resolveConcatTransition,
   type BgmGenPayload, type PrecomposePlan, type VoiceRow,
 } from '../videoMontageLogic'
 import { notify, unwrapIpc, errText, joinPath } from './context'
@@ -830,7 +830,8 @@ async function exportAllToJianyingDraft(): Promise<void> {
       clientError('video-montage', '导出关键词轨为空', `候选 ${cands.length} 段均未命中文字模板`)
       notify('无关键词特效', `本次导出未包含关键词/文字模板轨：\n${reason}`)
     }
-    const transition = concatTransition.value || 'fade'
+    // 'random' 导出时解析为池内随机一个具体转场（与文案混剪同款池）
+    const transition = resolveConcatTransition(concatTransition.value || 'random')
     const finalName = timelineDraftName()
     exportStage.value = '组装剪映时间轴草稿（转场/口播/字幕/BGM 各轨）...'
     exportProgress.value = 85

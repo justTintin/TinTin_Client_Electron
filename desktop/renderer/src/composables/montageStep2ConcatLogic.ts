@@ -163,6 +163,14 @@ export function planActiveDurationSec(p: PrecomposePlan): number {
     (acc, c, i) => acc + (p.deletedFlags[i] ? 0 : Math.max(0, (c.endSec || 0) - (c.startSec || 0))), 0)
 }
 
+/** 转场随机池（2026-09-23 用户裁决：智能混剪转场默认随机，与文案混剪同款三池） */
+export const RANDOM_TRANSITION_POOL = ['fade', 'dissolve', 'slideleft']
+/** 'random' → 池内随机取一；其余（具体转场名）原样返回 */
+export function resolveConcatTransition(mode: string, rnd: () => number = Math.random): string {
+  if (mode !== 'random') return mode
+  return RANDOM_TRANSITION_POOL[Math.floor(rnd() * RANDOM_TRANSITION_POOL.length) % RANDOM_TRANSITION_POOL.length]
+}
+
 export function newPrecomposePlan(clips: SplitSceneRow[], mode = 'random'): PrecomposePlan {
   return {
     clips: [...clips],

@@ -24,10 +24,13 @@ export interface CopywritingMontageTextFxContext {
   collectCandidates: (useSource?: boolean) => Promise<string[]>
   /** 产品信息（2026-09-19 架构：关键词命中词源=产品资料关联关键词） */
   sharedProductInfo: Ref<{ brand: string; product: string; model: string; extra: string; keywords: string[] }>
+  /** 分镜标注数据源（2026-09-23 用户裁决：标注面板按分镜脚本构建——虚拟方案无成片、
+   *  未克隆也可标注；key=plan:{tabId}，与导出 planHits 同键） */
+  listAnnotatePlans?: () => Array<{ key: string; name: string; text: string; timingPath: string; durationSec: number }>
 }
 
 export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext) {
-  const { voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo } = ctx
+  const { voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo, listAnnotatePlans } = ctx
 
   // ── 文字模板（2026-09-09 用户裁决：服务端 textfx 体系，与花字独立概念）──
   // textTemplateId 首项 'random'（随机样式，默认）：每次合成从全部模板随机选 N 个（默认 3）；
@@ -255,6 +258,23 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
   }
   async function refreshTextFxTracks(): Promise<void> {
     const seq = ++textFxTrackSeq
+    // 标注面板数据（2026-09-23 用户裁决）：按分镜脚本构建，不依赖文字模板开关/成片产物——
+    // 有旁白即可标注（未克隆时行时长为估算），克隆完成后带 timing 真值；
+    // key=plan:{tabId}，与导出 planHits 同键
+    {
+      const plans = listAnnotatePlans ? listAnnotatePlans() : []
+      const annotate: TextFxAnnotateTrack[] = []
+      for (const pl of plans) {
+        try {
+          const st = await resolveKeywordState(pl.text, pl.timingPath, pl.key)
+          annotate.push({ key: pl.key, name: pl.name, durationSec: pl.durationSec, rows: st.rows, hits: st.hits, words: st.words })
+        } catch (_) {
+          const prev = textFxAnnotate.value.find((a) => a.key === pl.key)
+          if (prev) annotate.push(prev)
+        }
+      }
+      if (seq === textFxTrackSeq) textFxAnnotate.value = annotate
+    }
     if (!textFxEnabled.value) { textFxPreviewTracks.value = []; return }
     // 合成期间跳过预览刷新（2026-09-12）：与本地预取并发连击服务端 match 是 500
     // 诱因之一；合成完成后由 startFinalMix finally 统一重刷
@@ -270,7 +290,6 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
     // 逐视频取关键词命中（与剪映导出同一取数函数 resolveKeywordHits：产品关联词，
     // 无关联词 LLM 兜底）；串行取数（2026-09-12：并发连击曾致服务端 500 的教训）
     const matched: Array<{ name: string; durationSec: number; lines: Array<{ text: string; start: number; end: number; keywords: string[] }> }> = []
-    const annotate: TextFxAnnotateTrack[] = []
     for (const c of outputs) {
       const row = voiceRows.value.find((r) => r.path === c || r.dubbedPath === c)
       const dur = Number(await window.tintin?.ffmpeg?.probeDuration?.(c).catch?.(() => 0)) || 0
@@ -286,14 +305,12 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
         st = prev || { key: c, name: pathBasename(c), durationSec: dur, rows: [], hits: [], words: [] }
       }
       matched.push({ name: pathBasename(c), durationSec: dur, lines: st.hits })
-      annotate.push({ key: c, name: pathBasename(c), durationSec: dur, rows: st.rows, hits: st.hits, words: st.words })
     }
     if (seq !== textFxTrackSeq) return // 过期响应丢弃（连续触发只保留最新）
     // 2026-09-10 用户终裁：轨名列显示视频名（模板名拼接方案废止；name 字段自此=文件名）
     // 2026-09-11 用户二次裁决：展示层改「第N条」序号，见 VideoMontage.vue .textfx-track-name
     // 2026-09-10 用户裁决：词条按命中模板渲染颜色+动画（与样式橱窗 textFxStyleSamples
     //  同源同构，去除 fontSize 只取颜色/渐变；不命中模板的词条走 CSS 默认色）
-    textFxAnnotate.value = annotate
     textFxPreviewTracks.value = buildTextFxTracks({
       rows: matched,
       tplNames,
@@ -416,6 +433,6 @@ export function useCopywritingMontageTextFx(ctx: CopywritingMontageTextFxContext
     activeTextPool, activeTextCount, textTemplateOptions, catalogTextLanes, loadCatalogLanes,
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates,
     resolveKeywordHits, currentMatchTemplateIds, refreshTextFxTracks,
-    textFxAnnotate, addManualKeyword, removeManualKeyword,
+    textFxAnnotate, addManualKeyword, removeManualKeyword, scheduleManualKwRefresh,
   }
 }

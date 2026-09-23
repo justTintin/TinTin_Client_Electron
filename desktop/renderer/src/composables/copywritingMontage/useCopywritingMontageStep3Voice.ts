@@ -110,7 +110,18 @@ export function useCopywritingMontageStep3Voice(ctx: CopywritingMontageStep3Cont
   const fancyPreviews = ref<Record<string, string>>({})
   const fancyTemplatesLoading = ref(false)
   // ── 文字模板 textfx（已迁 montage/useCopywritingMontageTextFx.ts，铁律 10 E3b 纯搬迁）──
-  const tfx = useCopywritingMontageTextFx({ voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo })
+  const tfx = useCopywritingMontageTextFx({
+    voiceRows, assemblePlans, finalBusy, step4Candidates, collectCandidates, sharedProductInfo,
+    listAnnotatePlans: () => storyboards.value
+      .filter((t) => t.narrative.trim())
+      .map((t) => ({
+        key: `plan:${t.id}`,
+        name: t.name,
+        text: t.narrative.trim(),
+        timingPath: t.voiceWav ? `${t.voiceWav}.timing.json` : '',
+        durationSec: t.voiceDurSec > 0 ? Math.round(t.voiceDurSec) : Math.round(t.shots.reduce((a, sh) => a + (Number(sh.duration) || 0), 0)),
+      })),
+  })
   const {
     textFxEnabled, lutRestore, lutId, lutList, lutListLoading, loadLuts,
     textTemplateId, textRandomCount, textKeywordDensity, textTemplates, textTemplatesLoading,
@@ -118,7 +129,9 @@ export function useCopywritingMontageStep3Voice(ctx: CopywritingMontageStep3Cont
     textFxPreviewTracks, textFxStyleSamples, srvBase, loadTextTemplates,
     textFxAnnotate, addManualKeyword, removeManualKeyword,
     resolveKeywordHits, currentMatchTemplateIds, refreshTextFxTracks,
+    scheduleManualKwRefresh,
   } = tfx
+
 
   // AI 改写（_show_ai_rewrite_settings：ai_rewrite_temperature 默认 0.5 → 自由度 50%）
   const rewriteTemp = ref(0.5)
@@ -709,6 +722,8 @@ function clearVoiceProgressListener(): void {
     } catch (_) { /* 缓存损坏忽略，走空态 */ }
   }
   restoreStoryboards()
+  // 分镜（旁白/声音/时长）变化 → 标注面板与预览轨重刷
+  watch(storyboards, () => { scheduleManualKwRefresh() }, { deep: true })
   watch(storyboards, () => {
     try {
       localStorage.setItem(STORYBOARDS_LS_KEY, JSON.stringify(storyboards.value))

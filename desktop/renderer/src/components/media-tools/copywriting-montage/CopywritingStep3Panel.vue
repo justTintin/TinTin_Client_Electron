@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// CopyStep3Panel.vue — 智能混剪 Step3 口播配音面板（铁律 10 Phase3 P3，2026-09-19）
+// CopywritingStep3Panel.vue — 智能混剪 Step3 口播配音面板（铁律 10 Phase3 P3，2026-09-19）
 // 模板/样式自 VideoMontage.vue 逐字搬迁；状态经 inject 解构回原名（零改动）。
 // 本面板本地逻辑：TTS 引擎/情感选项、页尾样本上传拖拽（useFilePicker）、
 // 参考声音下拉、生命周期（进 Step3 拉样本/字体/模板清单由 Shell 编排）。
@@ -11,7 +11,7 @@ import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import { useFilePicker } from '@/composables/useFilePicker'
 import { copywritingMontageShellKey } from './copywritingMontageUiContext'
-import CopyStoryboard from './CopyStoryboard.vue'
+import CopywritingStoryboard from './CopywritingStoryboard.vue'
 
 const shell = inject(copywritingMontageShellKey)!
 // 2026-09-21 用户裁决：本步只有声音 → 右侧配音预览栏删除（vd-unified 两栏壳一并拆除）
@@ -125,7 +125,7 @@ const tabVoices = computed(() => {
              配音对象自动取 Step2 已确认合成产物所在目录 -->
 
         <!-- 分镜脚本（公共组件 voice 态，始终显示；2026-09-21 用户报障：从视频素材返回本步时分镜消失） -->
-        <CopyStoryboard mode="voice" />
+        <CopywritingStoryboard mode="voice" />
 
         <!-- 2026-09-22 用户裁决：移除旧「待合成视频列表与配音文案映射」表（智能混剪遗留的
              逐视频配音界面——编辑/重生成/时长:视频）；文案混剪声音=每分镜脚本一条
@@ -442,7 +442,7 @@ const tabVoices = computed(() => {
    vd-unified 两栏壳/vd-split 分隔条样式一并移除（全宽单栏） */
 /* 第一步文案带过来（无视频行时展示；确认合成后自动填入各行配音文案） */
 .carry-copy { display: flex; flex-direction: column; gap: 6px; }
-/* 分镜卡/旁白小框样式已随分镜界面迁至公共组件 CopyStoryboard.vue */
+/* 分镜卡/旁白小框样式已随分镜界面迁至公共组件 CopywritingStoryboard.vue */
 
 /* 左上角框内的分镜声音播放条列表（2026-09-21 用户裁决：克隆完成后就地试听） */
 .carry-voice-list { display: flex; flex-direction: column; gap: 6px; }

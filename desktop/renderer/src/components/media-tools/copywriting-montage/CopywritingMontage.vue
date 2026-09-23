@@ -18,10 +18,10 @@ import { useFilePicker } from '@/composables/useFilePicker'
 import WbPickProductPanel from '@/components/workbench/WbPickProductPanel.vue'
 import StepPreviewPane, { type StepPreviewItem, type StepPreviewKeyword } from '../StepPreviewPane.vue'
 import VdStepBar from '../VdStepBar.vue'
-import CopyStep4Panel from './CopyStep4Panel.vue'
-import CopyStep2Panel from './CopyStep2Panel.vue'
-import CopyStep3Panel from './CopyStep3Panel.vue'
-import CopyStep1Panel from './CopyStep1Panel.vue'
+import CopywritingStep4Panel from './CopywritingStep4Panel.vue'
+import CopywritingStep2Panel from './CopywritingStep2Panel.vue'
+import CopywritingStep3Panel from './CopywritingStep3Panel.vue'
+import CopywritingStep1Panel from './CopywritingStep1Panel.vue'
 import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 import { markdownListLines, stripProductCodeFromModel, parseProductKeywords } from '@/composables/opsProductLibraryLogic'
 import { copyPreviewText, subtitlePresetTileStyle, FANCY_STYLE_PREVIEW, fancyDrawtextToPreview } from '@/composables/copywritingMontageLogic'
@@ -260,11 +260,11 @@ function scoreClass(score: number | undefined): string {
     <!-- 共享任务状态条移至页尾（原版底部 stage_label + progress_bar 同位置） -->
 
     <!-- Step 1: 镜头智能分割（布局对照原版 gui/montage/step1_split_view.py L27-181） -->
-    <!-- 2026-09-17 用户裁决换序：1.文案编写(CopyStep1Panel 历史名=分割页) →
-         2.口播配音(CopyStep3Panel 历史名) → 3.镜头重组(CopyStep2Panel 历史名) -->
-    <CopyStep1Panel v-if="step === 0" />
-    <CopyStep3Panel v-else-if="step === 1" />
-    <CopyStep2Panel v-else-if="step === 2" />
+    <!-- 2026-09-17 用户裁决换序：1.文案编写(CopywritingStep1Panel 历史名=分割页) →
+         2.口播配音(CopywritingStep3Panel 历史名) → 3.镜头重组(CopywritingStep2Panel 历史名) -->
+    <CopywritingStep1Panel v-if="step === 0" />
+    <CopywritingStep3Panel v-else-if="step === 1" />
+    <CopywritingStep2Panel v-else-if="step === 2" />
 
     <!-- Step 3: 口播配音（对照 gui/montage/step3_voice_view.py L27-298 逐控件一比一）；
          2026-09-10 用户需求「界面统一+联动预览」：左操作区 + 右逐条点亮预览 -->
@@ -272,7 +272,7 @@ function scoreClass(score: number | undefined): string {
     <!-- Step 4: 特效包装（step4_final_view.py L14-196 逐控件；另保留本端 AI 生成 BGM）；
          2026-09-09 用户裁决：烧制字幕/花字/文字模板特效配置自 Step3 迁入此处，随混音统一烧制，
          字幕文案按视频从 Step3 文案表带过去 -->
-    <CopyStep4Panel v-else />
+    <CopywritingStep4Panel v-else />
 
     <!-- 页尾状态区（原版底部共享：stage_label + progress_bar；
       确认合成期间不重复显示——状态文案已置进度条上方，用户裁决：下面的文字提示不需要） -->

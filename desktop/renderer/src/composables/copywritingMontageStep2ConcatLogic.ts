@@ -600,7 +600,7 @@ export function assignScenesToShots(shots: StoryboardShot[], scenes: SplitSceneR
 
 /** 组分镜翻译 prompt（system=文字分镜 skill 画面规则 + Viral Writer 口播节奏 + 现有
  *  分镜脚本 JSON 契约；旁白规则：audio=原文片段、按序覆盖全文、一字不改不丢） */
-export function buildCopyStoryboardPrompt(copyText: string, ratio = 'vertical'): {
+export function buildCopywritingStoryboardPrompt(copyText: string, ratio = 'vertical'): {
   systemPrompt: string
   userPrompt: string
 } {

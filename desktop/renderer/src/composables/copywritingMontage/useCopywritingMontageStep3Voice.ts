@@ -16,7 +16,7 @@ import {
   TEXT_KEYWORD_DENSITY_MAX, pickRandomItems, extractFancyWordsFromText,
   buildSubtitleRows, buildTextFxTracks, textFxStyleOf, rewriteTemperature,
   buildRewriteSystemPrompt, cleanRewriteContent, resolveOutMontageDir, pathBasename,
-  shotsNarrationText, buildCopyStoryboardPrompt,
+  shotsNarrationText, buildCopywritingStoryboardPrompt,
   type TextFxTrack, type SubtitleStylePreset, type PrecomposePlan, type VoiceRow,
 } from '../copywritingMontageLogic'
 import { notify, errText, joinPath } from './context'
@@ -882,7 +882,7 @@ function clearVoiceProgressListener(): void {
     storyboardBusy.value = true
     try {
       statusText.value = '正在根据旁白生成分镜脚本...'
-      const { systemPrompt, userPrompt } = buildCopyStoryboardPrompt(copy)
+      const { systemPrompt, userPrompt } = buildCopywritingStoryboardPrompt(copy)
       const res = await window.tintin.server.llmChat({
         model: '',
         messages: [

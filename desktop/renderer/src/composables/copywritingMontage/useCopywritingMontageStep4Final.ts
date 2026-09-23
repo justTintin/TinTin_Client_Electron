@@ -26,7 +26,7 @@ import { useCopywritingMontageStep3Voice } from './useCopywritingMontageStep3Voi
 import { useCopywritingMontageBgmGen } from './useCopywritingMontageBgmGen'
 import { useCopywritingMontageBgmPlayer } from './useCopywritingMontageBgmPlayer'
 
-type CopyStep3Api = ReturnType<typeof useCopywritingMontageStep3Voice>
+type CopywritingStep3Api = ReturnType<typeof useCopywritingMontageStep3Voice>
 
 export interface MontageStep4Context {
   statusText: Ref<string>
@@ -38,18 +38,18 @@ export interface MontageStep4Context {
   splitResolution: Ref<string>
   voiceRows: Ref<VoiceRow[]>
   voiceDirInput: Ref<string>
-  runDubBatch: CopyStep3Api["runDubBatch"]
-  nextVoiceChannel: CopyStep3Api["nextVoiceChannel"]
-  loadTextTemplates: CopyStep3Api["loadTextTemplates"]
-  refreshTextFxTracks: CopyStep3Api["refreshTextFxTracks"]
-  currentMatchTemplateIds: CopyStep3Api["currentMatchTemplateIds"]
-  resolveKeywordHits: CopyStep3Api["resolveKeywordHits"]
-  scanVoiceDir: CopyStep3Api["scanVoiceDir"]
-  activeTextPool: CopyStep3Api["activeTextPool"]
-  activeTextCount: CopyStep3Api["activeTextCount"]
-  selectedFancyTemplate: CopyStep3Api["selectedFancyTemplate"]
-  selectedSubtitlePreset: CopyStep3Api["selectedSubtitlePreset"]
-  selectedFontFamily: CopyStep3Api["selectedFontFamily"]
+  runDubBatch: CopywritingStep3Api["runDubBatch"]
+  nextVoiceChannel: CopywritingStep3Api["nextVoiceChannel"]
+  loadTextTemplates: CopywritingStep3Api["loadTextTemplates"]
+  refreshTextFxTracks: CopywritingStep3Api["refreshTextFxTracks"]
+  currentMatchTemplateIds: CopywritingStep3Api["currentMatchTemplateIds"]
+  resolveKeywordHits: CopywritingStep3Api["resolveKeywordHits"]
+  scanVoiceDir: CopywritingStep3Api["scanVoiceDir"]
+  activeTextPool: CopywritingStep3Api["activeTextPool"]
+  activeTextCount: CopywritingStep3Api["activeTextCount"]
+  selectedFancyTemplate: CopywritingStep3Api["selectedFancyTemplate"]
+  selectedSubtitlePreset: CopywritingStep3Api["selectedSubtitlePreset"]
+  selectedFontFamily: CopywritingStep3Api["selectedFontFamily"]
   addSubtitles: Ref<boolean>
   subtitleStyleKey: Ref<string>
   subtitleBgOpacity: Ref<number>
@@ -63,7 +63,7 @@ export interface MontageStep4Context {
   textTemplateId: Ref<string>
   textKeywordDensity: Ref<string>
   subtitleFontSize: Ref<number>
-  clearVoiceProgressListener: CopyStep3Api["clearVoiceProgressListener"]
+  clearVoiceProgressListener: CopywritingStep3Api["clearVoiceProgressListener"]
   finalBusy: Ref<boolean>
   finalProgress: Ref<number>
   finalDone: Ref<boolean>

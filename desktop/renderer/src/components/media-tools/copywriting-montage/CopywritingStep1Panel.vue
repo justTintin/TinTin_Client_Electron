@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ═════════════════════════════════════════════════════════════
-// CopyStep1Panel.vue — 文案混剪 Step1 文案编写面板
+// CopywritingStep1Panel.vue — 文案混剪 Step1 文案编写面板
 // 2026-09-21 用户裁决：按参考界面重排——高级脚本设置（生成方式/段落数量/自定义要求/
 // 系统提示）+ AI 生成视频文案与关键词；原「选择素材 + 智能镜头分割」自本页删除
 // （分割/素材编排仍保留在 useCopywritingMontageStep1Split，供「镜头重组」页链路使用）。
@@ -8,7 +8,7 @@
 // ═════════════════════════════════════════════════════════════
 import { ref, computed, onMounted, inject } from 'vue'
 import TButton from '@/components/common/TButton.vue'
-import CopyStoryboard from './CopyStoryboard.vue'
+import CopywritingStoryboard from './CopywritingStoryboard.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
 import WbPickProductDialog from '@/components/workbench/WbPickProductDialog.vue'
@@ -86,7 +86,7 @@ onMounted(() => { void loadScriptProviders() })
 
         <!-- 分镜脚本（2026-09-21 用户裁决：生成脚本的界面与逻辑自第二步移到本页文案下方；
              生成后作为四步公共显示组件，每步都有、只是状态不同——本步为编辑态） -->
-        <CopyStoryboard mode="edit" />
+        <CopywritingStoryboard mode="edit" />
 
 
       </section>

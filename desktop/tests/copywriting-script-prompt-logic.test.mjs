@@ -80,8 +80,8 @@ test('parseKeywordsText：普通逗号串原样切分；空输入 → 空', () =
   assert.deepEqual(M.parseKeywordsText(null), [])
 })
 
-test('buildCopyStoryboardPrompt：口播=旁白 + 文字分镜 skill 规则 + 现有 JSON 契约 + 文案全文', () => {
-  const { systemPrompt, userPrompt } = M.buildCopyStoryboardPrompt('测试口播文案。')
+test('buildCopywritingStoryboardPrompt：口播=旁白 + 文字分镜 skill 规则 + 现有 JSON 契约 + 文案全文', () => {
+  const { systemPrompt, userPrompt } = M.buildCopywritingStoryboardPrompt('测试口播文案。')
   // 口播≠分镜：旁白连续存在，分镜由 AI 根据旁白梳理
   assert.ok(systemPrompt.includes('口播旁白'))
   assert.ok(systemPrompt.includes('不是分镜'))

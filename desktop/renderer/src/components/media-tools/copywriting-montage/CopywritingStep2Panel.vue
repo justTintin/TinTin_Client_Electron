@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// CopyStep2Panel.vue — 智能混剪 Step2 镜头重组面板（铁律 10 Phase3 P2，2026-09-19）
+// CopywritingStep2Panel.vue — 智能混剪 Step2 镜头重组面板（铁律 10 Phase3 P2，2026-09-19）
 // 模板/样式自 VideoMontage.vue 逐字搬迁；状态经 inject 解构回原名（零改动）。
 // 本面板本地逻辑：右栏预览 computed、排列/时长/画幅下拉选项、方案与镜头详情
 // 右键菜单、口播弹窗产品选择（WbPickProductPanel）、scoreClass（Step1/2 各持一份）。
@@ -19,7 +19,7 @@ import { fetchMaterialGrid, fetchMaterialDistinct, type PickerItem } from '@/com
 import { buildMediaServeUrl, buildMediaThumbUrl } from '@/composables/workbenchChatContext'
 import { errText, notify } from '@/composables/copywritingMontage/context'
 import { clientError } from '@/utils/clientLog'
-import CopyStoryboard from './CopyStoryboard.vue'
+import CopywritingStoryboard from './CopywritingStoryboard.vue'
 import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 
 const shell = inject(copywritingMontageShellKey)!
@@ -506,7 +506,7 @@ function scoreClass(score: number | undefined): string {
         <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 分镜脚本（2026-09-21 用户裁决：上一步的分镜脚本在页面顶部显示（material 态，
              只读 + 自动分配的素材镜头列表）；素材上传/分割区移到脚本下面） -->
-        <CopyStoryboard mode="material" />
+        <CopywritingStoryboard mode="material" />
 
         <!-- 素材来源（2026-09-21 用户裁决：本地上传/素材库/在线库/AI生成/混合 五个 tab，
              当前仅本地上传实装；上传素材+镜头分割自智能混剪 Step1 移植） -->
@@ -1188,5 +1188,5 @@ function scoreClass(score: number | undefined): string {
 .score-high { color: #2ecc71; font-weight: 600; }
 .score-mid { color: #f1c40f; font-weight: 600; }
 .score-low { color: #e74c3c; font-weight: 600; }
-/* 分镜脚本卡样式在公共组件 CopyStoryboard.vue（material 态自注入） */
+/* 分镜脚本卡样式在公共组件 CopywritingStoryboard.vue（material 态自注入） */
 </style>

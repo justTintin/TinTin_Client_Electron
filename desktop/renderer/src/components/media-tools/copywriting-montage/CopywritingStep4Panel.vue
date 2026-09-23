@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// CopyStep4Panel.vue — 智能混剪 Step4 特效包装/BGM/成片面板（铁律 10 Phase3 P4，2026-09-19）
+// CopywritingStep4Panel.vue — 智能混剪 Step4 特效包装/BGM/成片面板（铁律 10 Phase3 P4，2026-09-19）
 // 模板/样式自 VideoMontage.vue 逐字搬迁；状态经 inject 解构回原名（零改动）。
 // 本面板本地逻辑：textfx 样式画布测量（折叠/ResizeObserver）、BGM 选择弹窗
 // （音频库 + AI 生成右栏，useAudioGen 独立实例）、花字/字幕下拉选项与预览 computed、
@@ -10,8 +10,8 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject } from '
 import TButton from '@/components/common/TButton.vue'
 import TSelect from '@/components/common/TSelect.vue'
 import VdStepBar from '../VdStepBar.vue'
-import CopyBgmPickDialog from './CopyBgmPickDialog.vue'
-import CopyStoryboard from './CopyStoryboard.vue'
+import CopywritingBgmPickDialog from './CopywritingBgmPickDialog.vue'
+import CopywritingStoryboard from './CopywritingStoryboard.vue'
 import { copywritingMontageShellKey } from './copywritingMontageUiContext'
 import { FANCY_STYLE_PREVIEW, fancyDrawtextToPreview, subtitlePresetTileStyle } from '@/composables/copywritingMontageLogic'
 import { errText, notify, joinPath } from '@/composables/copywritingMontage/context'
@@ -389,8 +389,8 @@ watch(textFxCanvasEl, (el) => {
 onUnmounted(() => { textFxResizeObs?.disconnect(); textFxResizeObs = null })
 
 
-// ── BGM 选择弹窗（已迁 CopyBgmPickDialog.vue，铁律 10 P4b 纯搬迁）──
-const bgmDlgRef = ref<InstanceType<typeof CopyBgmPickDialog> | null>(null)
+// ── BGM 选择弹窗（已迁 CopywritingBgmPickDialog.vue，铁律 10 P4b 纯搬迁）──
+const bgmDlgRef = ref<InstanceType<typeof CopywritingBgmPickDialog> | null>(null)
 /** 打开弹窗（target 空=全局 BGM；视频路径=逐行指派），模板调用点零改动 */
 function openBgmPickDlg(target = ''): void {
   bgmDlgRef.value?.show(target)
@@ -459,7 +459,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
       <section class="card">
         <VdStepBar :step="step" :steps="steps" @go="go" />
         <!-- 分镜脚本（2026-09-21 用户裁决：四步公共显示组件，本步 fx 态只读） -->
-        <CopyStoryboard mode="fx" :sfx-busy="sfxBusy" @sfx-regen="regenSfx" />
+        <CopywritingStoryboard mode="fx" :sfx-busy="sfxBusy" @sfx-regen="regenSfx" />
         <!-- 特效包装分组（2026-09-13 用户裁决：字幕拆出单独成组、置于背景音乐上方）：花字 + 文字模板 -->
         <div class="action-box fx-pack-box">
           <div class="fx-pack-title">花字</div>
@@ -769,7 +769,7 @@ const fancyCustomPreviewStyle = computed<Record<string, string>>(() => {
         </div>
 
     <!-- 分镜声音批量克隆选择弹窗（BGM 选择组件复用为音频选择） -->
-    <CopyBgmPickDialog ref="bgmDlgRef" />
+    <CopywritingBgmPickDialog ref="bgmDlgRef" />
 </template>
 
 <style scoped>

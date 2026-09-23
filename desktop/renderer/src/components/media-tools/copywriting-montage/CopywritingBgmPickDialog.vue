@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // ═══════════════════════════════════════════════════════════════
-// CopyBgmPickDialog.vue — 智能混剪 Step4·BGM 选择弹窗（铁律 10 P4b，2026-09-19）
-// 自 CopyStep4Panel.vue 逐字搬迁（IRON-02 五项 checklist）。
+// CopywritingBgmPickDialog.vue — 智能混剪 Step4·BGM 选择弹窗（铁律 10 P4b，2026-09-19）
+// 自 CopywritingStep4Panel.vue 逐字搬迁（IRON-02 五项 checklist）。
 // 左栏音频库列表 + 右栏 AI 生成（useAudioGen 独立实例，与音频生成页互不影响，
 // 2026-09-09 用户裁决）；2026-09-18 用户裁决：生成结果可直接确定应用，
 // target 为空=回填全局 bgmPath，target=视频路径=指派该行逐行 BGM。

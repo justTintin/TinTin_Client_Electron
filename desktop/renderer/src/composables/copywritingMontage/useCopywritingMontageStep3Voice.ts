@@ -1135,7 +1135,7 @@ function clearVoiceProgressListener(): void {
       const more = failures.length <= 8 ? '' : `\n…… 等共 ${failures.length} 个失败`
       notify(
         '部分合成失败',
-        `批量人声克隆完成：成功 ${ok} 个，失败 ${failures.length} 个（已跳过，可单独重试）。\n\n${detail}${more}\n\n提示：失败多为 VoxCPM 显存不足/文案过长，可重启服务或缩短该条文案后重试。`,
+        `批量人声克隆完成：成功 ${ok} 个，失败 ${failures.length} 个（已跳过，可单独重试）。\n\n${detail}${more}\n\n提示：失败多为服务端 TTS 异常（如 Qwen3 CUDA 崩溃/显存不足）或文案过长——重启服务端 TTS 服务后重试，或将引擎切换为 IndexTTS；也可缩短该条文案。`,
       )
     } else {
       notify('合成成功', `批量人声克隆合成完毕，共生成 ${ok} 个音频文件。`)

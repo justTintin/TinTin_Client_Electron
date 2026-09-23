@@ -111,6 +111,9 @@ export interface SplitSceneRow {
   checked: boolean
   /** 景别（仅服务端 shot_analysis.shot_type，客户端不自行推断，空则 UI 显 —） */
   shotType?: string
+  /** 媒体类型（2026-09-23 用户裁决：素材库图片素材入池时标注，选择池缩略图按类型渲染；
+   *  本地分割产物恒 video 缺省） */
+  mediaType?: 'video' | 'image'
   /** 位置（2026-09-09 裁决与 /montage/split 对齐：位置≠景别，指入场/出场等叙事位置）：
    *  服务端 enter/exit 布尔优先，否则按源素材文件名/文件夹命名兜底推断（原 classify 口径） */
   position?: string

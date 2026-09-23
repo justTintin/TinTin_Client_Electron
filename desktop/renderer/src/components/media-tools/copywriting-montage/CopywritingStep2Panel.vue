@@ -69,6 +69,7 @@ async function ensureLibServerUrl(): Promise<void> {
   if (libServerUrl.value) return
   try { libServerUrl.value = String((await (window as any).tintin?.env?.serverPing?.())?.url || '') } catch (_) {}
 }
+const libMediaType = ref('video') // 素材库类型过滤（2026-09-23 用户裁决：视频/图片/全部；默认视频=原行为）
 const libKw = ref('')
 const libBrand = ref('')
 const libModel = ref('')
@@ -224,7 +225,7 @@ async function runLib(p = 1): Promise<void> {
       brand: libBrand.value,
       model: libModel.value,
       category: libCategory.value,
-      mediaType: 'video',
+      mediaType: libMediaType.value,
       page: libPage.value,
       size: LIB_PAGE_SIZE,
     })
@@ -275,6 +276,7 @@ function addLibToPool(): void {
       serverPath: sp,
       downloadState: 'pending',
       checked: true,
+      mediaType: String(it.media_type || '') === 'image' ? 'image' : 'video',
       shotType: String(it.shot_type || '') || undefined,
       resolution: it.width && it.height ? `${Number(it.width)}x${Number(it.height)}` : undefined,
     })
@@ -664,6 +666,11 @@ function scoreClass(score: number | undefined): string {
             <input v-model="libBrand" class="input lib-input-sm" list="lib-brand-opts" placeholder="品牌…" @keydown.enter="runLib(1)" />
             <input v-model="libModel" class="input lib-input-sm" list="lib-model-opts" placeholder="型号…" @keydown.enter="runLib(1)" />
             <input v-model="libCategory" class="input lib-input-sm" list="lib-cat-opts" placeholder="分类…" @keydown.enter="runLib(1)" />
+            <select v-model="libMediaType" class="input lib-input-sm" title="按媒体类型过滤" @change="runLib(1)">
+              <option value="video">视频</option>
+              <option value="image">图片</option>
+              <option value="">全部</option>
+            </select>
             <datalist id="lib-brand-opts"><option v-for="o in libBrandOpts" :key="o" :value="o" /></datalist>
             <datalist id="lib-model-opts"><option v-for="o in libModelOpts" :key="o" :value="o" /></datalist>
             <datalist id="lib-cat-opts"><option v-for="o in libCatOpts" :key="o" :value="o" /></datalist>
@@ -717,9 +724,10 @@ function scoreClass(score: number | undefined): string {
               :class="{ 'pool-card--dup': poolIsDup(r) }"
               :title="(r.description || r.name) + '（双击预览）'" @dblclick="previewScene(r)">
               <span class="pool-idx">#{{ r.idx }}</span>
-              <!-- 2026-09-23 用户裁决：编号后带缩略图（clipUrl 首帧；#t=0.1 强制绘帧） -->
-              <video class="pool-thumb" :src="vdToAbsolute(r.clipUrl) + '#t=0.1'"
+              <!-- 2026-09-23 用户裁决：编号后带缩略图——视频取首帧（#t=0.1 强制绘帧）、图片直接渲染 -->
+              <video v-if="r.mediaType !== 'image'" class="pool-thumb" :src="vdToAbsolute(r.clipUrl) + '#t=0.1'"
                 preload="metadata" muted tabindex="-1"></video>
+              <img v-else class="pool-thumb" :src="vdToAbsolute(r.clipUrl)" alt="" />
               <span class="pool-name" :title="r.name">{{ r.name }}</span>
               <span class="pool-dur">{{ r.duration > 0 ? r.duration.toFixed(1) + 's' : '—' }}</span>
               <span v-if="r.shotType" class="pool-shot"

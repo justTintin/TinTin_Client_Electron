@@ -292,13 +292,16 @@ function scoreClass(score: number | undefined): string {
         </div>
         </div><!-- /vd-unified -->
       </section>
-    <!-- 预合成列表右键菜单（原版 _show_assembled_context_menu L5412-5434 三项，查看文案仅已生成时显示） -->
+    <!-- 预合成列表右键菜单（原版 _show_assembled_context_menu；2026-09-23 用户裁决补齐：
+         已合成=重启合成 / 待确认=确认合成视频，末项删除预合成视频；查看文案仅已生成时显示） -->
     <teleport to="body">
       <div v-if="planMenu.show" class="ctx-mask" @click="closePlanMenu" @contextmenu.prevent="closePlanMenu">
         <div class="ctx-menu" :style="{ left: planMenu.x + 'px', top: planMenu.y + 'px' }" @click.stop>
-          <button class="ctx-item" @click="planMenuConfirm">完成： 确认合成视频</button>
+          <button v-if="planMenu.composed" class="ctx-item" @click="planMenuRestart"> 重启合成</button>
+          <button v-else class="ctx-item" @click="planMenuConfirm">完成： 确认合成视频</button>
           <button class="ctx-item" @click="planMenuGen"> 生成口播文案</button>
           <button v-if="planMenu.hasCopy" class="ctx-item" @click="planMenuView"> 查看文案</button>
+          <button class="ctx-item ctx-item--danger" @click="planMenuRemove"> 删除预合成视频</button>
         </div>
       </div>
     </teleport>

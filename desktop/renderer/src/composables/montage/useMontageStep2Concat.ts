@@ -699,7 +699,7 @@ export function useMontageStep2Concat(ctx: MontageStep2Context) {
     p.confirmed = false
     await confirmPlanSingle(index)
   }
-  // 删除方案（2026-09-23 用户裁决：右键菜单补「删除」——从预合成列表移除该条）
+  // 删除预合成视频（用户追加的功能：右键菜单「删除」——从预合成列表移除该条）
   function removePlan(index: number): void {
     if (index < 0 || index >= assemblePlans.value.length) return
     assemblePlans.value.splice(index, 1)

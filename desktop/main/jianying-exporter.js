@@ -1899,12 +1899,17 @@ function appendKeywordTrack(tracks, materials, srtPath, words, kind, offsetUs = 
  *  + 独立源游标（跨同素材窗连续）；probe 失败回退：每窗单段 source [0,窗长]（无法回环时保守口径）。 */
 function appendBgmTrack(tracks, materials, bgmPath, bgmVolume, windows, deps) {
   const wins = (Array.isArray(windows) ? windows : [])
-    .map((w) => ({
-      startUs: Math.max(0, Math.round(Number(w && w.startUs) || 0)),
-      durUs: Math.round(Number(w && w.durUs) || 0),
-      // 逐视频 BGM：窗自带 bgmPath 优先，缺省回退全局单 BGM
-      path: String((w && w.bgmPath) || bgmPath || ''),
-    }))
+    .map((w) => {
+      // 2026-09-24 用户报障修复（BGM 轨断开）：行级 bgmPath 文件不存在时回退全局
+      // BGM——此前行级路径直接进 fs.existsSync 过滤被剔除，该窗成静音空洞
+      let path = String((w && w.bgmPath) || bgmPath || '')
+      if (path && !fs.existsSync(path)) path = String(bgmPath || '')
+      return {
+        startUs: Math.max(0, Math.round(Number(w && w.startUs) || 0)),
+        durUs: Math.round(Number(w && w.durUs) || 0),
+        path,
+      }
+    })
     .filter((w) => w.durUs > 0 && w.path && fs.existsSync(w.path))
   if (!wins.length) return
 

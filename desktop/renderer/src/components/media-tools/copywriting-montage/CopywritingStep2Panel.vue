@@ -473,11 +473,20 @@ async function applyAssignment(matchIds?: string[]): Promise<void> {
       // 一镜多片装填（2026-09-22 用户裁决开工：方案C——主片按镜标×0.9 封镜，末端超长
       // 裁剪到剩余量；每镜绑定组写 tab.clipGroups，确认预合成按组渲染/拼接）
       const groups: number[][] = []
+      // 2026-09-24 用户裁决：本分镜有声音时，各镜目标时长按旁白时长等比分摊
+      // （Σ镜目标=旁白实际时长，视频轨填满整条旁白；镜标只决定分摊比例）；
+      // 装填按放大后的目标继续多片拼接补齐，池内素材不足时欠装明示
+      const voiceScale = (() => {
+        const vd = Number(tab.voiceDurSec) || 0
+        const sum = tab.shots.reduce((a, sh) => a + (Number(sh.duration) || 0), 0)
+        return vd > 0 && sum > 0 ? Math.max(0.2, Math.min(4, vd / sum)) : 1
+      })()
       tab.shots.forEach((shot, si) => {
-        const fill = planShotGroup(shot, idxs[si] ?? -1, pool)
+        const shim = voiceScale !== 1 ? { ...shot, duration: Math.max(0.1, (Number(shot.duration) || 0) * voiceScale) } : shot
+        const fill = planShotGroup(shim, idxs[si] ?? -1, pool)
         groups.push(fill.idxs)
         coveredAll += fill.coveredSec
-        targetAll += Math.max(0, Number(shot.duration) || 0)
+        targetAll += Math.max(0, (Number(shot.duration) || 0) * voiceScale)
         const first = pool.find((pc) => pc.scene.idx === (fill.idxs[0] ?? -1))
         if (first && shot) {
           shot.material_path = first.scene.clipUrl || first.scene.name || ''
@@ -507,7 +516,7 @@ async function onConfirmCompose(): Promise<void> {
     notify('镜头分割进行中', '素材池尚未完整，请等分割完成后再生成剪辑方案。')
     return
   }
-  const tabs = storyboards.value.map((s) => ({ id: s.id, name: s.name, narrative: s.narrative, shots: s.shots, clipGroups: s.clipGroups.map((g) => g.slice()) }))
+  const tabs = storyboards.value.map((s) => ({ id: s.id, name: s.name, narrative: s.narrative, voiceDurSec: s.voiceDurSec, shots: s.shots, clipGroups: s.clipGroups.map((g) => g.slice()) }))
   const ok = await runConcatFromAllStoryboards(tabs)
   // 2026-09-23 用户裁决：生成剪辑方案成功后同步脚本到服务端（await 确保确定性执行，
   // 同步进行中的重复触发由尾随合并守卫合并，不再静默丢弃）

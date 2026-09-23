@@ -184,7 +184,7 @@ export function useCopywritingMontageStep2Concat(ctx: MontageStep2Context) {
    *  按序进入方案，组内 useDurs 按镜标分配（末端超长裁剪）；任一分镜绑定不完整则整体拦截点名）。
    *  返回是否成功出方案（供确认合成串联） */
   async function runConcatFromAllStoryboards(
-    tabs: Array<{ id: string; name: string; narrative: string; shots: Array<{ duration: number }>; clipGroups: number[][] }>,
+    tabs: Array<{ id: string; name: string; narrative: string; voiceDurSec?: number; shots: Array<{ duration: number }>; clipGroups: number[][] }>,
   ): Promise<boolean> {
     if (concatBusy.value) return false
     if (!tabs.length) { concatError.value = '尚未生成分镜脚本，无法预合成。请回第一步「AI 生成分镜」。'; return false }
@@ -222,9 +222,16 @@ export function useCopywritingMontageStep2Concat(ctx: MontageStep2Context) {
         }
         // 每个分镜脚本一条分组方案：镜序即成片序；组内按镜标分配 useDurs（末端超长
         // 裁剪、组内硬切——2026-09-22 用户裁决：一镜多片·按时长装填）
+        // 2026-09-24 用户裁决：有声音时镜标按旁白时长等比缩放（方案总长=旁白时长，
+        // 视频轨填满整条时间线）；未克隆时维持镜标原值
+        const voiceScale = (() => {
+          const vd = Number(tab.voiceDurSec) || 0
+          const sum = tab.shots.reduce((a, sh) => a + (Number(sh.duration) || 0), 0)
+          return vd > 0 && sum > 0 ? Math.max(0.2, Math.min(4, vd / sum)) : 1
+        })()
         const plan = buildGroupedPrecomposePlan(
           sceneGroups,
-          tab.shots.map((s) => Number(s.duration) || 0),
+          tab.shots.map((s) => (Number(s.duration) || 0) * voiceScale),
         )
         plan.copy = tab.narrative
         plan.tabId = tab.id

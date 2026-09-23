@@ -891,6 +891,9 @@ async function exportAllToJianyingDraft(): Promise<void> {
       }
       // 口播轨（每分镜一段整条克隆声音，挂在该分镜首片段上）
       const voiceDurUs = Math.round((voiceDurByPlan.get(m.planIdx) || 0) * 1e6)
+      if (m.planFirst && (!m.text || !m.voicePath)) {
+        clientError('copywriting-montage', '口播首片段缺文案/声音', `text 长度=${String(m.text || '').length}，voicePath=${m.voicePath || '(空)'}——该分镜将无字幕轨`)
+      }
       if (m.planFirst && m.voicePath && voiceDurUs > 0) {
         voiceClips.push([{ path: m.voicePath, startUs: 0, durUs: voiceDurUs }])
         planVoiceOk.add(m.planIdx)

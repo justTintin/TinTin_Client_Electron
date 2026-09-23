@@ -151,7 +151,11 @@ export function useMontageStep1Split(ctx: MontageStep1Context) {
   }
 
   /** 混剪任务缓存索引（原版 _montage_job_id = uuid4hex；本轮分割生成一次） */
-  const splitsJobId = ref('')
+  // 2026-09-23 用户裁决：任务 ID 持久化——重启沿用同一任务目录，消除
+  //  「持久化恢复老任务状态 + 分割又生成新目录」的资产错位；清空缓存时清除
+  const splitsJobId = ref((() => {
+    try { return localStorage.getItem('montage.splitJobId') || '' } catch (_) { return '' }
+  })())
   const splitsDownloading = ref(false)
   /** 解析进度 0-100（对照原版 step1_split_controller _progress：按素材数推进，每素材开始前更新） */
   const splitProgress = ref(0)
@@ -178,6 +182,7 @@ export function useMontageStep1Split(ctx: MontageStep1Context) {
     // jobId 前置（2026-09-22 与文案混剪副本对齐）：分割启动时即生成，避免合成中途
     // 产物孤儿化（splitsJobId 原在循环完成后才生成）
     splitsJobId.value = (crypto?.randomUUID?.() || `${Date.now()}_${Math.floor(Math.random() * 1e8)}`).replace(/-/g, '')
+    try { localStorage.setItem('montage.splitJobId', splitsJobId.value) } catch (_) {}
     // 断点续分：停止后再次开始时，已完成素材跳过（镜头行保留在 scenes）
     splitStopRequested.value = false
     const doneNames = new Set(srcVideos.value
@@ -469,6 +474,7 @@ export function useMontageStep1Split(ctx: MontageStep1Context) {
    *  全部任务目录，不触碰原始素材；本端同口径删本地缓存目录 + 清会话内镜头清单） */
   async function clearSplitCache(): Promise<void> {
     scenes.value = []
+    try { localStorage.removeItem('montage.splitJobId') } catch (_) {}
     splitResolution.value = ''
     splitFps.value = 0
     splitError.value = ''

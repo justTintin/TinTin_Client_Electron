@@ -1207,12 +1207,19 @@ function exportMultiToDraft({ videoPaths, videoDurations = null, muteVideoAudio 
     // 逐视频 BGM（bgmPaths[i] 优先，空则回退全局 bgmPath，落段时再判存在性）
     const bgmWindows = []
     let cursorUs = 0
+    // BGM 独立连续光标（2026-09-24 用户裁决修复）：视频轨段间有 0.5s 转场间隔
+    // （cursorUs += VIDEO_GAP_US），BGM 窗口此前直接继承该光标 → 每个片段边界
+    // 静音 0.5s（13 段=12 个无音乐空洞）。现 BGM 窗口吸收段间间隔铺满整条时间线，
+    // 源游标在 appendBgmTrack 内跨窗连续，音乐不断。末段不加尾间隔。
+    let bgmCursorUs = 0
     clips.forEach((clip, i) => {
       const materialId = hexId()
       materials.videos.push(videoMaterialFields({ ...clip, materialId }))
       const sp = speedMaterial(1.0)
       speeds.push(sp)
-      bgmWindows.push({ startUs: cursorUs, durUs: clip.durationUs, bgmPath: (Array.isArray(bgmPaths) && bgmPaths[i]) ? String(bgmPaths[i]) : '' })
+      const bgmWinUs = clip.durationUs + (i < clips.length - 1 ? VIDEO_GAP_US : 0)
+      bgmWindows.push({ startUs: bgmCursorUs, durUs: bgmWinUs, bgmPath: (Array.isArray(bgmPaths) && bgmPaths[i]) ? String(bgmPaths[i]) : '' })
+      bgmCursorUs += bgmWinUs
       // 静音判定（2026-09-22 虚拟时间轴）：muteVideoAudio=true 全片视频段静音（旁白
       //  覆盖口径）；数组=逐段静音标记；行级口播段沿用原判定
       const segMuted = muteVideoAudio === true

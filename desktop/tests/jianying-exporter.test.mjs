@@ -203,13 +203,14 @@ test('exportMultiToDraft：多段导出 → meta/content 结构逐字段对齐',
   const audioTrack = content.tracks.find((t) => t.type === 'audio')
   assert.equal(audioTrack.segments[0].volume, 0.3)
   assert.equal(audioTrack.segments[0].clip, null)
-  // 2026-09-18 用户裁决：单 BGM 逐视频窗落段（第一段截断于第一个视频结尾，
-  // 不是整条时间轴；间隔期静音）；源游标跨窗连续（第二段从 4s 处接着取）
+  // 2026-09-18 用户裁决：单 BGM 逐视频窗落段；2026-09-24 用户裁决：BGM 窗口吸收段间
+  // 0.5s 转场间隔（首窗=4s 片段+0.5s=4.5s，次窗起点 4.5s——不再出现静音断窗），
+  // 源游标跨窗连续（10s 源足够，无回环）
   assert.equal(audioTrack.segments.length, 2)
-  assert.deepEqual(audioTrack.segments[0].target_timerange, { start: 0, duration: 4000000 })
-  assert.deepEqual(audioTrack.segments[0].source_timerange, { start: 0, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[0].target_timerange, { start: 0, duration: 4500000 })
+  assert.deepEqual(audioTrack.segments[0].source_timerange, { start: 0, duration: 4500000 })
   assert.deepEqual(audioTrack.segments[1].target_timerange, { start: 4500000, duration: 4000000 })
-  assert.deepEqual(audioTrack.segments[1].source_timerange, { start: 4000000, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[1].source_timerange, { start: 4500000, duration: 4000000 })
   // 2026-09-17 对齐收尾（标准 §4.2）：音频素材 local_material_id / music_id = id
   const audioMat = content.materials.audios[0]
   assert.equal(audioMat.local_material_id, audioMat.id)
@@ -250,9 +251,9 @@ test('exportMultiToDraft：bgmPaths 逐视频 BGM → 各窗各素材，源游�
   const matA = content.materials.audios.find((m) => m.path.endsWith('rowa.mp3'))
   const matB = content.materials.audios.find((m) => m.path.endsWith('rowb.mp3'))
   assert.ok(matA && matB && matA.id !== matB.id)
-  // 第一窗引用 A、第二窗引用 B；各自源游标从 0 起（独立素材，不跨素材连续）
+  // 第一窗引用 A（吸收段间 0.5s=4.5s）、第二窗引用 B；各自源游标从 0 起（独立素材，不跨素材连续）
   assert.equal(audioTrack.segments[0].material_id, matA.id)
-  assert.deepEqual(audioTrack.segments[0].source_timerange, { start: 0, duration: 4000000 })
+  assert.deepEqual(audioTrack.segments[0].source_timerange, { start: 0, duration: 4500000 })
   assert.equal(audioTrack.segments[1].material_id, matB.id)
   assert.deepEqual(audioTrack.segments[1].source_timerange, { start: 0, duration: 4000000 })
   assert.deepEqual(audioTrack.segments[1].target_timerange, { start: 4500000, duration: 4000000 })
@@ -864,11 +865,17 @@ test('exportMultiToDraft：BGM 短于视频窗 → 窗内回环切 chunk（源�
   assert.equal(at2.length, 1)
   // BGM 素材 4s，每窗 4s：窗1=[0,4s) src[0,4s)；窗2 起点 4.5s，源游标已满归零
   // → src[0,4s)（回环无缝：若不归零会越界）；共 2 段、同素材 id（不重复入素材库）
-  assert.equal(at2[0].segments.length, 2)
+  // 2026-09-24 用户裁决：BGM 窗口吸收段间间隔——首窗 4.5s（4s 源回环补 0.5s），
+  // 次窗起点 4.5s、源游标跨窗续 500000 起；共 4 段、同素材 id（不重复入素材库）
+  assert.equal(at2[0].segments.length, 4)
   assert.deepEqual(at2[0].segments[0].source_timerange, { start: 0, duration: 4000000 })
-  assert.deepEqual(at2[0].segments[1].target_timerange, { start: 4500000, duration: 4000000 })
-  assert.deepEqual(at2[0].segments[1].source_timerange, { start: 0, duration: 4000000 })
-  assert.equal(at2[0].segments[0].material_id, at2[0].segments[1].material_id)
+  assert.deepEqual(at2[0].segments[1].target_timerange, { start: 4000000, duration: 500000 })
+  assert.deepEqual(at2[0].segments[1].source_timerange, { start: 0, duration: 500000 })
+  assert.deepEqual(at2[0].segments[2].target_timerange, { start: 4500000, duration: 3500000 })
+  assert.deepEqual(at2[0].segments[2].source_timerange, { start: 500000, duration: 3500000 })
+  assert.deepEqual(at2[0].segments[3].target_timerange, { start: 8000000, duration: 500000 })
+  assert.deepEqual(at2[0].segments[3].source_timerange, { start: 0, duration: 500000 })
+  assert.equal(at2[0].segments[0].material_id, at2[0].segments[3].material_id)
   assert.equal(c2.materials.audios.length, 1)
 })
 

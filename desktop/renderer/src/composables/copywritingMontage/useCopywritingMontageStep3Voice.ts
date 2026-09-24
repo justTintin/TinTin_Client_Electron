@@ -886,6 +886,34 @@ function clearVoiceProgressListener(): void {
       scriptSyncing.value = false
     }
   }
+  /** 进入模块时按 scriptId 回学服务端选题名（2026-09-23 用户裁决：本地持久化只恢复
+   *  界面状态，同步是单向推——本地默认名「脚本N」会长期挂 Name；此处一次性拉脚本库
+   *  列表，按 id 回填 tab.topic 与 tab.name（display_name 优先），best-effort 静默。 */
+  const tabNamesSynced = new Set<string>()
+  async function refreshTabNamesFromServer(): Promise<void> {
+    const withId = storyboards.value.filter((t) => t.scriptId && !tabNamesSynced.has(t.scriptId))
+    if (!withId.length) return
+    for (const t of withId) tabNamesSynced.add(t.scriptId)
+    try {
+      const data = (await window.tintin.server.get('/api/storyboard/scripts', { page: 1, page_size: 100 })) as unknown
+      if (!data || typeof data !== 'object' || 'error' in data) return
+      const items = extractScriptItems(data)
+      const byId = new Map<string, Record<string, unknown>>()
+      for (const it of items) {
+        const id = String((it as Record<string, unknown>).id ?? '').trim()
+        if (id) byId.set(id, it as Record<string, unknown>)
+      }
+      for (const t of withId) {
+        const hit = byId.get(String(t.scriptId))
+        if (!hit) continue
+        const topic = String(hit.topic ?? '').trim()
+        const dn = String(hit.display_name ?? '').trim()
+        if (topic) t.topic = topic
+        if (dn) t.name = dn.slice(0, 20)
+        else if (topic && /^脚本\d+$/.test(t.name)) t.name = topic.slice(0, 20)
+      }
+    } catch (_) { /* best-effort：失败保持本地名 */ }
+  }
   /** ✨ AI 生成分镜：llm:chat → 现有分镜解析器（剥```/JSON/normalize）→ 整组替换镜头卡。
    *  解析失败（fallback 单镜回退标记）保留现有卡并报错，不吞用户已编辑内容 */
   const storyboardBusy = ref(false)
@@ -1465,6 +1493,7 @@ function clearVoiceProgressListener(): void {
     copyShots, copyShotsStale, shotClipGroup, bindShotMaterial, removeShotClipAt, unbindShotMaterial,
     storyboards, activeStoryboardId, activeStoryboard, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, activeNarrative, COPY_STORYBOARD_MAX,
     scriptSyncing, syncStoryboardsToServer,
+    refreshTabNamesFromServer,
     genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
     scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,

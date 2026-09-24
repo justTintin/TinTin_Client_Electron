@@ -376,6 +376,7 @@ export function useCopywritingMontage() {
     copyShots, copyShotsStale, shotClipGroup, bindShotMaterial, removeShotClipAt, unbindShotMaterial, genStoryboard, storyboardBusy, scriptSaving, saveStoryboard,
     storyboards, activeStoryboardId, activeStoryboard, setActiveStoryboard, renameStoryboardTab, removeStoryboardTab, activeNarrative, COPY_STORYBOARD_MAX,
     scriptPickDlg, openScriptPick, refreshScriptOptions, pickDetail, selectScriptOption, applySelectedScript, syncStoryboardsToServer,
+    refreshTabNamesFromServer,
     loadLuts, loadCatalogLanes, resolveKeywordHits,
     currentMatchTemplateIds, refreshTextFxTracks, loadTextTemplates, ensureTtsApiUrl,
     nextVoiceChannel, clearVoiceProgressListener, scanVoiceDir, enterStepVoice,

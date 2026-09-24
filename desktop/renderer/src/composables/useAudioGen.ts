@@ -572,6 +572,12 @@ export function useAudioGen() {
       const query = listQuery.value.trim()
       if (tag) params.tag = tag
       if (query) params.query = query
+      // 2026-09-23 用户报障（BGM 弹窗只剩一条）：分类过滤此前只在本地做——全库 1590 条
+      // 按 20 条/页翻页，每页筛完剩 0-2 条。服务端 /audio/library 支持 category 参数
+      // （实测 category=音乐 → 51 条），kind 码映射服务端中文分类值上送
+      const kindToCategory: Record<string, string> = { music: '音乐', sfx: '音效', voice: '配音' }
+      const srvCategory = kindToCategory[listKind.value]
+      if (srvCategory) params.category = srvCategory
       const data = await serverGet('/audio/library', params)
       const rows = (data.items || []) as Record<string, unknown>[]
       const total = Number(data.total ?? rows.length)
